@@ -3,7 +3,7 @@
 供后端在保存责任模块树 / 变更用户画像后调用，
 让运行中的派单流水线重新加载模块树配置、失效召回与画像缓存。
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER_API")
@@ -69,3 +69,47 @@ async def debug_reindex_history():
     except Exception as e:
         logger.exception("补索引失败: %s", e)
         raise HTTPException(status_code=500, detail=f"补索引失败: {e}")
+
+
+@assigner_router.post("/debug/reassign-stats")
+async def debug_reassign_stats():
+    """开发者模式：按转派弹窗三个固定类型汇总指标（不猜、不进学习）。"""
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.debug_views import (
+            debug_reassign_stats as _stats,
+        )
+        return _ok(await _stats())
+    except Exception as e:
+        logger.exception("转派统计失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"转派统计失败: {e}")
+
+
+@assigner_router.post("/debug/reassign-review")
+async def debug_reassign_review(payload: dict = Body(...)):
+    """开发者模式：人工给未标转派点选类型。"""
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.debug_views import (
+            debug_review_reassign as _review,
+        )
+        return _ok(_review(payload.get("log_id"), payload.get("kind") or ""))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("转派审核失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"转派审核失败: {e}")
+
+
+@assigner_router.post("/debug/clusters/params")
+async def debug_cluster_params(payload: dict = Body(...)):
+    """开发者模式：保存簇门槛并按新值重建簇。"""
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.debug_views import (
+            debug_save_cluster_params as _save,
+        )
+        return _ok(await _save(payload or {}))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("保存簇门槛失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"保存簇门槛失败: {e}")
+

@@ -110,6 +110,7 @@ export interface RedispatchProfile {
   modules?: string[] | null;
   duty?: string | null;
   missing?: string[] | null;
+  specified_name?: string | null;
 }
 
 export interface RedispatchResult {

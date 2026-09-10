@@ -1,6 +1,7 @@
-"""精排评分层：三路并集，命中路取最高归一分 + 职级折扣 + 部门 soft_prior
+"""精排评分层：三路并集，命中路取最高绝对分 + 职级折扣 + 部门 soft_prior
 
-只命中一路：保留该路归一分，不因其他路空而打折。
+三路都用 0～1 绝对分，不按本批第一名拉满。
+只命中一路：保留该路分数，不因其他路空而打折。
 多路命中：取最高，来源标签仍标出命中了哪几路。
 """
 
@@ -23,29 +24,6 @@ class Ranker:
         except (TypeError, ValueError):
             self._preferred_floor = 0.9
 
-    @staticmethod
-    def _apply_transfer_signals(
-        llm_scores: Dict[str, float],
-        transfer_signals: Optional[Dict],
-    ) -> Dict[str, float]:
-        """转派旁路：先改 L1 分再加权。本版 signals 恒空，有值时 delta 可正可负。"""
-        out = dict(llm_scores or {})
-        if not transfer_signals or not isinstance(transfer_signals, dict):
-            return out
-        for key in ("penalties", "boosts"):
-            bucket = transfer_signals.get(key) or {}
-            if not isinstance(bucket, dict):
-                continue
-            for eid, spec in bucket.items():
-                if not eid:
-                    continue
-                try:
-                    delta = float((spec or {}).get("delta") or 0.0)
-                except (TypeError, ValueError):
-                    delta = 0.0
-                out[eid] = max(0.0, out.get(eid, 0.0) + delta)
-        return out
-
     def rank(
         self, recall_result: RecallResult,
         engineers: Optional[List[EngineerProfile]] = None,
@@ -55,12 +33,9 @@ class Ranker:
         prev_assignee_id: Optional[str] = None,
         dept_routing: Optional["DeptRoutingResult"] = None,
     ) -> Dict[str, Dict[str, float]]:
-        llm_scores = self._apply_transfer_signals(
-            recall_result.llm_recall,
-            getattr(recall_result, "transfer_signals", None),
-        )
-        similar = getattr(recall_result, "similar_recall", None) or recall_result.history_recall or {}
-        cluster = getattr(recall_result, "cluster_recall", None) or {}
+        llm_scores = recall_result.llm_recall or {}
+        similar = recall_result.similar_recall or {}
+        cluster = recall_result.cluster_recall or {}
 
         ids = set()
         ids.update(llm_scores.keys())
@@ -89,24 +64,17 @@ class Ranker:
             dept_boost = float(thresholds.get("dept_boost", 1.5))
             primary_dept = dept_routing.primary_dept
 
-        def _max_of(recall: Dict[str, float]) -> float:
-            vals = [recall.get(eid, 0.0) for eid in ids]
-            return max(vals) if vals else 0.0
-
-        def _norm(v: float, m: float) -> float:
-            return round(v / m, 4) if m > 0 else 0.0
-
-        llm_max, sim_max, clu_max = _max_of(llm_scores), _max_of(similar), _max_of(cluster)
+        def _abs01(v: float) -> float:
+            return round(min(1.0, max(0.0, float(v or 0.0))), 4)
 
         scores = {}
         for eid in ids:
             hit_llm = bool(eid in llm_scores and llm_scores.get(eid, 0) > 0)
             hit_similar = bool(eid in similar and similar.get(eid, 0) > 0)
             hit_cluster = bool(eid in cluster and cluster.get(eid, 0) > 0)
-            llm = _norm(llm_scores.get(eid, 0.0), llm_max) if hit_llm else 0.0
-            # 相似工单 / 问题域已是绝对 0～1，不再按本批最高拉满
-            sim = min(1.0, max(0.0, float(similar.get(eid, 0.0)))) if hit_similar else 0.0
-            clu = min(1.0, max(0.0, float(cluster.get(eid, 0.0)))) if hit_cluster else 0.0
+            llm = _abs01(llm_scores.get(eid, 0.0)) if hit_llm else 0.0
+            sim = _abs01(similar.get(eid, 0.0)) if hit_similar else 0.0
+            clu = _abs01(cluster.get(eid, 0.0)) if hit_cluster else 0.0
             hit_vals = []
             if hit_llm:
                 hit_vals.append(llm)
@@ -138,6 +106,10 @@ class Ranker:
 
             is_creator = bool(creator_id and eid == creator_id)
             is_prev = bool(prev_assignee_id and eid == prev_assignee_id)
+            was_rejected = eid in (getattr(recall_result, "misassign_rejected", None) or {})
+            was_confirmed = eid in (getattr(recall_result, "misassign_confirmed", None) or {})
+            if was_rejected:
+                total *= 0.70
 
             scores[eid] = {
                 "llm_score": llm,
@@ -154,7 +126,8 @@ class Ranker:
                 "preferred_assignee": is_preferred,
                 "is_creator": is_creator,
                 "prev_unsatisfied": is_prev,
-                "contact_multiplier": 1.0,
+                "misassign_rejected": was_rejected,
+                "misassign_confirmed": was_confirmed,
                 "preferred_floor": round(self._preferred_floor, 3) if is_preferred else None,
                 "dept_multiplier": round(dept_mul, 3),
                 "total_score": round(total, 4),

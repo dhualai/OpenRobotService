@@ -699,6 +699,7 @@ _TICKET_STATUS_CN = {
     "pending": "挂起",
     "resolved": "已解决（待提单人确认关闭）",
     "closed": "已关闭",
+    "canceled": "已取消",
 }
 
 # 工单流转规则指引（0904）：查单注入必带。此前只返回标题+描述+评论，状态/角色
@@ -764,7 +765,9 @@ async def _lookup_ticket_ref(ref_text: str, created_by: str = "") -> str:
         async with AsyncSessionLocal() as db:
             t = await TicketService.get_ticket_by_id(db, ticket_no, load_comments=True)
             if t is None:
-                return f"#{ticket_no}（未找到该工单号，可能记错或已被删除）"
+                return (f"#{ticket_no}（未找到该工单号，可能记错或已被删除。"
+                        f"请一句话告知用户即可，不要反复追问，"
+                        f"也不要编造该工单的内容）")
             if not _ticket_visible_to(t, created_by):
                 logger.info(f"[ticket_ref] 权限不足拒绝查看: ticket={ticket_no}, "
                             f"user={created_by!r}")
@@ -1205,14 +1208,24 @@ _PLANNER_TOOLS = [
     }},
     {"type": "function", "function": {
         "name": "lookup_ticket",
-        "description": "查询某个已有工单的详情（标题/描述/处理记录）。用户询问工单状态/"
-                       "内容/进度，且消息或上下文中**明确以工单指代形式给出号码**"
-                       "（@#+号码、#+号码、「工单」+号码、「那个N号单」）时调用。"
+        "description": "工单查询（两种用法，按用户消息选其一）："
+                       "①查单张详情——用户询问工单状态/内容/进度，且消息或上下文中"
+                       "**明确以工单指代形式给出号码**（@#+号码、#+号码、「工单」+号码、"
+                       "「那个N号单」）时，传 ticket_no。"
+                       "②查自己的工单清单——用户不带工单号地问「我有哪些工单/我的工单/"
+                       "我名下待处理的工单/我之前提过什么单」时，不传 ticket_no，"
+                       "可传 only_open（问「待处理/没解决/还在处理」为 true；"
+                       "问「全部/所有/历史」为 false 或不传）。清单按登录身份查询，"
+                       "无法查别人的。"
                        "🔴 车型/设备编号（TD-96、XP11）、错误码（E201）、楼层（3F）里的数字"
-                       "不是工单号，禁止截取调用；上下文里没有工单号时禁止调用。",
+                       "不是工单号，禁止截取；既没给出工单号、也不是问自己的工单清单时禁止调用。",
         "parameters": {"type": "object", "properties": {
-            "ticket_no": {"type": "integer", "description": "工单号，纯数字"},
-        }, "required": ["ticket_no"]},
+            "ticket_no": {"type": "integer",
+                          "description": "工单号，纯数字；查单张详情时传"},
+            "only_open": {"type": "boolean",
+                          "description": "查清单时用：true=只看未完结（新建/处理中/挂起）"
+                                         "，false或缺省=全部"},
+        }, "required": []},
     }},
     {"type": "function", "function": {
         "name": "search_history_tickets",
@@ -1223,6 +1236,17 @@ _PLANNER_TOOLS = [
             "query": {"type": "string", "description": "检索词，10-25字，"
                                                        "保留错误码/车型/故障现象关键词"},
         }, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "list_user_projects",
+        "description": "查询**当前用户自己**名下关联的项目清单（系统按登录身份查询，"
+                       "无需也无法指定其他用户）。两类情况调用：①用户询问「我有哪些项目/"
+                       "我名下的项目/我参与了哪些项目/我关联的项目」这类自己项目列表的问题；"
+                       "②用户询问项目整体或某个项目的进度、状态、计划等管理情况——"
+                       "此时也调用（系统会随结果返回标准边界话术，照着答即可）。"
+                       "🈲 设备故障、操作配置类问题即使提到项目也不要调用；"
+                       "问别人的项目清单时不要调用。",
+        "parameters": {"type": "object", "properties": {}, "required": []},
     }},
     # 项目提及捕捉（0828 治本）：咨询轮 oneshot 纯文本无协议可挂，规划器每轮
     # 必跑且本轮消息必在 prompt——搭便车捕捉，零额外 LLM 调用。服务端唯一
@@ -1278,8 +1302,11 @@ _PLANNER_SYSTEM = (
     "- 用户描述设备故障/异常现象（车不动、报错、通信断、任务失败等）想知道原因或解法 → "
     "search_history_tickets 查历史工单实战经验（与 search_kb 并行：一个查手册一个查实战，"
     "都调不冲突；纯平台功能/操作咨询不需要它）\n"
-    "- 查询已有工单，且消息或上下文（含用户最近提交的工单）中有明确工单号 → lookup_ticket；"
-    "消息用「之前那个工单」「那个单子」等指代且上下文任一轮出现过工单号时，用该号调用\n"
+    "- 查询已有工单 → lookup_ticket（两种形态）：消息或上下文（含用户最近提交的工单）"
+    "中有明确工单号 → 传该号查详情；消息用「之前那个工单」「那个单子」等指代且上下文"
+    "任一轮出现过工单号时，用该号调用；用户不带工单号地问自己的工单清单"
+    "（我有哪些工单/我的待处理工单/我提过什么单）→ 不传号"
+    "（问「待处理/没解决」时传 only_open=true）\n"
     "- 同时需要两者（如：工单里提到的问题怎么解决）→ 两个都调用\n"
     "- 🔴 消息只是极短的续接/反馈（「然后呢」「下一步」「还是不行」「好的我试试」「可以了」），"
     "本身不含新问题且上文刚给过资料 → 不调用工具，顺着上文继续即可；"
@@ -1287,6 +1314,9 @@ _PLANNER_SYSTEM = (
     "- ticket 且消息明确指代某个已有工单（如「针对那个单子的问题再提一单」）→ "
     "调 lookup_ticket 取该工单内容，不调 search_kb\n"
     "- courtesy → 不调用任何工具\n"
+    "- 用户询问自己名下的项目清单（有哪些项目/参与了哪些项目/关联的项目），"
+    "或询问项目整体/某个项目的进度、状态等管理情况 → "
+    "list_user_projects（系统按登录身份查询，无需参数；结果自带标准边界话术，照着答）\n"
     "- 用户消息里出现具体项目名/简称（如「本川项目」）→ mention_project"
     "（记录跨轮记忆，与 route 并列输出；没提项目名就不调——平台/服务号自身的"
     "名称不算项目提及）\n"
@@ -2028,6 +2058,49 @@ class AiDiagnosisPlatform:
         if action == "submit":
             state.phase = "escalated"
 
+    # list_user_projects 工具结果块（纯函数，供单测）。>5 个物理截断到 5——
+    # 只把前 5 个项目名放进资料块，flash 模型想多列也没有素材；两种情况各带
+    # 对应提示语，空列表的措辞同时覆盖「真没有」与「DB 查询失败降级」两种态。
+    _PROJECT_LIST_SHOW_MAX = 5
+
+    @staticmethod
+    def _format_user_projects_block(projects: List[Dict[str, str]]) -> str:
+        if not projects:
+            return ("【用户名下项目】查询结果：该用户名下暂无关联项目。请如实告知"
+                    "用户名下当前没有查到项目，不要编造任何项目；若用户认为自己"
+                    "应该有项目，建议其稍后再试或联系管理员核实权限。"
+                    + AiDiagnosisPlatform._project_boundary_tail())
+        total = len(projects)
+        shown = projects[:AiDiagnosisPlatform._PROJECT_LIST_SHOW_MAX]
+        lines = "\n".join(f"- {p.get('name') or ''}".rstrip() for p in shown if p.get("name"))
+        # 能力边界收口（0908 产品定调：清单给、属性拒）：边界话术只随工具块注入，
+        # 不进主 prompt——flash 顺着话术主动揽活，但查详情根本没这能力
+        if total > AiDiagnosisPlatform._PROJECT_LIST_SHOW_MAX:
+            head = (f"【用户名下项目】系统按登录身份查询到该用户名下共 {total} 个项目，"
+                    f"数量较多，以下仅展示其中前 {len(shown)} 个（按名称排序）：\n"
+                    f"{lines}\n"
+                    "请回答时：①只列出上面这些项目，禁止编造列表之外的任何项目；"
+                    f"②明确告知用户其名下共有 {total} 个项目，此处仅展示前 {len(shown)} 个，"
+                    "其余项目的名称及各项目的详细情况，请用户前往后台管理系统的项目"
+                    "管理页面查看。"
+                    + AiDiagnosisPlatform._project_boundary_tail())
+        else:
+            head = (f"【用户名下项目】系统按登录身份查询到该用户名下共 {total} 个项目，"
+                    f"已全部列出：\n{lines}\n"
+                    "请回答时：①列出以上项目（这就是该用户名下全部项目），"
+                    "禁止编造列表之外的任何项目；②告知用户以上即其名下全部项目。"
+                    + AiDiagnosisPlatform._project_boundary_tail())
+        return head
+
+    @staticmethod
+    def _project_boundary_tail() -> str:
+        """工具块统一结尾：能力边界话术只在这里维护，主 prompt 不承载。"""
+        return ("\n③这是项目查询的全部能力：你只能基于上面的查询结果作答，查不了任何"
+                "项目的详细情况。🔴 回答完自然收尾，禁止追问「需要我帮你看看哪个"
+                "项目」之类的话，禁止表示可以进一步查询/介绍某个项目；用户想了解"
+                "某个项目的进度、状态等详细情况时，告知其前往后台管理系统的项目"
+                "管理页面查看。")
+
     async def _get_user_projects(self, username: str) -> List[Dict[str, str]]:
         """查 username 名下关联的项目列表（helpdesk_724 跨库，与后端
         GET /api/admin/projects/me 同源：user_project_roles 排除 'global'）。
@@ -2076,6 +2149,104 @@ class AiDiagnosisPlatform:
         _USER_PROJECTS_CACHE[username] = (now + 300, projects)
         logger.info(f"[user_projects] username={username}, projects={len(projects)}")
         return projects
+
+    _USER_TICKETS_SHOW_MAX = 20
+
+    @staticmethod
+    def _user_tickets_boundary_tail() -> str:
+        """工单清单的能力边界收口（只随工具块注入，不进主 prompt）：
+        清单只给概要，详情要走单号查询——与项目清单同款设计。"""
+        return ("\n③这是工单清单查询的全部能力：只能列出上面的概要信息。用户想了解"
+                "某张工单的处理记录时，请其告知工单号（可从上面清单里选），"
+                "系统会再查该单详情；🔴 回答完自然收尾，禁止追问「需要我帮您看"
+                "哪张工单」，禁止表示可以直接点开/操作某张工单。")
+
+    @staticmethod
+    def _format_user_tickets_block(tickets: List[Dict[str, object]],
+                                   total: int, only_open: bool) -> str:
+        scope = "未完结（新建/处理中/挂起）" if only_open else ""
+        if not tickets:
+            return (f"【用户名下工单】系统按登录身份查询，该用户名下暂无{scope}工单。"
+                    "请如实告知用户没有查到工单，不要编造；若用户认为应该有，"
+                    "建议其确认登录身份或稍后再试。"
+                    + AiDiagnosisPlatform._user_tickets_boundary_tail())
+        lines = []
+        for r in tickets:
+            _sv = str(r.get("status") or "").lower()
+            bits = [f"#{r.get('id')}", str(r.get("title") or "").strip()[:40],
+                    _TICKET_STATUS_CN.get(_sv, _sv or "未知状态")]
+            if r.get("project_name"):
+                bits.append(str(r["project_name"])[:20])
+            if r.get("created_at"):
+                bits.append(str(r["created_at"])[5:10].replace("-", "/"))
+            if r.get("is_assignee_only"):
+                bits.append("（您是接单人）")
+            lines.append("- " + "｜".join(b for b in bits if b))
+        head = (f"【用户名下工单】系统按登录身份查询到该用户{('名下' + scope) if scope else '名下'}"
+                f"共 {total} 张工单"
+                + (f"，按创建时间倒序仅展示最近 {len(tickets)} 张" if total > len(tickets) else "，已全部列出")
+                + "：\n" + "\n".join(lines) + "\n"
+                "请回答时：①按清单如实列出（编号/标题/状态就是全部信息，禁止编造"
+                "清单之外的工单或补充清单里没有的字段）；"
+                + (f"②告知用户共 {total} 张，此处仅展示最近 {len(tickets)} 张。"
+                   if total > len(tickets) else "②告知用户以上即其全部匹配工单。")
+                + AiDiagnosisPlatform._user_tickets_boundary_tail())
+        return head
+
+    async def _get_user_tickets(self, username: str,
+                                only_open: bool = False) -> tuple:
+        """当前用户名下的工单清单（创建的 + 接手处理的），返回 (rows, total)。
+
+        身份只认请求的 created_by（登录用户）；tasks.created_by/assigned_to 存在
+        id/username 双形态（过渡期），用 identity_keys 三形态匹配（与
+        _ticket_visible_to 同一套可见性：创建者/处理人）。状态列存大写
+        （ci collation 查询不敏感），过滤值用小写即可命中。不缓存——查询毫秒级
+        且工单状态多变，清单要新鲜。失败抛错由调用方降级为空清单。
+        """
+        if not (username or "").strip():
+            return [], 0
+        from ai.core.database import SessionLocal
+        from sqlalchemy import bindparam, text
+        from app.core.user_identity import identity_keys
+        loop = asyncio.get_running_loop()
+
+        def _query():
+            session = SessionLocal()
+            try:
+                ks = list(dict.fromkeys(str(k) for k in identity_keys(username) if k))
+                open_clause = ("AND t.status IN ('new','in_progress','pending')"
+                               if only_open else "")
+                where = (f"WHERE (t.created_by IN :ks OR t.assigned_to IN :ks) "
+                         f"{open_clause}")
+                total = session.execute(
+                    text(f"SELECT COUNT(*) FROM tasks t {where}")
+                    .bindparams(bindparam("ks", expanding=True)),
+                    {"ks": ks}).scalar() or 0
+                rows = session.execute(
+                    text(f"SELECT t.id, t.title, t.status, t.project_name, "
+                         f"t.created_at, t.created_by, t.assigned_to "
+                         f"FROM tasks t {where} "
+                         f"ORDER BY t.created_at DESC "
+                         f"LIMIT {AiDiagnosisPlatform._USER_TICKETS_SHOW_MAX}")
+                    .bindparams(bindparam("ks", expanding=True)),
+                    {"ks": ks}).fetchall()
+                out = []
+                for r in rows:
+                    out.append({"id": r[0], "title": r[1] or "", "status": r[2],
+                                "project_name": r[3], "created_at": r[4],
+                                "is_assignee_only": (
+                                    str(r[6] or "") in ks
+                                    and str(r[5] or "") not in ks)})
+                return out, int(total)
+            finally:
+                session.close()
+
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _query), timeout=2.0)
+        except Exception as e:
+            logger.warning(f"[user_tickets] 名下工单查询失败: username={username}, err={e}")
+            return [], 0
 
     async def _get_recent_ticket_projects(self, username: str) -> List[Dict[str, str]]:
         """查 username 最近提交过工单的项目（按最近一次提单时间倒序，≤5 个）。
@@ -2823,9 +2994,11 @@ class AiDiagnosisPlatform:
                     # 项目提及捕捉（0828 治本）：咨询轮 oneshot 无协议可挂，
                     # 规划器搭便车。校验与持久化在下方统一做。
                     mention_raw = str(tc["arguments"].get("project_name") or "").strip()
-                elif name in ("search_kb", "lookup_ticket", "search_history_tickets"):
+                elif name in ("search_kb", "lookup_ticket", "search_history_tickets",
+                              "list_user_projects"):
                     plan.append((name, tc["arguments"]))
-            logger.info(f"[plan] 规划结果: intent={intent} tools={plan}"
+            logger.info(f"[plan] 规划结果: session={request.session_id}, "
+                        f"intent={intent} tools={plan}"
                         + (f" mention={mention_raw!r}" if mention_raw else ""))
             if mention_raw and mention_raw.lower() != "last":
                 # 反幻觉闸门（0904 生产实锤：规划 prompt 旧示例把平台名列为可报
@@ -2932,7 +3105,21 @@ class AiDiagnosisPlatform:
                         session_id, state, query_override=q)
                     return name, docs
                 if name == "lookup_ticket":
-                    no = str(args.get("ticket_no") or "").strip()
+                    raw_no = args.get("ticket_no")
+                    if raw_no is None or str(raw_no).strip() == "":
+                        # 无号形态：查「我的工单」清单（身份只认登录用户，
+                        # LLM 无参数可指定他人；查询失败降级为空清单文案）
+                        if not (created_by or "").strip():
+                            return "lookup_ticket_list", (
+                                "【用户名下工单】当前请求未携带登录身份，无法查询工单"
+                                "清单。请一句话告知用户需登录后使用，不要编造任何"
+                                "工单内容。")
+                        only_open = bool(args.get("only_open"))
+                        tickets, total = await self._get_user_tickets(
+                            created_by, only_open)
+                        return "lookup_ticket_list", self._format_user_tickets_block(
+                            tickets, total, only_open)
+                    no = str(raw_no).strip()
                     if not no.isdigit():
                         return name, ""
                     _cur = state.ticket_ref_context or ""
@@ -2968,6 +3155,14 @@ class AiDiagnosisPlatform:
                         "【历史工单经验】（公司工单沉淀库里相似问题的历史解决记录，"
                         "回答可参考其根因与解法，注明这是历史工单经验）\n"
                         + "\n".join(_items))
+                if name == "list_user_projects":
+                    # 身份只认请求的 created_by（登录用户），LLM 无参数可指定别人
+                    try:
+                        projects = await self._get_user_projects(created_by)
+                    except Exception as e:
+                        logger.warning(f"[plan_exec] 名下项目查询失败: {e}")
+                        projects = []
+                    return name, self._format_user_projects_block(projects)
                 if name == "project_disambiguate":
                     _cs = args.get("candidates") or []
                     _names = "\n".join(f"- {c.get('name')}" for c in _cs
@@ -2985,9 +3180,12 @@ class AiDiagnosisPlatform:
         results = await asyncio.gather(*[_run_one(n, a) for n, a in plan])
         kb_blocks = [c for k, c in results if k == "search_kb" and c]
         ticket_blocks = [c for k, c in results if k == "lookup_ticket" and c]
+        ticket_list_blocks = [c for k, c in results
+                              if k == "lookup_ticket_list" and c]
         history_blocks = [c for k, c in results
                           if k == "search_history_tickets" and c]
         disamb_blocks = [c for k, c in results if k == "project_disambiguate" and c]
+        proj_blocks = [c for k, c in results if k == "list_user_projects" and c]
         parts = []
         if history_blocks:
             parts.append("\n\n".join(history_blocks))
@@ -2998,6 +3196,10 @@ class AiDiagnosisPlatform:
         if ticket_blocks:
             parts.append("用户询问的工单（系统已查到，回答工单相关问题基于此内容，"
                          "不要说无法查看）：\n" + "\n\n".join(ticket_blocks))
+        if ticket_list_blocks:
+            parts.append("\n\n".join(ticket_list_blocks))
+        if proj_blocks:
+            parts.append("\n\n".join(proj_blocks))
         if disamb_blocks:
             parts.append("\n\n".join(disamb_blocks))
         return "\n\n".join(parts)

@@ -881,7 +881,8 @@ html, body, #root {
 }
 /* 项目编号题候选按钮（project_ask）：题面提示语下方等宽两列网格，
    实心蓝底序号徽标+名字左对齐（超长省略号），点击=以用户身份发送序号走
-   编号还原→预填→弹窗链路；答复后随 project_choices 清空消失 */
+   编号还原→预填→弹窗链路；答复后按钮持久保留：所选项加深（--selected）、
+   其余弱化（--done）且整组禁用防重复发序号（派生态见 ChatPanel messages.map） */
 .chat-proj-choices {
   /* 插在题面 head/tail 两段之间（原编号列表位置）：上下对称留白，无分隔线 */
   margin: 10px 0;
@@ -941,6 +942,30 @@ html, body, #root {
   white-space: nowrap;
   font-weight: 500;
 }
+/* 已答复：所选项加深（=hover 蓝底白字的持久版，徽标同步反白） */
+.chat-proj-choices__btn--selected {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  cursor: default;
+}
+.chat-proj-choices__btn--selected .chat-proj-choices__index {
+  background: var(--primary-foreground);
+  color: var(--primary);
+}
+/* 已答复：其余按钮弱化置灰，不可再点 */
+.chat-proj-choices__btn--done {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  cursor: default;
+  opacity: 0.72;
+}
+.chat-proj-choices__btn--done .chat-proj-choices__index {
+  background: var(--muted-foreground);
+  color: #fff;
+}
+.chat-proj-choices__btn:disabled {
+  pointer-events: none;
+}
 .chat-ticket-overview__footer {
   margin-top: 12px;
   padding-top: 12px;
@@ -971,15 +996,31 @@ html, body, #root {
   cursor: pointer;
 }
 .chat-ticket-overview__redispatch:active { background: var(--blue-2); border-color: var(--blue-2); }
-/* 二次派单感知增强（M3）：派单结果提醒单行（警示色、单行省略，整卡点击进详情） */
+/* 派单提醒单行：标签蓝、正文灰，与详情 DispatchFold 同口径 */
 .chat-ticket-overview__tip {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
   margin-top: 8px;
   font-size: 11.5px;
-  color: #B45309;
-  background: rgba(255, 171, 0, 0.10);
+  color: var(--muted-foreground);
+  background: var(--blue-soft);
+  border: 1px solid color-mix(in oklab, var(--blue-3) 28%, transparent);
   border-radius: 4px;
   padding: 3px 8px;
   max-width: 100%;
+  overflow: hidden;
+}
+.chat-ticket-overview__tip-label {
+  flex-shrink: 0;
+  color: var(--blue-2);
+  font-weight: 600;
+}
+.chat-ticket-overview__tip-text {
+  min-width: 0;
+  flex: 1;
+  color: var(--muted-foreground);
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1852,34 +1893,43 @@ html, body, #root {
   color: var(--muted-foreground);
   margin-top: 2px;
 }
-/* 二次派单感知增强（M3）：派单结果提醒行（警示色、单行省略） */
+/* 派单提醒行：标签蓝、正文灰 */
 .history-row__tip {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
   font-size: 11.5px;
-  color: #B45309;
-  background: rgba(255, 171, 0, 0.10);
+  color: var(--muted-foreground);
+  background: var(--blue-soft);
+  border: 1px solid color-mix(in oklab, var(--blue-3) 28%, transparent);
   border-radius: 4px;
   padding: 2px 8px;
   margin-top: 4px;
   max-width: 100%;
+  overflow: hidden;
+}
+.history-row__tip-label {
+  flex-shrink: 0;
+  color: var(--blue-2);
+  font-weight: 600;
+}
+.history-row__tip-text {
+  min-width: 0;
+  flex: 1;
+  color: var(--muted-foreground);
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 派单说明 / 派单理由：默认折叠成一行标题，点开再看全文 */
+/* 派单提醒 / 派单原因：标签蓝、正文灰，点开再看全文 */
 .dispatch-fold {
   margin-top: 10px;
   border-radius: 6px;
   overflow: hidden;
-}
-.dispatch-fold--tip {
-  color: #92400E;
-  background: rgba(255, 171, 0, 0.06);
-  border: 1px solid rgba(255, 171, 0, 0.22);
-}
-.dispatch-fold--reason {
-  color: #1D4ED8;
-  background: rgba(59, 130, 246, 0.06);
-  border: 1px solid rgba(59, 130, 246, 0.16);
+  background: var(--blue-soft);
+  border: 1px solid color-mix(in oklab, var(--blue-3) 28%, transparent);
+  color: var(--muted-foreground);
 }
 .dispatch-fold__header {
   display: flex;
@@ -1906,13 +1956,11 @@ html, body, #root {
   overflow: hidden;
   white-space: nowrap;
 }
-.dispatch-fold__label {
-  flex-shrink: 0;
-  font-weight: 600;
-}
+.dispatch-fold__label,
 .dispatch-fold__sep {
   flex-shrink: 0;
   font-weight: 600;
+  color: var(--blue-2);
 }
 .dispatch-fold__clip {
   min-width: 0;
@@ -1921,21 +1969,22 @@ html, body, #root {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 400;
+  color: var(--muted-foreground);
 }
-.dispatch-fold--tip .dispatch-fold__label,
-.dispatch-fold--tip .dispatch-fold__sep { color: #92400E; }
-.dispatch-fold--tip .dispatch-fold__clip { color: #92400E; }
-.dispatch-fold--reason .dispatch-fold__label,
-.dispatch-fold--reason .dispatch-fold__sep { color: #1E40AF; }
-.dispatch-fold--reason .dispatch-fold__clip { color: #1E3A8A; }
 .dispatch-fold__chevron {
   flex-shrink: 0;
-  color: inherit;
-  opacity: 0.7;
+  color: var(--muted-foreground);
+  opacity: 0.75;
   transition: transform 0.2s ease;
 }
 .dispatch-fold.is-open > .dispatch-fold__header .dispatch-fold__chevron {
   transform: rotate(180deg);
+}
+.dispatch-fold.is-open .dispatch-fold__clip {
+  display: none;
+}
+.dispatch-fold:not(.is-foldable) > .dispatch-fold__header {
+  cursor: default;
 }
 .dispatch-fold__bodywrap {
   display: grid;
@@ -1952,12 +2001,12 @@ html, body, #root {
   font-size: 12.5px;
   line-height: 20px;
   font-weight: 400;
+  white-space: pre-wrap;
+  color: var(--muted-foreground);
 }
 .dispatch-fold.is-open .dispatch-fold__body {
   padding-bottom: 8px;
 }
-.dispatch-fold--tip .dispatch-fold__body { color: #92400E; }
-.dispatch-fold--reason .dispatch-fold__body { color: #1E3A8A; }
 /* 编辑弹窗-所属项目选择（仿下拉，点击弹出搜索层） */
 .ticket-edit-form__select {
   display: flex;
@@ -5772,6 +5821,36 @@ html, body, #root {
 .detail-card__title-inner { font: inherit; color: inherit; letter-spacing: inherit; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 /* 卡片小节标题（设计稿 SectionCard：13px font-semibold 前景色） */
 .detail-card__h { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--foreground); }
+/* 卡片正文文本（统一标准：12.5px / 24px 行高，与讨论气泡 .detail-chat-bubble 一致；
+   问题描述 / 解决方式 / 讨论摘要 等卡片正文统一使用，避免裸容器回退到 body 15px） */
+.detail-card__body {
+  font-size: 12.5px;
+  line-height: 24px;
+  color: var(--foreground);
+  word-break: break-word;
+}
+/* 纯文本正文（Textarea 录入 / AI 纯文本摘要）：保留换行符 */
+.detail-card__body--pre { white-space: pre-wrap; }
+/* 占位/提示性正文（暂无摘要等）：弱化色 */
+.detail-card__body--muted { color: var(--muted-foreground); }
+
+/* 当前阶段名称（工单阶段性处理卡片：当前阶段「xxx」） */
+.detail-step-current {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.detail-step-current__label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.detail-step-current__name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--blue-2);
+}
 
 /* 工单动态卡片（详情页内嵌，点击跳转流转记录页） */
 .ticket-dynamics-card { cursor: pointer; transition: background 0.15s; }
@@ -6738,10 +6817,10 @@ html, body, #root {
 }
 .user-select__status--active { background: #e3f9e9; color: var(--sky); }
 .user-select__status--inactive { background: var(--border); color: var(--muted-foreground); }
-/* 项目选择器小字标注（相关性/状态）统一蓝色调 */
+/* 项目选择器小字标注（相关性/状态）统一系统蓝（--sky/--sky-soft） */
 .user-select__status--ticketed,
 .user-select__status--owned,
-.user-select__status--info { background: #e8f1fd; color: #2563eb; }
+.user-select__status--info { background: var(--sky-soft); color: var(--sky); }
 
 /* ===== 通用下拉刷新 / 触底加载（PullToRefresh） ===== */
 .ptr-scroll {
@@ -7743,6 +7822,7 @@ html, body, #root {
   padding: 14px 14px 10px;
 }
 .dispatch-dev__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dispatch-dev__head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .dispatch-dev__title { font-size: 14px; font-weight: 600; color: var(--mac-fg, #303435); }
 .dispatch-dev__btn {
   border: 0;
@@ -7755,6 +7835,73 @@ html, body, #root {
 .dispatch-dev__btn:disabled { opacity: 0.55; }
 .dispatch-dev__hint { margin: 8px 0 0; font-size: 11.5px; color: var(--mac-muted-fg, #888d8f); line-height: 1.45; }
 .dispatch-dev__stats { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; font-size: 12px; color: #303435; }
+.dispatch-dev__rates {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px;
+}
+.dispatch-dev__rate-btn {
+  display: block;
+  width: 100%;
+  border: 1px solid transparent;
+  background: #f7fbfc;
+  border-radius: 10px;
+  padding: 10px 8px;
+  text-align: center;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.dispatch-dev__rate-btn.is-active,
+.dispatch-dev__stat-btn.is-active {
+  border-color: color-mix(in oklab, var(--mac-blue-2, #3697c3) 45%, transparent);
+  background: #eaf7fd;
+}
+.dispatch-dev__rates strong,
+.dispatch-dev__rate-btn strong { display: block; font-size: 18px; color: #227197; }
+.dispatch-dev__rates span,
+.dispatch-dev__rate-btn span { display: block; margin-top: 4px; font-size: 11px; color: #888d8f; line-height: 1.35; }
+.dispatch-dev__rate-btn em {
+  display: block;
+  margin-top: 4px;
+  font-style: normal;
+  font-size: 10px;
+  color: var(--mac-blue-2, #3697c3);
+}
+.dispatch-dev__stat-btn {
+  border: 1px solid transparent;
+  background: #f7fbfc;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: #303435;
+  cursor: pointer;
+}
+.dispatch-dev__ticket-link {
+  color: var(--mac-blue-2, #3697c3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+.dispatch-dev__ticket-link:hover { color: #227197; }
+.dispatch-dev__drill {
+  margin-top: 10px;
+  border: 1px solid #eef3f5;
+  border-radius: 10px;
+  padding: 8px 10px 4px;
+  background: #fafcfd;
+}
+.dispatch-dev__drill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #303435;
+  font-weight: 600;
+}
+@media (max-width: 640px) {
+  .dispatch-dev__rates { grid-template-columns: 1fr; }
+}
 .dispatch-dev__chart { margin-top: 12px; }
 .dispatch-dev__sub { display: block; font-size: 12px; color: #888d8f; margin-bottom: 4px; }
 .dispatch-dev__list { list-style: none; margin: 10px 0 0; padding: 0; }
@@ -7777,4 +7924,41 @@ html, body, #root {
   padding: 24px 8px; text-align: center; color: #888d8f; font-size: 12px;
 }
 .dispatch-dev__empty-row { padding: 16px 0; }
+.dispatch-dev__params {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 12px;
+}
+.dispatch-dev__params label {
+  display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #888d8f;
+}
+.dispatch-dev__params input {
+  width: 88px; border: 1px solid #e8eaea; border-radius: 8px; padding: 6px 8px; font-size: 13px; color: #303435;
+}
+.dispatch-dev__review-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.dispatch-dev__hops { list-style: none; margin: 8px 0 0; padding: 0; }
+.dispatch-dev__hop {
+  padding: 8px 0 8px 10px;
+  border-left: 2px solid #e8eaea;
+  margin-top: 6px;
+}
+.dispatch-dev__hop-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: #f4f6f6;
+  color: #888d8f;
+  font-size: 11px;
+}
+.dispatch-dev__hop-reason {
+  margin: 4px 0 0;
+  color: #303435;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.dispatch-dev__hop-reason--empty {
+  color: #888d8f;
+  font-size: 12px;
+}
+.dispatch-dev__btn--ghost { background: #f4f6f6; color: #888d8f; }
 

@@ -32,7 +32,7 @@ async def get_my_tasks(
     if not token:
         raise HTTPException(status_code=401, detail="未授权")
     
-    from app.modules.admin.utils_das.security import decode_token
+    from app.core.security import decode_token
     decoded = decode_token(token)
     if not decoded:
         raise HTTPException(status_code=401, detail="无效的token")
@@ -72,7 +72,7 @@ async def get_my_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
     
-    from app.modules.admin.utils_das.security import decode_token
+    from app.core.security import decode_token
     decoded = decode_token(token)
     username = decoded.get("sub")
     me = {"username": username, "id": to_user_id(username)}
@@ -95,7 +95,7 @@ async def create_my_task(
     if not token:
         raise HTTPException(status_code=401, detail="未授权")
     
-    from app.modules.admin.utils_das.security import decode_token
+    from app.core.security import decode_token
     decoded = decode_token(token)
     username = decoded.get("sub")
     

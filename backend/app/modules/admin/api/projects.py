@@ -196,10 +196,10 @@ async def get_my_project_relevance(
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> dict:
     """工单弹窗项目选择器的相关性信号（0907 需求：提过单 > 名下 > 其他）。
-    返回两个 project_code 集合：ticketed=该用户创建过工单的项目（tasks.project_id），
-    owned=名下项目（user_project_roles，DB id 经 project_service 转码）。
-    ticketed 与 owned 有交集时只出现在 ticketed（提过单优先）。任一信号查询失败
-    静默降级为空集，不影响另一个。"""
+    ticketed=该用户创建过工单的项目（tasks.project_id，含提单数，按提单数降序——
+    0908：提得多的排前），owned=名下项目（user_project_roles，DB id 经
+    project_service 转码）。ticketed 与 owned 有交集时只出现在 ticketed
+    （提过单优先）。任一信号查询失败静默降级为空，不影响另一个。"""
     from app.core.security import decode_token
 
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
@@ -218,18 +218,19 @@ async def get_my_project_relevance(
         raise HTTPException(status_code=404, detail="用户不存在")
     user_id = user.get("id")
 
-    ticketed: set = set()
+    ticketed_counts: Dict[str, int] = {}
     try:
+        from sqlalchemy import func
         from app.core.db import SessionLocal
         from app.models.task import Task
         db = SessionLocal()
         try:
-            rows = db.query(Task.project_id).filter(
+            rows = db.query(Task.project_id, func.count(Task.id)).filter(
                 Task.created_by == user_id,
                 Task.project_id.isnot(None),
                 Task.project_id != "",
-            ).distinct().all()
-            ticketed = {r[0] for r in rows if r[0]}
+            ).group_by(Task.project_id).all()
+            ticketed_counts = {r[0]: int(r[1]) for r in rows if r[0]}
         finally:
             db.close()
     except Exception as e:
@@ -237,6 +238,10 @@ async def get_my_project_relevance(
 
     owned: set = set()
     try:
+        # 必须用 app.services 的 PermissionService（查 user_project_roles）；
+        # 模块顶部导入的 admin 版 PermissionService 没有此方法，
+        # AttributeError 会被下面 except 吞掉 → owned 永远空集（0908 生产实锤）
+        from app.services.permission_service import PermissionService
         user_roles = PermissionService.get_user_roles_all_projects(user_id)
         for pid in [p for p in user_roles.keys() if p != "global"]:
             project = project_service.get_project(pid)
@@ -245,8 +250,13 @@ async def get_my_project_relevance(
     except Exception as e:
         logger.warning(f"[projects/me/relevance] 名下项目查询失败: {e}")
 
-    owned -= ticketed
-    return {"ticketed": sorted(ticketed), "owned": sorted(owned)}
+    owned -= ticketed_counts.keys()
+    # 提单数降序，同数按编码升序保证返回稳定（前端组内顺序以此为信号）
+    ticketed_sorted = sorted(
+        ({"code": c, "count": n} for c, n in ticketed_counts.items()),
+        key=lambda x: (-x["count"], x["code"]),
+    )
+    return {"ticketed": ticketed_sorted, "owned": sorted(owned)}
 
 
 @project_router.get("/{project_id}", summary="获取单个项目")
@@ -362,7 +372,7 @@ async def create_project(
                 role_data["role_ids"].append(diaoyan_role_id)
             await PermissionService.assign_role(request, token, project_data.contact_person_id, role_data)
 
-            from app.modules.admin.utils_das.security import decode_token
+            from app.core.security import decode_token
             from app.modules.admin.services.wechat_service import WeChatService
 
             current_user = decode_token(token)
@@ -405,7 +415,7 @@ async def create_project(
     try:
         token = request.headers.get("Authorization", "")
         token = token[7:]  # 去掉 "Bearer " 前缀，与下方 decode_token 约定一致
-        from app.modules.admin.utils_das.security import decode_token
+        from app.core.security import decode_token
         current_user = decode_token(token)
         if current_user:
             current_username = current_user.get("sub", "")
@@ -466,7 +476,7 @@ async def update_project(
         }
         await PermissionService.assign_role(request, token, update_data.contact_person_id, new_role_data)
         
-        from app.modules.admin.utils_das.security import decode_token
+        from app.core.security import decode_token
         from app.modules.admin.services.wechat_service import WeChatService
         
         current_user = decode_token(token)

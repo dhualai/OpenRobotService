@@ -32,8 +32,8 @@ def _cluster_params() -> dict:
         "cluster_assign": hc.get("cluster_assign"),
         "cluster_top_k": hc.get("cluster_top_k"),
         "sim_threshold": hc.get("sim_threshold"),
-        "top_k": hc.get("top_k"),
-        "cluster_window": 500,
+        "retrieve_top_k": hc.get("retrieve_top_k", 30),
+        "cluster_window": None,  # 与 A 路一致：resolved+closed 全量，不再截 500
     }
 
 
@@ -42,7 +42,16 @@ async def debug_overview() -> dict:
     clusters = cluster_snapshot_from_cache(names)
     clusters["params"] = _cluster_params()
     history = await history_overview(names)
-    return {"clusters": clusters, "history": history}
+    reassign = {}
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import (
+            summarize_reassign_stats,
+        )
+        reassign = summarize_reassign_stats()
+    except Exception as e:
+        logger.warning(f"[debug] 转派统计失败: {e}")
+        reassign = {"error": str(e)}
+    return {"clusters": clusters, "history": history, "reassign": reassign}
 
 
 async def debug_rebuild_clusters() -> dict:
@@ -93,3 +102,41 @@ async def debug_reindex() -> dict:
     index = await run_indexer(dry_run=False)
     history = await history_overview()
     return {"index": index, "history": history}
+
+
+async def debug_reassign_stats(*, use_llm: bool = False, persist: bool = False, force: bool = False) -> dict:
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import (
+        summarize_reassign_stats,
+    )
+
+    return summarize_reassign_stats()
+
+
+def debug_review_reassign(log_id, kind: str) -> dict:
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import review_reassign
+    try:
+        lid = int(log_id)
+    except (TypeError, ValueError) as e:
+        raise ValueError("缺少转派记录 id") from e
+    return review_reassign(lid, kind)
+
+
+async def debug_save_cluster_params(payload: dict) -> dict:
+    """保存簇门槛、热更新运行中的派单配置，并立刻按新门槛重建簇。"""
+    from ai.agents.AiDiagnosisPlatform.assigner.settings import save_cluster_overrides
+    from ai.agents.AiDiagnosisPlatform.assigner import ensure_dispatch_ready
+
+    saved = save_cluster_overrides(
+        cluster_merge=payload.get("cluster_merge"),
+        cluster_assign=payload.get("cluster_assign"),
+        cluster_min_size=payload.get("cluster_min_size"),
+    )
+    try:
+        flow = ensure_dispatch_ready()
+        flow.reload_config()
+    except Exception as e:
+        logger.warning(f"[debug] 保存簇门槛后热更新失败: {e}")
+    snap = await debug_rebuild_clusters()
+    snap["params"] = _cluster_params()
+    snap["saved"] = saved
+    return snap

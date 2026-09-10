@@ -18,6 +18,28 @@ _PROJECT_COLUMNS = {c.key for c in inspect(Project).mapper.column_attrs}
 def _filter_project_fields(data: Dict) -> Dict:
     return {k: v for k, v in data.items() if k in _PROJECT_COLUMNS}
 
+# 轻量查询字段（仪表盘统计专用）：跳过 project_summary / risk_list / stage_notes /
+# project_documents / system_integration 等重 JSON 列的加载与逐行 json.loads
+_LIGHT_PROJECT_COLUMNS = (
+    Project.code,
+    Project.name,
+    Project.contact_person,
+    Project.settlement_period,
+    Project.category_basis,
+    Project.undertake_status,
+)
+
+def _light_project_row_to_dict(row) -> Dict:
+    code, name, contact_person, settlement_period, category_basis, undertake_status = row
+    return {
+        "project_code": code,
+        "name": name,
+        "contact_person": contact_person,
+        "settlement_period": settlement_period,
+        "category_basis": category_basis,
+        "undertake_status": undertake_status,
+    }
+
 def _to_float_or_none(value) -> Optional[float]:
     """将 JSON 提取出的值转 float；None/空串/非法值返回 None。"""
     if value is None or value == "":
@@ -214,12 +236,16 @@ class ProjectService:
         }
         return project_dict
     
-    def get_projects(self, skip: int = 0, limit: int = 999999999, include_pending: bool = False) -> List[Dict]:
+    def get_projects(self, skip: int = 0, limit: int = 999999999, include_pending: bool = False,
+                     light: bool = False) -> List[Dict]:
         """项目列表。默认只返回已承接项目（undertake_status='是'）。
 
         include_pending=True 时把「待定」项目一并返回，目前仅仪表盘月柱图
         （dashboard.py get_project_monthly_summary）使用，用于统计浅色段数量；
         其余列表/统计都不应放开，否则项目总数、紧急度看板等口径会跟着变。
+
+        light=True 时仅查询统计所需的 6 个轻量字段（见 _LIGHT_PROJECT_COLUMNS），
+        供仪表盘聚合统计使用，避免全表加载重 JSON 列。
         """
         db = SessionLocal()
         try:
@@ -230,15 +256,20 @@ class ProjectService:
             )
             if not include_pending:
                 query = query.filter(Project.undertake_status == UNDERTAKE_YES)
+            if light:
+                query = query.with_entities(*_LIGHT_PROJECT_COLUMNS)
             projects = query.offset(skip).limit(limit).all()
+            if light:
+                return [_light_project_row_to_dict(row) for row in projects]
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
 
-    def get_projects_by_ids(self, project_ids: List[str], include_pending: bool = False) -> List[Dict]:
+    def get_projects_by_ids(self, project_ids: List[str], include_pending: bool = False,
+                            light: bool = False) -> List[Dict]:
         """按项目 ID 列表批量查询项目，用于仪表盘按当前用户关联项目过滤统计。
 
-        同 get_projects：默认只返回已承接项目。
+        同 get_projects：默认只返回已承接项目；light=True 仅返回统计所需轻量字段。
         """
         if not project_ids:
             return []
@@ -252,7 +283,11 @@ class ProjectService:
         )
             if not include_pending:
                 query = query.filter(Project.undertake_status == UNDERTAKE_YES)
+            if light:
+                query = query.with_entities(*_LIGHT_PROJECT_COLUMNS)
             projects = query.all()
+            if light:
+                return [_light_project_row_to_dict(row) for row in projects]
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()

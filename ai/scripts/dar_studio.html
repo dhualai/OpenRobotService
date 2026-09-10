@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 质量工作台</title>
+<style>
+:root{
+  --bg:#f1f5f9; --card:#ffffff; --ink:#0f172a; --ink2:#475569; --ink3:#94a3b8;
+  --line:#e2e8f0; --brand:#4f46e5; --brand2:#6366f1; --brand-soft:#eef2ff;
+  --ok:#16a34a; --ok-soft:#f0fdf4; --warn:#d97706; --warn-soft:#fffbeb;
+  --danger:#dc2626; --danger-soft:#fef2f2;
+  --side:#0f172a; --side-ink:#cbd5e1; --side-dim:#64748b;
+  --term:#0b1020; --term-ink:#a8b8d0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  background:var(--bg);color:var(--ink);font-size:14px;height:100vh;overflow:hidden}
+.mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
+
+/* ── 布局 ── */
+.shell{display:flex;height:100vh}
+.side{width:216px;background:var(--side);color:var(--side-ink);display:flex;flex-direction:column;flex-shrink:0}
+.brand{padding:20px 18px 16px;border-bottom:1px solid #1e293b}
+.brand .t{font-size:16px;font-weight:700;color:#fff;letter-spacing:.5px}
+.brand .s{font-size:11px;color:var(--side-dim);margin-top:4px}
+.nav{padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+.nav button{all:unset;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
+  cursor:pointer;color:var(--side-ink);font-size:14px;position:relative}
+.nav button:hover{background:#1e293b}
+.nav button.on{background:#1e293b;color:#fff}
+.nav button.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:2px;background:var(--brand2)}
+.nav .dot{width:8px;height:8px;border-radius:50%;background:#334155;flex-shrink:0}
+.nav button.on .dot{background:var(--brand2)}
+.side .fill{flex:1}
+.side .conn{padding:14px 16px;border-top:1px solid #1e293b;font-size:12px;color:var(--side-dim);
+  display:flex;flex-direction:column;gap:7px}
+.side .conn b{color:var(--side-ink);font-weight:600}
+.side .cline{display:flex;align-items:center;gap:7px;white-space:nowrap;overflow:hidden}
+.side .cdot{width:7px;height:7px;border-radius:50%;background:#475569;flex-shrink:0}
+.side .cdot.ok{background:var(--ok)}
+.side .cdot.bad{background:var(--danger)}
+.side .foot{padding:10px 16px 16px;font-size:11px;color:#334155}
+
+.main{flex:1;overflow:auto;padding:22px 26px}
+.view{display:none;max-width:1080px;margin:0 auto}
+.view.on{display:block}
+h2.pg{font-size:19px;font-weight:700;margin-bottom:4px}
+p.sub{color:var(--ink2);font-size:13px;margin-bottom:18px}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.card h3{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h3 .hint{font-weight:400;color:var(--ink3);font-size:12px}
+
+/* ── 通用控件 ── */
+button.btn{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;
+  padding:7px 14px;font-size:13px;cursor:pointer;transition:.15s;display:inline-flex;align-items:center;gap:6px}
+button.btn:hover:not(:disabled){border-color:var(--brand2);color:var(--brand)}
+button.btn:disabled{opacity:.45;cursor:not-allowed}
+button.btn.pri{background:var(--brand);border-color:var(--brand);color:#fff}
+button.btn.pri:hover:not(:disabled){background:var(--brand2);color:#fff}
+button.btn.dng{color:var(--danger);border-color:#fecaca}
+button.btn.dng:hover:not(:disabled){background:var(--danger-soft);border-color:var(--danger)}
+button.btn.sm{padding:4px 10px;font-size:12px;border-radius:6px}
+input[type=text],input[type=password],select{border:1px solid var(--line);border-radius:8px;
+  padding:7px 10px;font-size:13px;background:#fff;color:var(--ink);outline:none;min-width:0}
+input:focus,select:focus{border-color:var(--brand2);box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--ink2)}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;border-radius:99px;padding:3px 10px}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}
+.badge.warn{background:var(--warn-soft);color:var(--warn)}
+.badge.err{background:var(--danger-soft);color:var(--danger)}
+.badge.dim{background:#f1f5f9;color:var(--ink3)}
+.spin{width:13px;height:13px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
+  animation:sp .7s linear infinite}
+.spin.d{border-color:#c7d2fe;border-top-color:var(--brand)}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ── 指标卡片 ── */
+.mhero{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px}
+.mcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.mcard .lb{font-size:12.5px;color:var(--ink2);display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.mcard .v{font-size:34px;font-weight:750;letter-spacing:-.5px;line-height:1.1}
+.mcard .sb{font-size:11.5px;color:var(--ink3);margin-top:8px;line-height:1.5;word-break:break-all}
+.mhero .mcard{border-top:3px solid var(--brand2)}
+.mhero .mcard:nth-child(2){border-top-color:var(--ok)}
+.mhero .mcard:nth-child(3){border-top-color:var(--warn)}
+.mcard .wow{font-size:12px;font-weight:650;margin-top:6px}
+.mcard .wow.up{color:var(--ok)}
+.mcard .wow.down{color:var(--danger)}
+.urow{padding:8px 4px;border-bottom:1px solid var(--line);font-size:12.5px}
+.urow:last-child{border-bottom:none}
+.urow .uq{font-weight:600;color:var(--ink);margin-bottom:3px}
+.urow .um{display:flex;gap:8px;align-items:center;color:var(--ink3);font-size:11.5px;flex-wrap:wrap}
+.urow .ur{color:var(--ink3);font-size:11.5px;margin-top:3px}
+.mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
+.mgrid .mcard .v{font-size:24px}
+.repbar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);
+  padding:10px 14px;background:var(--brand-soft);border:1px solid #e0e7ff;border-radius:10px;margin-bottom:16px}
+.repbar b{color:var(--ink)}
+/* ── 向导 ── */
+.wiz{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+.wstep{border:1px solid var(--line);border-radius:12px;padding:12px 12px 10px;background:#fff;
+  display:flex;flex-direction:column;gap:8px;position:relative;transition:.15s}
+.wstep:hover{border-color:var(--brand2)}
+.wstep .no{width:22px;height:22px;border-radius:50%;background:#f1f5f9;color:var(--ink2);
+  font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.wstep.run .no{background:var(--brand);color:#fff}
+.wstep.done .no{background:var(--ok);color:#fff}
+.wstep .t{font-size:13.5px;font-weight:650}
+.wstep .d{font-size:11.5px;color:var(--ink3);line-height:1.5;flex:1}
+.wstep .ops{display:flex;gap:6px}
+.wstep kbd{display:none}
+
+/* ── 页签1 周流程 ── */
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;padding:7px 16px;font-size:13px;cursor:pointer;color:var(--ink2)}
+.seg button.on{background:var(--brand);color:#fff}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:99px;padding:5px 13px;font-size:12.5px;
+  cursor:pointer;color:var(--ink2);user-select:none;transition:.12s}
+.chip:hover{border-color:var(--brand2)}
+.chip.on{background:var(--brand-soft);border-color:var(--brand2);color:var(--brand);font-weight:600}
+.term{background:var(--term);border-radius:10px;padding:14px 16px;height:340px;overflow:auto;
+  font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.75;color:var(--term-ink)}
+.term .hd{color:#64748b}
+.term .err{color:#f87171}
+.term .okl{color:#4ade80}
+.term .bar{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.term .bar .t{font-size:12px;color:var(--ink3)}
+.art{display:flex;flex-direction:column;gap:6px}
+.art .row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:8px;cursor:pointer;transition:.12s}
+.art .row:hover{border-color:var(--brand2);background:var(--brand-soft)}
+#reglist details.row{border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin-bottom:6px}
+#reglist details.row>summary{list-style:none}
+#reglist details.row>summary::-webkit-details-marker{display:none}
+#reglist details.row[open]{border-color:var(--brand2);background:var(--brand-soft)}
+.art .nm{flex:1;font-size:13px}
+.art .mt{color:var(--ink3);font-size:12px;white-space:nowrap}
+.art .sz{color:var(--ink3);font-size:11px;min-width:64px;text-align:right}
+.empty{color:var(--ink3);font-size:13px;padding:14px;text-align:center}
+
+/* ── 页签2 在线测试 ── */
+.connbar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.modebar{display:flex;gap:8px;margin-bottom:14px}
+.chatwrap{display:flex;flex-direction:column;height:calc(100vh - 320px);min-height:420px}
+.chat{flex:1;overflow:auto;display:flex;flex-direction:column;gap:14px;padding:4px 2px}
+.msg{display:flex;flex-direction:column;max-width:86%}
+.msg.u{align-self:flex-end;align-items:flex-end}
+.msg .who{font-size:11px;color:var(--ink3);margin-bottom:4px}
+.bubble{border-radius:12px;padding:10px 14px;line-height:1.7;white-space:pre-wrap;word-break:break-word;font-size:13.5px}
+.msg.u .bubble{background:var(--brand);color:#fff;border-bottom-right-radius:4px}
+.msg.a .bubble{background:#fff;border:1px solid var(--line);border-bottom-left-radius:4px}
+.stages{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px}
+.stage{font-size:11px;border-radius:5px;padding:2px 8px;background:#f1f5f9;color:var(--ink3)}
+.stage.run{background:var(--brand-soft);color:var(--brand)}
+.stage.done{background:var(--ok-soft);color:var(--ok)}
+.dets{margin-top:6px;font-size:12px}
+.dets summary{cursor:pointer;color:var(--ink3);user-select:none}
+.dets pre{background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:6px;
+  overflow:auto;max-height:260px;font-size:11.5px;line-height:1.6}
+.tk{margin-top:8px;border:1px solid #fde68a;background:var(--warn-soft);border-radius:10px;padding:10px 12px}
+.tk .tt{font-weight:600;font-size:13px;margin-bottom:4px;display:flex;gap:8px;align-items:center}
+.tk .fld{font-size:12px;color:var(--ink2);line-height:1.8}
+.tk .ops{margin-top:8px;display:flex;gap:8px}
+.askbar{display:flex;gap:10px;margin-top:12px}
+.askbar input{flex:1}
+.empty-chat{margin:auto;color:var(--ink3);font-size:13px;text-align:center;line-height:2}
+
+/* 探针 */
+.prow{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.prow .rt{display:flex;gap:8px;align-items:center;margin-bottom:5px;flex-wrap:wrap}
+.prow .route{font-size:11.5px;background:var(--brand-soft);color:var(--brand);border-radius:5px;padding:2px 8px}
+.prow .ttl{font-size:12.5px;font-weight:600}
+.prow .txt{font-size:12.5px;color:var(--ink2);line-height:1.7;word-break:break-word}
+.prow img{max-width:200px;border-radius:6px;margin-top:6px}
+.meta-line{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);margin:10px 0 14px}
+.meta-line b{color:var(--ink)}
+
+/* toast */
+#toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:99}
+.toast{background:#0f172a;color:#fff;font-size:13px;border-radius:10px;padding:10px 16px;
+  box-shadow:0 6px 20px rgba(15,23,42,.25);animation:up .2s ease-out}
+.toast.err{background:var(--danger)}
+.toast.ok{background:var(--ok)}
+@keyframes up{from{transform:translateY(8px);opacity:0}}
+kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
+  padding:0 5px;font-size:11px;font-family:inherit}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><div class="t">AI 质量工作台</div><div class="s">AI Quality Studio</div></div>
+    <nav class="nav">
+      <button id="nav-week" class="on"><span class="dot"></span>周流程 · 指标生成</button>
+      <button id="nav-test"><span class="dot"></span>在线测试</button>
+      <button id="nav-sink"><span class="dot"></span>工单沉淀</button>
+    </nav>
+    <div class="fill"></div>
+    <div class="conn">
+      <div class="cline"><span class="cdot ok"></span>生产库 <b id="conn-prod">就绪</b></div>
+      <div class="cline"><span class="cdot" id="conn-dot"></span>测试环境 <b id="conn-test">未连接</b></div>
+    </div>
+    <div class="foot">dar_studio · 本地工具</div>
+  </aside>
+
+  <main class="main">
+    <!-- ══ 页签1 周流程 ══ -->
+    <section class="view on" id="view-week">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <h2 class="pg" style="margin:0">周流程 · 指标生成</h2>
+        <span class="badge dim" style="margin-top:2px">数据源：生产库</span>
+        <span style="flex:1"></span>
+        <button class="btn sm" id="mrefresh">刷新指标</button>
+        <button class="btn sm pri" id="openreport">完整周报</button>
+      </div>
+
+      <div class="mhero" id="mhero"></div>
+      <div class="mgrid" id="msmall"></div>
+      <div class="repbar" id="repbar" style="display:none"></div>
+
+      <details class="card" id="uacard">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          未直答问题清单 <span class="hint" id="uasum" style="font-weight:400">加载中…</span></summary>
+        <div style="margin-top:10px;font-size:12px;color:var(--ink3);margin-bottom:8px">
+          L3 预标「未直答/未覆盖」段全量底账（知识缺口）；按周分组看增量，type 过滤定位缺口类型。
+        </div>
+        <div class="chips" id="uaweeks" style="margin-bottom:8px"></div>
+        <div class="chips" id="uatypes" style="margin-bottom:10px"></div>
+        <div id="ualist" style="max-height:420px;overflow:auto"></div>
+      </details>
+
+      <div class="card">
+        <h3>流程</h3>
+        <div class="wiz" id="wiz"></div>
+      </div>
+
+      <details class="card" id="logcard">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          运行日志 <span class="hint" id="runstate" style="font-weight:400"></span></summary>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <input type="text" id="note" placeholder="附注（--note，随周报落盘）" style="flex:1">
+          <button class="btn sm dng" id="resetretr" title="删当日检索判定（jsonl+json），重跑 retrieval 步即全量重判——换判定模型后用">重判全部</button>
+          <button class="btn sm dng" id="resetl3" title="删当日 L3 judge 两套（校准+预标 jsonl+json），重跑 L3 步即全段重判——换判定模型后用">重判 L3</button>
+          <button class="btn sm dng" id="stopbtn" disabled>停止</button>
+        </div>
+        <div class="term" style="height:150px"><div class="hd">$ 等待运行…（步骤可增量复用，重复跑只补新数据）</div></div>
+      </details>
+
+      <details class="card">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">高级：自选步骤</summary>
+        <div style="margin-top:10px;font-size:12px;color:var(--ink3);margin-bottom:8px">
+          点选步骤（可多选，顺序固定）；export 需连服务器，retrieval 生产源走 ssh 隧道。
+        </div>
+        <div class="chips" id="steps"></div>
+        <button class="btn sm" id="advrun" style="margin-top:10px">运行所选</button>
+      </details>
+
+      <details class="card">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">产物文件</summary>
+        <div class="art" id="artlist" style="margin-top:10px"><div class="empty">暂无产物</div></div>
+      </details>
+    </section>
+
+    <!-- ══ 页签2 在线测试 ══ -->
+    <section class="view" id="view-test">
+      <h2 class="pg">在线测试</h2>
+      <p class="sub">固定打<b>测试环境</b>真实服务（代码/知识库先上测试验证）：全链路=意图→检索→回答→提单（提单落测试库）；检索探针=本地重放，可选测试/生产知识库（只读）。</p>
+
+      <div class="card">
+        <div class="connbar">
+          <label class="f">用户名<input type="text" id="f_user" style="width:120px"></label>
+          <label class="f">密码<input type="password" id="f_pass" style="width:120px"></label>
+          <label class="f" style="font-size:12px;color:var(--ink3)"><input type="checkbox" id="remember" checked style="width:auto">记住</label>
+          <button class="btn pri" id="loginbtn">登录测试环境</button>
+          <span id="loginstate" class="badge dim">未连接</span>
+          <span style="flex:1"></span>
+          <span style="font-size:12px;color:var(--ink3)" class="mono" id="envtip">ssh 隧道 → 125.122.97.107:9400/:9401（登录时自动建立）</span>
+        </div>
+      </div>
+
+      <div class="modebar">
+        <button class="btn pri" id="m-reg">回归测试</button>
+        <button class="btn" id="m-chat">全链路对话</button>
+        <button class="btn" id="m-probe">检索探针</button>
+      </div>
+
+      <!-- 一键回归 -->
+      <div id="pane-reg">
+        <p class="sub" style="margin-bottom:10px">用例集来自 <span class="mono">ai/tests/golden/cases</span>（四维度基准，同一份真源可直接改 yaml 加用例）。
+        retrieval=本地重放连测试知识库断言命中排名；answer/ticket/flow=逐用例打测试环境真实链路断言回答/弹窗/话术。</p>
+        <div class="card" id="regcases"><div class="empty">用例清单加载中…</div></div>
+        <div class="card" style="display:flex;gap:10px;align-items:center">
+          <label class="f">检索源
+            <select id="f_rsrc"><option value="test">测试环境（默认）</option><option value="prod">生产（只读）</option><option value="local">本地</option></select></label>
+          <button class="btn pri" id="regrun">一键运行</button>
+          <button class="btn dng" id="regstop" disabled>停止</button>
+          <span style="flex:1"></span>
+          <span class="hint" id="regsum"></span>
+        </div>
+        <div class="card" id="reglive" style="display:none"></div>
+        <div class="card" id="reglist" style="display:none"></div>
+      </div>
+
+      <!-- 全链路对话 -->
+      <div id="pane-chat" style="display:none">
+        <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+          <label class="f" style="flex:1">会话 ID（多轮上下文共享）<input type="text" id="f_sess"></label>
+          <button class="btn" id="newsess" style="margin-top:14px">新会话</button>
+          <label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--ink2);margin-top:14px">
+            <input type="checkbox" id="f_skip"> 跳过检索</label>
+        </div>
+        <div class="card chatwrap">
+          <div class="chat" id="chat"><div class="empty-chat">登录后发送问题，走线上真实链路。<br>回答流式展示；状态行显示检索/生成阶段；结果详情可展开；转工单会出草稿卡片。</div></div>
+          <div class="askbar">
+            <input type="text" id="f_q" placeholder="输入测试问题，Enter 发送">
+            <button class="btn pri" id="sendbtn">发送</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 检索探针 -->
+      <div id="pane-probe" style="display:none">
+        <div class="card" style="display:flex;gap:10px;align-items:flex-end">
+          <label class="f" style="flex:1">问题<input type="text" id="f_pq" placeholder="如：AGV 怎么上线部署"></label>
+          <label class="f">知识库
+            <select id="f_psrc"><option value="test">测试环境（默认）</option><option value="prod">生产（只读）</option><option value="local">本地</option></select></label>
+          <button class="btn pri" id="probebtn">检索</button>
+        </div>
+        <div id="probeout"><div class="card"><div class="empty">输入问题查看知识库命中</div></div></div>
+      </div>
+    </section>
+
+    <!-- ══ 页签3 工单沉淀 ══ -->
+    <section class="view" id="view-sink">
+      <h2 class="pg">工单沉淀审核</h2>
+      <p class="sub">closed 工单 → LLM 提炼卡（pending 不可检索）→ 人工判定 → 应用。每周三步：拉取 → 审核 → 应用（应用是<b>生产写</b>：放行卡即刻可检索，驳回/测试单删点+终态标记）。</p>
+
+      <div class="card">
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <button class="btn pri" id="sinkexport">① 拉取待审</button>
+          <button class="btn pri" id="sinkopen">② 打开审核页</button>
+          <label class="f">审核人<input type="text" id="sinkrev" style="width:110px"></label>
+          <button class="btn dng" id="sinkapply">③ 应用判定</button>
+          <span style="flex:1"></span>
+          <span class="badge dim" id="sinkstat">未拉取</span>
+        </div>
+        <div style="margin-top:10px;font-size:12.5px;color:var(--ink3);line-height:1.8">
+          ① ssh 生产跑导出并拉回本地（只读库，几十秒）；② 新标签页逐卡判定（通过 / 驳回 / 测试单，驳回必选理由），
+          点「保存标注结果」回写本页；③ 确认后回写生产。<br>
+          误杀复检：AI 判「无知识可提」跳过的单在审核页底部折叠区，抽检后按卡内命令单张重跑。
+        </div>
+      </div>
+
+      <details class="card" id="sinklogcard" open>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          运行日志 <span class="hint" id="sinkrunstate" style="font-weight:400"></span></summary>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <button class="btn sm dng" id="sinkstop" disabled>停止</button>
+        </div>
+        <div class="term" style="height:150px"><div class="hd">$ 拉取/应用的输出在这里（与「指标生成」页签共用同一运行通道）</div></div>
+      </details>
+    </section>
+  </main>
+</div>
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function toast(msg, kind){
+  const d = document.createElement("div");
+  d.className = "toast " + (kind||"");
+  d.textContent = msg;
+  $("#toasts").appendChild(d);
+  setTimeout(()=>d.remove(), 3200);
+}
+
+/* SSE over fetch：onEvent({event,data}) */
+async function sse(url, body, onEvent, onDone){
+  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  if(!r.ok){
+    let t = ""; try{ t = (await r.json()).detail || ""; }catch(e){ t = await r.text(); }
+    onEvent({event:"error", data:{error:`HTTP ${r.status} ${t}`.slice(0,180), fatal:true}});
+    onDone && onDone(); return;
+  }
+  const rd = r.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for(;;){
+    const {done, value} = await rd.read();
+    if(done) break;
+    buf += dec.decode(value, {stream:true});
+    let i;
+    while((i = buf.indexOf("\n\n")) >= 0){
+      const blk = buf.slice(0, i); buf = buf.slice(i+2);
+      let ev = null, data = "";
+      for(const line of blk.split("\n")){
+        if(line.startsWith("event:")) ev = line.slice(6).trim();
+        else if(line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if(data === "[DONE]"){ onDone && onDone(); return; }
+      if(ev || data){
+        let d = data;
+        try{ d = JSON.parse(data); }catch(e){}
+        let name = ev, payload = d;
+        if(d && typeof d === "object" && "event" in d){ name = d.event; payload = d.data; }
+        onEvent({event: name || "message", data: payload});
+      }
+    }
+  }
+  onDone && onDone();
+}
+
+/* ── 导航 ── */
+function nav(v){
+  ["week","test","sink"].forEach(k=>{
+    $("#nav-"+k).classList.toggle("on", v===k);
+    $("#view-"+k).classList.toggle("on", v===k);
+  });
+}
+$("#nav-week").onclick = ()=>nav("week");
+$("#nav-test").onclick = ()=>nav("test");
+$("#nav-sink").onclick = ()=>nav("sink");
+
+/* ══ 页签1 周流程 ══ */
+const env = "prod";  // 指标固定连生产（用户定调：对话记录只从生产拿）
+
+/* 指标卡片 */
+let activeEnv = env;  // 展示用环境：生产无周报时回退 test（跑流程仍固定 env）
+async function loadMetrics(){
+  const j = await (await fetch(`/api/metrics?env=${env}`)).json();
+  const hero = $("#mhero"), small = $("#msmall"), bar = $("#repbar");
+  hero.innerHTML = ""; small.innerHTML = "";
+  activeEnv = j.found ? (j.source_env || env) : env;
+  document.querySelector('#view-week .badge.dim').textContent =
+    j.found && activeEnv !== env ? "数据源：生产库（当前展示 test 周报）" : "数据源：生产库";
+  if(!j.found){
+    hero.innerHTML = `<div class="mcard" style="grid-column:1/-1"><div class="lb">暂无周报</div>
+      <div class="v" style="font-size:18px;color:var(--ink3)">跑一遍流程后，三口径指标会显示在这里</div></div>`;
+    bar.style.display = "none";
+    return;
+  }
+  // 环比：hero 卡下挂 vs 上期变化（trend 取最近两期，多周后自然成走势）
+  const KEYMAP = {"L1 机器信号":"L1_段级", "L2 人工标注":"L2_人工", "L3 AI 预标":"L3_AI同段"};
+  const tr = j.trend || [];
+  const prevT = tr.length >= 2 ? tr[tr.length-2] : null;
+  const wowOf = (label)=>{
+    const k = KEYMAP[label];
+    if(!k || !prevT || prevT[k] == null || (tr[tr.length-1][k] == null)) return null;
+    return Math.round((tr[tr.length-1][k] - prevT[k]) * 10) / 10;
+  };
+  (j.hero || []).forEach(c=>{
+    const d = wowOf(c.label);
+    const wowHtml = d === null ? "" :
+      `<div class="wow ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "↗ +" : d < 0 ? "↘ " : "± "}${d}pp vs 上期</div>`;
+    hero.insertAdjacentHTML("beforeend",
+      `<div class="mcard"><div class="lb">${esc(c.label)}</div><div class="v">${esc(c.value)}</div>
+       <div class="sb">${esc(c.sub)}</div>${wowHtml}</div>`);
+  });
+  (j.small || []).forEach(c=>{
+    small.insertAdjacentHTML("beforeend",
+      `<div class="mcard"><div class="lb">${esc(c.label)}</div><div class="v">${esc(c.value)}</div>
+       <div class="sb">${esc(c.sub)}</div></div>`);
+  });
+  const bits = [j.file ? `周报 <b>${esc(j.date || "")}</b>`
+    : `<span class="badge warn" style="font-weight:400">周报未出——以下为过程指标（第五步吸收后落周报/出同分母口径）</span>`];
+  if(j.source_env && j.source_env !== env)
+    bits.push(`<span class="badge warn" style="font-weight:400">生产尚未出周报，展示 test 环境数据</span>`);
+  if(j.this_week && j.this_week.n_segs)
+    bits.push(`本周新增（${esc(j.this_week.from)}~${esc(j.this_week.to)}）：<b>${j.this_week.n_convs}</b> 会话 <b>${j.this_week.n_segs}</b> 段 · L1 <b>${esc(j.this_week.L1_rate)}</b>（全量为上线以来累积，本周单独看）`);
+  if(j.note) bits.push(`附注：${esc(j.note)}`);
+  if(j.meta?.git_head) bits.push(`版本 <span class="mono">${esc(String(j.meta.git_head).slice(0,8))}</span>（本周合入 ${(j.meta.merges||[]).length} 条）`);
+  if(j.avg_rounds && Object.keys(j.avg_rounds).length)
+    bits.push(`轮次：${Object.entries(j.avg_rounds).map(([k,v])=>`${esc(k)} ${esc(v)}`).join(" · ")}`);
+  if(j.ticket_quality?.建议转单未提单) bits.push(`建议转单未提单：${esc(j.ticket_quality.建议转单未提单)}`);
+  if(tr.length >= 2)
+    bits.push(`L1 走势：${tr.map(t=>`${esc(String(t.date).slice(5))} ${t["L1_段级"]??"—"}`).join(" → ")}`);
+  bar.innerHTML = bits.join('<span style="color:#c7d2fe">｜</span>');
+  bar.style.display = "";
+}
+$("#mrefresh").onclick = loadMetrics;
+$("#openreport").onclick = async ()=>{
+  const j = await (await fetch(`/api/artifacts?env=${activeEnv}`)).json();
+  const md = (j.items || []).find(x => x.name.endsWith(".md"));
+  if(!md){ toast("还没有 Markdown 周报（先跑 report 步）", "err"); return; }
+  preview(md.name);
+};
+
+/* 流程向导 */
+const WIZ = [
+  {t:"导数据", steps:["export","prepare"], pk:"export", d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
+  {t:"L1 指标", steps:["l1"], pk:"l1", d:"LLM 逐会话切话题——跑完 L1 指标卡即时出（不等标注/周报）"},
+  {t:"人工切题", steps:["tool0"], pk:"tool0", openAfter:true,
+   d:"生成切题工具（蓝色界面），只核对/修正话题边界不打标签；「保存到工作台」自动重算 L1"},
+  {t:"L3 预标", steps:["l1r","retrieval","l3","tool"], pk:"l3",
+   d:"按人工边界重算 L1 + 检索判定 + judge 预标，重生成标注工具（预标全程有效）"},
+  {t:"人工标注", label:true,
+   d:"新标签页打开标注工具（绿色界面）打标签，回车采纳预标，「保存到工作台」收标签"},
+  {t:"吸收 → 周报", steps:["l1r","retrieval","l3","report"], pk:"report",
+   d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
+];
+function renderWiz(){
+  const w = $("#wiz");
+  w.innerHTML = "";
+  WIZ.forEach((st, i)=>{
+    const d = document.createElement("div");
+    d.className = "wstep";
+    d.innerHTML = `<div class="no">${i+1}</div><div class="t">${esc(st.t)} <span class="badge ok wok" style="display:none;font-weight:400"></span></div><div class="d">${esc(st.d)}</div>
+      <div class="ops"></div>`;
+    const b = d.querySelector(".ops").appendChild(document.createElement("button"));
+    if(st.label){
+      b.className = "btn sm pri"; b.textContent = "打开标注工具";
+      b.onclick = ()=>{ if(!window.open(`/label_tool?env=${activeEnv}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err"); };
+    }else if(st.openAfter){
+      b.className = "btn sm pri"; b.textContent = "生成并打开";
+      b.onclick = ()=>{
+        const w = window.open("", "_blank");  // 先占位：异步完成回调里 open 会被拦截
+        runSteps(st.steps, d, rc=>{
+          if(rc === 0){
+            if(w && !w.closed) w.location = `/label_tool?env=${activeEnv}`;
+            else if(!window.open(`/label_tool?env=${activeEnv}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err");
+          }else if(w && !w.closed){ w.close(); }
+        });
+      };
+    }else{
+      b.className = "btn sm"; b.textContent = "运行";
+      b.onclick = ()=>runSteps(st.steps, d);
+    }
+    w.appendChild(d);
+  });
+}
+async function loadProg(){
+  try{
+    const j = await (await fetch(`/api/progress?env=${env}`)).json();
+    document.querySelectorAll("#wiz .wstep").forEach((el, i)=>{
+      const st = WIZ[i];
+      const key = st.label ? "label" : (st.pk || st.steps[0]);
+      const t = (j.steps || {})[key] || "";
+      const b = el.querySelector(".wok");
+      if(t){ b.style.display = ""; b.textContent = "✓ " + t; el.classList.add("done"); }
+      else { b.style.display = "none"; el.classList.remove("done"); }
+    });
+  }catch(_){}
+}
+loadProg();
+/* 运行状态恢复：刷新/重开页面后重连正在跑的流程（服务端独立线程读日志留档，不受前端断连影响） */
+let folN = null, folTimer = null;
+function stopFollow(){ folN = null; if(folTimer){ clearTimeout(folTimer); folTimer = null; } }
+async function followRun(first){
+  try{
+    const q = folN != null ? `?after=${folN}` : "";
+    const j = await (await fetch("/api/run_status" + q)).json();
+    if(first && (j.running || j.n > 0)){
+      document.querySelector("#logcard").open = true;
+      if(j.cmd) termLine("hd", `▶ ${j.cmd}${j.running ? "（恢复跟随）" : ""}`);
+    }
+    (j.logs || []).forEach(l=>termLine("", l));
+    folN = j.n;
+    if(j.running){
+      runUI(true);
+      folTimer = setTimeout(()=>followRun(false), 2500);
+    }else if(folN > 0){
+      termLine(j.rc === 0 ? "okl" : "err", j.rc === 0 ? "✔ 完成" : `✘ 退出码 ${j.rc}`);
+      runUI(false);
+      folN = null;
+      loadMetrics().then(()=>{ loadArts(); loadUA(); });
+      loadProg();
+    }else{ folN = null; }
+  }catch(_){ folTimer = setTimeout(()=>followRun(false), 5000); }
+}
+followRun(true);
+/* 重判：删当日判定产物（增量只认这些文件），重跑对应步即全量重判。
+   kind=retrieval 删检索判定；kind=l3 删 L3 judge 两套（换模型建议两个都清） */
+async function resetJudge(kind, label){
+  if(!confirm(`删除当日${label}判定产物？删后重跑对应步=全部段重新判定（换判定模型后用这个）。`)) return;
+  try{
+    const j = await (await fetch("/api/reset_retrieval", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env, kind})})).json();
+    document.querySelector("#logcard").open = true;
+    if(j.removed && j.removed.length){
+      termLine("err", `已删当日${label}判定：${j.removed.join("、")}（重跑即全量重判）`);
+      toast(`已删 ${j.removed.length} 个文件，重跑即全量重判`);
+    }else{
+      termLine("", "当日无判定产物（重跑本来就是全量）");
+      toast("当日无判定产物，重跑本来就是全量");
+    }
+  }catch(e){ toast("删除失败：" + e.message, "err"); }
+}
+$("#resetretr").onclick = ()=>resetJudge("retrieval", "检索");
+$("#resetl3").onclick = ()=>resetJudge("l3", "L3");
+let running = false;
+async function runSteps(steps, wstepEl, after, opts){
+  if(running){ toast("已有流程在跑", "err"); return; }
+  running = true; stopFollow();
+  runUI(true);
+  wstepEl?.classList.add("run");
+  document.querySelector("#logcard").open = true;
+  if($("#sinklogcard")) $("#sinklogcard").open = true;
+  document.querySelectorAll(".term").forEach(t => t.innerHTML = "");
+  const isSink = opts && opts.kind;
+  termLine("hd", `$ ${(opts && opts.hdr) || `dar_weekly --env ${env} ${steps.join(" ")}`}`);
+  let lastRc = null;
+  // sink 命令只发 kind/dir/reviewer——steps/note 是周流程专属，带上会被 /api/run
+  // 当 dar 跑（0910 实锤：拉取待审跑成了 export prepare l1）
+  const body = isSink ? {kind: opts.kind, dir: opts.dir || "", reviewer: opts.reviewer || ""}
+                      : {env, steps, note: $("#note").value.trim()};
+  await sse("/api/run", body, ev=>{
+    if(ev.event === "log") termLine("", ev.data.line);
+    else if(ev.event === "begin") termLine("hd", `▶ ${ev.data.cmd}`);
+    else if(ev.event === "done"){
+      lastRc = ev.data.rc;
+      termLine(ev.data.rc === 0 ? "okl" : "err", ev.data.rc === 0 ? "✔ 完成" : `✘ 退出码 ${ev.data.rc}`);
+    }
+  }, ()=>{
+    running = false;
+    runUI(false);
+    wstepEl?.classList.remove("run");
+    wstepEl?.classList.add("done");
+    loadMetrics().then(()=>{ loadArts(); loadUA(); });
+    loadProg();
+    loadSink();
+    if(after) after(lastRc);
+  });
+}
+renderWiz();
+
+/* 高级：自选步骤 */
+const STEPS = [
+  ["export","导出数据"],["prepare","切分准备"],["l1","L1 话题"],
+  ["tool0","切题工具(无预标)"],["l1r","L1 重算(吸收人工)"],
+  ["retrieval","检索判定"],["l3","L3 预标"],["tool","生成标注工具"],["report","周报"]
+];
+const chosen = new Set();
+STEPS.forEach(([k, name])=>{
+  const c = document.createElement("div");
+  c.className = "chip"; c.textContent = name; c.dataset.k = k;
+  c.onclick = ()=>{ c.classList.toggle("on"); c.classList.contains("on") ? chosen.add(k) : chosen.delete(k); };
+  $("#steps").appendChild(c);
+});
+$("#advrun").onclick = ()=>{
+  if(!chosen.size){ toast("先点选步骤", "err"); return; }
+  runSteps([...chosen], null);
+};
+
+function termLine(cls, txt){
+  // 双终端：指标生成页签与工单沉淀页签各有一块 .term，同一运行内容两处镜像
+  document.querySelectorAll(".term").forEach(t => {
+    const atBottom = t.scrollTop + t.clientHeight >= t.scrollHeight - 30;
+    const d = document.createElement("div");
+    d.className = cls||""; d.textContent = txt;
+    if(t.firstChild?.classList?.contains("hd")) t.innerHTML = "";
+    t.appendChild(d);
+    if(atBottom) t.scrollTop = t.scrollHeight;
+  });
+}
+/* 运行态 UI：两页签各自的停止按钮/状态徽标同步 */
+function runUI(on){
+  document.querySelectorAll("#stopbtn, #sinkstop").forEach(b => b.disabled = !on);
+  const badge = `<span class="badge ${on ? "warn" : "ok"}">${on ? "运行中" : "空闲"}</span>`;
+  $("#runstate").innerHTML = badge;
+  if($("#sinkrunstate")) $("#sinkrunstate").innerHTML = badge;
+  document.querySelectorAll(".wstep .ops button, #advrun").forEach(x => x.disabled = on);
+}
+$("#stopbtn").onclick = async ()=>{
+  await fetch("/api/stop_run", {method:"POST"});
+  toast("已发送终止信号", "ok");
+};
+if($("#sinkstop")) $("#sinkstop").onclick = $("#stopbtn").onclick;
+
+async function loadArts(){
+  const r = await fetch(`/api/artifacts?env=${activeEnv}`);
+  const j = await r.json();
+  const el = $("#artlist");
+  el.innerHTML = "";
+  if(!j.items.length){ el.innerHTML = '<div class="empty">暂无产物</div>'; return; }
+  j.items.forEach(it=>{
+    const row = document.createElement("div");
+    row.className = "row";
+    const isLabel = it.name === "segmentation_tool.html";
+    row.innerHTML = `<span class="nm mono">${esc(it.name)}</span><span class="mt">${it.mtime}</span><span class="sz">${(it.size/1024).toFixed(0)} KB</span>`
+      + (isLabel ? `<button class="btn sm pri">打开标注</button>` : "");
+    row.onclick = isLabel ? ()=>window.open(`/label_tool?env=${activeEnv}`, "_blank") : ()=>preview(it.name);
+    el.appendChild(row);
+  });
+}
+async function preview(name){
+  const r = await fetch(`/api/artifact?env=${activeEnv}&name=${encodeURIComponent(name)}`);
+  if(!r.ok){ toast("读取失败", "err"); return; }
+  const j = await r.json();
+  const w = window.open("", "_blank");
+  if(!w){ toast("浏览器拦截了弹窗", "err"); return; }
+  w.document.title = name;
+  w.document.body.style = "margin:0;font:12.5px/1.7 ui-monospace,Consolas,monospace;background:#f8fafc";
+  if(name.endsWith(".md")){
+    w.document.body.style.whiteSpace = "pre-wrap";
+    w.document.body.textContent = j.content;
+  }else{
+    const pre = w.document.createElement("pre");
+    pre.style = "padding:16px;white-space:pre-wrap;word-break:break-word";
+    try{ pre.textContent = JSON.stringify(JSON.parse(j.content), null, 2); }
+    catch(e){ pre.textContent = j.content; }
+    w.document.body.appendChild(pre);
+  }
+}
+loadMetrics().then(()=>{ loadArts(); loadUA(); });
+
+/* 未直答问题清单（全量底账，按周看增量） */
+let uaItems = [], uaWeek = "all", uaType = "all";
+function chipRow(el, pairs, cur, onpick){
+  el.innerHTML = "";
+  pairs.forEach(([val, txt])=>{
+    const c = document.createElement("div");
+    c.className = "chip" + (val === cur ? " on" : "");
+    c.textContent = txt;
+    c.onclick = ()=>onpick(val);
+    el.appendChild(c);
+  });
+}
+function renderUA(){
+  const inWeek = uaItems.filter(it=> uaWeek === "all" || it.week === uaWeek);
+  const tc = {};
+  inWeek.forEach(it=>{ tc[it.type] = (tc[it.type] || 0) + 1; });
+  chipRow($("#uaweeks"), uaWeekPairs, uaWeek, v=>{ uaWeek = v; renderUA(); });
+  chipRow($("#uatypes"), [["all", `全部类型 ${inWeek.length}`],
+    ...Object.entries(tc).sort((a,b)=>b[1]-a[1]).map(([t,n])=>[t, `${t} ${n}`])],
+    uaType, v=>{ uaType = v; renderUA(); });
+  const rows = inWeek.filter(it=> uaType === "all" || it.type === uaType);
+  const CAP = 300;
+  $("#ualist").innerHTML = rows.slice(0, CAP).map(it=>`<div class="urow">
+      <div class="uq">${esc(it.q)}</div>
+      <div class="um"><span class="badge ${it.pre === "未覆盖" ? "warn" : "err"}">${esc(it.pre)}</span>
+        <span class="badge dim">${esc(it.type)}</span>
+        <span>${esc(it.user || "")}</span><span class="mono">${esc(it.at || "")}</span></div>
+      ${it.reason ? `<div class="ur">${esc(it.reason)}</div>` : ""}</div>`).join("")
+    + (rows.length > CAP ? `<div class="empty" style="padding:8px">仅显示前 ${CAP} 条（共 ${rows.length}）</div>`
+       : (rows.length ? "" : '<div class="empty">该过滤条件下没有段</div>'));
+}
+let uaWeekPairs = [];
+async function loadUA(){
+  const j = await (await fetch(`/api/unanswered?env=${activeEnv}`)).json();
+  if(!j.found){
+    $("#uasum").textContent = "暂无（先跑 L3 预标 + 周报）";
+    $("#uaweeks").innerHTML = ""; $("#uatypes").innerHTML = ""; $("#ualist").innerHTML = "";
+    return;
+  }
+  uaItems = j.items || [];
+  uaWeek = "all"; uaType = "all";
+  const weeks = Object.entries(j.weeks || {}).sort((a,b)=>a[0] < b[0] ? -1 : 1);
+  const latest = weeks.length ? weeks[weeks.length - 1] : null;
+  $("#uasum").textContent = `共 ${j.total} 条`
+    + (latest ? ` · 最新周（${latest[0].slice(5)} 起）+${latest[1]}` : "");
+  uaWeekPairs = [["all", `全部 ${j.total}`],
+    ...weeks.map(([w, n])=>[w, `${w.slice(5).replace("-", "/")} 周 +${n}`])];
+  renderUA();
+}
+
+/* ══ 页签3 工单沉淀 ══ */
+let sinkDir = "";
+async function loadSink(){
+  try{
+    const j = await (await fetch("/api/sink_status")).json();
+    const el = $("#sinkstat");
+    if(!j.found){ el.textContent = "未拉取"; el.className = "badge dim"; sinkDir = ""; return; }
+    sinkDir = j.dir;
+    el.className = "badge " + (j.total && j.judged >= j.total ? "ok" : "warn");
+    el.textContent = j.total
+      ? `${j.dir.slice(7,16)}｜已判 ${j.judged}/${j.total}（过${j.approved} 驳${j.rejected} 测${j.test}）`
+      : `${j.dir.slice(7,16)}｜待审（未保存标注）`;
+  }catch(_){}
+}
+$("#sinkexport").onclick = ()=>runSteps([], null, null, {kind:"sink_export", hdr:"sink_flow --export"});
+$("#sinkopen").onclick = ()=>{
+  if(!sinkDir){ toast("先「① 拉取待审」", "err"); return; }
+  if(!window.open(`/sink_review?dir=${encodeURIComponent(sinkDir)}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err");
+};
+$("#sinkrev").value = localStorage.getItem("sink_reviewer") || "";
+$("#sinkapply").onclick = async ()=>{
+  const reviewer = $("#sinkrev").value.trim();
+  if(!sinkDir){ toast("先「① 拉取待审」", "err"); return; }
+  if(!reviewer){ toast("先填审核人", "err"); return; }
+  const j = await (await fetch("/api/sink_status")).json();
+  if(!j.found || !j.total){ toast("先在审核页「保存标注结果」", "err"); return; }
+  if(!j.judged){ toast("还没有任何判定", "err"); return; }
+  if(!confirm(`应用判定到生产？\n\n放行 ${j.approved} 张（即刻可检索）\n删除 ${j.rejected + j.test} 张（驳回+测试单：删点+终态标记）\n未判 ${j.total - j.judged} 张跳过\n\n审核人：${reviewer}`)) return;
+  localStorage.setItem("sink_reviewer", reviewer);
+  runSteps([], null, null, {kind:"sink_apply", dir:sinkDir, reviewer,
+                            hdr:`sink_flow --apply ${sinkDir} --reviewer ${reviewer}`});
+};
+loadSink();
+
+/* ══ 页签2 在线测试 ══ */
+function setConn(user){
+  const dot = $("#conn-dot"), txt = $("#conn-test");
+  if(user){ dot.className = "cdot ok"; txt.textContent = "已连接 · " + user; }
+  else{ dot.className = "cdot"; txt.textContent = "未连接"; }
+}
+(async ()=>{
+  const j = await (await fetch("/api/status")).json();
+  if(j.prod_export){
+    $("#conn-prod").textContent = "已导入 " + j.prod_export.replace(/^\d{4}-/, "");
+    $("#conn-prod").title = j.prod_export;  // 悬停看完整时间
+  }
+  else{
+    $("#conn-prod").textContent = "未导数据";
+    document.querySelector("#conn-prod").closest(".cline").querySelector(".cdot").className = "cdot";
+  }
+  if(j.logged_in){
+    $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.logged_in;
+    setConn(j.logged_in);
+  }else{
+    const sv = localStorage.getItem("dar_test_login");  // 记住的凭据 → 静默自动登录
+    if(sv){ try{ const c = JSON.parse(sv); doLogin(c.u, c.p, true); }catch(_){} }
+  }
+})();
+async function doLogin(u, p, quiet){
+  const b = $("#loginbtn");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span>登录中';
+  try{
+    const r = await fetch("/api/login", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username: u, password: p})});
+    const txt = await r.text(); let j = null; try{ j = JSON.parse(txt); }catch(_){}
+    if(!r.ok) throw new Error((j && j.detail) || txt.slice(0, 80) || "登录失败");
+    $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.username;
+    setConn(j.username);
+    $("#f_user").value = u; $("#f_pass").value = p;
+    if($("#remember").checked)
+      localStorage.setItem("dar_test_login", JSON.stringify({u, p}));
+    else
+      localStorage.removeItem("dar_test_login");
+    if(!quiet) toast("登录成功", "ok");
+    return true;
+  }catch(e){ toast(e.message, "err"); return false; }
+  finally{ b.disabled = false; b.textContent = "登录测试环境"; }
+}
+$("#loginbtn").onclick = ()=>doLogin($("#f_user").value.trim(), $("#f_pass").value);
+
+/* 会话 */
+function newSid(){ return "dar_test_" + Date.now().toString(36); }
+$("#f_sess").value = newSid();
+$("#newsess").onclick = ()=>{ $("#f_sess").value = newSid(); $("#chat").innerHTML = '<div class="empty-chat">新会话已开启</div>'; };
+
+/* 模式切换 */
+const MODES = [["m-reg","pane-reg"],["m-chat","pane-chat"],["m-probe","pane-probe"]];
+function switchMode(mid){
+  MODES.forEach(([m, p])=>{
+    document.getElementById(m).classList.toggle("pri", m === mid);
+    document.getElementById(p).style.display = (m === mid) ? "" : "none";
+  });
+}
+MODES.forEach(([m])=> document.getElementById(m).onclick = ()=>switchMode(m));
+
+/* 一键回归 */
+const SUITE_ZH = {retrieval:"检索", answer:"回答", ticket:"提单", flow:"流程"};
+const V_ICON = {PASS:"✓", WARN:"⚠", FAIL:"✗", ERROR:"✗"};
+const V_CLS = {PASS:"ok", WARN:"warn", FAIL:"err", ERROR:"err"};
+
+async function loadCases(){
+  const el = $("#regcases");
+  let j;
+  try{ j = await (await fetch("/api/cases")).json(); }
+  catch(e){ el.innerHTML = '<div class="empty">用例集加载失败</div>'; return; }
+  el.innerHTML = "";
+  for(const [suite, info] of Object.entries(j)){
+    const grp = document.createElement("div");
+    grp.style.marginBottom = "10px";
+    grp.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <input type="checkbox" class="gsel" data-suite="${esc(suite)}" checked>
+      <b>${esc(SUITE_ZH[suite]||suite)}（${info.cases.length} 例）</b>
+      <span class="hint">${esc(info.desc)}</span></div>`;
+    const list = document.createElement("div");
+    list.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:4px 16px";
+    info.cases.forEach(c=>{
+      const lab = document.createElement("label");
+      lab.style.cssText = "display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--ink2);cursor:pointer";
+      lab.innerHTML = `<input type="checkbox" class="csel" data-suite="${esc(suite)}"
+        data-name="${esc(c.name)}" checked>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.query||c.turns?.[0]||"")}">${esc(c.name)}</span>`;
+      list.appendChild(lab);
+    });
+    grp.appendChild(list);
+    el.appendChild(grp);
+  }
+  el.querySelectorAll(".gsel").forEach(g=> g.onclick = ()=>{
+    el.querySelectorAll(`.csel[data-suite="${g.dataset.suite}"]`)
+      .forEach(c=> c.checked = g.checked);
+  });
+}
+loadCases();
+
+let regRunning = false;
+$("#regrun").onclick = async ()=>{
+  if(regRunning) return;
+  const picked = [...document.querySelectorAll(".csel:checked")];
+  if(!picked.length){ toast("先勾选至少一个用例", "err"); return; }
+  const suites = [...new Set(picked.map(c=> c.dataset.suite))];
+  regRunning = true;
+  $("#regrun").disabled = true; $("#regstop").disabled = false;
+  $("#regsum").textContent = "运行中…";
+  const live = $("#reglive"), listEl = $("#reglist");
+  live.style.display = ""; listEl.style.display = "";
+  live.innerHTML = '<div class="hd" style="font-size:12.5px;color:var(--ink3)">启动中…（retrieval 首跑含模型加载约 1-2 分钟）</div>';
+  listEl.innerHTML = "";
+  const rows = {};
+  let counts = {PASS:0, WARN:0, FAIL:0, ERROR:0};
+  await sse("/api/regression",
+    {suites, only: picked.map(c=> c.dataset.name), qdrant: $("#f_rsrc").value},
+    ev=>{
+      const d = ev.data || {};
+      if(ev.event === "case_begin"){
+        live.innerHTML = `<div style="font-size:12.5px">▶ 运行中：<b>${esc(d.name)}</b>
+          <span class="badge dim">${esc(SUITE_ZH[d.suite]||d.suite)}</span> ${d.index+1}/${d.total}</div>`;
+      }else if(ev.event === "case"){
+        counts[d.verdict] = (counts[d.verdict]||0) + 1;
+        live.innerHTML = `<div style="font-size:12.5px;color:var(--ink3)">完成：${esc(d.name)} → ${V_ICON[d.verdict]} ${d.verdict}</div>`;
+        const det = d.detail || {};
+        const detl = (det.fails||[]).map(f=>`<div style="color:var(--danger)">· ${esc(f)}</div>`).join("");
+        const facts = [];
+        if(det.hit) facts.push(`命中「${esc(det.hit)}」 rank#${det.rank}${det.limit?` (≤${det.limit})`:""}`);
+        if(det.stages){const SZ={idle:"空闲",retrieving:"检索",analyzing:"分析",diagnosing:"诊断",generating_ticket:"生成工单",review:"弹窗",collect_cancel:"已取消"};
+          facts.push(`阶段：${det.stages.map((arr,i)=>`${i+1}）${arr.map(s=>SZ[s]||s).join("→")}`).join("　")}`.slice(0,160));}
+        if(det.ms) facts.push(`${det.ms}ms`);
+        const row = document.createElement("details");
+        row.className = "row";
+        row.innerHTML = `<summary style="cursor:pointer;display:flex;gap:8px;align-items:center">
+          <span class="badge ${V_CLS[d.verdict]}">${V_ICON[d.verdict]} ${d.verdict}</span>
+          <b>${esc(d.name)}</b>
+          <span class="badge dim">${esc(SUITE_ZH[d.suite]||d.suite)}</span>
+          <span style="flex:1"></span><span class="hint">${esc(facts.join(" · "))}</span></summary>
+          <div style="padding:8px 4px 2px;font-size:12.5px;color:var(--ink2)">
+            <div>问句：${esc(det.query||"")}</div>${detl}
+            ${(det.turns_qa||[]).length?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">每轮问答（${det.turns_qa.length} 轮，各前 400 字）</summary>${det.turns_qa.map((t,i)=>`<div style="padding:6px 0;border-top:1px dashed var(--line)"><div>第 ${i+1} 轮问：${esc(t.q)}</div><div style="white-space:pre-wrap;padding:4px 0">答：${esc(t.a)}</div></div>`).join("")}</details>`:(det.answer_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">回答（前 400 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.answer_head)}</div></details>`:"")}
+            ${det.docs_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">送 prompt 资料（前 300 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.docs_head)}</div></details>`:""}
+            ${det.error?`<div style="color:var(--danger)">${esc(det.error)}</div>`:""}
+          </div>`;
+        listEl.prepend(row);
+        rows[d.suite + d.name] = row;
+        $("#regsum").innerHTML = `<b>${counts.PASS}</b> 通过 · <b style="color:#b8860b">${counts.WARN}</b> 警告 · <b style="color:#c0392b">${counts.FAIL+counts.ERROR}</b> 失败`;
+      }else if(ev.event === "fatal"){
+        live.innerHTML = `<div style="color:#c0392b">执行器崩溃：${esc((d.error||"").slice(0,160))}</div>`;
+      }
+    }, ()=>{
+      regRunning = false;
+      $("#regrun").disabled = false; $("#regstop").disabled = true;
+      if($("#regsum").textContent === "运行中…") $("#regsum").textContent = "未完成（中断或出错，看下方明细）";
+    });
+};
+$("#regstop").onclick = async ()=>{
+  await fetch("/api/stop_regression", {method:"POST"});
+  toast("已发送终止信号", "ok");
+};
+
+/* 全链路对话 */
+const STAGE_ZH = {retrieving:"检索", generating:"生成回答", diagnosing:"诊断", tool:"工具",
+  ticket:"提单", thinking:"思考", rewriting:"改写", waiting:"等待"};
+let busy = false;
+async function send(){
+  if(busy) return;
+  const q = $("#f_q").value.trim(); if(!q) return;
+  busy = true; $("#sendbtn").disabled = true; $("#f_q").value = "";
+  const chat = $("#chat");
+  if(chat.querySelector(".empty-chat")) chat.innerHTML = "";
+
+  const u = document.createElement("div");
+  u.className = "msg u"; u.innerHTML = `<div class="who">我</div><div class="bubble"></div>`;
+  u.querySelector(".bubble").textContent = q;
+  chat.appendChild(u);
+
+  const a = document.createElement("div");
+  a.className = "msg a";
+  a.innerHTML = `<div class="who">AI · 线上链路</div><div class="stages"></div><div class="bubble"></div>
+    <div class="dets" style="display:none"><details><summary>结果详情</summary><pre></pre></details></div>`;
+  chat.appendChild(a);
+  const bubble = a.querySelector(".bubble"), stages = a.querySelector(".stages");
+  const dets = a.querySelector(".dets"), pre = a.querySelector("pre");
+  chat.scrollTop = chat.scrollHeight;
+
+  let answer = "", curStage = null;
+  const mark = (key, cls, txt)=>{
+    stages.querySelectorAll(".stage").forEach(x=>{ if(!x.classList.contains("run")) x.className = "stage done"; });
+    if(curStage) curStage.remove();
+    curStage = document.createElement("span");
+    curStage.className = "stage " + cls;
+    curStage.textContent = txt;
+    stages.appendChild(curStage);
+  };
+
+  await sse("/api/ask", {session_id: $("#f_sess").value.trim(), query: q,
+      skip_retrieval: $("#f_skip").checked}, ev=>{
+    const d = ev.data || {};
+    if(ev.event === "message" || ev.event === "token"){
+      if(d.token){ answer += d.token; bubble.textContent = answer; chat.scrollTop = chat.scrollHeight; }
+    }else if(ev.event === "status"){
+      const s = STAGE_ZH[d.stage] || d.stage || "处理中";
+      mark("s", "run", s + (d.round ? ` ·${d.round}` : ""));
+    }else if(ev.event === "first_token"){
+      mark("t", "done", "首字 " + d.ms + "ms");
+    }else if(ev.event === "result"){
+      if(d.answer && !answer){ answer = d.answer; bubble.textContent = answer; }
+      pre.textContent = JSON.stringify(d, null, 2);
+      dets.style.display = "";
+      mark("r", "done", "完成");
+      if(d.ticket || d.draft || d.task_id) ticketCard(a, d);
+    }else if(ev.event === "title"){
+      /* 忽略 */
+    }else if(ev.event === "error"){
+      mark("e", "run", "错误");
+      bubble.textContent = (answer ? answer + "\n\n" : "") + "⚠ " + (d.error || "未知错误");
+      if(d.fatal && /401|过期/.test(d.error||"")){ $("#loginstate").className="badge err"; $("#loginstate").textContent="登录过期";
+        $("#conn-dot").className = "cdot bad"; $("#conn-test").textContent = "登录过期"; }
+    }else if(ev.event === "done"){
+      mark("d", "done", d.total_ms + "ms");
+    }
+    chat.scrollTop = chat.scrollHeight;
+  }, ()=>{ busy = false; $("#sendbtn").disabled = false; });
+}
+$("#sendbtn").onclick = send;
+$("#f_q").addEventListener("keydown", e=>{ if(e.key === "Enter" && !e.isComposing) send(); });
+
+/* 工单草稿/确认（按钮转工单路径） */
+function ticketCard(msgEl, result){
+  const box = document.createElement("div");
+  box.className = "tk";
+  box.innerHTML = `<div class="tt"><span>工单草稿</span></div><div class="fld"></div><div class="ops">
+    <button class="btn sm pri">生成草稿（prepare）</button><button class="btn sm dng" style="display:none">确认提单（落测试库）</button></div>`;
+  msgEl.appendChild(box);
+  const fld = box.querySelector(".fld"), bPre = box.querySelector(".pri"), bCfm = box.querySelector(".dng");
+  bPre.onclick = async ()=>{
+    bPre.disabled = true; bPre.innerHTML = '<span class="spin"></span>生成中';
+    try{
+      const r = await fetch("/api/ticket_prepare", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session_id: $("#f_sess").value.trim()})});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.detail || "prepare 失败");
+      const d = j.body?.data || j.body || {};
+      box._draft = d;
+      fld.innerHTML = ["title","type","description","project"].filter(k=>d[k])
+        .map(k=>`<b>${esc(k)}</b>：${esc(String(d[k]).slice(0,160))}`).join("<br>") || `<pre style="margin:6px 0">${esc(JSON.stringify(d, null, 2).slice(0,800))}</pre>`;
+      bPre.style.display = "none"; bCfm.style.display = "";
+      toast("草稿已生成", "ok");
+    }catch(e){ toast(e.message, "err"); bPre.disabled = false; bPre.textContent = "生成草稿（prepare）"; }
+  };
+  bCfm.onclick = async ()=>{
+    if(!confirm("确认向测试环境提交工单？")) return;
+    bCfm.disabled = true;
+    try{
+      const r = await fetch("/api/ticket_confirm", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session_id: $("#f_sess").value.trim(), overrides: box._draft || {}})});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.detail || "confirm 失败");
+      fld.innerHTML += `<br><span style="color:var(--ok);font-weight:600">✔ 已提交（测试库）</span>`;
+      bCfm.style.display = "none";
+      toast("工单已提交（测试库）", "ok");
+    }catch(e){ toast(e.message, "err"); bCfm.disabled = false; }
+  };
+}
+
+/* 检索探针 */
+$("#probebtn").onclick = async ()=>{
+  const q = $("#f_pq").value.trim(); if(!q) return;
+  const b = $("#probebtn");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span>检索中';
+  $("#probeout").innerHTML = '<div class="card"><div class="empty">检索中…（远程源走 ssh 隧道，首次约 1-2 分钟含模型加载）</div></div>';
+  try{
+    const r = await fetch("/api/probe", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({q, qdrant: $("#f_psrc").value})});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "探针失败");
+    renderProbe(j);
+  }catch(e){
+    $("#probeout").innerHTML = `<div class="card"><div class="empty" style="color:var(--danger)">${esc(e.message)}</div></div>`;
+  }
+  b.disabled = false; b.textContent = "检索";
+};
+function renderProbe(j){
+  const out = $("#probeout");
+  const src = {test:"测试知识库", prod:"生产知识库", local:"本地知识库"}[j.qdrant] || j.qdrant;
+  const heads = `<div class="meta-line">
+    <span>源：<b>${src}</b></span>
+    <span>命中：<b>${j.chunks?.length || 0} 块</b></span><span>上下文：<b>${j.ctx_len || 0} 字</b></span>
+    ${j.pointers?.company ? `<span class="mono" style="font-size:11px;color:var(--ink3)">${esc(j.pointers.company)} · ${esc(j.pointers.team||"")}</span>` : ""}</div>`;
+  const rows = (j.chunks || []).map(c=>`
+    <div class="prow"><div class="rt"><span class="route">${esc(c.route)}</span>
+    ${c.title ? `<span class="ttl">${esc(c.title)}</span>` : ""}</div>
+    <div class="txt">${esc(c.text)}</div></div>`).join("");
+  out.innerHTML = heads + (rows || '<div class="card"><div class="empty">无命中</div></div>');
+}
+</script>
+</body>
+</html>

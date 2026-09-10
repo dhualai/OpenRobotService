@@ -15,7 +15,6 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, Tick
 
 def _cfg(**kwargs):
     data = dict(
-        ranker_weights={"llm_match": 0.70, "similar_match": 0.15, "cluster_match": 0.15},
         job_level_penalty={1: 1.0, 2: 0.90, 3: 0.90, 99: 0.90},
         preferred_floor=0.9,
         llm_decision_topk=0,
@@ -68,7 +67,6 @@ class TestContactNoDouble:
             recall, engineers=engineers, contact_assignee_id="u-b",
         )
         assert scores["u-b"]["contact_assignee"] is True
-        assert scores["u-b"]["contact_multiplier"] == 1.0
         assert scores["u-a"]["total_score"] == scores["u-b"]["total_score"]
 
     def test_contact_no_floor(self):
@@ -97,7 +95,6 @@ class TestPreferredFloor:
         assert scores["u-p"]["preferred_assignee"] is True
         assert scores["u-p"]["total_score"] == 0.9
         assert scores["u-p"]["preferred_floor"] == 0.9
-        assert scores["u-p"]["contact_multiplier"] == 1.0
 
     def test_high_score_kept(self):
         """正常流程：倾向人加权后已高于 0.9 → 不压低。"""
@@ -125,21 +122,20 @@ class TestPreferredFloor:
         assert scores["u-d"]["total_score"] < 0.9
 
 
-class TestTransferHook:
-    """转派旁路先改 L1 分再加权。"""
+class TestMisassignRanking:
+    """派错纠正：精排压低原处理人。"""
 
-    def test_penalty_lowers_llm_before_weight(self):
-        """正常流程：对 A 的 L1 分 -1 → 归一化后 A 排到 B 后面。"""
+    def test_rejected_total_multiplied(self):
+        """正常流程：曾错派人总分 ×0.7，接手人打上转派纠正。"""
         recall = RecallResult()
-        recall.llm_recall = {"u-a": 1.0, "u-b": 0.5}
-        recall.transfer_signals = {
-            "boosts": {},
-            "penalties": {"u-a": {"delta": -1.0, "reason": "错派"}},
-        }
+        recall.llm_recall = {"u-a": 1.0, "u-b": 1.0}
+        recall.misassign_rejected = {"u-a": "不归硬件"}
+        recall.misassign_confirmed = {"u-b": "不归硬件"}
         engineers = [_eng("u-a", "甲"), _eng("u-b", "乙")]
         scores = Ranker(_cfg()).rank(recall, engineers=engineers)
-        assert list(scores)[0] == "u-b"
-        assert scores["u-a"]["llm_score"] == 0.0
+        assert scores["u-a"]["misassign_rejected"] is True
+        assert scores["u-b"]["misassign_confirmed"] is True
+        assert scores["u-a"]["total_score"] == round(scores["u-b"]["total_score"] * 0.70, 4)
 
 
 class TestNoWindowCut:
@@ -194,7 +190,7 @@ class TestNoWindowCut:
 
 
 class TestThreeWayRecall:
-    """三路并集：单路保留归一分，多路取最高。"""
+    """三路并集：单路保留绝对分，多路取最高。"""
 
     def test_empty_cluster_does_not_shrink_llm(self):
         """正常流程：问题域空不影响 LLM 分，多路命中取最高。"""
@@ -220,8 +216,23 @@ class TestThreeWayRecall:
         assert scores["u-b"]["similar_score"] == 0.40
         assert scores["u-b"]["total_score"] == 0.40
 
+    def test_llm_absolute_not_stretched(self):
+        """正常流程：画像 0.85 不按本批第一名拉成 1.0。"""
+        recall = RecallResult()
+        recall.llm_recall = {"u-a": 0.85, "u-b": 0.85, "u-c": 0.75}
+        engineers = [_eng("u-a", "甲"), _eng("u-b", "乙"), _eng("u-c", "丙"), _eng("u-p", "倾向")]
+        scores = Ranker(_cfg()).rank(
+            recall, engineers=engineers, preferred_assignee_id="u-p",
+        )
+        assert scores["u-a"]["llm_score"] == 0.85
+        assert scores["u-b"]["llm_score"] == 0.85
+        assert scores["u-c"]["llm_score"] == 0.75
+        assert scores["u-a"]["total_score"] == 0.85
+        assert scores["u-p"]["total_score"] == 0.9
+        assert list(scores)[0] == "u-p"
+
     def test_cluster_only_keeps_full_score(self):
-        """正常流程：只在问题域命中 → 保留簇归一分，不打折。"""
+        """正常流程：只在问题域命中 → 保留簇绝对分，不打折。"""
         recall = RecallResult()
         recall.llm_recall = {"u-a": 1.0}
         recall.cluster_recall = {"u-c": 1.0}
@@ -243,7 +254,8 @@ class TestThreeWayRecall:
         assert scores["u-a"]["similar_score"] == 0.0
         assert scores["u-a"]["cluster_score"] == 0.0
         assert scores["u-a"]["total_score"] > scores["u-b"]["total_score"]
-        assert abs(scores["u-a"]["total_score"] - 1.0) < 0.01
+        assert scores["u-a"]["total_score"] == 0.8
+        assert scores["u-b"]["total_score"] == 0.4
 
     def test_example_llm_five_similar_empty_cluster_acf(self):
         """正常流程：LLM=a..e，相似空，簇=a/c/f → 单路保留分，多路取最高，f 不摊权。"""
@@ -264,7 +276,7 @@ class TestThreeWayRecall:
         assert scores["c"]["total_score"] == max(
             scores["c"]["llm_score"], scores["c"]["cluster_score"],
         )
-        assert list(scores) == ["a", "c", "b", "d", "f", "e"]
+        assert list(scores) == ["c", "a", "b", "d", "f", "e"]
 
     def test_union_marks_outside_tighten(self):
         """正常流程：只在问题域命中、不在收紧名单 → 进精排并标 outside_tighten。"""

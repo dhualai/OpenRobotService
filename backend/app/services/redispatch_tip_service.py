@@ -1,22 +1,103 @@
-"""二次派单感知增强（M3 高情商回复）：未派到指定人时的「派单说明」话术生成。
+"""派单说明话术：列表 / 对话气泡 / 详情同一出口 `build_redispatch_tip`。
 
-从 `app/modules/tasks/api/task.py` 的 `_build_redispatch_tip_detail` 抽离，收敛为独立 service：
-- 模板拼装 + 分支引导（确定性文案，零 LLM 成本）
-- 可选 AI 润色（REDISPATCH_TIP_AI_POLISH=True 时用 ModelService 润色，失败降级模板）；prompt 收敛在此
-
-调用方：`task.py::get_task` 组装 `redispatch.result.tip_detail` 时调用。
+未派到倾向人用完整详情模板（原因 + 下一步）；Step0 短句仍走本函数其它分支。
+可选 AI 润色仅 `build_redispatch_tip_detail`（默认关）。
 """
 from typing import List, Optional
 
 from app.core.config import settings
 
+PROFILE_MISSING_LABEL = {
+    "department": "部门",
+    "job_level": "职级",
+    "responsibility_modules": "责任模块",
+}
+
+
+def clean_reasoning_for_display(reasoning_raw, log, user_map) -> str:
+    """把派单理由里的 users.id 换成姓名，给提单人 tip / 接单人「派单理由」共用。"""
+    if not isinstance(reasoning_raw, str) or not reasoning_raw.strip():
+        return reasoning_raw if isinstance(reasoning_raw, str) else ""
+    txt = reasoning_raw
+    for _cand in (getattr(log, "candidates", None) or []):
+        if isinstance(_cand, dict):
+            _cid = _cand.get("engineer_id")
+            _cname = _cand.get("name") or (user_map or {}).get(_cid, _cid)
+            if _cid and _cname:
+                txt = txt.replace(f"ID:{_cid}", _cname)
+                txt = txt.replace(f"({_cid})", f"({_cname})")
+                txt = txt.replace(f"（{_cid}）", f"（{_cname}）")
+                txt = txt.replace(_cid, _cname)
+    for _cid, _cname in (user_map or {}).items():
+        if _cname and _cid and isinstance(_cid, str) and _cid in txt:
+            txt = txt.replace(_cid, _cname)
+    return txt
+
+
+def _pref_missing_zh(log) -> List[str]:
+    preferred_id = getattr(log, "preferred_id", None)
+    out: List[str] = []
+    for cand in (getattr(log, "candidates", None) or []):
+        if not isinstance(cand, dict) or cand.get("engineer_id") != preferred_id:
+            continue
+        for f in (cand.get("missing") or []):
+            zh = PROFILE_MISSING_LABEL.get(str(f), str(f))
+            if zh not in out:
+                out.append(zh)
+        break
+    return out
+
+
+def format_unmatched_preferred_tip(
+    pref_name: str,
+    assigned_name: str,
+    reasoning: str = "",
+    pref_missing_zh: Optional[List[str]] = None,
+) -> str:
+    """重派未派到倾向人：详情模板（列表 / 气泡 / 详情同一句）。"""
+    pref_missing_zh = pref_missing_zh or []
+    missing_txt = "、".join(pref_missing_zh) if pref_missing_zh else ""
+    if pref_missing_zh:
+        guide = (
+            f"您倾向的【{pref_name}】画像不完整（缺：{missing_txt}），"
+            "暂不足以直接指派，可补充画像后重新派单。"
+        )
+    else:
+        guide = f"如需【{pref_name}】接单，可 @ 接单人 转派或重新派单。"
+    reason_txt = f"，原因：{reasoning.strip()}" if (reasoning or "").strip() else ""
+    return (
+        f"很抱歉，未派给您指定的【{pref_name}】；"
+        f"已优先改派给【{assigned_name}】处理{reason_txt}。"
+        f"{guide}"
+    )
+
+
+def step0_blocks_redispatch(first_log) -> Optional[str]:
+    """首轮已由 Step0 派上指定人 → 返回 assigned_id（拦截重派）。
+
+    看第一轮日志，不看最新一轮（重派后 preferred_id 会变成表单倾向人）。
+    不看 profile.specified_name：拼音命中也会写入对照原文，人已经派上了。
+    找不到指定人走了智能派单：matched_pref 不是 True → 放行。
+    """
+    if first_log is None:
+        return None
+    if not getattr(first_log, "matched_pref", False):
+        return None
+    pref = getattr(first_log, "preferred_id", None)
+    assigned = getattr(first_log, "assigned_id", None) or None
+    if not pref:
+        return None
+    if assigned and pref != assigned:
+        return None
+    return assigned or pref
+
 
 def build_redispatch_tip(log, user_map) -> Optional[str]:
-    """派单结果提醒的唯一出口（列表摘要 / 详情非「未派到」分支）。
+    """派单结果提醒的唯一出口（列表 / 气泡 / 详情 tip_detail）。
 
     数据源：task_dispatch_log 结构化字段（preferred_id / pinyin_match /
-    name_collision / profile.missing / profile.specified_name）。
-    Step0 指定人与重派倾向人走同一条规则。
+    name_collision / profile.missing / profile.specified_name /
+    profile.specified_multi / candidates / reasoning）。
     """
     if log is None:
         return None
@@ -33,34 +114,53 @@ def build_redispatch_tip(log, user_map) -> Optional[str]:
             "配置后系统会继续尝试。"
         )
 
-    # Step0 指定人找不到：没有 users.id，只记下了指定名
+    # Step0 指定人找不到：没有 users.id，只记下指定名。
+    # 智能派单有门槛，只有画像完整的人能进候选池，不会派到画像不全的人。
     if specified_name and not preferred_id:
         return f"没找到您指定的【{specified_name}】，已按智能派单处理"
 
-    # ② 未派到指定人 / 倾向人
-    if preferred_id and preferred_id != log.assigned_id:
-        tip = f"很抱歉，您指定的【{preferred_name}】暂未采纳，已改派更合适的【{assigned_name}】处理"
-    # ④ 拼音命中（已派到解析出的人）
-    elif getattr(log, "pinyin_match", False):
-        tip = f"拼音找到的是【{assigned_name}】，有可能不准确"
-    # ③ 同名
-    elif getattr(log, "name_collision", False):
-        if prof.get("collision_random"):
-            tip = f"指派人存在同名，已随机选择【{assigned_name}】"
-        else:
-            tip = f"指派人存在同名，已按评估选择【{assigned_name}】"
-    else:
-        tip = None
+    # 重派未派到倾向人：详情模板，不再用「暂未采纳」短句
+    if preferred_id and log.assigned_id and preferred_id != log.assigned_id:
+        return format_unmatched_preferred_tip(
+            preferred_name or preferred_id,
+            assigned_name,
+            reasoning=clean_reasoning_for_display(
+                getattr(log, "reasoning", None) or "", log, user_map,
+            ),
+            pref_missing_zh=_pref_missing_zh(log),
+        )
 
-    # ① 画像不完整（可叠加；同名随机多半两边都不完整，要提醒补）
+    parts = []
+    if prof.get("specified_multi"):
+        parts.append("工单暂时只允许分配一个处理人")
+    pinyin_hit = getattr(log, "pinyin_match", False)
+    if pinyin_hit and not prof.get("specified_multi"):
+        if specified_name and specified_name != assigned_name:
+            parts.append(
+                f"系统找到的是【{assigned_name}】没有您指定的【{specified_name}】，"
+                "有可能不准确"
+            )
+        else:
+            parts.append(f"系统找到的是【{assigned_name}】，有可能不准确")
+    collision = getattr(log, "name_collision", False)
+    # 多人与同名都要提醒；无多人时拼音仍优先于同名（与旧口径一致）
+    if collision and (prof.get("specified_multi") or not pinyin_hit):
+        if prof.get("collision_random"):
+            parts.append(f"指派人存在同名，已随机选择【{assigned_name}】")
+        else:
+            parts.append(f"指派人存在同名，已按评估选择【{assigned_name}】")
+    tip = "；".join(parts) if parts else None
+
+    # 画像不完整（可叠加）。已有主句时不写「您指定的」，避免和拼音对照句打架
     missing = (prof.get("missing") or []) if prof else []
     if missing:
-        if preferred_id and preferred_id == log.assigned_id:
-            suffix = "您指定的接单人画像不完整，请补充"
+        if tip:
+            suffix = "接单人画像不完整。"
+        elif preferred_id and preferred_id == log.assigned_id:
+            suffix = "您指定的接单人画像不完整。"
         else:
             suffix = "该接单人画像不完整，待补充"
         tip = (f"{tip}；{suffix}") if tip else suffix
-    # 部门职责画像：只认库，yaml 不补；库里没有就提醒去后台补
     if prof.get("no_dept_profile"):
         suffix = "没有部门画像，请到后台补充部门职责"
         tip = (f"{tip}；{suffix}") if tip else suffix
@@ -73,42 +173,15 @@ async def build_redispatch_tip_detail(
     reasoning: str = "",
     pref_missing_zh: Optional[List[str]] = None,
 ) -> str:
-    """二次派单感知增强（M3 高情商回复）：未派到指定人时的完整情商话术。
+    """未派到倾向人的详情模板；仅当 REDISPATCH_TIP_AI_POLISH=True 时润色。
 
-    默认纯模板（settings.REDISPATCH_TIP_AI_POLISH=False）：文案确定、零 LLM 成本、可复用。
-    可选 AI 润色：仅当 REDISPATCH_TIP_AI_POLISH=True 时把模板喂给 LLM 润色，失败降级模板。
-
-    模板带分支引导：
-    - 倾向人画像不完整（pref_missing_zh 非空）→ 点明缺失项 + 引导先补充画像后重新派单；
-    - 画像完整 → 引导「@ 接单人 帮忙转派」或重新派单。
-    返回 string。
+    主展示出口是 `build_redispatch_tip`（默认不润色，与列表一致）。
     """
     pref_missing_zh = pref_missing_zh or []
     missing_txt = "、".join(pref_missing_zh) if pref_missing_zh else ""
-
-    # 分支引导段（尽量精简）
-    if pref_missing_zh:
-        guide = (
-            f"您倾向的【{pref_name}】画像不完整（缺：{missing_txt}），"
-            "暂不足以直接指派，可补充画像后重新派单。"
-        )
-    else:
-        guide = f"如需【{pref_name}】接单，可 @ 接单人 转派或重新派单。"
-
-    # 备注：reasoning 由派单引擎（LLM 决策 / fallback）在源头就生成「一句话简洁原因」，
-    # 因此这里原样展示即可，不再做截断/取首句处理；配合精简模板，整段话术保持简短。
-    if reasoning:
-        reason_txt = f"，原因：{reasoning.strip()}"
-    else:
-        reason_txt = ""
-    template = (
-        f"很抱歉，未派给您指定的【{pref_name}】；"
-        f"已优先改派给【{assigned_name}】处理{reason_txt}。"
-        f"{guide}"
+    template = format_unmatched_preferred_tip(
+        pref_name, assigned_name, reasoning=reasoning, pref_missing_zh=pref_missing_zh,
     )
-
-    # 默认纯模板（settings.REDISPATCH_TIP_AI_POLISH=False，零 LLM 成本、文案确定可复用）。
-    # 仅当显式开启 AI_POLISH 时才用 LLM 润色；失败 / LLM_STREAM 返回生成器 → 仍降级模板。
     try:
         if getattr(settings, "REDISPATCH_TIP_AI_POLISH", False):
             from app.modules.call.services.model_service import ModelService
@@ -126,9 +199,7 @@ async def build_redispatch_tip_detail(
                 system_prompt="你是工单系统的亲和客服助手，负责把派单结果转述给提单人，语气温和、简洁、可信。",
             )
             if isinstance(polished, str) and polished.strip():
-                # 逗号/句号结尾兜底规范化（去掉可能的引号包裹等）
                 return polished.strip().strip('"\u201c\u201d') or template
     except Exception:
-        # AI 润色失败 / LLM_STREAM 场景返回流式生成器 → 降级为模板
         pass
     return template

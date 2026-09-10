@@ -76,7 +76,7 @@ type Handler = (e: WsEvent) => void;
 
 export class TaskRoomSocket {
   private ws: WebSocket | null = null;
-  private url: string;
+  private taskId: string | number;
   private handlers = new Set<Handler>();
   private closedByUser = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -93,13 +93,22 @@ export class TaskRoomSocket {
   private static readonly MAX_OUTBOX = 50;
 
   constructor(taskId: string | number) {
-    // 后端路由：/api/tasks/{task_id}/ws（task_router 在 /api/tasks 前缀下）
-    this.url = buildWsUrl(`${API_CONFIG.TASKS.BASE_URL}/${taskId}/ws`);
+    this.taskId = taskId;
+  }
+
+  /**
+   * 每次建连实时计算 WS URL。
+   * 不能沿用构造期缓存的 url：token 会随刷新变化，缓存 url 会让断线重连一直
+   * 携带过期 token → 握手 403 → 指数退避无限重试（表现为「讨论区实时消息不更新」）。
+   * 后端路由：/api/tasks/{task_id}/ws（task_router 在 /api/tasks 前缀下）
+   */
+  private buildUrl(): string {
+    return buildWsUrl(`${API_CONFIG.TASKS.BASE_URL}/${this.taskId}/ws`);
   }
 
   connect(): void {
     this.closedByUser = false;
-    this.ws = new WebSocket(this.url);
+    this.ws = new WebSocket(this.buildUrl());
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
       this.startHeartbeat();

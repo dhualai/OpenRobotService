@@ -5,7 +5,9 @@
 //    52px 液态玻璃圆钮 + 常显小标签 + 可拖拽自由定位；差异点是色相换为深一号蓝（--blue-2）、
 //    呼吸闪烁放慢至 3.6s。
 //  - 点开为右侧抽屉式聊天对话框（窄屏自动全宽），气泡样式复用全局 .chat-bubble 体系，与摇人对话观感一致。
-//  - 问答走真实接口：POST /api/ai/analysis/chat（AiDataAnalysisPlatform 快速对话，非流式 JSON）。
+//  - 问答走真实接口：POST /api/ai/analysis/chat（AiDataAnalysisPlatform 快速对话，非流式 JSON），
+//    兼容三种模式：chat（普通聊天）、analysis（数据分析+口径回显）、clarify（澄清追问+候选按钮），
+//    澄清多轮自动携带 conversation_id 关联上下文。
 //  - 会话持久化：独立表 dataqa_conversations/messages（/api/dataqa/*），与摇人对话库表完全隔离：
 //    首问自动建会话（标题=首问截断）并逐轮落库；头部可新建会话、查看历史会话列表（恢复完整记录）
 //    并可删除历史会话。
@@ -15,9 +17,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Popup, Button, Toast } from 'tdesign-mobile-react';
-import { Bot, History, MessageSquarePlus, Send, Sparkles, Trash2, X } from 'lucide-react';
+import { Bot, Calendar, Hash, History, MessageSquarePlus, RotateCcw, Send, Sparkles, Target, Trash2, X } from 'lucide-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
-import { analysisChat } from '@/api/analysis';
+import { analysisChat, type AnalysisPlan } from '@/api/analysis';
 import {
   createConversation,
   listMyConversations,
@@ -43,8 +45,12 @@ interface AdaMessage {
   content: string;
   /** true = 正在等待后端回答（打字占位），内容定稿前不渲染 Markdown */
   typing?: boolean;
-  /** 响应模式：chat（纯闲聊）或 analysis（指标分析），由后端意图识别返回；仅 assistant 有效 */
-  mode?: 'chat' | 'analysis';
+  /** 响应模式：chat / analysis / clarify */
+  mode?: string;
+  /** 解析出的分析计划（口径回显，analysis/clarify 模式均有值） */
+  plan?: AnalysisPlan | null;
+  /** clarify 模式下的候选选项，前端渲染为可点按钮 */
+  suggestions?: string[];
 }
 
 /** 空态推荐问题 */
@@ -54,6 +60,50 @@ const CHIP_QUESTIONS = [
   '服务号最近用户增长如何？',
   '本月报障集中在哪些车型？',
 ];
+
+/** 指标 key → 中文标签映射（与后端 metric_registry.py 对齐，25 个指标） */
+const METRIC_LABEL_MAP: Record<string, string> = {
+  'ticket.total': '工单总数',
+  'ticket.new_count': '新增工单数',
+  'ticket.resolved_count': '已解决工单数',
+  'ticket.closed_count': '已关闭工单数',
+  'ticket.resolve_rate': '工单解决率',
+  'ticket.overdue_count': '逾期工单数',
+  'ticket.by_status': '工单状态分布',
+  'ticket.by_priority': '工单优先级分布',
+  'ticket.by_type': '工单类型分布',
+  'ticket.new_by_day': '新增工单趋势',
+  'ticket.overdue_list': '逾期工单明细',
+  'ticket.items': '工单明细',
+  'project.total': '项目总数',
+  'project.active_count': '活跃项目数',
+  'project.completed_count': '已完成项目数',
+  'project.on_hold_count': '暂停项目数',
+  'project.by_status': '项目状态分布',
+  'project.items': '项目明细',
+  'risk.total': '风险总数',
+  'risk.new_count': '新增风险数',
+  'risk.closed_count': '已关闭风险数',
+  'risk.by_level': '风险等级分布',
+  'risk.by_status': '风险状态分布',
+  'risk.by_category': '风险分类分布',
+  'risk.items': '风险明细',
+};
+
+/** 指标 key 转中文标签；未注册的 key 直接返回原值 */
+const metricLabel = (key: string) => METRIC_LABEL_MAP[key] || key;
+
+/** 时间范围类型 → 中文 */
+const TIME_RANGE_LABELS: Record<string, string> = {
+  today: '今天',
+  yesterday: '昨天',
+  recent_days: '最近',
+  this_week: '本周',
+  last_week: '上周',
+  this_month: '本月',
+  last_month: '上月',
+  custom: '自定义',
+};
 
 const WELCOME_TEXT = `你好，我是**后台数据助手** 👋 可以问我服务号的运营情况：新增报障、处理时效、用户增长、项目进展……`;
 
@@ -67,7 +117,7 @@ export default function AdminDataAssistant() {
   const isAdmin = useAuthStore((s) => s.isAdmin);
   // 用户ID（users.id）：传给分析接口，分析意图时后端按该用户关联项目自动查库
   const userId = useAuthStore((s) => s.userId);
-  // 页面上下文中的项目代码：从后台管理项目详情/子页面路由中提取
+  // 页面上下文中的项目代码：从后台管理项目详情子页面路由中提取
   // （/admin/project/:code/...），问题未提及具体项目时作为兜底
   const pageProjectCode = useMemo(() => {
     const m = pathname.match(/^\/admin\/project\/([^/]+)/);
@@ -124,6 +174,7 @@ export default function AdminDataAssistant() {
   );
   const [messages, setMessages] = useState<AdaMessage[]>(() => [welcomeMsg]);
   const [input, setInput] = useState('');
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const thinking = messages.some((m) => m.typing);
   const userTurnCount = messages.filter((m) => m.role === 'user').length;
   // 在途请求：发新问题 / 清空 / 关抽屉 / 卸载时 abort，杜绝迟到响应回写已关闭的对话框
@@ -132,19 +183,19 @@ export default function AdminDataAssistant() {
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── 会话管理状态（独立表 dataqa_conversations/messages，与摇人对话隔离） ──
-  const [convId, setConvId] = useState<number | null>(null);
-  const convIdRef = useRef<number | null>(null);
-  const [conversations, setConversations] = useState<DataqaConversation[]>([]);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [deleting, setDeleting] = useState<DataqaConversation | null>(null);
-
   const abortPending = () => {
     if (pendingRef.current) {
       pendingRef.current.abort();
       pendingRef.current = null;
     }
   };
+
+  // ── 会话管理状态（独立表 dataqa_conversations/messages，与摇人对话隔离） ──
+  const [convId, setConvId] = useState<number | null>(null);
+  const convIdRef = useRef<number | null>(null);
+  const [conversations, setConversations] = useState<DataqaConversation[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [deleting, setDeleting] = useState<DataqaConversation | null>(null);
 
   /** 拉取当前用户的数据助手历史会话（后端按 updated_at 倒序） */
   const refreshList = async () => {
@@ -153,7 +204,7 @@ export default function AdminDataAssistant() {
     } catch { /* 会话列表拉取失败不打断问答 */ }
   };
 
-  /** 新建会话：中止在途请求，回到空白新会话（首问发送时才真正落库） */
+  /** 新建会话：中断在途请求，回到空白新会话（首问发送时才真正落库） */
   const newConversation = () => {
     abortPending();
     sendingRef.current = false;
@@ -162,22 +213,25 @@ export default function AdminDataAssistant() {
     setMessages([{ ...welcomeMsg, id: uid() }]);
     setInput('');
     setHistoryOpen(false);
+    setConversationId(null);
     const t = inputRef.current;
     if (t) t.style.height = '';
   };
 
-  /** 切换到历史会话：中止在途请求，从 DB 恢复完整消息记录 */
+  /** 切换到历史会话：中断在途请求，从 DB 恢复完整消息记录 */
   const openConversation = async (id: number) => {
     if (id === convIdRef.current) { setHistoryOpen(false); return; }
     abortPending();
     sendingRef.current = false;
     setHistoryOpen(false);
+    // 切换会话时清空后端澄清会话上下文，避免旧 plan 污染新会话
+    setConversationId(null);
     try {
       const conv = await getConversation(id);
       const restored: AdaMessage[] = (conv.messages ?? [])
         .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content.trim())
         .map((m) => {
-          let mode: 'chat' | 'analysis' | undefined;
+          let mode: string | undefined;
           if (m.metadata_) {
             try { const meta = JSON.parse(m.metadata_); mode = meta.mode; } catch { /* 元数据损坏忽略 */ }
           }
@@ -227,7 +281,19 @@ export default function AdminDataAssistant() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, open]);
 
-  /** 发送问题：思考占位 → 持久化用户消息 → POST /api/ai/analysis/chat → 定稿并持久化回答 */
+  const resetConversation = () => {
+    abortPending();
+    sendingRef.current = false;
+    setMessages([{ ...welcomeMsg, id: uid() }]);
+    setInput('');
+    setConversationId(null);
+    const t = inputRef.current;
+    if (t) t.style.height = '';
+  };
+
+  /** 发送问题：思考占位 → 持久化用户消息 → POST /api/ai/analysis/chat → 定稿并持久化回答
+   *  - 兼容三种模式：chat（普通聊天）、analysis（数据分析+口径回显）、clarify（澄清追问+候选按钮）
+   *  - 澄清多轮时自动携带 conversation_id 关联上下文 */
   const ask = async (raw: string) => {
     const text = raw.trim();
     if (!text || thinking || sendingRef.current) return;
@@ -264,21 +330,35 @@ export default function AdminDataAssistant() {
     }
 
     try {
-      const { answer, mode } = await analysisChat(
+      const result = await analysisChat(
         {
           question: text,
           user_id: userId || undefined,
           context_meta: pageProjectCode
             ? { project_code: pageProjectCode, scene: 'admin' }
             : undefined,
+          conversation_id: conversationId ?? undefined,
         },
         controller.signal,
       );
       if (controller.signal.aborted) return;
+
+      // 更新会话ID（clarify 时后端返回新 ID，后续轮次带上）
+      if (result.conversation_id) {
+        setConversationId(result.conversation_id);
+      }
+
       setMessages((prev) => prev.map((m) =>
-        m.id === thinkingId ? { id: m.id, role: 'assistant' as const, content: answer, mode: mode as 'chat' | 'analysis' } : m));
+        m.id === thinkingId ? {
+          id: m.id,
+          role: 'assistant' as const,
+          content: result.answer,
+          mode: result.mode,
+          plan: result.plan ?? null,
+          suggestions: result.suggestions,
+        } : m));
       if (cid !== null) {
-        try { await appendMessage(cid, 'assistant', answer, JSON.stringify({ mode })); } catch { /* 落库失败不阻断问答 */ }
+        try { await appendMessage(cid, 'assistant', result.answer, JSON.stringify({ mode: result.mode })); } catch { /* 落库失败不阻断问答 */ }
       }
       if (isNewConv) void refreshList();
     } catch (err) {
@@ -394,6 +474,15 @@ export default function AdminDataAssistant() {
             <button
               type="button"
               className="ada-head__act"
+              title="清空对话"
+              aria-label="清空对话"
+              onClick={resetConversation}
+            >
+              <RotateCcw size={16} strokeWidth={2} />
+            </button>
+            <button
+              type="button"
+              className="ada-head__act"
               title="关闭"
               aria-label="关闭"
               onClick={() => setOpen(false)}
@@ -463,10 +552,55 @@ export default function AdminDataAssistant() {
                     <div className="chat-bubble__text">{m.content}</div>
                   ) : (
                     <>
-                      {m.mode === 'analysis' && (
+                      {/* 分析口径回显：analysis 模式且 plan 有值时显示 */}
+                      {m.mode === 'analysis' && m.plan && m.plan.metric_keys.length > 0 && (
+                        <div className="ada-plan-badge">
+                          <div className="ada-plan-badge__row">
+                            <Hash size={12} strokeWidth={2} />
+                            <span>{m.plan.metric_keys.map(metricLabel).join(' · ')}</span>
+                          </div>
+                          <div className="ada-plan-badge__row">
+                            <Calendar size={12} strokeWidth={2} />
+                            <span>{m.plan.time_range.label || TIME_RANGE_LABELS[m.plan.time_range.type] || '全部时间'}</span>
+                          </div>
+                          <div className="ada-plan-badge__row">
+                            <Target size={12} strokeWidth={2} />
+                            <span>
+                              {m.plan.scope.type === 'global' ? '全局范围' :
+                               m.plan.scope.type === 'single_project' ? (m.plan.scope.project_name || m.plan.scope.project_code || '指定项目') :
+                               '用户关联项目'}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {/* 分析模式兜底标签：无 plan 时（如 data 场景）也给出模式提示 */}
+                      {m.mode === 'analysis' && !(m.plan && m.plan.metric_keys.length > 0) && (
                         <div className="ada-bubble__tag">📊 数据分析</div>
                       )}
                       <MarkdownRenderer content={m.content} compact />
+                      {/* clarify 候选按钮：clarify 模式且有 suggestions 时显示 */}
+                      {m.mode === 'clarify' && m.suggestions && m.suggestions.length > 0 && (
+                        <div className="ada-clarify">
+                          <div className="ada-clarify__hint">
+                            {m.plan?.missing_fields?.includes('time_range') ? '请选择时间范围' :
+                             m.plan?.missing_fields?.includes('project_code') ? '请选择项目范围' :
+                             '请补充以下信息'}
+                          </div>
+                          <div className="ada-clarify__chips">
+                            {m.suggestions.map((s) => (
+                              <button
+                                key={s}
+                                type="button"
+                                className="ada-clarify__chip"
+                                onClick={() => void ask(s)}
+                              >
+                                <Sparkles size={11} strokeWidth={2} />
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

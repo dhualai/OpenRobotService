@@ -38,9 +38,7 @@ def _eng(eid: str, name: str) -> EngineerProfile:
 
 def _cfg():
     return SimpleNamespace(
-        ranker_weights={"llm_match": 0.70, "semantic_match": 0.15, "history_match": 0.15},
         job_level_penalty={1: 1.0, 2: 0.90, 3: 0.90, 99: 0.90},
-        contact_bonus=1.0,
         preferred_floor=0.9,
         llm_decision_topk=0,
     )

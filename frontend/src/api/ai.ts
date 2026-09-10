@@ -32,6 +32,9 @@ export const trackSession = (sessionId: string): void => {
 
 /** 带 token 的 fetch 封装（用于 SSE 流式请求） */
 export const fetchWithAuth = async (url: string, init: RequestInit = {}) => {
+  // 主动预刷新：AI 接口此前是 401 的高发面（token 30 分钟到期），
+  // 发请求前先按 TOKEN_EXPIRES_AT 预判并换新，从源头消掉这批 401。
+  await useAuthStore.getState().ensureFreshToken();
   const doFetch = (tok: string | null) => fetch(url, {
     ...init,
     headers: {
@@ -397,6 +400,8 @@ export const qaUploadStream = async (
     return true;
   };
 
+  // 预刷新后再建流：上传 SSE 的 401 必须在流开启前挡掉（流一旦开始无法再改状态码）
+  await useAuthStore.getState().ensureFreshToken();
   let ok = await doStream(useAuthStore.getState().token);
   if (!ok) {
     const refreshed = await useAuthStore.getState().refreshAuthToken();

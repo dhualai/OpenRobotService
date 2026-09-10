@@ -1,7 +1,7 @@
 """Step1 部门主判 / 审查：工单字段同一套；部门画像只认库、yaml 不补漏。"""
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.dept_audit_signal import DeptAuditSignal
 from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.dept_ticket_prompt import ticket_fields_block
@@ -120,6 +120,62 @@ def test_departments_db_only_not_merged_with_yaml():
     assert names == {"仅库里有的部"}
     assert "机器人事业部" not in names
     assert cfg.dept_profiles_missing is False
+
+
+def test_audit_redo_same_dept_respects_thresholds():
+    """异常流程：审查打回后仍是原部门，低置信不能无条件 hard_filter。"""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from ai.agents.AiDiagnosisPlatform.assigner.filtering.dept_router import DeptRouter
+    from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.dept_audit_signal import (
+        DeptAuditResult,
+    )
+    from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile
+
+    cfg = SimpleNamespace(
+        departments=[{"name": "智能规划研究院"}],
+        departments_without_profile=[],
+        dept_profiles_missing=False,
+        dept_audit_enabled=True,
+        department_routing={
+            "thresholds": {
+                "hard_filter_score": 0.80,
+                "hard_filter_margin": 0.10,
+                "soft_prior_score": 0.55,
+            },
+            "fusion": {"history_bonus": 0.05, "history_confirm_threshold": 0.5},
+            "audit": {"min_confidence": 0.6},
+        },
+    )
+    router = DeptRouter(config=cfg)
+    router._llm.classify = AsyncMock(return_value={"智能规划研究院": 0.62})
+    router._history.aggregate = AsyncMock(return_value={})
+    router._audit.audit = AsyncMock(return_value=DeptAuditResult(
+        ok=False, correct_dept="", confidence=0.4, reason="不太确定",
+    ))
+    engs = [EngineerProfile(id="u-a", name="甲", department="智能规划研究院")]
+    _cands, result = asyncio.run(router.route(_ticket(), engs))
+    assert result.mode == "soft_prior"
+    assert result.signals.get("audit_redone") is True
+
+
+def test_reload_config_clears_history_sync():
+    """正常流程：热更新同时清 history_sync 与人员画像缓存。"""
+    from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow import DispatchFlow
+
+    flow = DispatchFlow.__new__(DispatchFlow)
+    flow._config = MagicMock()
+    with patch.object(flow._config, "reload"), patch(
+        "ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow.invalidate_expertise_cache"
+    ), patch(
+        "ai.agents.AiDiagnosisPlatform.assigner.sync.history_sync.invalidate_cache"
+    ) as hs, patch(
+        "ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync.invalidate_cache"
+    ) as pers:
+        flow.reload_config()
+    hs.assert_called_once()
+    pers.assert_called_once()
 
 
 def test_no_dept_profile_tip():

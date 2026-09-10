@@ -207,11 +207,20 @@ class DeptRouter:
                         result.mode = self._decide_mode(p2, s2, m2)
                         result.signals["audit_redone"] = True
                     else:
-                        # 重判后仍回到原部门：确保至少落到一个部门（单一归属）
-                        logger.info(
-                            f"{ltag} 部门审查打回重判后仍为 {primary} → 确定为该部门"
+                        # 重判后仍回到原部门：按分数重新定 mode，不要无条件 hard_filter
+                        if p2:
+                            primary, score, margin = p2, s2, m2
+                            result.primary_dept = primary
+                            result.confidence = score
+                            result.margin = margin
+                        result.mode = self._decide_mode(
+                            result.primary_dept, result.confidence, result.margin,
                         )
-                        result.mode = "hard_filter"
+                        result.signals["audit_redone"] = True
+                        logger.info(
+                            f"{ltag} 部门审查打回重判后仍为 {result.primary_dept} "
+                            f"→ mode={result.mode}"
+                        )
                 except Exception as e:
                     logger.warning(f"{ltag} 部门审查打回重判失败: {e}")
                     if result.mode == "hard_filter":

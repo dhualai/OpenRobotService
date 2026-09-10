@@ -50,6 +50,11 @@ class TicketUpdate(BaseModel):
     curr_step_endtime: Optional[datetime] = Field(None, description="当前阶段截止时间（更新时同步 deadline_at，对用户不可见）")
     # 用于操作日志识别，不入库
     operation_type: Optional[str] = Field(None, description="操作类型：escalate/return/reassign/update")
+    reassign_kind: Optional[str] = Field(
+        None,
+        description="转派类型：misassign=派错了 / stage=阶段转派 / other=其它。仅 misassign 进入派单学习",
+    )
+    reassign_reason: Optional[str] = Field(None, description="转派原因（选填；有则落日志，并再写一条评论给人看）")
 
 
 class TicketCommentBase(BaseModel):
@@ -126,7 +131,7 @@ class RedispatchResult(BaseModel):
     matched_pref: Optional[bool] = Field(None, description="是否派到意向人")
     name_collision: Optional[bool] = Field(None, description="是否同名命中（同名提醒）")
     pinyin_match: Optional[bool] = Field(None, description="是否拼音近似名命中（近似名提醒）")
-    tip_detail: Optional[str] = Field(None, description="未派到指定人时的完整情商话术（含换人理由与重新派单引导，仅 matched_pref=false 有）")
+    tip_detail: Optional[str] = Field(None, description="派单说明（列表/气泡/详情同一出口：未派到倾向人为详情模板；Step0 为短句）")
 
 
 class TicketRedispatch(BaseModel):

@@ -8,6 +8,8 @@ TAG_CREATOR = "提单人"
 TAG_CONTACT = "项目对接人"
 TAG_PREFERRED = "倾向接单人"
 TAG_PREV_UNSATISFIED = "原用户不满意的接单人"
+TAG_MISASSIGN_CONFIRMED = "转派纠正"
+TAG_MISASSIGN_REJECTED = "曾错派"
 
 
 def llm_person_label(
@@ -90,19 +92,19 @@ def recall_source_label(d: Optional[Dict[str, Any]]) -> str:
 
     hits = []
     if _hit("hit_llm", "llm_score"):
-        hits.append("LLM")
+        hits.append("画像")
     if _hit("hit_similar", "similar_score") or _hit("hit_similar", "history_score"):
         hits.append("相似工单")
     if _hit("hit_cluster", "cluster_score"):
-        hits.append("问题域")
+        hits.append("问题簇")
     src = "+".join(hits) if hits else "未命中召回"
     miss = []
-    if "LLM" not in hits:
-        miss.append("LLM未召回")
+    if "画像" not in hits:
+        miss.append("画像未召回")
     if "相似工单" not in hits:
         miss.append("相似未命中")
-    if "问题域" not in hits:
-        miss.append("问题域未命中")
+    if "问题簇" not in hits:
+        miss.append("问题簇未命中")
     extra = "；不在部门/产品收紧名单，由历史捞回" if d.get("outside_tighten") else ""
     tail = ("；" + "、".join(miss)) if hits else ""
     return f"来源: {src}{extra}{tail}"
@@ -121,6 +123,10 @@ def score_tag_labels(d: Optional[Dict[str, Any]]) -> List[str]:
         tags.append(TAG_PREV_UNSATISFIED)
     if d.get("preferred_assignee"):
         tags.append(TAG_PREFERRED)
+    if d.get("misassign_confirmed"):
+        tags.append(TAG_MISASSIGN_CONFIRMED)
+    if d.get("misassign_rejected"):
+        tags.append(TAG_MISASSIGN_REJECTED)
     return tags
 
 

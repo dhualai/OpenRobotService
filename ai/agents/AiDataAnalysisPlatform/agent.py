@@ -9,20 +9,25 @@ from __future__ import annotations
 import json
 import re
 from typing import AsyncIterator
+from uuid import uuid4
 
 from .analyzer import DataAnalyzer
 from .config import AnalysisConfig
 from .llm_client import LLMClient
 from .logging_config import get_logger
+from .metric_planner import AnalysisPlanner, PlanConversationCache
+from .metric_registry import TimeRangeType, resolve_time_range
 from .prompts import build_chat_prompt, build_system_prompt
-from .report_generator import ReportGenerator, _parse_date
+from .report_generator import ReportGenerator, ReportDataCollector
 from .report_schemas import ReportPeriod
 from .schemas import (
+    AnalysisPlan,
     AnalysisResult,
     AnalysisType,
     ChatResponse,
     DataSource,
     HealthResponse,
+    ScopeSpec,
 )
 
 logger = get_logger("Agent")
@@ -46,6 +51,12 @@ _ANALYSIS_ACTION_KEYWORDS = (
     "同比",
     "环比",
     "top",
+    "新增",
+    "新建",
+    "数量",
+    "多少",
+    "几个",
+    "怎么样",
 )
 
 _ANALYSIS_SUBJECT_KEYWORDS = (
@@ -68,6 +79,7 @@ _ANALYSIS_STRONG_PATTERNS = (
     r"(风险和工单|工单情况|风险情况|项目情况|任务情况)",
     r"(日报|周报|月报)",
     r"(成功率|完成率|解决率|逾期率|风险分布|工单分布|趋势)",
+    r"(新增|新建|逾期|解决率|完成率|等级分布|状态分布|类型分布|优先级分布)",
 )
 
 # LLM 兜底意图判定的系统提示词：要求只输出一个词，便于低成本解析
@@ -100,6 +112,10 @@ class DataAnalysisAgent:
         self._config = config
         self._llm = LLMClient(config)
         self._analyzer = DataAnalyzer(self._llm)
+        # 指标意图解析器（阶段 2：问题 → AnalysisPlan）
+        self._planner = AnalysisPlanner(self._llm)
+        # 澄清会话的 plan 缓存（多轮补充）
+        self._plan_cache = PlanConversationCache()
 
     # ── 工厂方法 ────────────────────────────────────────────
 
@@ -182,6 +198,7 @@ class DataAnalysisAgent:
         user_id: str | None = None,
         period: ReportPeriod = ReportPeriod.DAILY,
         date: str | None = None,
+        conversation_id: str | None = None,
     ) -> ChatResponse:
         """快速对话问答。
 
@@ -193,11 +210,12 @@ class DataAnalysisAgent:
             analysis_type: 分析类型。
             project_code: 项目代码；未传 data 时可自动按项目查库。
             user_id: 用户ID或用户名；未传 data 且未传 project_code 时可按用户查库。
-            period: 自动查库时的数据周期。
-            date: 自动查库时的目标日期 YYYY-MM-DD。
+            period: 自动查库时的数据周期（向后兼容保留，指标对话流程由 plan 决定时间范围）。
+            date: 自动查库时的目标日期 YYYY-MM-DD（向后兼容保留）。
+            conversation_id: 对话会话ID；澄清多轮时关联上一轮解析结果。
 
         Returns:
-            对话响应。
+            对话响应（chat / analysis / clarify 三种模式）。
         """
         has_data = data is not None and bool(data.strip())
         has_scope = bool(project_code or user_id)
@@ -205,7 +223,10 @@ class DataAnalysisAgent:
         intent = self._classify_question_intent(question, context)
         if intent == "unknown":
             intent = await self._classify_intent_with_llm(question, context)
+        # 澄清会话进行中：缓存里有待补充的 plan 时优先进入指标流程
+        pending_plan = self._plan_cache.get(conversation_id)
 
+        # 1) 用户提供了数据 → 保持原有分析问答
         if has_data:
             result = await self._analyzer.analyze(
                 data=data,
@@ -222,59 +243,181 @@ class DataAnalysisAgent:
                 analysis=result,
             )
 
-        if has_scope and intent == "analysis":
-            # 从问题中解析时间范围（覆盖默认的 today+DAILY）
-            resolved_period, resolved_date = self._extract_time_scope(question, period, date)
-            # 项目优先级：问题实体提取 > 页面上下文 project_code > 用户关联全部项目
-            resolved_project = project_code
-            if not resolved_project:
-                project_hint = self._extract_project_hint(question)
-                if project_hint:
-                    resolved_project = ReportGenerator.lookup_project_by_hint(project_hint)
-
-            generator = ReportGenerator(self._llm)
-            target_date = _parse_date(resolved_date)
-            collected = generator.collect_data(
-                period=resolved_period,
-                target_date=target_date,
-                project_code=resolved_project,
-                user_id=user_id,
-            )
-            collected_data = json.dumps(
-                collected.model_dump(by_alias=True),
-                ensure_ascii=False,
-                indent=2,
-                default=str,
-            )
-            collected_context = (
-                f"数据来源：OpenRobotService MySQL 实时采集；"
-                f"统计周期：{resolved_period.value}；"
-                f"统计范围：{collected.date_range}。"
-            )
-            merged_context = (
-                f"{context}\n\n{collected_context}" if context else collected_context
-            )
-            result = await self._analyzer.analyze(
-                data=collected_data,
-                data_source=DataSource.JSON,
-                analysis_type=analysis_type,
+        # 2) 数据分析意图（或显式范围 / 澄清会话中）→ 指标对话流程
+        if intent == "analysis" or has_scope or pending_plan is not None:
+            # 首次进入无会话ID时自动生成，clarify 响应回传供客户端后续轮次关联
+            conversation_id = conversation_id or uuid4().hex
+            return await self._chat_metric_flow(
                 question=question,
-                context=merged_context,
+                context=context,
+                project_code=project_code,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+
+        # 3) 普通聊天
+        return await self._chat_reply(question, context)
+
+    # ── 指标对话主流程（阶段 2）─────────────────────────────
+
+    async def _chat_metric_flow(
+        self,
+        question: str,
+        context: str | None,
+        project_code: str | None,
+        user_id: str | None,
+        conversation_id: str | None,
+    ) -> ChatResponse:
+        """指标对话主流程：问题 → plan → 澄清/采集 → 分析 → 回答。"""
+        previous_plan = self._plan_cache.get(conversation_id)
+        plan = await self._planner.parse(question, context, previous_plan)
+
+        # 显式参数覆盖/兜底 plan 的范围
+        if project_code:
+            plan.scope = ScopeSpec(type="single_project", project_code=project_code)
+        elif user_id:
+            plan.scope = ScopeSpec(type="user_projects", user_id=user_id)
+        elif plan.scope.type == "single_project" and plan.scope.project_name:
+            # 用户提到了项目名但未映射出代码 → 查库映射
+            code = self._resolve_project_code_by_name(plan.scope.project_name)
+            if code:
+                plan.scope.project_code = code
+        elif plan.scope.type == "global":
+            # 快路径不解析项目名：问题中出现"XX项目"等实体时查库映射补全范围
+            hint = self._extract_project_hint(question)
+            if hint:
+                code = ReportGenerator.lookup_project_by_hint(hint)
+                if code:
+                    plan.scope = ScopeSpec(type="single_project", project_code=code)
+
+        missing = self._planner.missing_fields(plan)
+        plan.missing_fields = missing
+
+        # 无法解析出指标且无显式范围 → 回落普通聊天
+        if not plan.metric_keys and plan.scope.type == "global":
+            return await self._chat_reply(question, context)
+
+        if missing:
+            # 缓存 plan，等用户下一轮补充
+            self._plan_cache.put(conversation_id, plan)
+            clarify_text, suggestions = self._planner.build_clarify_questions(
+                plan, missing
             )
             return ChatResponse(
-                answer=result.raw_response or result.summary,
-                mode="analysis",
-                model=result.model,
-                usage=result.usage,
-                analysis=result,
+                answer=clarify_text,
+                mode="clarify",
+                model=self._llm.model_name,
+                plan=plan,
+                suggestions=suggestions,
+                conversation_id=conversation_id,
             )
 
-        if intent == "analysis":
-            raise ValueError(
-                "识别到数据分析意图，但缺少 data 或 project_code/user_id。"
-                "请补充分析数据，或传 project_code/user_id 让后端自动查库。"
+        # plan 完整 → 按指标采集并分析
+        try:
+            result = await self._analyze_by_plan(plan, question, context)
+        except Exception:
+            logger.exception("按计划分析失败")
+            raise
+
+        self._plan_cache.delete(conversation_id)
+        return ChatResponse(
+            answer=result.raw_response or result.summary,
+            mode="analysis",
+            model=result.model,
+            usage=result.usage,
+            analysis=result,
+            plan=plan,
+            conversation_id=conversation_id,
+        )
+
+    async def _analyze_by_plan(
+        self, plan: AnalysisPlan, question: str, context: str | None
+    ) -> AnalysisResult:
+        """按 AnalysisPlan 采集数据并调用分析引擎。"""
+        tr = plan.time_range
+        range_type = (
+            TimeRangeType(tr.type)
+            if tr.type in [t.value for t in TimeRangeType]
+            else TimeRangeType.RECENT_DAYS
+        )
+        try:
+            start, end, label = resolve_time_range(
+                range_type,
+                days=tr.days or 7,
+                start_str=tr.start,
+                end_str=tr.end,
+            )
+        except ValueError:
+            start, end, label = resolve_time_range(
+                TimeRangeType.RECENT_DAYS, days=7
             )
 
+        collector = ReportDataCollector(
+            project_ids=self._resolve_plan_project_ids(plan)
+        )
+        collected = collector.collect_by_plan(
+            plan.metric_keys, start, end, label
+        )
+        collected_data = json.dumps(
+            collected, ensure_ascii=False, indent=2, default=str
+        )
+        collected_context = (
+            f"数据来源：OpenRobotService MySQL 实时采集；"
+            f"统计周期：{label}；"
+            f"统计范围：{plan.scope.type}。"
+        )
+        merged_context = (
+            f"{context}\n\n{collected_context}" if context else collected_context
+        )
+
+        return await self._analyzer.analyze(
+            data=collected_data,
+            data_source=DataSource.JSON,
+            analysis_type=AnalysisType.CUSTOM,
+            question=question,
+            context=merged_context,
+        )
+
+    @staticmethod
+    def _resolve_plan_project_ids(plan: AnalysisPlan) -> list[str] | None:
+        """将 plan 的范围解析为项目过滤列表。
+
+        - single_project → 该项目代码
+        - user_projects → 用户关联的全部项目（无项目时用占位符防越权）
+        - global → None（不过滤）
+        """
+        if plan.scope.type == "single_project" and plan.scope.project_code:
+            return [plan.scope.project_code]
+        if plan.scope.type == "user_projects" and plan.scope.user_id:
+            project_ids = ReportGenerator._resolve_project_ids_by_user(
+                plan.scope.user_id
+            )
+            return project_ids or ["__no_project__"]
+        return None
+
+    @staticmethod
+    def _resolve_project_code_by_name(name: str) -> str | None:
+        """按项目名称模糊匹配项目代码。"""
+        from ai.core.database import ProjectDelivery, SessionLocal
+
+        db = SessionLocal()
+        try:
+            row = (
+                db.query(ProjectDelivery)
+                .filter(ProjectDelivery.name.like(f"%{name}%"))
+                .first()
+            )
+            return row.id if row else None
+        except Exception as exc:
+            logger.warning("项目名称→代码映射失败: %s", exc)
+            return None
+        finally:
+            db.close()
+
+    async def _chat_reply(
+        self, question: str, context: str | None
+    ) -> ChatResponse:
+        """普通聊天回复。"""
         system_prompt = build_system_prompt(AnalysisType.CUSTOM)
         user_prompt = build_chat_prompt(question, context)
 
@@ -289,11 +432,12 @@ class DataAnalysisAgent:
 
     @staticmethod
     def _classify_question_intent(question: str, context: str | None = None) -> str:
-        """基于关键词快筛意图，返回三态：chat / analysis / unknown。
+        """基于问题文本快速识别意图（混合判定第一步：关键词快筛）。
 
-        - 命中礼貌用语 → "chat"（明确闲聊，无需 LLM 判定）
-        - 命中分析动作词+主体词组合 → "analysis"（明确分析，无需 LLM 判定）
-        - 其余 → "unknown"，交由 :meth:`_classify_intent_with_llm` 用 LLM 兜底判定
+        返回三态：
+        - "chat"：明确的礼貌用语/闲聊
+        - "analysis"：明确的指标分析意图
+        - "unknown"：关键词无法判定，交由 :meth:`_classify_intent_with_llm` LLM 兜底
         """
         text = "\n".join(part.strip() for part in [question, context or ""] if part).lower()
         if not text:
@@ -340,43 +484,6 @@ class DataAnalysisAgent:
         if m:
             return m.group(1).strip()
         return None
-
-    @staticmethod
-    def _extract_time_scope(
-        question: str,
-        default_period: ReportPeriod,
-        default_date: str | None,
-    ) -> tuple[ReportPeriod, str | None]:
-        """从问题中解析时间表述，返回 (period, date_str)。
-
-        仅在问题中有明确时间词时才覆盖默认值；
-        否则返回原始 (default_period, default_date)。
-        """
-        from datetime import date as _dt_date, timedelta as _td
-
-        today = _dt_date.today()
-        text = question.lower()
-
-        # 本周 / 这周
-        if re.search(r'(?:本周|这周|这礼拜)', text):
-            return ReportPeriod.WEEKLY, today.isoformat()
-        # 上周
-        if re.search(r'上周', text):
-            last_monday = today - _td(days=today.weekday() + 7)
-            return ReportPeriod.WEEKLY, last_monday.isoformat()
-        # 今天
-        if re.search(r'今天', text):
-            return ReportPeriod.DAILY, today.isoformat()
-        # 昨天
-        if re.search(r'昨天', text):
-            yesterday = today - _td(days=1)
-            return ReportPeriod.DAILY, yesterday.isoformat()
-        # 前天
-        if re.search(r'前天', text):
-            two_days_ago = today - _td(days=2)
-            return ReportPeriod.DAILY, two_days_ago.isoformat()
-
-        return default_period, default_date
 
     async def _classify_intent_with_llm(self, question: str, context: str | None = None) -> str:
         """LLM 兜底意图判定：关键词快筛无法判定时调用。

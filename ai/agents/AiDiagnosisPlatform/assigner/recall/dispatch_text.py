@@ -25,11 +25,22 @@ def build_dispatch_ticket_text(
     description: Optional[str] = None,
     robot_type: Optional[str] = None,
     fault_code: Optional[str] = None,
+    skip_empty: bool = False,
 ) -> str:
-    """拼成固定四栏，供 embed。"""
-    return "\n".join([
+    """拼成固定四栏，供 embed。
+
+    skip_empty=True 时不写空的车型/故障码栏（B 路用）。缺栏一律写「无」会让
+    无关工单共享「车型：无 / 故障码：无」，把余弦抬高、簇糊成一团。
+    A 路入库/检索保持 skip_empty=False，与已有 Qdrant 向量对齐。
+    """
+    lines = [
         f"标题：{_slot(title)}",
         f"描述：{_slot(description, limit=_DESC_MAX)}",
-        f"车型：{_slot(robot_type)}",
-        f"故障码：{_slot(fault_code)}",
-    ])
+    ]
+    robot = (robot_type or "").strip()
+    fault = (fault_code or "").strip()
+    if robot or not skip_empty:
+        lines.append(f"车型：{_slot(robot_type)}")
+    if fault or not skip_empty:
+        lines.append(f"故障码：{_slot(fault_code)}")
+    return "\n".join(lines)
