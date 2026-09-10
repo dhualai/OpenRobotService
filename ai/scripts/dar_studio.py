@@ -777,6 +777,7 @@ def progress(env: str = "prod"):
     return {"env": env, "steps": {
         "export": _mtime_str(os.path.join(proc, "conversations_split.jsonl")),
         "l1": latest("direct_answer_summary_*.json"),
+        "tool0": latest("segmentation_tool.html"),
         "l3": latest("segmentation_tool.html") or latest("l3_judge_all_*.json"),
         "label": _mtime_str(os.path.join(os.path.expanduser("~"), "Downloads", manual)),
         "report": latest("weekly_*.json"),

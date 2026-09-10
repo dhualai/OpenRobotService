@@ -5,20 +5,20 @@
 <title>话题切分审核</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font: 13px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; background: #f0f2f5; color: #222; }
-  header { position: fixed; top: 0; left: 0; right: 0; height: 52px; background: #fff;
+  body { font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; background: #f0f2f5; color: #222; }
+  header { position: fixed; top: 0; left: 0; right: 0; height: 56px; background: #fff;
            border-bottom: 1px solid #d9dce1; display: flex; align-items: center; gap: 10px;
            padding: 0 14px; z-index: 10; }
-  header .info { font-weight: 600; }
-  header .meta { color: #666; font-size: 12px; }
-  header .progress { margin-left: auto; font-size: 12px; color: #0a7; font-weight: 600; }
+  header .info { font-weight: 600; font-size: 15px; }
+  header .meta { color: #666; font-size: 13px; }
+  header .progress { margin-left: auto; font-size: 13px; color: #0a7; font-weight: 600; }
   button { border: 1px solid #c5cad1; background: #fff; border-radius: 6px; padding: 5px 12px;
-           cursor: pointer; font-size: 13px; }
+           cursor: pointer; font-size: 14px; }
   button:hover { background: #f5f7fa; }
   button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
   button.primary:hover { background: #1d4ed8; }
   button:disabled { opacity: .4; cursor: default; }
-  #wrap { display: flex; margin-top: 52px; height: calc(100vh - 52px); }
+  #wrap { display: flex; margin-top: 56px; height: calc(100vh - 56px); }
   #side { width: 300px; background: #fff; border-right: 1px solid #d9dce1; overflow-y: auto;
           padding: 8px; }
   #side .filters { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -28,34 +28,32 @@
                margin-bottom: 3px; }
   .conv-item:hover { background: #f1f5f9; }
   .conv-item.cur { background: #e0ecff; border-color: #93c5fd; }
-  .conv-item .t { font-size: 11px; color: #888; }
+  .conv-item .t { font-size: 12px; color: #888; }
   .conv-item .who { color: #2563eb; font-weight: 600; margin-left: 2px; }
-  .conv-item .done { color: #0a7; font-size: 11px; }
-  .conv-item .ntop { float: right; font-size: 11px; color: #b45309; }
+  .conv-item .done { color: #0a7; font-size: 12px; }
+  .conv-item .ntop { float: right; font-size: 12px; color: #b45309; }
   #flow { flex: 1; overflow-y: auto; padding: 18px 40px 120px; position: relative; }
   .seg { border-radius: 8px; margin: 14px 0; padding: 8px 12px 10px; }
-  .seg .seg-head { font-size: 12px; color: #555; margin-bottom: 6px; display: flex; gap: 14px; }
-  .seg .seg-head b { font-size: 13px; }
+  .seg .seg-head { font-size: 13px; color: #555; margin-bottom: 6px; display: flex; gap: 14px; }
+  .seg .seg-head b { font-size: 14.5px; }
   .seg .labels { display: flex; gap: 4px; flex-wrap: wrap; margin: 2px 0 6px; }
   .pre-row { background: #fffbea; border: 1px solid #fde68a; border-radius: 6px;
-             padding: 4px 10px; margin: 4px 0 6px; font-size: 12px; color: #57534e;
+             padding: 4px 10px; margin: 4px 0 6px; font-size: 13px; color: #57534e;
              display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .pre-row .tag { display: inline-block; padding: 0 7px; border-radius: 4px; color: #fff;
-                  font-size: 11px; font-weight: 600; }
+                  font-size: 12px; font-weight: 600; }
   .pre-row .rv { font-weight: 600; }
   .pre-row .why { color: #78716c; flex: 1; min-width: 200px; }
-  .pre-row button { padding: 1px 9px; font-size: 11px; }
+  .pre-row button { padding: 1px 9px; font-size: 12px; }
   .chk { background: #f8fafc; border: 1px solid #e2e5ea; border-radius: 6px;
-         padding: 4px 10px; margin: 4px 0 6px; font-size: 12px; }
-  .chk summary { cursor: pointer; color: #2563eb; font-size: 12px; user-select: none; }
+         padding: 4px 10px; margin: 4px 0 6px; font-size: 13px; }
+  .chk summary { cursor: pointer; color: #2563eb; font-size: 13px; user-select: none; }
   .chk .chk-i { padding: 4px 0 2px; border-top: 1px dashed #e2e5ea; margin-top: 4px; }
   .chk .chk-i:first-of-type { border-top: none; }
   .chk .chk-r { color: #7c3aed; font-weight: 600; }
   .chk .chk-t { color: #555; word-break: break-word; margin-top: 1px; }
-  .kbd { background: #fff; border: 1px solid #cbd5e1; border-bottom-width: 2px; border-radius: 4px;
-         padding: 0 5px; font-size: 11px; color: #334155; }
-  .lbtn { border: 1px solid #cbd5e1; background: #fff; border-radius: 4px; font-size: 11px;
-          padding: 1px 7px; cursor: pointer; color: #475569; }
+  .lbtn { border: 1px solid #cbd5e1; background: #fff; border-radius: 4px; font-size: 12.5px;
+          padding: 2px 9px; cursor: pointer; color: #475569; }
   .lbtn:hover { background: #f1f5f9; }
   .lbtn.on { background: var(--lc, #2563eb); border-color: var(--lc, #2563eb); color: #fff; }
   .seg.s0 { background: #eef4ff; }
@@ -64,15 +62,15 @@
   .seg.s3 { background: #f6eeff; }
   .round { background: #fff; border: 1px solid #e2e5ea; border-radius: 8px;
            padding: 8px 12px; margin: 8px 0; }
-  .round .rhead { display: flex; gap: 8px; font-size: 11px; color: #888; align-items: center; }
-  .badge { padding: 0 6px; border-radius: 4px; font-size: 11px; }
+  .round .rhead { display: flex; gap: 8px; font-size: 12px; color: #888; align-items: center; }
+  .badge { padding: 0 6px; border-radius: 4px; font-size: 12px; }
   .badge.q { background: #dcfce7; color: #166534; }
   .badge.nq { background: #f1f5f9; color: #64748b; }
   .badge.tk { background: #fee2e2; color: #991b1b; }
   .round .u { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
   .round details { margin-top: 4px; color: #555; }
   .round details summary { cursor: pointer; font-size: 12px; color: #2563eb; user-select: none; }
-  .round .a { margin-top: 4px; white-space: pre-wrap; word-break: break-word; font-size: 12.5px;
+  .round .a { margin-top: 4px; white-space: pre-wrap; word-break: break-word; font-size: 13.5px;
               max-height: 300px; overflow-y: auto; }
   .cut { height: 18px; margin: 6px -12px -6px; position: relative; cursor: grab; }
   .cut::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 0;
@@ -90,16 +88,55 @@
   .rgap { position: relative; height: 14px; }
   .dragging { cursor: grabbing !important; }
   .cut.ghost { opacity: .55; pointer-events: none; }
-  .hint { margin-top: 10px; }
-  .hint span { background: #fff; border: 1px solid #d9dce1; padding: 3px 10px; border-radius: 12px;
-               margin-right: 8px; font-size: 12px; color: #555; }
+  /* 使用说明卡片（替代原胶囊提示行） */
+  .help { background: #fff; border: 1px solid #d9dce1; border-radius: 10px;
+          padding: 10px 16px 12px; margin-bottom: 12px; font-size: 13.5px; color: #444; }
+  .help summary { cursor: pointer; font-weight: 700; user-select: none; font-size: 14px; }
+  .help .h-grid > div { margin-top: 7px; line-height: 1.8; }
+  .help b { display: inline-block; min-width: 62px; color: #1f2937; font-weight: 700; }
+  .help .lb { display: inline-block; padding: 1px 9px; border-radius: 4px; color: #fff;
+              font-size: 12.5px; font-weight: 600; margin-right: 8px; }
+  .help .lb-row { margin-top: 4px; padding-left: 62px; font-size: 12.5px; color: #555; }
+  /* 双模式：bounds=切题轮（只定边界，蓝）｜label=标注轮（打标签，绿）——
+     头部主题色/页面底色/徽标整体区分，一眼可辨 */
+  #h-mode { display: none; padding: 3px 14px; border-radius: 999px; font-size: 13.5px;
+            font-weight: 700; white-space: nowrap; }
+  body.bounds #h-mode { display: inline-block; background: #2563eb; color: #fff; }
+  body.label #h-mode { display: inline-block; background: #16a34a; color: #fff; }
+  body.bounds { background: #e6edff; }
+  body.label { background: #ecf9f0; }
+  body.bounds header { background: #dbeafe; border-bottom: 2px solid #2563eb; }
+  body.label header { background: #dcfce7; border-bottom: 2px solid #16a34a; }
+  body.bounds .cut::before { border-top-width: 3.5px; }
+  body.bounds .cut { height: 28px; }   /* 切题轮加大拖拽热区 */
+  body.bounds .rgap { height: 20px; }
+  body.bounds .gap-add { display: block; opacity: .18; }
+  body.bounds .rgap:hover .gap-add { opacity: 1; }
+  #mode-banner { display: none; background: #dbeafe; border: 1px solid #60a5fa;
+                 color: #1e40af; border-radius: 8px; padding: 9px 15px; font-size: 14px;
+                 font-weight: 600; margin-bottom: 10px; }
+  /* 轻提示 */
+  #toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+           background: #0f172a; color: #fff; padding: 9px 18px; border-radius: 10px;
+           font-size: 13.5px; opacity: 0; pointer-events: none; transition: opacity .2s;
+           z-index: 99; }
+  #toast.show { opacity: 1; }
+  /* 会话末尾内嵌「下一个」：不用够右上角 */
+  .next-big { display: block; margin: 20px auto 6px; padding: 10px 30px; font-size: 15px;
+              font-weight: 700; background: #2563eb; border: 1px solid #2563eb; color: #fff;
+              border-radius: 10px; }
+  .next-big:hover { background: #1d4ed8; }
+  body.label .next-big { background: #16a34a; border-color: #16a34a; }
+  body.label .next-big:hover { background: #15803d; }
 </style>
 </head>
 <body>
 <header>
   <button id="btn-prev">← 上一个</button>
+  <span id="h-mode"></span>
   <div class="info" id="h-info">—</div>
   <div class="meta" id="h-meta"></div>
+  <span id="h-dirty" style="display:none;color:#b45309;font-size:13px;font-weight:600">● 有未导出修改</span>
   <div class="progress" id="h-prog">0/0</div>
   <button id="btn-export">导出 JSON</button>
   <button id="btn-skip" class="primary">保存并下一个 →</button>
@@ -117,18 +154,19 @@
     <div id="conv-list"></div>
   </div>
   <div id="flow">
-    <div class="hint">
-      <span>橙色虚线 = 话题边界（可拖动，吸附到回合间隙）</span><span>线上的 × 删除</span>
-      <span>间隙悬停出现 + 添加</span><span>段头显示 咨询数/出单数（红色=该段出了工单）</span>
-      <span>段内彩色按钮 = 该话题是否直答（L2 标注；先定边界再标注，点已选的可取消）</span>
-      <span>键盘：<span class="kbd">1</span>–<span class="kbd">6</span> 顺序标第一个未标段
-      <span class="kbd">Enter</span> 采纳其 AI 预标（预标仅供参考，勿盲从）</span>
-    </div>
+    <div id="mode-banner"></div>
+    <details id="help-card" class="help" open>
+      <summary>使用说明</summary>
+      <div class="h-grid"></div>
+    </details>
     <div id="conv-flow"></div>
   </div>
 </div>
+<div id="toast"></div>
 <script>
 const DATA = __DATA__;
+const MODE = DATA.mode || "label";
+const RK = MODE === "bounds" ? "readB" : "read";  // 切题轮/标注轮的已读标记分开，互不清空
 const LS_KEY = "seg_review_v1";
 // L2 标签（与 docs/直答率统计口径.md 对齐）：
 // 分子=直答正确；分母=+未直答；未覆盖/无法判定单列不摊入；
@@ -141,17 +179,65 @@ const LABELS = [
 const LEGACY_LABEL = {  // 旧标签名迁移（六类旧体系）
   "直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单",
 };
+// 标签定义（帮助卡片展示；与 docs/直答率统计口径.md 口径一致，抽象表述不带示例）
+const LABEL_DEF = {
+  "直答正确": "问题被正面回答并解决，段末也没提工单",
+  "未直答": "有回答但没解决问题（答非所问、半答、追问多次仍未解决）",
+  "未覆盖": "知识库没有相关内容，助手给不出有用答案",
+  "建议转单": "助手口头建议提工单，用户没提",
+  "直接提单": "用户来意就是为产品问题/需求提单（写成疑问句也算）",
+  "无法判定": "从这段对话判断不出来",
+};
 const store = JSON.parse(localStorage.getItem(LS_KEY) || '{"bounds":{},"read":{}}');
 store.labels = store.labels || {};  // {convId: {段首回合索引: 标签名}}
+store[RK] = store[RK] || {};
 // 旧标签名迁移到现行体系
 for (const k in store.labels) for (const s in store.labels[k])
   if (LEGACY_LABEL[store.labels[k][s]]) store.labels[k][s] = LEGACY_LABEL[store.labels[k][s]];
 const SEGC = ["s0", "s1", "s2", "s3"];
 const state = { fStatus: "unread", fGroup: "real", cur: null };
 
-function persist() { localStorage.setItem(LS_KEY, JSON.stringify(store)); }
+/* 轻提示 */
+let toastTimer = null;
+function toast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>t.classList.remove("show"), 2600);
+}
+
+/* 未导出修改保护：任何改动置位，导出清零；关页时提醒 */
+let dirty = false;
+function updateDirty(){
+  document.getElementById("h-dirty").style.display = dirty ? "" : "none";
+}
+window.addEventListener("beforeunload", e => {
+  if (dirty) { e.preventDefault(); e.returnValue = ""; }
+});
+
+/* 撤销（当前会话的边界/标签，最近 60 步） */
+const undoStack = [];
+function snapshotOf(c){
+  if (!c) return;
+  if (undoStack.length > 60) undoStack.shift();
+  undoStack.push(JSON.stringify({id: String(c.conversation_id),
+                                 b: [...c._bounds], l: {...labelsOf(c)}}));
+}
+function undo(){
+  const s = undoStack.pop();
+  if (!s || !state.cur) return;
+  const o = JSON.parse(s);
+  if (o.id !== String(state.cur.conversation_id)) { toast("只能撤销当前会话内的操作"); return; }
+  state.cur._bounds = new Set(o.b);
+  store.labels[o.id] = o.l;
+  persist(); renderFlow(); renderList();
+  toast("已撤销");
+}
+
+function persist() { localStorage.setItem(LS_KEY, JSON.stringify(store)); dirty = true; updateDirty(); }
 function labelsOf(c) { return store.labels[String(c.conversation_id)] || {}; }
 function setLabel(c, start, name) {
+  snapshotOf(c);
   const key = String(c.conversation_id);
   store.labels[key] = store.labels[key] || {};
   if (store.labels[key][start] === name) delete store.labels[key][start];
@@ -186,7 +272,7 @@ function visible() {
   return DATA.convs.filter(c => {
     if (state.fGroup === "real" && c.tester) return false;
     if (state.fGroup === "test" && !c.tester) return false;
-    const read = !!store.read[String(c.conversation_id)];
+    const read = !!store[RK][String(c.conversation_id)];
     if (state.fStatus === "unread" && read) return false;
     if (state.fStatus === "read" && !read) return false;
     return true;
@@ -197,12 +283,20 @@ function renderList() {
   const list = document.getElementById("conv-list");
   const vis = visible();
   list.innerHTML = "";
+  if (!vis.length) {
+    list.innerHTML = DATA.convs.length
+      ? '<div style="padding:16px 10px;color:#15803d;font-weight:700;font-size:14px">全部会话已过完 ✓<br><br>'
+        + '<span style="color:#555;font-weight:400;font-size:12.5px">别忘了点右上「'
+        + (MODE === "bounds" ? "导出切分结果" : "导出 JSON")
+        + '」存到 Downloads 目录</span></div>' : "";
+    return;
+  }
   vis.forEach(c => {
     const d = document.createElement("div");
     d.className = "conv-item" + (state.cur === c ? " cur" : "");
-    const read = store.read[String(c.conversation_id)];
+    const read = store[RK][String(c.conversation_id)];
     const nt = boundsOf(c).size;
-    const nl = Object.keys(labelsOf(c)).length;
+    const nl = MODE === "bounds" ? 0 : Object.keys(labelsOf(c)).length;
     d.innerHTML = `<div>${fmtT(c.created_at)} ${c.tester ? "测" : "真"}
       ${c.name ? `<span class="who">${c.name}</span>` : ""}
       <span class="ntop">${nt}话题${nl ? ` 标${nl}` : ""}</span></div>
@@ -224,8 +318,9 @@ function openConv(c) {
 }
 
 function renderProg() {
-  const n = Object.keys(store.read).length;
-  document.getElementById("h-prog").textContent = `已审 ${n}/${DATA.convs.length}`;
+  const n = Object.keys(store[RK]).length;
+  document.getElementById("h-prog").textContent =
+    `${MODE === "bounds" ? "已切" : "已审"} ${n}/${DATA.convs.length}`;
 }
 
 const RV_TXT = { yes: "检索:有答案", partial: "检索:部分相关", no: "检索:无关", error: "检索:异常" };
@@ -297,24 +392,28 @@ function renderFlow() {
         ? `<span style="color:#b91c1c">出单 ${tk.length}（${tk.map(t => "#" + t.id).join(" ")}）</span>`
         : "无单"}</span>`;
     seg.appendChild(head);
-    // AI 预标行（按 AI 段首索引锚定；边界改动后该段不显示，防错位）
-    const preRow = renderPreRow(c, st);
+    // AI 预标行（按 AI 段首索引锚定；边界改动后该段不显示，防错位）；
+    // 切题轮不显示（该轮在判定之前，预标还没跑）
+    const preRow = MODE === "bounds" ? null : renderPreRow(c, st);
     if (preRow) seg.appendChild(preRow);
-    const chkRow = renderChkRow(c, st);
+    const chkRow = MODE === "bounds" ? null : renderChkRow(c, st);
     if (chkRow) seg.appendChild(chkRow);
     // L2 标注行：是否直答（先定边界再标注——段首索引即标签键，边界改动后需重标）
-    const curLab = labelsOf(c)[st] || "";
-    const lr = document.createElement("div");
-    lr.className = "labels";
-    LABELS.forEach(([name, col]) => {
-      const b = document.createElement("button");
-      b.className = "lbtn" + (curLab === name ? " on" : "");
-      b.style.setProperty("--lc", col);
-      b.textContent = name;
-      b.onclick = () => { setLabel(c, st, name); renderFlow(); };
-      lr.appendChild(b);
-    });
-    seg.appendChild(lr);
+    // 切题轮不显示（该轮只定边界，标签在标注轮打）
+    if (MODE !== "bounds") {
+      const curLab = labelsOf(c)[st] || "";
+      const lr = document.createElement("div");
+      lr.className = "labels";
+      LABELS.forEach(([name, col]) => {
+        const b = document.createElement("button");
+        b.className = "lbtn" + (curLab === name ? " on" : "");
+        b.style.setProperty("--lc", col);
+        b.textContent = name;
+        b.onclick = () => { setLabel(c, st, name); renderFlow(); };
+        lr.appendChild(b);
+      });
+      seg.appendChild(lr);
+    }
     for (let i = st; i < en; i++) {
       const r = c.rounds[i];
       const rd = document.createElement("div");
@@ -338,13 +437,18 @@ function renderFlow() {
     host.appendChild(seg);
     if (!last) host.appendChild(makeCut(starts[si + 1]));
   });
+  const nx = document.createElement("button");
+  nx.className = "next-big";
+  nx.textContent = "保存并下一个 →";
+  nx.onclick = () => document.getElementById("btn-skip").click();
+  host.appendChild(nx);
 }
 
 function makeCut(pos) {
   const el = document.createElement("div");
   el.className = "cut";
   el.innerHTML = '<button class="del">×</button>';
-  el.querySelector(".del").onclick = e => { e.stopPropagation(); state.cur._bounds.delete(pos); renderFlow(); };
+  el.querySelector(".del").onclick = e => { e.stopPropagation(); snapshotOf(state.cur); state.cur._bounds.delete(pos); renderFlow(); };
   el.addEventListener("pointerdown", ev => startDrag(el, pos, ev));
   return el;
 }
@@ -352,7 +456,7 @@ function makeGap(pos) {
   const g = document.createElement("div");
   g.className = "rgap";
   g.innerHTML = `<button class="gap-add">+ 在此分段</button>`;
-  g.querySelector(".gap-add").onclick = () => { state.cur._bounds.add(pos); renderFlow(); };
+  g.querySelector(".gap-add").onclick = () => { snapshotOf(state.cur); state.cur._bounds.add(pos); renderFlow(); };
   return g;
 }
 
@@ -378,6 +482,7 @@ function startDrag(el, pos, ev) {
     document.removeEventListener("pointerup", up);
     ghost.remove(); el.classList.remove("dragging");
     if (target !== pos) {
+      snapshotOf(state.cur);
       state.cur._bounds.delete(pos); state.cur._bounds.add(target); renderFlow();
     }
   };
@@ -387,16 +492,22 @@ function startDrag(el, pos, ev) {
 
 document.getElementById("btn-skip").onclick = () => {
   if (!state.cur) return;
-  store.read[String(state.cur.conversation_id)] = Date.now();
+  store[RK][String(state.cur.conversation_id)] = Date.now();
   saveCur();
   const vis = visible().filter(c => c !== state.cur);
   openConv(vis.length ? vis[0] : state.cur);
 };
 document.getElementById("btn-prev").onclick = () => {
   saveCur();
-  const vis = visible(); if (!vis.length) return;
-  const i = vis.indexOf(state.cur);
-  openConv(vis[(i - 1 + vis.length) % vis.length]);
+  // 回看不受「未审」过滤限制：同组全部会话里找上一个（翻过的也能回去）
+  const all = DATA.convs.filter(c => {
+    if (state.fGroup === "real" && c.tester) return false;
+    if (state.fGroup === "test" && !c.tester) return false;
+    return true;
+  });
+  if (!all.length) return;
+  const i = all.indexOf(state.cur);
+  openConv(all[(i - 1 + all.length) % all.length]);
 };
 document.getElementById("btn-export").onclick = () => {
   saveCur();
@@ -405,6 +516,8 @@ document.getElementById("btn-export").onclick = () => {
   a.href = URL.createObjectURL(blob);
   a.download = "manual_segmentation" + (DATA.env === "prod" ? "_prod" : "") + ".json";
   a.click();
+  dirty = false; updateDirty();
+  toast("已导出到浏览器下载目录（通常是 Downloads/），回工作台继续下一步");
 };
 document.querySelectorAll("#side .filters button").forEach(b => {
   b.onclick = () => {
@@ -416,13 +529,28 @@ document.querySelectorAll("#side .filters button").forEach(b => {
   };
 });
 
-// 键盘流：数字 1-6 给第一个未标段设标签；回车采纳第一个未标段的 AI 预标
+// 键盘流：Ctrl+Z 撤销；→/n 下一个会话（两轮通用），←/p 上一个；切题轮 Enter 同效翻页。
+// 标注轮：数字 1-6 给第一个未标段设标签；回车采纳第一个未标段的 AI 预标，
+// 全会话标完时 Enter 顺势翻下一个（连续 Enter 一路到底）
 document.addEventListener("keydown", e => {
-  if (!state.cur || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (!state.cur) return;
+  if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+    e.preventDefault(); undo(); return;
+  }
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
+  const skip = () => { e.preventDefault(); document.getElementById("btn-skip").click(); };
+  const prev = () => { e.preventDefault(); document.getElementById("btn-prev").click(); };
+  if (e.key === "ArrowRight" || e.key === "n" || e.key === "N"
+      || (MODE === "bounds" && e.key === "Enter")) { skip(); return; }
+  if (e.key === "ArrowLeft" || e.key === "p" || e.key === "P") { prev(); return; }
+  if (MODE === "bounds") return;
   const starts = [...state.cur._bounds].sort((a, b) => a - b);
   const lm = labelsOf(state.cur);
   const target = starts.find(st => !lm[st]);
-  if (target === undefined) return;
+  if (target === undefined) {
+    if (e.key === "Enter") skip();
+    return;
+  }
   const idx = Number(e.key) - 1;
   if (Number.isInteger(idx) && idx >= 0 && idx < LABELS.length) {
     e.preventDefault();
@@ -433,6 +561,37 @@ document.addEventListener("keydown", e => {
     if (p && p.pre) { e.preventDefault(); setLabel(state.cur, target, p.pre); renderFlow(); }
   }
 });
+
+// 使用说明卡片：按模式组装（边界操作 / 标签定义 / 快捷键），首次使用不用翻文档
+function buildHelp(){
+  const g = document.querySelector("#help-card .h-grid");
+  const rows = [
+    '<div><b>边界</b>拖动橙色虚线挪到别的回合间隙 · 线上的 × 删除 · 回合间隙 + 添加</div>',
+    '<div><b>段头</b>咨询数 / 出单数（红色 = 该段出了工单）</div>',
+  ];
+  if (MODE !== "bounds") {
+    rows.push('<div><b>标签</b>段头彩色按钮选一类，点已选中的可取消；改过边界后该段要重新选</div>');
+    LABELS.forEach(([n, c]) =>
+      rows.push(`<div class="lb-row"><span class="lb" style="background:${c}">${n}</span>${LABEL_DEF[n]}</div>`));
+  }
+  rows.push(`<div><b>快捷键</b>${MODE === "bounds"
+    ? '→ / Enter / n 下一个会话 · ← / p 上一个 · Ctrl+Z 撤销'
+    : '1–6 给第一个未标段选标签 · Enter 采纳其 AI 预标（仅供参考） · 本会话标完 Enter 翻下一个 · →/n 下一个 · ←/p 上一个 · Ctrl+Z 撤销'}</div>`);
+  g.innerHTML = rows.join("");
+}
+
+// 模式初始化：标题/徽标/横幅/导出按钮按轮次区分（bounds=切题轮，label=标注轮）
+document.body.classList.add(MODE);
+document.title = MODE === "bounds" ? "人工切题 · 只定边界" : "话题标注 · 打标签";
+document.getElementById("h-mode").textContent =
+  MODE === "bounds" ? "切题轮 · 只定边界" : "标注轮 · 打标签";
+if (MODE === "bounds") {
+  const b = document.getElementById("mode-banner");
+  b.style.display = "block";
+  b.textContent = "这一轮只定话题边界、不打标签；过完点右下「保存并下一个」，全部过完点右上「导出切分结果」放 Downloads/，再回工作台跑第 4 步。";
+  document.getElementById("btn-export").textContent = "导出切分结果";
+}
+buildHelp();
 
 renderProg(); renderList();
 const init = visible();

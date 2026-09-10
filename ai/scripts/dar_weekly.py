@@ -1,14 +1,22 @@
 # -*- coding: utf-8 -*-
-"""直答率周流程单入口：export → prepare → l1 → retrieval → l3 → tool → report。
+"""直答率周流程单入口：export → prepare → l1 → tool0 → l1r/retrieval/l3/tool → report。
 
 每周流程（步骤名按需组合，缺省全跑除 export 外的本地步骤）：
+  全流程    导数据(export prepare) → L1(l1) → 人工切题(浏览器改边界、导出 JSON 放
+            Downloads/) → L3 预标(l1r retrieval l3 tool，按人工边界判) → 人工标注
+            (浏览器打标签、再导出) → 吸收出周报(l1r retrieval l3 report)。
+            先人工定边界再判定：judge/检索重放的输入就是人工认可的话题段，
+            标注轮预标全部有效。
   export     ssh 到测试服务器导出四表 csv.gz → export_dar/（凭据只在服务器端解析，
              不回传不落日志；首次跑或 ssh key 不在时先手动验证 ssh 通）
   prepare    csv.gz → processed/conversations_split.jsonl（dar_prepare）
-  l1         LLM 批判 + L1/L2 统计（dar_l1 --replay 不存在时自动跑批判）
-  retrieval  全段检索判定（dar_retrieval_check，增量：已判段复用）
-  l3         全段四类预标（dar_l3 --all，供标注工具注入）
-  tool       生成 segmentation_tool.html（build_segmentation_tool）
+  l1         LLM 批判 + L1 统计（有人工标注文件时带 --review 出 L2）
+  tool0      生成切题版标注工具（--bounds-only：无预标，只定边界）
+  l1r        L1 重算：--replay --review 吸收人工切分/标签（不调 LLM 秒出；
+             无人工文件时跳过，判定产物落后于新导出时回退 l1 全量）
+  retrieval  全段检索判定（dar_retrieval_check，增量：已判段复用；人工边界优先）
+  l3         全段四类预标（dar_l3 --all，供标注工具注入；人工边界优先）
+  tool       生成标注版工具（注入预标 + 人工边界）
   report     聚合周报：L1/L2 + 检索交叉 + 预标分布 + 人工标注进度 + 与上周对比，
              落盘 processed/weekly_YYYYMMDD.json
 
@@ -164,6 +172,22 @@ def step_export():
 def step(name, script, args=()):
     print(f"\n{'=' * 72}\n== {name}：{script} {' '.join(args)}\n{'=' * 72}")
     sh([sys.executable, os.path.join(HERE, script), *args])
+
+
+def step_l1_replay():
+    """L1 重算：--replay --review 吸收人工切分/标签（读已落盘判定，不调 LLM）。
+    无人工文件时跳过；classified 缺失/落后于新导出时回退 l1 全量重判（带 --review）。"""
+    cls = os.path.join(OUT, "conversations_classified.jsonl")
+    fresh = (os.path.exists(cls) and os.path.exists(SPLIT)
+             and os.path.getmtime(cls) >= os.path.getmtime(SPLIT))
+    if not os.path.exists(MANUAL):
+        print("l1r：无人工切分/标注文件，跳过（L1 维持 LLM 切分口径）")
+        return
+    if fresh:
+        step("l1 重算（吸收人工切分）", "dar_l1.py",
+             ("--out", OUT, "--replay", "--review", MANUAL))
+    else:
+        STEPS["l1"]()
 
 
 def _same_denominator_compare(judge_rows):
@@ -829,6 +853,9 @@ STEPS = {
     # dar_l1 --out 默认 Desktop（非 processed），显式传；有人工标注带上 --review 出 L2
     "l1": lambda: step("l1", "dar_l1.py", ("--out", OUT) +
                        (("--review", MANUAL) if os.path.exists(MANUAL) else ())),
+    "tool0": lambda: step("tool 切题（无预标）", "build_segmentation_tool.py",
+                          ("--bounds-only",)),
+    "l1r": lambda: step_l1_replay(),
     "retrieval": lambda: step("retrieval", "dar_retrieval_check.py"),
     "l3": lambda: step("l3 预标", "dar_l3.py", ("--all",)),
     "tool": lambda: step("tool", "build_segmentation_tool.py"),

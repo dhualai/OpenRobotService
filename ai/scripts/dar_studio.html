@@ -101,7 +101,7 @@ label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--in
   padding:10px 14px;background:var(--brand-soft);border:1px solid #e0e7ff;border-radius:10px;margin-bottom:16px}
 .repbar b{color:var(--ink)}
 /* ── 向导 ── */
-.wiz{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.wiz{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
 .wstep{border:1px solid var(--line);border-radius:12px;padding:12px 12px 10px;background:#fff;
   display:flex;flex-direction:column;gap:8px;position:relative;transition:.15s}
 .wstep:hover{border-color:var(--brand2)}
@@ -464,9 +464,14 @@ $("#openreport").onclick = async ()=>{
 const WIZ = [
   {t:"导数据", steps:["export","prepare"], pk:"export", d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
   {t:"L1 指标", steps:["l1"], pk:"l1", d:"LLM 逐会话切话题——跑完 L1 指标卡即时出（不等标注/周报）"},
-  {t:"L3 预标", steps:["retrieval","l3","tool"], pk:"l3", d:"重放检索判定 + judge 四类预标 + 生成标注工具"},
-  {t:"人工标注", label:true, d:"新标签页打开标注工具，审段改分段打标签，导出 JSON 放 Downloads/"},
-  {t:"吸收 → 周报", steps:["l1","retrieval","l3","report"], pk:"report", d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
+  {t:"人工切题", steps:["tool0"], pk:"tool0", openAfter:true,
+   d:"生成切题工具（蓝色界面），只核对/修正话题边界不打标签，导出 JSON 放 Downloads/"},
+  {t:"L3 预标", steps:["l1r","retrieval","l3","tool"], pk:"l3",
+   d:"按人工边界重算 L1 + 检索判定 + judge 预标，重生成标注工具（预标全程有效）"},
+  {t:"人工标注", label:true,
+   d:"新标签页打开标注工具（绿色界面）打标签，回车采纳预标，导出 JSON 放 Downloads/"},
+  {t:"吸收 → 周报", steps:["l1r","retrieval","l3","report"], pk:"report",
+   d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
 ];
 function renderWiz(){
   const w = $("#wiz");
@@ -480,6 +485,17 @@ function renderWiz(){
     if(st.label){
       b.className = "btn sm pri"; b.textContent = "打开标注工具";
       b.onclick = ()=>{ if(!window.open(`/label_tool?env=${activeEnv}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err"); };
+    }else if(st.openAfter){
+      b.className = "btn sm pri"; b.textContent = "生成并打开";
+      b.onclick = ()=>{
+        const w = window.open("", "_blank");  // 先占位：异步完成回调里 open 会被拦截
+        runSteps(st.steps, d, rc=>{
+          if(rc === 0){
+            if(w && !w.closed) w.location = `/label_tool?env=${activeEnv}`;
+            else if(!window.open(`/label_tool?env=${activeEnv}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err");
+          }else if(w && !w.closed){ w.close(); }
+        });
+      };
     }else{
       b.className = "btn sm"; b.textContent = "运行";
       b.onclick = ()=>runSteps(st.steps, d);
@@ -551,7 +567,7 @@ async function resetJudge(kind, label){
 $("#resetretr").onclick = ()=>resetJudge("retrieval", "检索");
 $("#resetl3").onclick = ()=>resetJudge("l3", "L3");
 let running = false;
-async function runSteps(steps, wstepEl){
+async function runSteps(steps, wstepEl, after){
   if(running){ toast("已有流程在跑", "err"); return; }
   running = true; stopFollow();
   document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = true);
@@ -561,11 +577,14 @@ async function runSteps(steps, wstepEl){
   document.querySelector("#logcard").open = true;
   $("#term").innerHTML = "";
   termLine("hd", `$ dar_weekly --env ${env} ${steps.join(" ")}`);
+  let lastRc = null;
   await sse("/api/run", {env, steps, note: $("#note").value.trim()}, ev=>{
     if(ev.event === "log") termLine("", ev.data.line);
     else if(ev.event === "begin") termLine("hd", `▶ ${ev.data.cmd}`);
-    else if(ev.event === "done")
+    else if(ev.event === "done"){
+      lastRc = ev.data.rc;
       termLine(ev.data.rc === 0 ? "okl" : "err", ev.data.rc === 0 ? "✔ 完成" : `✘ 退出码 ${ev.data.rc}`);
+    }
   }, ()=>{
     running = false;
     document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = false);
@@ -575,6 +594,7 @@ async function runSteps(steps, wstepEl){
     $("#runstate").innerHTML = '<span class="badge ok">空闲</span>';
     loadMetrics().then(()=>{ loadArts(); loadUA(); });
     loadProg();
+    if(after) after(lastRc);
   });
 }
 renderWiz();
@@ -582,6 +602,7 @@ renderWiz();
 /* 高级：自选步骤 */
 const STEPS = [
   ["export","导出数据"],["prepare","切分准备"],["l1","L1 话题"],
+  ["tool0","切题工具(无预标)"],["l1r","L1 重算(吸收人工)"],
   ["retrieval","检索判定"],["l3","L3 预标"],["tool","生成标注工具"],["report","周报"]
 ];
 const chosen = new Set();
