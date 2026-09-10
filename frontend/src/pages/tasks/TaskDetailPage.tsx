@@ -2,28 +2,30 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ChevronDown } from 'lucide-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
-import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
+import { setupWechatShare, isPcWechat } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { readStored } from '@/stores/authStorage';
 import SafeHtml from '@/shared/components/SafeHtml';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
+import TicketDynamicsCard from '@/shared/components/TicketDynamicsCard';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import DispatchFold from '@/shared/components/DispatchFold';
 import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
-import { uploadCommentAttachment, getOperationLogs, formatDuration, type OperationLog as TicketOperationLog } from '@/api/ticket';
+import { uploadCommentAttachment } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
-import { formatDateTime, formatRawDateTime, parseUtcDate } from '@/shared/utils/url';
+import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
@@ -102,7 +104,6 @@ const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
 };
 
 interface Attachment { path: string; size?: number; filename?: string; url?: string; id?: string; }
-type OperationLog = TicketOperationLog;
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -162,8 +163,6 @@ export default function TaskDetailPage() {
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
   // 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可看到，详情页 redispatch.result.reasoning）
   const [dispatchReason, setDispatchReason] = useState<string>('');
-  const [tipFoldOpen, setTipFoldOpen] = useState(false);
-  const [reasonFoldOpen, setReasonFoldOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; curr_step_endtime?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   // 当前阶段截止时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
@@ -223,9 +222,6 @@ export default function TaskDetailPage() {
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
-  // 工单动态（操作日志，用于详情页滚动展示）
-  const [opLogs, setOpLogs] = useState<OperationLog[]>([]);
-
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
   const [responding, setResponding] = useState(false);
@@ -265,8 +261,6 @@ export default function TaskDetailPage() {
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
         // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(t.redispatch?.result?.reasoning || '');
-        setTipFoldOpen(false);
-        setReasonFoldOpen(false);
         // 摘要存 metadata_info.ai_summary（不混入讨论区）
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
@@ -295,14 +289,6 @@ export default function TaskDetailPage() {
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
-  }, [detailId]);
-
-  // 加载工单操作日志（用于工单动态区域滚动展示）
-  useEffect(() => {
-    if (!detailId) return;
-    getOperationLogs(detailId)
-      .then((data) => setOpLogs(data || []))
-      .catch(() => setOpLogs([]));
   }, [detailId]);
 
   // 查看停留时长追踪：用户离开页面 / 切后台时回传累计可见秒数
@@ -358,6 +344,20 @@ export default function TaskDetailPage() {
       flush();
     };
   }, [detailId]);
+
+  // PC 微信专用：SPA(pushState) 跳转不会更新微信内部记录的「分享页 URL」，
+  // 导致分享链接停留在首次加载的工单。检测当前工单是否经 SPA 跳入，是则用整页刷新修正。
+  // 仅 PC 微信生效；手机端 / 普通浏览器走 SPA，不受影响。
+  useEffect(() => {
+    if (!detail?.id) return;
+    if (!isPcWechat()) return;
+    const current = window.location.href.split('#')[0];
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    const loadUrl = nav ? String(nav.name).split('#')[0] : '';
+    if (loadUrl !== current) {
+      window.location.href = current;
+    }
+  }, [detail?.id]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
   useEffect(() => {
@@ -1390,8 +1390,6 @@ export default function TaskDetailPage() {
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
         // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(t.redispatch?.result?.reasoning || '');
-        setTipFoldOpen(false);
-        setReasonFoldOpen(false);
       })
       .catch(() => {});
   };
@@ -1565,24 +1563,7 @@ export default function TaskDetailPage() {
 
           {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
           {redispatchTipDetail && (
-            <div className={`dispatch-fold dispatch-fold--tip${tipFoldOpen ? ' is-open' : ''}`}>
-              <button
-                type="button"
-                className="dispatch-fold__header"
-                onClick={() => setTipFoldOpen((v) => !v)}
-                aria-expanded={tipFoldOpen}
-              >
-                <span className="dispatch-fold__preview">
-                  <span className="dispatch-fold__label">派单说明</span>
-                  <span className="dispatch-fold__sep">：</span>
-                  <span className="dispatch-fold__clip">{redispatchTipDetail.replace(/\s+/g, ' ').trim()}</span>
-                </span>
-                <ChevronDown size={14} className="dispatch-fold__chevron" aria-hidden />
-              </button>
-              <div className="dispatch-fold__bodywrap">
-                <div className="dispatch-fold__body">{redispatchTipDetail}</div>
-              </div>
-            </div>
+            <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
           )}
 
           {/* 
@@ -1608,31 +1589,14 @@ export default function TaskDetailPage() {
             const { isAssignee } = getCurrentUserRoles();
             if (!isAssignee && !isAdmin) return null;
             return (
-              <div className={`dispatch-fold dispatch-fold--reason${reasonFoldOpen ? ' is-open' : ''}`}>
-                <button
-                  type="button"
-                  className="dispatch-fold__header"
-                  onClick={() => setReasonFoldOpen((v) => !v)}
-                  aria-expanded={reasonFoldOpen}
-                >
-                  <span className="dispatch-fold__preview">
-                    <span className="dispatch-fold__label">派单理由</span>
-                    <span className="dispatch-fold__sep">：</span>
-                    <span className="dispatch-fold__clip">{dispatchReason.replace(/\s+/g, ' ').trim()}</span>
-                  </span>
-                  <ChevronDown size={14} className="dispatch-fold__chevron" aria-hidden />
-                </button>
-                <div className="dispatch-fold__bodywrap">
-                  <div className="dispatch-fold__body">{dispatchReason}</div>
-                </div>
-              </div>
+              <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />
             );
           })()}
         </div>
 
         <div className="detail-card">
           <h4 className="detail-card__h">问题描述</h4>
-          <SafeHtml html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
+          <SafeHtml className="detail-card__body detail-card__body--pre" html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
 
         {/* 工单阶段性处理（协商节点）：当前节点描述 + 回合胶囊 + 操作按钮 */}
@@ -1760,7 +1724,10 @@ export default function TaskDetailPage() {
               <div style={{ marginBottom: 12 }}>
                 {stepName ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--foreground)' }}>{stepName}</span>
+                    <span className="detail-step-current">
+                      <span className="detail-step-current__label">当前阶段</span>
+                      <span className="detail-step-current__name">「{stepName}」</span>
+                    </span>
                     {total > 0 && (
                       <span style={{
                         fontSize: 11, color: 'var(--muted-foreground)',
@@ -1995,50 +1962,7 @@ export default function TaskDetailPage() {
           </div>
         )}
 
-        <div
-          className="detail-card ticket-dynamics-card"
-          onClick={() => navigate(`/tasks/${detailId}/operations`)}
-          role="button"
-          tabIndex={0}
-        >
-          <h4 className="detail-card__h">
-            工单动态
-            <span className="ticket-dynamics-card__more">查看全部 ›</span>
-          </h4>
-          {(() => {
-            if (opLogs.length === 0) {
-              return <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5 }}>暂无动态</p>;
-            }
-            const formatTime = (ts: string) => {
-              // 后端返回 naive datetime（UTC），需经 parseUtcDate 标记为 UTC 后由浏览器按本地时区自动 +8
-              const d = parseUtcDate(ts);
-              if (!d) return '';
-              return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-            };
-            const items = opLogs.map((l) => {
-              // 查看记录追加停留时长
-              const dur = l.operation_type === 'view' ? formatDuration(l.duration_seconds) : '';
-              const suffix = dur ? `（停留 ${dur}）` : '';
-              return {
-                key: String(l.id),
-                text: `${formatTime(l.created_at)} · ${l.description || l.operation_type}${suffix}`,
-              };
-            });
-            // 复制一份用于无缝循环滚动
-            const loopItems = [...items, ...items];
-            const scrollStyle = { '--count': items.length } as React.CSSProperties;
-            const scrollAttrs = items.length <= 3 ? { 'data-count-lte': '3' } : {};
-            return (
-              <div className="ticket-dynamics-scroll" style={scrollStyle} {...scrollAttrs}>
-                <div className="ticket-dynamics-scroll__track">
-                  {loopItems.map((it, i) => (
-                    <div className="ticket-dynamics-scroll__item" key={`${it.key}-${i}`}>{it.text}</div>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
-        </div>
+        <TicketDynamicsCard taskId={detailId ?? ''} />
 
         {(() => {
           const meta = detail.metadata_info || {};
@@ -2048,7 +1972,7 @@ export default function TaskDetailPage() {
           return (
             <div className="detail-card">
               <h4 className="detail-card__h">解决方式</h4>
-              <div style={{ color: 'var(--foreground)', fontSize: '12.5px', lineHeight: '24px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              <div className="detail-card__body detail-card__body--pre">
                 {rs}
               </div>
             </div>
@@ -2058,9 +1982,9 @@ export default function TaskDetailPage() {
         <div className="detail-card">
           <h4 className="detail-card__h">讨论摘要</h4>
           {aiSummary ? (
-            <SafeHtml html={aiSummary} />
+            <SafeHtml className="detail-card__body detail-card__body--pre" html={aiSummary} />
           ) : (
-            <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>暂无摘要，U老师 将自动总结讨论进展</p>
+            <p className="detail-card__body detail-card__body--muted">暂无摘要，U老师 将自动总结讨论进展</p>
           )}
         </div>
 

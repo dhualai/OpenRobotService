@@ -26,7 +26,7 @@ class LlmRecall:
 
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
-        self.last_reasons: Dict[str, str] = {}
+        self.last_reasons: Dict[str, str] = {}  # 最近一次结束时的拷贝；并发下不可信，主链路用 arecall 返回值
         lr = getattr(self._config, "llm_recall", None) or {}
         if not isinstance(lr, dict):
             lr = {}
@@ -77,16 +77,34 @@ class LlmRecall:
             logger.warning(f"[派单:{ticket.id}] Step3 画像召回失败: {e}")
             return {}, {}
 
+    @staticmethod
+    def unpack_arecall(result) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """把 arecall 返回值拆成（分数, 理由）。异常或空 → 两个空 dict。
+
+        理由必须跟这次返回的分数走，不能事后读 self.last_reasons：
+        Worker 里两张单可能同时跑，会把别人的理由盖进来。
+        """
+        if result is None or isinstance(result, Exception):
+            return {}, {}
+        if isinstance(result, tuple):
+            scores = result[0] if result else {}
+            reasons = result[1] if len(result) > 1 else {}
+            return dict(scores or {}), dict(reasons or {})
+        if isinstance(result, dict):
+            return dict(result), {}
+        return {}, {}
+
     async def arecall(
         self, ticket: TicketContext, engineers: List[EngineerProfile],
-    ) -> Dict[str, float]:
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
         """人少单轮 Top single_top_k；人多分批每批 Top batch_top_k，合并后全部进精排。
 
         分批不再做第二轮决选。任一轮 LLM 失败仅跳过该批，不阻断。
+        返回 (分数, 理由)；理由给 Step6 提示词用，跟分数同一趟带走。
         """
         self.last_reasons = {}
         if not engineers:
-            return {}
+            return {}, {}
 
         n = len(engineers)
         k_single = min(self._single_top_k, n)
@@ -102,7 +120,7 @@ class LlmRecall:
             logger.info(
                 f"[派单:{ticket.id}] Step3 画像 单轮 Top{k_single} 人数={n} 输出={len(scores)}人"
             )
-            return scores
+            return scores, reasons
 
         # ── 候选人数多：分批召回，各批胜者全部保留进 Step4 ──
         stage1: Dict[str, float] = {}
@@ -136,11 +154,11 @@ class LlmRecall:
         self.last_reasons = reasons
         if not scores:
             logger.warning(f"[派单:{ticket.id}] Step3 画像 分批召回无胜者，返回空")
-            return {}
+            return {}, {}
         logger.info(
             f"[派单:{ticket.id}] Step3 画像 分批合并 {n}→{len(scores)}人（各批 Top{self._batch_top_k} 全保留）"
         )
-        return scores
+        return scores, reasons
 
     @staticmethod
     def _keep_batch_union(

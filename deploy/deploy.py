@@ -35,6 +35,16 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+# 防御性修复：Windows 控制台默认 GBK 编码，无法输出 vite 构建日志中的 ✓（\u2713）等非 GBK
+# 字符，会导致 print 抛 UnicodeEncodeError 崩溃（前端部署时踩过，脚本构建到一半中断）。
+# 这里强制 stdout/stderr 用 UTF-8 输出、无法编码的字符替换为 '?'，避免因控制台编码中断部署。
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 try:
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox, scrolledtext

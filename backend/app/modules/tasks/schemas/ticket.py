@@ -131,7 +131,7 @@ class RedispatchResult(BaseModel):
     matched_pref: Optional[bool] = Field(None, description="是否派到意向人")
     name_collision: Optional[bool] = Field(None, description="是否同名命中（同名提醒）")
     pinyin_match: Optional[bool] = Field(None, description="是否拼音近似名命中（近似名提醒）")
-    tip_detail: Optional[str] = Field(None, description="未派到指定人时的完整情商话术（含换人理由与重新派单引导，仅 matched_pref=false 有）")
+    tip_detail: Optional[str] = Field(None, description="派单说明（列表/气泡/详情同一出口：未派到倾向人为详情模板；Step0 为短句）")
 
 
 class TicketRedispatch(BaseModel):

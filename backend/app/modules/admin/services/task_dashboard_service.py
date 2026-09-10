@@ -7,8 +7,9 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from collections import Counter
 
-from sqlalchemy import select, func, and_, distinct
+from sqlalchemy import select, func, and_, distinct, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.models.task import Task, TaskStatus, TaskOperationLog, OperationType
 from app.core.user_identity import same_identity
@@ -49,14 +50,17 @@ class TaskDashboardService:
                 "by_status": {key: 0 for key in MONITORED_STATUS_KEYS},
             }
 
-        by_status: Dict[str, int] = {}
-        for key in MONITORED_STATUS_KEYS:
-            status_enum = FRONTEND_STATUS_MAP[key]
-            query = select(func.count(Task.id)).where(Task.status == status_enum)
-            if project_ids is not None:
-                query = query.where(Task.project_id.in_(project_ids))
-            result = await db.execute(query)
-            by_status[key] = result.scalar() or 0
+        # 状态分布：一条 GROUP BY 取全部状态计数（原先按 6 个状态各发一条 COUNT）
+        status_query = select(Task.status, func.count(Task.id)).group_by(Task.status)
+        if project_ids is not None:
+            status_query = status_query.where(Task.project_id.in_(project_ids))
+        status_rows = (await db.execute(status_query)).all()
+        status_counts = {status: count for status, count in status_rows}
+
+        by_status: Dict[str, int] = {
+            key: status_counts.get(status_enum, 0)
+            for key, status_enum in FRONTEND_STATUS_MAP.items()
+        }
 
         # 总数与状态分布同口径：监控中的六种状态之和（含 new）
         total = sum(by_status.values())
@@ -139,7 +143,8 @@ class TaskDashboardService:
         )
         tasks = result.scalars().all()
 
-        user_map = user_service.get_user_map()
+        # 同步 pymysql 加载，线程池执行避免阻塞事件循环（缓存未命中时才真正查库）
+        user_map = await run_in_threadpool(user_service.get_user_map)
         items = [
             {
                 "id": t.id,
@@ -330,31 +335,35 @@ class TaskDashboardService:
         完单耗时口径 = closed_at - created_at，仅统计已关闭工单（closed_at 非空，
         与类型分布一致不按状态过滤：未关闭的工单没有完单时间，不计入即不会被误算为 0 耗时）。
         结果按平均耗时降序排列，方便前端横向条形图「最长的在最上面」。
+
+        SQL 端聚合：AVG(GREATEST(0, TIMESTAMPDIFF(SECOND, created_at, closed_at)))，
+        避免把全部已关闭工单行拉回 Python 逐行计算；TIMESTAMPDIFF 按整秒截断，
+        与原先逐行 total_seconds() 的差异在亚秒级，可忽略。GREATEST(0, ...) 对应
+        原来的 max(elapsed, 0) 负值钳制。
         """
         if project_ids is not None and len(project_ids) == 0:
             return {"by_type": []}
 
-        query = select(Task.task_type, Task.created_at, Task.closed_at).where(
-            Task.closed_at.isnot(None)
+        elapsed_seconds = func.greatest(
+            0,
+            func.timestampdiff(text("SECOND"), Task.created_at, Task.closed_at),
+        )
+        query = (
+            select(Task.task_type, func.count(Task.id), func.avg(elapsed_seconds))
+            .where(Task.closed_at.isnot(None))
+            .group_by(Task.task_type)
         )
         if project_ids is not None:
             query = query.where(Task.project_id.in_(project_ids))
         rows = (await db.execute(query)).all()
 
-        elapsed_by_type: Dict[str, List[float]] = {}
-        for task_type, created_at, closed_at in rows:
-            if created_at is None or closed_at is None:
-                continue
-            elapsed = max((closed_at - created_at).total_seconds(), 0)
-            elapsed_by_type.setdefault(task_type.value, []).append(elapsed)
-
         by_type = [
             {
-                "key": key,
-                "count": len(seconds_list),
-                "avg_seconds": round(sum(seconds_list) / len(seconds_list)),
+                "key": task_type.value,
+                "count": count,
+                "avg_seconds": round(float(avg_seconds)) if avg_seconds is not None else 0,
             }
-            for key, seconds_list in elapsed_by_type.items()
+            for task_type, count, avg_seconds in rows
         ]
         by_type.sort(key=lambda item: item["avg_seconds"], reverse=True)
 

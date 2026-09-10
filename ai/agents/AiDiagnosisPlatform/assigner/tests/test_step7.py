@@ -117,6 +117,19 @@ class TestRunStep7:
         assert out.engineer_name == "现场经理"
         assert "精排" not in (out.reasoning or "")
 
+    def test_fallback_person_need_not_be_in_pool(self):
+        """正常流程：兜底人可以不在智能派单准入池（画像不必完整）。"""
+        flow = DispatchFlow()
+        row = SimpleNamespace(project_manager_id="u-pm", project_manager="现场经理")
+        with patch.object(DispatchFlow, "_load_project_row", return_value=row), \
+             patch.object(DispatchFlow, "_config_project_manager", return_value=None):
+            out = flow._run_step7(
+                _ticket(), "u-out", "编外对接", [_eng("u-other", "路人")],
+                REASON_STEP6, "[派单:t-step7]",
+            )
+        assert out.engineer_id == "u-out"
+        assert out.engineer_name == "编外对接"
+
     def test_empty_returns_unassignable(self):
         """异常流程：对接人、项目经理、配置都空 → 未指派结果，写 tip 标记，不抛错。"""
         flow = DispatchFlow()

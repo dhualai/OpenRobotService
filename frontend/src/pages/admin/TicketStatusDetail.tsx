@@ -1,6 +1,7 @@
 // 工单状态下钻明细 —— 点击仪表盘某个状态标签后展示该状态下的工单列表
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import { fetchTicketsByStatus, type TicketListItem } from '@/api/dashboard';
 import { TICKET_STATUS_MAP } from '@/shared/constants/dashboard';
@@ -64,7 +65,7 @@ export default function TicketStatusDetail() {
                   background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
                   boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
                 }}
-                onClick={() => navigate(`/tasks/${t.id}`)}
+                onClick={() => navigateInWechat(navigate, `/tasks/${t.id}`)}
               >
                 <div style={{ fontWeight: 600, fontSize: 15 }}>{t.title || '无标题'}</div>
                 <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>

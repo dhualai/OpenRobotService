@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
@@ -931,7 +932,14 @@ export default function TasksView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketDraft]);
 
-  const openDetail = useCallback((id: string) => { navigate(`/tasks/${id}`); }, [navigate]);
+  const openDetail = useCallback((id: string) => { navigateInWechat(navigate, `/tasks/${id}`); }, [navigate]);
+
+  // PC 微信下点工单是整页跳转（详情页/操作记录页均为懒加载 chunk），列表挂载即预取，
+  // 缩短首次点击后的下载等待；普通浏览器 / SPA 路径不受影响。
+  useEffect(() => {
+    import('@/pages/tasks/TaskDetailPage');
+    import('@/pages/tasks/OperationLogsPage');
+  }, []);
 
   
 

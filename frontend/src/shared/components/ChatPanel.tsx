@@ -108,37 +108,9 @@ interface Message {
   };
 }
 
-// 二次派单感知增强（M3）：按详情 redispatch.result 生成派单结果提醒（与后端 _redispatch_tip 同一四分支口径）
-function redispatchTipFromResult(result?: {
-  matched_pref?: boolean | null;
-  name_collision?: boolean | null;
-  pinyin_match?: boolean | null;
-  assigned_name?: string | null;
-  preferred_name?: string | null;
-  profile?: { missing?: string[] | null } | null;
-}): string | undefined {
-  if (!result) return undefined;
-  const assignedName = result.assigned_name || '';
-  const prefName = result.preferred_name || '';
-  let tip: string | undefined;
-  // ② 未派到指定人（仅当确实存在用户指定的倾向人时才算「未派到指定人」；
-  //    首次派单无倾向处理人时 matched_pref 默认为 false，但此时并无「指定的 X」，不应显示该提醒）
-  if (result.matched_pref === false && prefName) {
-    tip = `未派给您指定的【${prefName}】，已派给【${assignedName}】`;
-  } else if (result.pinyin_match) {
-    // ④ 拼音/近似名命中
-    tip = `按拼音匹配到【${assignedName}】（与输入【${prefName || assignedName}】不同字），如非此人请更正`;
-  } else if (result.name_collision) {
-    // ③ 同名命中
-    tip = `指派人存在同名，已按评估选择【${assignedName}】`;
-  }
-  // ① 画像不完整（可叠加追加）
-  const missing = result.profile?.missing || [];
-  if (missing.length) {
-    const suffix = '；该接单人画像不完整，待补充';
-    tip = tip ? tip + suffix : '该接单人画像不完整，待补充';
-  }
-  return tip || undefined;
+function tipFromRedispatchResult(result?: { tip_detail?: string | null } | null): string | undefined {
+  const t = (result?.tip_detail || '').trim();
+  return t || undefined;
 }
 
 const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
@@ -497,9 +469,12 @@ const MessageBubble = memo(function MessageBubble({
                   </span>
                 )}
               </div>
-              {/* 二次派单感知增强（M3）：派单结果提醒单行（警示色，整卡点击进详情） */}
+              {/* 派单提醒单行：标签蓝、正文灰，整卡点击进详情 */}
               {msg.ticket_overview.redispatch_tip && (
-                <div className="chat-ticket-overview__tip">派单结果提醒：{msg.ticket_overview.redispatch_tip}</div>
+                <div className="chat-ticket-overview__tip">
+                  <span className="chat-ticket-overview__tip-label">派单提醒：</span>
+                  <span className="chat-ticket-overview__tip-text">{msg.ticket_overview.redispatch_tip}</span>
+                </div>
               )}
             </div>
           ) : msg.content ? (
@@ -2136,7 +2111,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return raw ? Number(raw) : undefined;
   })();
 
-  /** 弹窗打开/类型确定后：拉取该类型的处理阶段列表（默认不选，仅回填默认阶段完成时间 +7 天） */
+  /** 弹窗打开/类型确定后：拉取该类型的处理阶段列表（默认选中第一个步骤，并回填阶段完成时间 +7 天） */
   const loadTicketSteps = useCallback(async (ticketType: string) => {
     if (!ticketType) return;
     setStepsLoading(true);
@@ -2144,11 +2119,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const res = await qaGetTicketSteps(ticketType);
       const steps = res?.data?.steps ?? [];
       setTicketSteps(steps);
-      // 阶段完成时间默认 +7 天；已有则不动（处理阶段默认不选，由用户手动选择）
+      // 阶段完成时间默认 +7 天；已有则不动。
+      // 处理阶段默认选中第一个步骤：下拉已删空占位项，若不回填 state，浏览器会显示首个
+      // 步骤但 curr_step_id 仍为空，提交时被「请选择处理阶段」误拦（视觉有默认值却提交不了）。
       setTicketConfirm((s) => {
         const overrides = { ...s.overrides };
         if (!overrides.curr_step_endtime) {
           overrides.curr_step_endtime = dayjs().add(7, 'day').toISOString();
+        }
+        if (!overrides.curr_step_id && steps.length > 0) {
+          overrides.curr_step_id = Number(steps[0].id);
         }
         return { ...s, overrides };
       });
@@ -2170,7 +2150,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     try {
       // 必须 skipCache：createRequest 的 GET 默认缓存 5 分钟，否则第二次轮询起命中缓存返回旧 assigned_to，
       // 控制台看不到请求、气泡永远显示"派单中"（只有刷新清空模块级 requestCache 后才真正请求）。
-      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string; redispatch?: { result?: Parameters<typeof redispatchTipFromResult>[0] } }>(`/${dbId}`, { skipCache: true });
+      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string; redispatch?: { result?: { tip_detail?: string | null } } }>(`/${dbId}`, { skipCache: true });
       if (task.assigned_to) {
         // 只接受后端解析出的真实名字 assigned_to_name，绝不用 assigned_to（裸 id）兜底显示。
         // 若瞬时无法解析（后端 user_map 缓存缺该用户，assigned_to_name 为空/仍等于 id），
@@ -2179,7 +2159,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         if (nameResolved) {
           const assignedName = task.assigned_to_name as string;
           // 二次派单感知增强（M3）：派单完成时从 redispatch.result 生成提醒文案
-          const newOv = { ...ov, assigned_to_name: assignedName, redispatch_tip: redispatchTipFromResult(task.redispatch?.result) };
+          const newOv = { ...ov, assigned_to_name: assignedName, redispatch_tip: tipFromRedispatchResult(task.redispatch?.result) };
           // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
           // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
           // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
@@ -2300,7 +2280,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         const latestName = task.assigned_to_name;
         if (latestName && latestName !== ov.assigned_to_name) {
           // 二次派单感知增强（M3）：同步时也刷新派单结果提醒文案
-          const newOv = { ...ov, assigned_to_name: latestName, redispatch_tip: redispatchTipFromResult((task as any)?.redispatch?.result) };
+          const newOv = { ...ov, assigned_to_name: latestName, redispatch_tip: tipFromRedispatchResult((task as { redispatch?: { result?: { tip_detail?: string | null } } }).redispatch?.result) };
           setMessages((prev) => prev.map((x) =>
             x.id === m.id && x.ticket_overview ? { ...x, ticket_overview: newOv } : x
           ));
@@ -2356,6 +2336,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const projectIdVal = draftField('project_id').trim();
     const projectNameVal = draftField('project').trim();
     const isDual = ticketConfirm.dualTicket;
+
+    // 工单类型必填：下拉已删空占位项，但 AI 草稿 type 缺失/不在枚举内时浏览器会默认
+    // 选中第一项（报障）作为显示文本，state 仍为空 → 此处拦下避免提交生成空类型工单。
+    if (!draftField('type').trim()) {
+      Toast({ message: '请选择工单类型', theme: 'warning' });
+      return;
+    }
 
     // 校验：非双工单要求 project_id；双工单要求项目负责人
     if (!isDual && !projectIdVal) {
@@ -2903,7 +2890,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     void loadTicketSteps(t);
                   }}
                 >
-                  <option value="">请选择工单类型</option>
+                  {/* 不展示空占位项：用户误选「请选择工单类型」会提交生成空类型工单。
+                      AI 草稿 type 缺失时 select 显示第一项（报障），但 state 仍为空，
+                      由 handleConfirmTicket 的非空校验兜底拦截。 */}
                   {Object.entries(TICKET_TYPE_LABEL).map(([value, label]) => (
                     <option key={value} value={value}>{label}</option>
                   ))}
@@ -2944,9 +2933,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   value={selectedStepId ?? ''}
                   onChange={(e) => setDraftField('curr_step_id', e.target.value)}
                 >
-                  {stepsLoading
-                    ? <option value="">加载中…</option>
-                    : <option value="">请选择本工单预期的处理阶段</option>}
+                  {stepsLoading && <option value="">加载中…</option>}
                   {ticketSteps.map((s) => (
                     <option key={s.id} value={s.id}>{s.step_name}</option>
                   ))}

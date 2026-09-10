@@ -1,0 +1,62 @@
+# ============================================================
+# 提单基准用例 — 行为层（真实 LLM 多轮）
+# 本地 runner：状态机层自动跑 pytest tests/test_ticket_submit.py
+#   tests/test_can_submit.py；行为层走 _agent_think_stream 多轮驱动
+# 线上一键回归（dar_regress）：打测试环境 ask/stream，多轮真实状态迁移；
+#   到弹窗后可自动 prepare 验草稿 → confirm 落测试库 → ssh 查库验证
+# 字段：
+#   name:       用例名
+#   turns:      多轮用户消息列表
+#   expect_review_any_round: true=任一轮出现 review 弹窗事件即过
+#   forbid_review:     true=所有轮不得出弹窗（取消/拦截类）
+#   expect_ask_any: 话术应包含的追问要素（任一）——信息不全追问
+#   forbid_any:      话术不得包含（任一）——铁律类
+#   expect_stages_any: 任一轮 status 阶段含任一（如 diagnosing=诊断工具循环）
+#   expect_draft_any: 到弹窗后 prepare 草稿字段（title/description 等）含任一关键词
+#   expect_confirm:  true=自动调 /ticket/confirm，断言 code=0 且返回 db_id
+#   expect_db:       true=ssh 查测试库 tasks 表验证 db_id 落库+字段含关键词
+#   after_confirm_ask: confirm 成功后同会话再发这句（提交后再提单引导类），
+#                     回答并入话术断言（expect_ask_any/forbid_any）
+#   strict:     默认 false=失败只 WARN；true=FAIL
+# ============================================================
+
+- name: 标准报障多轮到达弹窗并落库
+  turns:
+    - 帮我提个工单，我们一台XQE车报错813停在货架前取不了货，车编号A027
+    - 今天上午十点左右的事，任务号没记下来，货架在A区03库位
+    - 反复出现的，这几次到货架前都取不了货
+  expect_review_any_round: true
+  expect_draft_any: ["813"]
+  expect_confirm: true
+  expect_db: true
+  strict: true
+
+- name: 草稿字段完整且不拦项目
+  turns:
+    - 帮我提个工单，激光雷达一直报通讯超时，车编号B103，故障反复出现
+    - 就在3号库那边作业的时候，今天下午两点左右开始的
+  expect_review_any_round: true
+  expect_draft_any: ["激光雷达", "雷达", "通讯超时"]
+  forbid_any: ["必须选择项目", "项目是必填", "先选择项目", "项目不能为空", "必须先选项目"]
+  strict: true
+
+- name: 信息不足追问要素
+  turns:
+    - 帮我提个工单
+  expect_ask_any: ["什么问题", "主题", "型号", "编号", "现象", "设备", "站点"]
+
+- name: 取消提单后不出弹窗
+  turns:
+    - 帮我提个工单，XQE车报错813取不了货，车编号A027
+    - 算了不用提了，我自己处理
+  forbid_review: true
+  forbid_any: ["必须选择项目", "项目是必填"]
+
+- name: 落库后立刻再提单有引导
+  turns:
+    - 帮我提个工单，XQE车报错813停在货架前取不了货，车编号A027
+    - 今天上午的事，货架在A区03库位，反复出现
+  expect_review_any_round: true
+  expect_confirm: true
+  after_confirm_ask: 再帮我提个单子，另一台车也报813
+  expect_ask_any: ["刚", "已提交", "已生成", "继续", "新单"]

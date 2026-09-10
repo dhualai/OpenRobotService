@@ -90,7 +90,7 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
         if not row.get("id"):
             skipped += 1
             continue
-        # ── 准入校验：三个必填字段 ──
+        # ── 准入校验：部门 + 职级 + 责任模块，缺一不可 ──
         dept = (row.get("department") or "").strip()
         modules = row.get("responsibility_modules") or {}
         # responsibility_modules 不能是空 dict
@@ -104,6 +104,11 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
             logger.debug(f"[engineers_sync] 跳过 {row.get('name')}: 缺少 department")
             skipped += 1
             continue
+        job_level = row.get("job_level")
+        if not job_level:
+            logger.debug(f"[engineers_sync] 跳过 {row.get('name')}: 缺少 job_level")
+            skipped += 1
+            continue
         if not has_modules:
             logger.debug(f"[engineers_sync] 跳过 {row.get('name')}: responsibility_modules 为空")
             skipped += 1
@@ -115,12 +120,12 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
             company=row.get("company"),
             department=dept,
             responsibility_modules=modules,
-            job_level=row.get("job_level", 1),
+            job_level=job_level,
             duty_text=row.get("duty_text"),
         ))
 
     if skipped:
-        logger.info(f"[engineers_sync] 准入校验: 跳过 {skipped} 人 (缺 department/modules)")
+        logger.info(f"[engineers_sync] 准入校验: 跳过 {skipped} 人 (缺 department/job_level/modules)")
     return profiles
 
 
