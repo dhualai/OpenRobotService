@@ -101,7 +101,7 @@ def main():
         print("切题轮：不注入预标/检索（先人工定边界，判定在边界定稿后跑）")
 
     out = []
-    n_man = n_llm_multi = 0
+    n_man = n_llm_multi = n_noise = 0
     for c in convs:
         rounds = c["rounds"]
         if len(rounds) < 2:
@@ -110,6 +110,11 @@ def main():
         cls = cls_all.get(cid)
         if not cls or len(cls) != len(rounds):
             cls = [{"q": True, "t": False, "topic": 0} for _ in rounds]
+        # 全程无咨询且无工单（纯寒暄）：无话题可切、无标签可打，不进工具
+        # （带工单的保留——纯提单会话是「直接提单」标的标的；指标层本就跳过无咨询段）
+        if not any(k["q"] for k in cls) and not (c.get("tasks") or []):
+            n_noise += 1
+            continue
         if len({k.get("topic", 0) for k in cls}) >= 2:
             n_llm_multi += 1
         task_ts = [ts(t["at"]) for t in c.get("tasks") or []]
@@ -159,7 +164,8 @@ def main():
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(html)
     print(f"生成 {path}")
-    print(f"会话 {len(out)} 个（≥2 回合），回合 {sum(len(c['rounds']) for c in out)}")
+    print(f"会话 {len(out)} 个（≥2 回合），回合 {sum(len(c['rounds']) for c in out)}"
+          + (f"，滤掉纯寒暄（无咨询无工单）{n_noise} 个" if n_noise else ""))
     if man:
         print(f"人工边界嵌入 {n_man} 个已切会话（初始切分=人工边界），LLM 切出多话题的 {n_llm_multi} 个")
     else:
