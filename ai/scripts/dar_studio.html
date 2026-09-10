@@ -240,6 +240,18 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
         <div class="wiz" id="wiz"></div>
       </div>
 
+      <details class="card" id="logcard">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          运行日志 <span class="hint" id="runstate" style="font-weight:400"></span></summary>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <input type="text" id="note" placeholder="附注（--note，随周报落盘）" style="flex:1">
+          <button class="btn sm dng" id="resetretr" title="删当日检索判定（jsonl+json），重跑 retrieval 步即全量重判——换判定模型后用">重判全部</button>
+          <button class="btn sm dng" id="resetl3" title="删当日 L3 judge 两套（校准+预标 jsonl+json），重跑 L3 步即全段重判——换判定模型后用">重判 L3</button>
+          <button class="btn sm dng" id="stopbtn" disabled>停止</button>
+        </div>
+        <div class="term" style="height:150px"><div class="hd">$ 等待运行…（步骤可增量复用，重复跑只补新数据）</div></div>
+      </details>
+
       <details class="card">
         <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">高级：自选步骤</summary>
         <div style="margin-top:10px;font-size:12px;color:var(--ink3);margin-bottom:8px">
@@ -344,20 +356,16 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
           误杀复检：AI 判「无知识可提」跳过的单在审核页底部折叠区，抽检后按卡内命令单张重跑。
         </div>
       </div>
-    </section>
 
-    <!-- 运行日志：全局（周流程/工单沉淀两页签共用同一运行通道） -->
-    <details class="card" id="logcard">
-      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
-        运行日志 <span class="hint" id="runstate" style="font-weight:400"></span></summary>
-      <div style="display:flex;gap:8px;margin:10px 0">
-        <input type="text" id="note" placeholder="附注（--note，随周报落盘）" style="flex:1">
-        <button class="btn sm dng" id="resetretr" title="删当日检索判定（jsonl+json），重跑 retrieval 步即全量重判——换判定模型后用">重判全部</button>
-        <button class="btn sm dng" id="resetl3" title="删当日 L3 judge 两套（校准+预标 jsonl+json），重跑 L3 步即全段重判——换判定模型后用">重判 L3</button>
-        <button class="btn sm dng" id="stopbtn" disabled>停止</button>
-      </div>
-      <div class="term" id="term" style="height:150px"><div class="hd">$ 等待运行…（步骤可增量复用，重复跑只补新数据）</div></div>
-    </details>
+      <details class="card" id="sinklogcard" open>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          运行日志 <span class="hint" id="sinkrunstate" style="font-weight:400"></span></summary>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <button class="btn sm dng" id="sinkstop" disabled>停止</button>
+        </div>
+        <div class="term" style="height:150px"><div class="hd">$ 拉取/应用的输出在这里（与「指标生成」页签共用同一运行通道）</div></div>
+      </details>
+    </section>
   </main>
 </div>
 <div id="toasts"></div>
@@ -556,14 +564,11 @@ async function followRun(first){
     (j.logs || []).forEach(l=>termLine("", l));
     folN = j.n;
     if(j.running){
-      $("#runstate").innerHTML = '<span class="badge warn">运行中</span>';
-      $("#stopbtn").disabled = false;
-      document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = true);
+      runUI(true);
       folTimer = setTimeout(()=>followRun(false), 2500);
     }else if(folN > 0){
       termLine(j.rc === 0 ? "okl" : "err", j.rc === 0 ? "✔ 完成" : `✘ 退出码 ${j.rc}`);
-      $("#stopbtn").disabled = true;
-      $("#runstate").innerHTML = '<span class="badge ok">空闲</span>';
+      runUI(false);
       folN = null;
       loadMetrics().then(()=>{ loadArts(); loadUA(); });
       loadProg();
@@ -595,15 +600,19 @@ let running = false;
 async function runSteps(steps, wstepEl, after, opts){
   if(running){ toast("已有流程在跑", "err"); return; }
   running = true; stopFollow();
-  document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = true);
-  $("#stopbtn").disabled = false;
+  runUI(true);
   wstepEl?.classList.add("run");
-  $("#runstate").innerHTML = '<span class="badge warn">运行中</span>';
   document.querySelector("#logcard").open = true;
-  $("#term").innerHTML = "";
+  if($("#sinklogcard")) $("#sinklogcard").open = true;
+  document.querySelectorAll(".term").forEach(t => t.innerHTML = "");
+  const isSink = opts && opts.kind;
   termLine("hd", `$ ${(opts && opts.hdr) || `dar_weekly --env ${env} ${steps.join(" ")}`}`);
   let lastRc = null;
-  await sse("/api/run", {env, steps, note: $("#note").value.trim(), ...(opts||{})}, ev=>{
+  // sink 命令只发 kind/dir/reviewer——steps/note 是周流程专属，带上会被 /api/run
+  // 当 dar 跑（0910 实锤：拉取待审跑成了 export prepare l1）
+  const body = isSink ? {kind: opts.kind, dir: opts.dir || "", reviewer: opts.reviewer || ""}
+                      : {env, steps, note: $("#note").value.trim()};
+  await sse("/api/run", body, ev=>{
     if(ev.event === "log") termLine("", ev.data.line);
     else if(ev.event === "begin") termLine("hd", `▶ ${ev.data.cmd}`);
     else if(ev.event === "done"){
@@ -612,11 +621,9 @@ async function runSteps(steps, wstepEl, after, opts){
     }
   }, ()=>{
     running = false;
-    document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = false);
-    $("#stopbtn").disabled = true;
+    runUI(false);
     wstepEl?.classList.remove("run");
     wstepEl?.classList.add("done");
-    $("#runstate").innerHTML = '<span class="badge ok">空闲</span>';
     loadMetrics().then(()=>{ loadArts(); loadUA(); });
     loadProg();
     loadSink();
@@ -644,18 +651,29 @@ $("#advrun").onclick = ()=>{
 };
 
 function termLine(cls, txt){
-  const t = $("#term");
-  const atBottom = t.scrollTop + t.clientHeight >= t.scrollHeight - 30;
-  const d = document.createElement("div");
-  d.className = cls||""; d.textContent = txt;
-  if(t.firstChild?.classList?.contains("hd")) t.innerHTML = "";
-  t.appendChild(d);
-  if(atBottom) t.scrollTop = t.scrollHeight;
+  // 双终端：指标生成页签与工单沉淀页签各有一块 .term，同一运行内容两处镜像
+  document.querySelectorAll(".term").forEach(t => {
+    const atBottom = t.scrollTop + t.clientHeight >= t.scrollHeight - 30;
+    const d = document.createElement("div");
+    d.className = cls||""; d.textContent = txt;
+    if(t.firstChild?.classList?.contains("hd")) t.innerHTML = "";
+    t.appendChild(d);
+    if(atBottom) t.scrollTop = t.scrollHeight;
+  });
+}
+/* 运行态 UI：两页签各自的停止按钮/状态徽标同步 */
+function runUI(on){
+  document.querySelectorAll("#stopbtn, #sinkstop").forEach(b => b.disabled = !on);
+  const badge = `<span class="badge ${on ? "warn" : "ok"}">${on ? "运行中" : "空闲"}</span>`;
+  $("#runstate").innerHTML = badge;
+  if($("#sinkrunstate")) $("#sinkrunstate").innerHTML = badge;
+  document.querySelectorAll(".wstep .ops button, #advrun").forEach(x => x.disabled = on);
 }
 $("#stopbtn").onclick = async ()=>{
   await fetch("/api/stop_run", {method:"POST"});
   toast("已发送终止信号", "ok");
 };
+if($("#sinkstop")) $("#sinkstop").onclick = $("#stopbtn").onclick;
 
 async function loadArts(){
   const r = await fetch(`/api/artifacts?env=${activeEnv}`);

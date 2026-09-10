@@ -378,6 +378,8 @@ async def run(req: RunReq):
     if req.kind == "dar":
         if req.env not in ("test", "prod"):
             raise HTTPException(400, "env 取值 test|prod")
+        if not req.steps:
+            raise HTTPException(400, "steps 为空（dar 运行必须带步骤）")
         args = [sys.executable, os.path.join(HERE, "dar_weekly.py"), "--env", req.env]
         if req.note:
             args += ["--note", req.note]
