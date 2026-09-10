@@ -7,24 +7,25 @@ import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
-import { setupWechatShare, isPcWechat, navigateInWechat } from '@/shared/utils/wechatJsSdk';
+import { setupWechatShare, isPcWechat } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { readStored } from '@/stores/authStorage';
 import SafeHtml from '@/shared/components/SafeHtml';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
+import TicketDynamicsCard from '@/shared/components/TicketDynamicsCard';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import DispatchFold from '@/shared/components/DispatchFold';
 import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
-import { uploadCommentAttachment, getOperationLogs, formatDuration, type OperationLog as TicketOperationLog } from '@/api/ticket';
+import { uploadCommentAttachment } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
-import { formatDateTime, formatRawDateTime, parseUtcDate } from '@/shared/utils/url';
+import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
@@ -103,7 +104,6 @@ const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
 };
 
 interface Attachment { path: string; size?: number; filename?: string; url?: string; id?: string; }
-type OperationLog = TicketOperationLog;
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -222,9 +222,6 @@ export default function TaskDetailPage() {
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
-  // 工单动态（操作日志，用于详情页滚动展示）
-  const [opLogs, setOpLogs] = useState<OperationLog[]>([]);
-
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
   const [responding, setResponding] = useState(false);
@@ -292,14 +289,6 @@ export default function TaskDetailPage() {
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
-  }, [detailId]);
-
-  // 加载工单操作日志（用于工单动态区域滚动展示）
-  useEffect(() => {
-    if (!detailId) return;
-    getOperationLogs(detailId)
-      .then((data) => setOpLogs(data || []))
-      .catch(() => setOpLogs([]));
   }, [detailId]);
 
   // 查看停留时长追踪：用户离开页面 / 切后台时回传累计可见秒数
@@ -1973,50 +1962,7 @@ export default function TaskDetailPage() {
           </div>
         )}
 
-        <div
-          className="detail-card ticket-dynamics-card"
-          onClick={() => navigateInWechat(navigate, `/tasks/${detailId}/operations`)}
-          role="button"
-          tabIndex={0}
-        >
-          <h4 className="detail-card__h">
-            工单动态
-            <span className="ticket-dynamics-card__more">查看全部 ›</span>
-          </h4>
-          {(() => {
-            if (opLogs.length === 0) {
-              return <p className="detail-card__body detail-card__body--muted">暂无动态</p>;
-            }
-            const formatTime = (ts: string) => {
-              // 后端返回 naive datetime（UTC），需经 parseUtcDate 标记为 UTC 后由浏览器按本地时区自动 +8
-              const d = parseUtcDate(ts);
-              if (!d) return '';
-              return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-            };
-            const items = opLogs.map((l) => {
-              // 查看记录追加停留时长
-              const dur = l.operation_type === 'view' ? formatDuration(l.duration_seconds) : '';
-              const suffix = dur ? `（停留 ${dur}）` : '';
-              return {
-                key: String(l.id),
-                text: `${formatTime(l.created_at)} · ${l.description || l.operation_type}${suffix}`,
-              };
-            });
-            // 复制一份用于无缝循环滚动
-            const loopItems = [...items, ...items];
-            const scrollStyle = { '--count': items.length } as React.CSSProperties;
-            const scrollAttrs = items.length <= 3 ? { 'data-count-lte': '3' } : {};
-            return (
-              <div className="ticket-dynamics-scroll" style={scrollStyle} {...scrollAttrs}>
-                <div className="ticket-dynamics-scroll__track">
-                  {loopItems.map((it, i) => (
-                    <div className="ticket-dynamics-scroll__item" key={`${it.key}-${i}`}>{it.text}</div>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
-        </div>
+        <TicketDynamicsCard taskId={detailId ?? ''} />
 
         {(() => {
           const meta = detail.metadata_info || {};
