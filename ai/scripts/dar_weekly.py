@@ -20,6 +20,13 @@
 环境：--env test（缺省）| prod。两环境数据/人工标注/周报完全隔离；
 模型：l1/l3/retrieval 三步的判定用 DAR_MODEL（缺省 deepseek-v4.1-flash-expires-on-0910，
 温度 0 无思考）；检索词改写走 pipeline 内部 get_intent_client（INTENT_MODEL）。
+
+环境规定（用户 0910 定调，固定不再变）：
+  1) 指标生成的数据从生产拿：对话记录走 --env prod（export 连生产库）；测试库数据
+     只用于校准考卷/内部验证（--env test）。
+  2) L1/L3/retrieval 等一切用到检索的步骤，去服务器的测试环境测（DAR_QDRANT 缺省
+     test：隧道 + 测试服务指针）；本地快照又旧又慢，只作 DAR_QDRANT=local 应急。
+  3) 在线测试也从测试环境测；生产库/生产服务只读，写操作绝不碰生产。
 """
 import glob
 import io
@@ -875,8 +882,9 @@ def main():
     OUT = os.path.join(DATA, "processed")
     MANUAL = os.path.join(r"C:/Users/PAJ26020/Downloads", MANUAL_NAME[ENV])
     SPLIT = os.path.join(OUT, "conversations_split.jsonl")
-    # retrieval 检索源跟随数据环境（prod=连生产 qdrant 只读重放）；显式 DAR_QDRANT 可覆盖
-    os.environ.setdefault("DAR_QDRANT", "prod" if ENV == "prod" else "local")
+    # 检索源（规定，用户 0910 定调）：L1/L3/retrieval 一律走服务器测试环境；
+    # 本地快照又旧又慢，仅 DAR_QDRANT=local 应急。数据由 --env 决定，与检索源无关。
+    os.environ.setdefault("DAR_QDRANT", "test")
     if ENV == "test":
         _migrate_legacy()
     if not names:

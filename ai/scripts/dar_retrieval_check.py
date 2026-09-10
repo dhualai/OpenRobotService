@@ -36,8 +36,9 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 # 环境随 dar_weekly --env 走（subprocess 继承 DAR_ENV）；单独跑缺省 test
 ENV = os.environ.get("DAR_ENV", "test")
 # 检索源：prod=连生产 qdrant 只读重放（隧道+切指针，见 dar_qdrant.py），local=本地知识库。
-# 缺省跟随数据环境；显式 DAR_QDRANT=local 可在 prod 数据下仍用本地检索
-QDRANT = os.environ.get("DAR_QDRANT", "prod" if ENV == "prod" else "local")
+# 检索源（规定，用户 0910 定调）：一律走服务器测试环境（与 dar_l3 同源同规则）；
+# DAR_QDRANT=local 仅作应急，不作缺省。对话数据由 DAR_ENV 决定。
+QDRANT = os.environ.get("DAR_QDRANT", "test")
 OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
@@ -141,6 +142,15 @@ async def main():
     from ai.agents.AiDiagnosisPlatform.pipeline import AgentState, get_diagnosis_platform
     from dar_llm import get_dar_client
 
+    if QDRANT == "local":  # 指针残留自愈+校验：否则全轮静默空检索（0910 实锤，见 dar_qdrant）
+        from dar_qdrant import heal_local_pointers
+        miss = heal_local_pointers()
+        if miss:
+            print("!! 本地指针指向的集合在本地库不存在：" + "；".join(f"{d}={v}" for d, v in miss)
+                  + "\n!! 常见原因：远程跑被中断，指针残留远程值未恢复。此状态下检索全空"
+                  "且整轮不报错，判定失真——先修指针再跑。")
+            sys.exit(2)
+
     rows = build_rows()
     path = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
     jpath = path[:-5] + ".jsonl"  # 断点续跑：逐段追加；中断后重跑只补未判段
@@ -228,11 +238,19 @@ async def main():
 
 
 if __name__ == "__main__":
-    # prod 检索源必须在首次 import pipeline 前切好 env/指针（进程级，退出自动恢复）
-    if QDRANT == "prod":
-        from dar_qdrant import remote_qdrant
-        with remote_qdrant("prod") as ptr:
-            print(f"检索源=生产 qdrant（指针: {ptr}）")
+    # 服务器检索源必须在首次 import pipeline 前切好 env/指针（进程级，退出自动恢复）
+    if QDRANT in ("prod", "test"):
+        from contextlib import ExitStack
+
+        from dar_qdrant import SSH_HOST, SSH_PORT, remote_qdrant
+        with ExitStack() as st:
+            try:  # 隧道/指针拉不到=起跑前明确退出，不烧 LLM
+                ptr = st.enter_context(remote_qdrant(QDRANT))
+            except Exception as ex:
+                sys.exit(f"服务器检索源不可用（{QDRANT}）：{type(ex).__name__}: {ex}\n"
+                         f"  → 检查免密 ssh {SSH_HOST}:{SSH_PORT}；"
+                         "或 DAR_QDRANT=local 用本地知识库跑")
+            print(f"检索源={QDRANT} 服务器 qdrant（指针: {ptr}）")
             asyncio.run(main())
     else:
         print("检索源=本地知识库")

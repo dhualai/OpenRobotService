@@ -119,6 +119,33 @@ def _restore_leftover():
         os.remove(bak)
 
 
+def heal_local_pointers():
+    """local 模式启动自愈 + 校验：remote 跑被 kill 会残留远程指针（0909/0910 实锤），
+    残留后 local 检索对三个域全部查不存在的集合——每条 query 都「检索失败→空资料」
+    但整轮不报错（0910：290 段 66s 跑完全空，产物差点当成 r5）。恢复 .dar_bak 后
+    校验三域指针集合在本地库存在，返回缺失列表 [(domain, value), ...]（空=正常）。"""
+    _restore_leftover()
+    missing, ptrs = [], {}
+    for d in DOMAINS:
+        p = os.path.join(_LOCAL_KB, f"active_{d}_collection.txt")
+        if not os.path.exists(p):
+            missing.append((d, "<无指针文件>"))
+            continue
+        ptrs[d] = open(p, encoding="utf-8").read().strip()
+    if not missing:
+        try:
+            from qdrant_client import QdrantClient
+            c = QdrantClient(path=os.path.join(_LOCAL_KB, "qdrant"))
+            have = {x.name for x in c.get_collections().collections}
+            c.close()
+            for d, col in ptrs.items():
+                if col and col not in have:
+                    missing.append((d, col))
+        except Exception as ex:
+            print(f"[dar_qdrant] 本地集合校验跳过: {type(ex).__name__}: {ex}")
+    return missing
+
+
 @contextmanager
 def remote_qdrant(which: str):
     """进入远程检索模式（隧道+指针+env），退出自动恢复指针与 env。which=test|prod。"""
