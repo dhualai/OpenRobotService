@@ -916,7 +916,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           });
           if (resp.ok) {
             const j = (await resp.json()) as { url?: string };
-            if (j.url) dataUrl = j.url;
+            // 后端返回 /api/ai/media/...（media_url_prefix），但测试环境 nginx 前缀是
+            // /t/api/ai——按前端 BASE 重写前缀，否则 img 404 出问号图
+            if (j.url) dataUrl = j.url.replace(/^\/api\/ai/, API_CONFIG.AI.BASE_URL);
           } else {
             console.warn('[forward] 上传转发图失败', resp.status);
           }
