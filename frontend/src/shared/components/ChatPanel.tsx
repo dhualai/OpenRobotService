@@ -310,6 +310,7 @@ const mergeDbMessages = (prev: Message[], fresh: Message[]): Message[] => {
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
   msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice, answered, selectedChoice,
+  selectMode, checked, onCheck, onEnterSelect,
 }: {
   msg: Message;
   editingId: string | null;
@@ -330,9 +331,50 @@ const MessageBubble = memo(function MessageBubble({
   // 禁用防重复发序号）；selectedChoice=答复序号对应按钮（加深显示）
   answered?: boolean;
   selectedChoice?: number;
+  // 转发多选（0911）：长按消息进入多选；多选模式下点击整条切换勾选
+  selectMode?: boolean;
+  checked?: boolean;
+  onCheck?: (id: string) => void;
+  onEnterSelect?: (id: string) => void;
 }) {
+  // 长按 500ms 进入多选（转发记录）。编辑中/流式中不触发；语音长按在输入区不冲突。
+  const pressTimerRef = useRef<number | null>(null);
+  const clearPress = () => {
+    if (pressTimerRef.current !== null) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+  };
+  // 长按触发后置真，抑制紧随的 click（防多选刚开就误触气泡内部交互）
+  const suppressClickRef = useRef(false);
+  const canLongPress = !!onEnterSelect && editingId !== msg.id && !msg.streaming && !msg.uploading && !msg.phase;
   return (
-    <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
+    <div
+      className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}${selectMode ? ' is-selecting' : ''}${selectMode && checked ? ' is-checked' : ''}`}
+      data-msg-id={msg.id}
+      onPointerDown={canLongPress && !selectMode ? (e) => {
+        // 仅主键/触摸；移动指针滑出取消
+        if (e.button !== 0) return;
+        clearPress();
+        pressTimerRef.current = window.setTimeout(() => {
+          suppressClickRef.current = true;
+          onEnterSelect?.(msg.id);
+          if (navigator.vibrate) navigator.vibrate(15);
+        }, 500);
+      } : undefined}
+      onPointerUp={clearPress}
+      onPointerLeave={clearPress}
+      onPointerCancel={clearPress}
+      onClick={selectMode ? () => {
+        if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+        onCheck?.(msg.id);
+      } : undefined}
+    >
+      {selectMode && (
+        <div className={`chat-select-check${checked ? ' is-on' : ''}`} aria-hidden>
+          {checked && <Check size={14} strokeWidth={3} />}
+        </div>
+      )}
       <div className={`chat-bubble ${msg.role === 'user' ? 'is-user' : 'is-ai'}`}>
         {msg.imageUrl && (
           <div className="chat-bubble__media">
@@ -680,6 +722,106 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return () => clearInterval(timer);
   }, [isCall]);
   const rotatingPlaceholder = isCall ? AI_INPUT_PLACEHOLDER_TIPS[inputTipIndex] : '发消息…';
+
+  // ── 聊天记录转发（0911）：长按消息进入多选 → 生成品牌化长图（宣传引流场景：
+  // 把「我问 AI 答」的记录转给同事/客户，证明摇人吧能解决问题）。仅 call 场景。
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [forwardImage, setForwardImage] = useState<string | null>(null);
+  const [forwardBusy, setForwardBusy] = useState(false);
+
+  const enterSelect = useCallback((id: string) => {
+    setSelectMode(true);
+    setSelectedIds(new Set([id]));
+  }, []);
+  const exitSelect = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }, []);
+  const toggleCheck = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const selectAllVisible = useCallback(() => {
+    setSelectedIds(new Set(messages
+      .filter((m) => m.role === 'user' || (!m.streaming && !m.phase))
+      .map((m) => m.id)));
+  }, [messages]);
+
+  const pickedMsgs = useMemo(
+    () => messages.filter((m) => selectedIds.has(m.id)), [messages, selectedIds]);
+
+  const copyForwardText = useCallback(async () => {
+    if (!pickedMsgs.length) return;
+    const text = [
+      '【摇人吧 · 与 AI 助手的对话记录】',
+      ...pickedMsgs.map((m) => `${m.role === 'user' ? '问' : '答'}：${(m.content || '').trim()}`),
+      '—— 来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行',
+    ].join('\n\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      Toast({ message: '已复制为文本', theme: 'success' });
+    } catch {
+      Toast({ message: '复制失败，请重试', theme: 'error' });
+    }
+  }, [pickedMsgs]);
+
+  const fmtTs = (ts: string) => (ts || '').replace('T', ' ').slice(5, 16);
+  const makeForwardImage = useCallback(async () => {
+    if (!pickedMsgs.length || forwardBusy) return;
+    setForwardBusy(true);
+    try {
+      const { default: html2canvas } = await import('html2canvas-pro');
+      const root = document.createElement('div');
+      root.className = 'forward-snapshot';
+      const who = name || username || '用户';
+      const head = document.createElement('div');
+      head.className = 'forward-snapshot__head';
+      head.innerHTML =
+        `<div class="forward-snapshot__logo">摇</div>` +
+        `<div class="forward-snapshot__titles">` +
+        `<div class="forward-snapshot__name">摇人吧 · AI 助手 U老师</div>` +
+        `<div class="forward-snapshot__sub">${who} 的提问记录 · ${fmtTs(pickedMsgs[0].timestamp)} 起</div>` +
+        `</div>`;
+      root.appendChild(head);
+      const bodyEl = document.createElement('div');
+      bodyEl.className = 'forward-snapshot__body';
+      for (const m of pickedMsgs) {
+        const node = messagesContainerRef.current?.querySelector(
+          `[data-msg-id="${CSS.escape(m.id)}"]`);
+        if (!node) continue;
+        const clone = node.cloneNode(true) as HTMLElement;
+        clone.classList.remove('is-selecting', 'is-checked');
+        const chk = clone.querySelector('.chat-select-check');
+        if (chk) chk.remove();
+        bodyEl.appendChild(clone);
+      }
+      root.appendChild(bodyEl);
+      const foot = document.createElement('div');
+      foot.className = 'forward-snapshot__foot';
+      foot.textContent = '—— 来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行';
+      root.appendChild(foot);
+      document.body.appendChild(root);
+      try {
+        const canvas = await html2canvas(root, {
+          scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false,
+        });
+        setForwardImage(canvas.toDataURL('image/png'));
+        exitSelect();
+      } finally {
+        document.body.removeChild(root);
+      }
+    } catch (e) {
+      console.error('[forward] 生成转发图失败', e);
+      Toast({ message: '生成失败，请重试', theme: 'error' });
+    } finally {
+      setForwardBusy(false);
+    }
+  }, [pickedMsgs, forwardBusy, exitSelect, name, username]);
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -2604,6 +2746,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     <div className={`chat-panel${compact ? ' is-compact' : ''}`}>
 
       <div className="chat-view__messages" ref={messagesContainerRef}>
+        {selectMode && (
+          <div className="chat-select-bar">
+            <button className="chat-select-bar__btn" onClick={exitSelect}>取消</button>
+            <span className="chat-select-bar__info">已选 {selectedIds.size} 条 · 点消息勾选</span>
+            <button className="chat-select-bar__btn" onClick={selectAllVisible}>全选</button>
+          </div>
+        )}
         {messages.length === 0 && (
           <div className="chat-view__empty">
             {!isCall && <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>}
@@ -2655,6 +2804,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             selectedChoice={selectedChoice}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
+            selectMode={isCall && selectMode}
+            checked={selectedIds.has(msg.id)}
+            onCheck={toggleCheck}
+            onEnterSelect={enterSelect}
           />
           );
         })}
@@ -2737,8 +2890,23 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       )}
 
       {/* 输入区（设计稿单行横排：上传 + 输入框 + 发送 + 新建会话） */}
+      {/* 多选模式：输入区上方出现转发操作条，输入栏本体禁用（防误触） */}
+      {selectMode && (
+        <div className="chat-forward-bar">
+          <button className="chat-forward-bar__btn" onClick={copyForwardText} disabled={!selectedIds.size}>
+            复制文本
+          </button>
+          <button
+            className="chat-forward-bar__btn is-primary"
+            onClick={makeForwardImage}
+            disabled={!selectedIds.size || forwardBusy}
+          >
+            {forwardBusy ? '生成中…' : `生成转发图（${selectedIds.size} 条）`}
+          </button>
+        </div>
+      )}
       <div
-        className="chat-input-bar"
+        className={`chat-input-bar${selectMode ? ' is-select-disabled' : ''}`}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); }
         }}
@@ -3131,6 +3299,34 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           open={!!previewUrl}
           onClose={() => setPreviewUrl(null)}
         />
+
+        {/* 转发图预览：长按图片可保存/转发，也可点按钮下载 */}
+        {forwardImage && (
+          <div className="chat-forward-preview" onClick={() => setForwardImage(null)}>
+            <div className="chat-forward-preview__panel" onClick={(e) => e.stopPropagation()}>
+              <div className="chat-forward-preview__hint">长按图片保存，或点按钮下载后转发</div>
+              <div className="chat-forward-preview__img-wrap">
+                <img src={forwardImage} alt="转发图" />
+              </div>
+              <div className="chat-forward-preview__ops">
+                <button
+                  className="chat-forward-bar__btn is-primary"
+                  onClick={() => {
+                    const a = document.createElement('a');
+                    a.href = forwardImage;
+                    a.download = `摇人吧对话记录_${Date.now()}.png`;
+                    a.click();
+                  }}
+                >
+                  下载图片
+                </button>
+                <button className="chat-forward-bar__btn" onClick={() => setForwardImage(null)}>
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
