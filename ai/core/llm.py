@@ -97,14 +97,17 @@ class DeepSeekProvider(BaseLLMProvider):
             "messages": messages,
             **kwargs,
         }
-        # DeepSeek/miMo 思考模式（默认开启，传 thinking=False 显式关闭）。
-        # 思考强度用 reasoning_effort 控制（low/medium/high），开启时一律最低档 low
+        # DeepSeek/miMo 思考模式（0911 起默认**关闭**，传 thinking=True 显式开启）。
+        # 0827-0910 曾默认开（effort low）：v4-flash 老后端 low 档思考极短无感；
+        # 0910 官方下线 v4 家族、请求全部由新 flash 后端承接后，low 档思考
+        # 1100-2300 字——流式回答先思考后正文，「你好」也要 6.9s（生产日志
+        # 实锤：中位 3.1s→6.9s）。关思考同题 1.9s。需要推理的场景显式传 True。
         if any(x in model.lower() for x in ("deepseek", "mimo")):
-            if _thinking is False:
-                payload["thinking"] = {"type": "disabled"}
-            else:
+            if _thinking is True:
                 payload["thinking"] = {"type": "enabled"}
                 payload["reasoning_effort"] = _effort or "low"
+            else:
+                payload["thinking"] = {"type": "disabled"}
         return payload
 
     def extract_content(self, response: Dict[str, Any]) -> str:
@@ -150,12 +153,14 @@ class OpenAIProvider(BaseLLMProvider):
             **kwargs,
         }
         _model = model.lower()
-        # DeepSeek/miMo 思考模式（默认开启，传 thinking=False 显式关闭）
+        # DeepSeek/miMo 思考模式（0911 起默认**关闭**，传 thinking=True 显式开启——
+        # 同上方构建函数的注释与缘由）
         if any(x in _model for x in ("deepseek", "mimo")):
-            if _thinking is False:
-                payload["thinking"] = {"type": "disabled"}
-            else:
+            if _thinking is True:
                 payload["thinking"] = {"type": "enabled"}
+                payload["reasoning_effort"] = _reasoning_effort or "low"
+            else:
+                payload["thinking"] = {"type": "disabled"}
         # Claude 经 OpenAI 兼容中转站：默认**不传任何 thinking 字段**。
         # 实测（yitongapi 中转站 claude-opus-4-8）：只要请求带 thinking
         # （无论 enabled/disabled），思考型问题的正文字符就是 0——中转站对
