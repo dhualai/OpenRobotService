@@ -840,67 +840,66 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       document.body.appendChild(root);
       inlineComputed(root);
       try {
-        // 微信 WebView 里 html-to-image 内部的超长 data URL 送图画不出来（静默灰图）——
-        // 手动走 Blob URL 绕开长度限制；产物做空图检测（防 foreignObject 内容不渲染），
-        // 失败自动落回 html2canvas（基线会画沉但保出图）
-        const renderForeignObject = async (): Promise<string> => {
-          const { toSvg } = await import('html-to-image');
-          const svgData = await toSvg(root, {
-            pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
-          });
-          // 残留外链 url()（字体/图标）会让 canvas taint（getImageData/toBlob 抛
-          // SecurityError）——清洗成 none（系统字体、无背景图，不受影响）
-          const svgText = await (await fetch(svgData)).text();
-          const cleaned = svgText.replace(/url\(\s*['"]?(?!data:|#)[^)]*\)/gi, 'none');
-          // FileReader 产 base64 dataURL：blob URL + foreignObject 会被判跨源污染 canvas，
-          // encodeURIComponent 编码版 foreignObject 不渲染——base64 版两端实证可用
-          const dataUrl = await new Promise<string>((resolve) => {
-            const fr = new FileReader();
-            fr.onload = () => resolve(fr.result as string);
-            fr.readAsDataURL(new Blob([cleaned], { type: 'image/svg+xml;charset=utf-8' }));
-          });
-          const im = await new Promise<HTMLImageElement>((resolve, reject) => {
-            const i = new Image();
-            i.onload = () => resolve(i);
-            i.onerror = () => reject(new Error('svg image load failed'));
-            i.src = dataUrl;
-          });
-          if (!im.naturalWidth || !im.naturalHeight) throw new Error('svg image zero size');
-          const canvas = document.createElement('canvas');
-          canvas.width = im.naturalWidth * 2;
-          canvas.height = im.naturalHeight * 2;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) throw new Error('no 2d context');
-          ctx.fillStyle = '#eef1f6';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(im, 0, 0, canvas.width, canvas.height);
-          // 空图检测：头部区域（品牌蓝横条）若仍是背景色 = foreignObject 内容没渲染
-          const probe = ctx.getImageData(
-            Math.floor(canvas.width * 0.75), Math.min(80, canvas.height - 1), 1, 1).data;
-          if (probe[0] > 225 && probe[1] > 230 && probe[2] > 235) {
-            throw new Error('foreignObject rendered empty');
+        // 文本预栅格化：html2canvas 按 CJK/拉丁分 baseline 画文本（英文数字画沉 6~7px，
+        // 三平台实锤、字体/行高均治不了）——把文本节点替换成 canvas 亲手画的 img
+        // （fillText 中英混排天然同基线），html2canvas 只画图片+色块，平台无关
+        const rasterizeTexts = (rootEl: HTMLElement) => {
+          const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+          const texts: Text[] = [];
+          while (walker.nextNode()) {
+            const n = walker.currentNode as Text;
+            if (n.textContent && n.textContent.trim()) texts.push(n);
           }
-          return await new Promise<string>((resolve, reject) => {
-            canvas.toBlob(
-              (b) => (b ? resolve(URL.createObjectURL(b)) : reject(new Error('toBlob failed'))),
-              'image/png',
-            );
-          });
+          for (const node of texts) {
+            const el = node.parentElement;
+            if (!el) continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+            const raw = node.textContent ?? '';
+            const fontSize = parseFloat(cs.fontSize) || 13;
+            const font = `${cs.fontStyle} ${cs.fontWeight} ${fontSize}px ${cs.fontFamily}`;
+            const meas = document.createElement('canvas').getContext('2d');
+            if (!meas) continue;
+            meas.font = font;
+            const elW = el.getBoundingClientRect().width;
+            const availW = Math.max(elW - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), 40) || 300;
+            const lines: string[] = [];
+            for (const seg of raw.split('\n')) {
+              let cur = '';
+              for (const ch of seg) {
+                if (meas.measureText(cur + ch).width > availW && cur) {
+                  lines.push(cur);
+                  cur = ch;
+                } else cur += ch;
+              }
+              lines.push(cur);
+            }
+            const lh = parseFloat(cs.lineHeight) || fontSize * 1.5;
+            const dpr = 2;
+            const w = Math.ceil(Math.max(...lines.map((l) => meas.measureText(l).width), 1)) + 2;
+            const h = Math.ceil(lines.length * lh) + 2;
+            const c = document.createElement('canvas');
+            c.width = Math.ceil(w * dpr);
+            c.height = Math.ceil(h * dpr);
+            const g = c.getContext('2d');
+            if (!g) continue;
+            g.scale(dpr, dpr);
+            g.font = font;
+            g.fillStyle = cs.color;
+            g.textBaseline = 'alphabetic';
+            lines.forEach((l, i) => g.fillText(l, 1, i * lh + (lh + fontSize * 0.72) / 2));
+            const img = document.createElement('img');
+            img.src = c.toDataURL('image/png');
+            img.style.cssText = `display:inline-block;vertical-align:top;width:${w}px;height:${h}px;`;
+            node.replaceWith(img);
+          }
         };
-        let dataUrl = '';
-        try {
-          dataUrl = await renderForeignObject();
-        } catch (e) {
-          console.warn('[forward] foreignObject 路线失败，走 html2canvas', e);
-        }
-        if (!dataUrl) {
-          const { default: html2canvas } = await import('html2canvas-pro');
-          const canvas = await html2canvas(root, {
-            scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false,
-          });
-          dataUrl = canvas.toDataURL('image/png');
-        }
-        setForwardImage(dataUrl);
+        rasterizeTexts(root);
+        const { default: html2canvas } = await import('html2canvas-pro');
+        const canvas = await html2canvas(root, {
+          scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false,
+        });
+        setForwardImage(canvas.toDataURL('image/png'));
         exitSelect();
       } finally {
         document.body.removeChild(root);

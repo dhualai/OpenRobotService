@@ -116,49 +116,63 @@
     s.onerror = reject;
     document.head.appendChild(s);
   });
-  // blob 版 foreignObject 链路（与 ChatPanel.renderForeignObject 同构）：
-  // toSvg → fetch→blob → objectURL → Image → canvas → 空图探针 → toBlob
-  const { toSvg } = await import('html-to-image');
-  const svgData = await toSvg(document.getElementById('snap'),
-    { pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true });
-  // 整页 <style>（TDesign 全量 CSS）可整体删：截图树已逐元素 inline computedStyle；
-  // 体积从几百 KB 掉到几十 KB，dataURL 不再超 WebView 限度。
-  // 残留外链 url() 也清洗（canvas taint 源）。
-  const svgText0 = await (await fetch(svgData)).text();
-  const cleaned = svgText0
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/url\(\s*['"]?(?!data:|#)[^)]*\)/gi, 'none');
-  window.__pvSvgLen = { before: svgText0.length, after: cleaned.length };
-  // FileReader 产 base64 dataURL（与 html-to-image 内部一致；
-  // btoa+spread 266KB 会爆栈，encodeURIComponent 版 Chrome 下 foreignObject 不渲染）
-  const dataUrl2 = await new Promise((resolve) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result);
-    fr.readAsDataURL(new Blob([cleaned], { type: 'image/svg+xml;charset=utf-8' }));
+  // 文本预栅格化：把文本节点替换成 canvas 画的 img（fillText 中英混排天然同基线），
+  // html2canvas 只画图片+色块——基线问题从根上消失，平台无关
+  const rasterizeTexts = (rootEl) => {
+    const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+    const texts = [];
+    while (walker.nextNode()) if (walker.currentNode.textContent && walker.currentNode.textContent.trim()) texts.push(walker.currentNode);
+    for (const node of texts) {
+      const el = node.parentElement;
+      if (!el) continue;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      const raw = node.textContent;
+      const fontSize = parseFloat(cs.fontSize) || 13;
+      const font = `${cs.fontStyle} ${cs.fontWeight} ${fontSize}px ${cs.fontFamily}`;
+      const meas = document.createElement('canvas').getContext('2d');
+      meas.font = font;
+      const availW = Math.max(el.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), 40) || 300;
+      const lines = [];
+      for (const seg of raw.split('\n')) {
+        let cur = '';
+        for (const ch of seg) {
+          if (meas.measureText(cur + ch).width > availW && cur) { lines.push(cur); cur = ch; }
+          else cur += ch;
+        }
+        lines.push(cur);
+      }
+      const lh = parseFloat(cs.lineHeight) || fontSize * 1.5;
+      const dpr = 2;
+      const w = Math.ceil(Math.max(...lines.map(l => meas.measureText(l).width), 1)) + 2;
+      const h = Math.ceil(lines.length * lh) + 2;
+      const c = document.createElement('canvas');
+      c.width = Math.ceil(w * dpr); c.height = Math.ceil(h * dpr);
+      const g = c.getContext('2d');
+      g.scale(dpr, dpr);
+      g.font = font;
+      g.fillStyle = cs.color;
+      g.textBaseline = 'alphabetic';
+      lines.forEach((l, i) => g.fillText(l, 1, i * lh + (lh + fontSize * 0.72) / 2));
+      const img = document.createElement('img');
+      img.src = c.toDataURL('image/png');
+      img.style.cssText = `display:inline-block;vertical-align:top;width:${w}px;height:${h}px;`;
+      node.replaceWith(img);
+    }
+  };
+  rasterizeTexts(document.getElementById('snap'));
+  sheets.forEach(s => { s.disabled = true; });
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/node_modules/html2canvas-pro/dist/html2canvas-pro.min.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
   });
-  const svgUrl = dataUrl2;
-  let im;
-  try {
-    im = await new Promise((resolve, reject) => {
-      const i = new Image();
-      i.onload = () => resolve(i);
-      i.onerror = () => reject(new Error('svg image load failed'));
-      i.src = svgUrl;
-    });
-    if (!im.naturalWidth || !im.naturalHeight) throw new Error('svg image zero size');
-    const canvas = document.createElement('canvas');
-    canvas.width = im.naturalWidth * 2; canvas.height = im.naturalHeight * 2;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#eef1f6';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(im, 0, 0, canvas.width, canvas.height);
-    const probe = ctx.getImageData(Math.floor(canvas.width * 0.75), 80, 1, 1).data;
-    window.__pvProbe = [probe[0], probe[1], probe[2]];
-    url = await new Promise((resolve, reject) => {
-      canvas.toBlob(b => (b ? (window.__pvBlob = b, resolve(URL.createObjectURL(b))) : reject(new Error('toBlob failed'))), 'image/png');
-    });
-  } finally { URL.revokeObjectURL(svgUrl); }
+  const canvas = await window.html2canvas(document.getElementById('snap'),
+    { scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false });
   sheets.forEach(s => { s.disabled = false; });
+  url = canvas.toDataURL('image/png');
   img.src = url;
   hint.textContent = '长按图片可直接发送给朋友，或保存图片';
   dl.disabled = false;
