@@ -27,8 +27,9 @@
   python ai/scripts/dar_weekly.py --env prod export         # 连生产导数据（目录隔离到 export_dar/prod/）
   python ai/scripts/dar_weekly.py --env prod --note 上线v2 prepare l1 ...   # 附注随周报落盘
 环境：--env test（缺省）| prod。两环境数据/人工标注/周报完全隔离；
-模型：l1/l3/retrieval 三步的判定用 DAR_MODEL（缺省 deepseek-v4.1-flash-expires-on-0910，
-温度 0 无思考）；检索词改写走 pipeline 内部 get_intent_client（INTENT_MODEL）。
+模型：l1/l3/retrieval 三步的判定用 DAR_MODEL（缺省 deepseek-flash，
+0910 起——旧别名 v4.1-flash-expires-on-0910 已失效；温度 0 无思考）；
+检索词改写走 pipeline 内部 get_intent_client（INTENT_MODEL）。
 
 环境规定（用户 0910 定调，固定不再变）：
   1) 指标生成的数据从生产拿：对话记录走 --env prod（export 连生产库）；测试库数据
