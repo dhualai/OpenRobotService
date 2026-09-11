@@ -15,6 +15,9 @@ import { readStored } from '@/stores/authStorage';
 import SafeHtml from '@/shared/components/SafeHtml';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import TicketDynamicsCard from '@/shared/components/TicketDynamicsCard';
+import StepNegotiationCard from '@/shared/components/StepNegotiationCard';
+import { useStepNegotiation } from '@/shared/hooks/useStepNegotiation';
+import { useResolveTicket } from '@/shared/hooks/useResolveTicket';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import DispatchFold from '@/shared/components/DispatchFold';
 import UserSelect from '@/shared/components/UserSelect';
@@ -447,208 +450,6 @@ export default function TaskDetailPage() {
     }
   };
 
-  // 结束工单：轮询读取 metadata_info.resolution_summary（worker 后台生成后回填）
-  const pollResolutionSummary = async (force = false) => {
-    if (!detailId) return;
-    let attempts = 0;
-    const maxAttempts = 20; // 约 20 * 1.5s ≈ 30s 上限
-    setResolutionPolling(true);
-
-    // 重试时先带 force 强制重新入队（清除"无内容"标记）
-    if (force) {
-      try {
-        await request<{ status: string; resolution_summary?: string }>(`/${detailId}/resolution-summary`, {
-          method: 'POST',
-          body: JSON.stringify({ force: true }),
-          skipCache: true,
-        });
-      } catch {
-        setResolutionLoading(false);
-        setResolutionPolling(false);
-        setResolutionFailed(true);
-        return;
-      }
-    }
-
-    while (attempts < maxAttempts) {
-      attempts += 1;
-      await new Promise((r) => setTimeout(r, 1500));
-      // 取消/关闭时立即停止轮询
-      if (resolvePollStopRef.current) {
-        setResolutionPolling(false);
-        return;
-      }
-      try {
-        const res = await request<{ status: string; resolution_summary?: string }>(`/${detailId}/resolution-summary`, {
-          method: 'POST',
-          skipCache: true,
-        });
-        console.log(`[resolution-summary] 轮询第${attempts}次:`, res);
-        // 已取消 → 不再回填，直接退出
-        if (resolvePollStopRef.current) {
-          setResolutionPolling(false);
-          return;
-        }
-        const text = (res?.resolution_summary || '').trim();
-        // 已生成完成（有值、无内容、或 empty）→ 结束轮询
-        if (res?.status === 'empty') {
-          // AI 判定无解决方案
-          setResolutionLoading(false);
-          setResolutionFailed(false);
-          setResolutionNoSolution(true);
-          setResolutionPolling(false);
-          if (text) setResolutionText(text);
-          return;
-        }
-        if (res?.status === 'done' || res?.status === 'confirmed') {
-          if (text) {
-            setResolutionText(text);
-          }
-          setResolutionLoading(false);
-          setResolutionFailed(false);
-          setResolutionNoSolution(false);
-          setResolutionPolling(false);
-          return;
-        }
-        // status === 'pending' → 仍在生成中，继续轮询
-      } catch {
-        // 单次请求失败继续轮询
-      }
-    }
-    // 轮询超时仍未完成 → 置失败，提示用户手动补充/重试
-    setResolutionLoading(false);
-    setResolutionPolling(false);
-    setResolutionFailed(true);
-  };
-
-  const handleResolveClick = async () => {
-    if (!detail) return;
-    // 打开弹窗：默认显示空输入框，由接单人手动填写或点击"帮我生成"触发 AI
-    console.log('[resolution-summary] handleResolveClick 触发: task_id=', detail.id);
-    resolvePollStopRef.current = false; // 重置轮询停止标志
-    resolveConfirmedRef.current = false; // 重置确认标志（新一次打开）
-    setShowResolutionPopup(true);
-    setResolutionText('');
-    setResolutionLoading(false);
-    setResolutionFailed(false);
-    setResolutionPolling(false);
-    setResolutionNoSolution(false);
-  };
-
-  // 手动触发 AI 生成解决方式（点"帮我生成"时调用）
-  const handleGenerateResolution = async () => {
-    if (!detail) return;
-    resolvePollStopRef.current = false;
-    setResolutionLoading(true);
-    setResolutionFailed(false);
-    setResolutionPolling(false);
-    setResolutionNoSolution(false);
-    try {
-      console.log('[resolution-summary] 手动触发 POST /' + detail.id + '/resolution-summary (force)');
-      const res = await request<{ status: string; resolution_summary?: string }>(`/${detail.id}/resolution-summary`, {
-        method: 'POST',
-        body: JSON.stringify({ force: true }),
-        skipCache: true,
-      });
-      console.log('[resolution-summary] 接口返回:', res);
-      if (res) {
-        const text = (res.resolution_summary || '').trim();
-        if (text) {
-          // 已有解决方式（worker 已生成/已确认）→ 直接填入
-          setResolutionText(text);
-          setResolutionLoading(false);
-          setResolutionFailed(false);
-        } else if (res.status === 'pending') {
-          // 仍在生成中 → 轮询回读 worker 生成的草稿
-          pollResolutionSummary();
-        } else if (res.status === 'empty') {
-          // AI 判定当前无解决方案 → 停止 loading，显示"当前没有解决方案"占位
-          setResolutionLoading(false);
-          setResolutionFailed(false);
-          setResolutionNoSolution(true);
-        } else if (res.status === 'done') {
-          // worker 已完成但无内容（无资料）→ 停止 loading，placeholder 兜底
-          setResolutionLoading(false);
-          setResolutionFailed(false);
-          setResolutionNoSolution(false);
-        } else {
-          // 入队失败/异常 → 兜底：提示用户补充
-          setResolutionLoading(false);
-          setResolutionFailed(true);
-        }
-      } else {
-        setResolutionLoading(false);
-        setResolutionFailed(true);
-      }
-    } catch {
-      setResolutionLoading(false);
-      setResolutionFailed(true);
-    }
-  };
-
-  const handleRetryResolution = () => {
-    // 重试：重置停止标志，强制重新触发生成 + 轮询
-    resolvePollStopRef.current = false;
-    setResolutionFailed(false);
-    setResolutionLoading(true);
-    setResolutionText('');
-    setResolutionNoSolution(false);
-    pollResolutionSummary(true);
-  };
-
-  // 取消：停止轮询 + 清掉已保存的解决方式草稿，关闭弹窗（下次点击重新生成）
-  const handleResolveCancel = async () => {
-    // 先停止任何进行中的轮询
-    resolvePollStopRef.current = true;
-    setResolutionPolling(false);
-    setResolutionLoading(false);
-    if (resolveConfirmedRef.current) {
-      // 已确认完成成功，关闭弹窗但不清除草稿
-      setShowResolutionPopup(false);
-      resolveConfirmedRef.current = false;
-      return;
-    }
-    setShowResolutionPopup(false);
-    try {
-      if (detail?.id) {
-        await request<{ status: string }>(`/${detail.id}/resolution-summary`, {
-          method: 'POST',
-          body: JSON.stringify({ clear: true }),
-          skipCache: true,
-        });
-      }
-    } catch {
-      // 清除失败不影响：下次点击仍会重新生成
-    }
-  };
-
-  const handleConfirmResolve = async () => {
-    if (!detail) return;
-    const finalText = resolutionText.trim();
-    if (!finalText) {
-      Toast({ message: '请填写解决方式', theme: 'warning' });
-      return;
-    }
-    if (resolutionSubmitting) return;
-    setResolutionSubmitting(true);
-    try {
-      await request<Ticket>(`/${detail.id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'resolved', resolution_summary: finalText }),
-      });
-      refreshTasks();
-      await refreshDetail();
-      resolveConfirmedRef.current = true; // 标记已确认，关闭时不清除草稿
-      setShowResolutionPopup(false);
-      setResolutionText('');
-      Toast({ message: '工单已处理完成', theme: 'success' });
-    } catch (err) {
-      Toast({ message: `处理完成失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setResolutionSubmitting(false);
-    }
-  };
-
   const handleResume = async () => {
     if (!detail) return;
     
@@ -747,6 +548,10 @@ export default function TaskDetailPage() {
     setDetail(refreshed);
     refreshTasks();
   };
+
+  // 工单阶段性处理（协商节点）+ 结束工单（解决方式）：抽到共享 hook，与历史工单详情页复用
+  const negotiation = useStepNegotiation(detailId ?? '', detail, refreshDetail);
+  const resolve = useResolveTicket(detailId ?? '', detail, refreshDetail, refreshTasks);
 
   // ===== 公司/部门审核 =====
   const approvalInfo = (() => {
@@ -878,149 +683,6 @@ export default function TaskDetailPage() {
       setShowReturnConfirmPopup(false);
     } catch (err) {
       Toast({ message: `退回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    }
-  };
-
-  // 首次响应（确认同意）：确认当前协商节点，工单 new → in_progress
-  const handleRespond = async () => {
-    if (!detail) return;
-    setResponding(true);
-    try {
-      await request(`/${detail.id}/respond`, {
-        method: 'POST',
-        body: JSON.stringify({ curr_step_id: detail.curr_step_id ?? null }),
-      });
-      await refreshDetail();
-      Toast({ message: '已确认协商节点，开始处理', theme: 'success' });
-    } catch (err) {
-      Toast({ message: `响应失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setResponding(false);
-    }
-  };
-
-  // 当前阶段完成：处理人选择下一阶段节点 + 节点结束时间，提交后回合交给创建人
-  const handleStepComplete = async () => {
-    if (!detail) return;
-    if (!completeNextStepId) {
-      Toast({ message: '请选择下一阶段', theme: 'warning' });
-      return;
-    }
-    if (!completeNextEndTime) {
-      Toast({ message: '请选择下一阶段结束时间', theme: 'warning' });
-      return;
-    }
-    setSubmittingComplete(true);
-    setCompleting(true);
-    try {
-      await request(`/${detail.id}/complete-step`, {
-        method: 'POST',
-        body: JSON.stringify({
-          next_step_id: completeNextStepId,
-          curr_step_endtime: completeNextEndTime,
-        }),
-      });
-      await refreshDetail();
-      Toast({ message: '已推进到下一阶段，等待创建人确认', theme: 'success' });
-      setShowCompleteStepPopup(false);
-      setCompleteNextStepId(null);
-      setCompleteNextEndTime(null);
-    } catch (err) {
-      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setSubmittingComplete(false);
-      setCompleting(false);
-    }
-  };
-
-  // 设置节点时间（已升级工单，处理人一锤定音）
-  const handleSetStepTime = async () => {
-    if (!detail) return;
-    if (!setStepTimeValue) {
-      Toast({ message: '请选择节点时间', theme: 'warning' });
-      return;
-    }
-    setSubmittingSetStepTime(true);
-    try {
-      await request(`/${detail.id}/set-step-time`, {
-        method: 'POST',
-        body: JSON.stringify({ curr_step_endtime: setStepTimeValue }),
-        headers: { 'Content-Type': 'application/json' },
-      });
-      Toast({ message: '已设置节点时间', theme: 'success' });
-      setShowSetStepTimePopup(false);
-      setSetStepTimeValue(null);
-      await refreshDetail();
-    } catch (e: any) {
-      Toast({ message: e?.message || '设置失败', theme: 'error' });
-    } finally {
-      setSubmittingSetStepTime(false);
-    }
-  };
-
-  // 协商节点：可调整节点（前/后均可）+ 设置节点结束时间，理由必填
-  const handleNegotiateStep = async () => {
-    if (!detail) return;
-    if (!negotiateEndTime) {
-      Toast({ message: '请选择协商节点时间', theme: 'warning' });
-      return;
-    }
-    if (!negotiateReason.trim()) {
-      Toast({ message: '请填写协商理由', theme: 'warning' });
-      return;
-    }
-    setSubmittingNegotiate(true);
-    try {
-      await request(`/${detail.id}/negotiate-step`, {
-        method: 'POST',
-        body: JSON.stringify({
-          curr_step_endtime: negotiateEndTime,
-          curr_step_id: negotiateStepId,
-          reason: negotiateReason.trim(),
-        }),
-      });
-      await refreshDetail();
-      Toast({ message: '协商节点已更新', theme: 'success' });
-      setNegotiateReason('');
-      setNegotiateEndTime(null);
-      setNegotiateStepId(null);
-      setShowNegotiateStepPopup(false);
-    } catch (err) {
-      Toast({ message: `设置失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setSubmittingNegotiate(false);
-    }
-  };
-
-  // 未解决打回：提单人选择重新开始的阶段 + 时间，工单回到处理中，阶段性处理从头开始
-  const handleReopenStep = async () => {
-    if (!detail) return;
-    if (!reopenStepId) {
-      Toast({ message: '请选择重新开始的阶段', theme: 'warning' });
-      return;
-    }
-    if (!reopenEndTime) {
-      Toast({ message: '请选择节点结束时间', theme: 'warning' });
-      return;
-    }
-    setSubmittingReopen(true);
-    try {
-      await request(`/${detail.id}/reopen-step`, {
-        method: 'POST',
-        body: JSON.stringify({
-          curr_step_id: reopenStepId,
-          curr_step_endtime: reopenEndTime,
-        }),
-      });
-      await refreshDetail();
-      Toast({ message: '工单已打回到处理中，阶段性处理从头开始', theme: 'success' });
-      setShowReopenPopup(false);
-      setReopenStepId(null);
-      setReopenEndTime(null);
-    } catch (err) {
-      Toast({ message: `打回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setSubmittingReopen(false);
     }
   };
 
@@ -1466,13 +1128,13 @@ export default function TaskDetailPage() {
                       setShowResumePopup(true);
                     } else if (action.actionType === 'reopen') {
                       // 未解决打回：选择重新开始的阶段 + 节点时间，阶段性处理从头开始
-                      const firstStep = [...stepTemplate].sort((a, b) => a.sequence - b.sequence)[0];
-                      setReopenStepId(firstStep ? firstStep.id : null);
-                      setReopenEndTime(null);
-                      setShowReopenPopup(true);
+                      const firstStep = [...negotiation.stepTemplate].sort((a, b) => a.sequence - b.sequence)[0];
+                      negotiation.setReopenStepId(firstStep ? firstStep.id : null);
+                      negotiation.setReopenEndTime(null);
+                      negotiation.setShowReopenPopup(true);
                     } else if (action.nextStatus === 'resolved') {
                       // 结束工单（→ resolved）→ 打开 "问题 + AI 解决方式" 确认弹窗
-                      handleResolveClick();
+                      resolve.handleResolveClick();
                     } else {
                       handleStatusChange(action);
                     }
@@ -1599,315 +1261,23 @@ export default function TaskDetailPage() {
           <SafeHtml className="detail-card__body detail-card__body--pre" html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
 
-        {/* 工单阶段性处理（协商节点）：当前节点描述 + 回合胶囊 + 操作按钮 */}
-        {(() => {
-          const status = (detail.status || '').toLowerCase();
-          // 终态（已解决/已关闭/已取消）：保留节点信息展示，但隐藏卡内所有操作按钮
-          const isTerminal = ['resolved', 'closed', 'canceled', 'cancelled'].includes(status);
-          const total = stepTemplate.length;
-          const currIdx = stepTemplate.findIndex((s) => s.id === detail.curr_step_id);
-          const stepName = detail.curr_step_name || (currIdx >= 0 ? stepTemplate[currIdx].step_name : '');
-          // 尚未开始阶段性处理（当前节点未初始化）→ 整卡隐藏
-          if (!stepName) return null;
-          const endtimeText = detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '';
-          // 最新协商理由：从系统评论中解析（negotiate-step 评论含"缘由："/旧文案"理由："）。
-          // 倒序扫描评论：遇到"完成阶段/打回重开"等阶段边界评论则说明当前节点尚无协商理由。
-          const latestNegotiateReason = (() => {
-            const list = detail.comments ?? [];
-            const sorted = [...list].sort(
-              (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-            );
-            for (let i = sorted.length - 1; i >= 0; i--) {
-              const c = sorted[i]?.content || '';
-              // 阶段边界：推进到新节点 / 打回重开 → 当前节点暂无协商理由
-              if (c.includes('完成阶段「') || c.includes('标记工单未解决') || c.includes('打回重开')) return '';
-              const m = c.match(/[理缘]由：([\s\S]+)$/);
-              if (m && (c.includes('预期「') || c.includes('协商节点') || c.includes('协商将节点'))) {
-                // 去掉系统附加的回合/首次响应/警示后缀
-                return m[1]
-                  .replace(/（本轮协商回合[\s\S]*$/, '')
-                  .replace(/（首次响应[\s\S]*$/, '')
-                  .replace(/⚠️[\s\S]*$/, '')
-                  .trim();
-              }
-            }
-            return '';
-          })();
-          const isProcessing = status === 'in_progress';
-          const stepAgreed = !!detail.curr_step_agreed;  // 当前协商节点是否已协商一致
-          const canRespond = !!detail.curr_step_id && (status === 'new' || (status === 'in_progress' && !stepAgreed));
-          const canNegotiate = !!detail.curr_step_id;
-          const currSeq = currIdx >= 0 ? stepTemplate[currIdx].sequence : null;
-          const hasNext = currSeq === null ? true : stepTemplate.some((s) => s.sequence > currSeq);
-          const openNegotiate = () => {
-            setNegotiateStepId(detail.curr_step_id ?? null);
-            setNegotiateEndTime(detail.curr_step_endtime ?? null);
-            setNegotiateReason('');
-            setShowNegotiateStepPopup(true);
-          };
-          const openCompleteStep = () => {
-            // 默认选中紧邻的下一阶段（sequence > 当前节点 取第一个）
-            const currSeqLocal = currIdx >= 0 ? stepTemplate[currIdx].sequence : null;
-            const nextStep = currSeqLocal === null
-              ? stepTemplate[0]
-              : stepTemplate.find((s) => s.sequence > currSeqLocal);
-            setCompleteNextStepId(nextStep ? nextStep.id : null);
-            setCompleteNextEndTime(null);
-            setShowCompleteStepPopup(true);
-          };
-          // 回合展示
-          const round = detail.step_negotiation_round ?? 0;
-          const maxRound = detail.step_neg_max_rounds ?? 3;
-          const isEscalated = (detail.escalate_count ?? 0) > 0;
-          const escalateCount = detail.escalate_count ?? 0;
-          // 已升级上报后不再受回合上限限制
-          const reachedMax = !isEscalated && round >= maxRound;
-          const lastStepBy = detail.step_last_updated_by;
-          // 轮到当前用户：assigned = 接单人回合；creator = 提单人回合；无值 = 默认接单人回合
-          const { isAssignee, isReporter } = getCurrentUserRoles();
-          // 操作按钮仅对工单创建人（isReporter）和处理人（isAssignee）可见
-          const canOperate = isAssignee || isReporter;
-          const myTurn = (!lastStepBy && isAssignee)
-            || (lastStepBy === 'assigned' && isReporter)
-            || (lastStepBy === 'creator' && isAssignee);
-          // 回合胶囊样式
-          let pillBg = 'rgba(100,116,139,0.15)';
-          let pillColor = 'var(--muted-foreground)';
-          if (round >= maxRound) { pillBg = 'rgba(220,38,38,0.15)'; pillColor = '#b91c1c'; }
-          else if (round === maxRound - 1) { pillBg = 'rgba(234,179,8,0.2)'; pillColor = '#8a6400'; }
-          else if (myTurn) { pillBg = 'rgba(37,99,235,0.15)'; pillColor = 'var(--blue-2)'; }
-          const openEscalate = () => {
+        {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用 */}
+        <StepNegotiationCard
+          negotiation={negotiation}
+          detail={detail}
+          roles={getCurrentUserRoles()}
+          onResolve={resolve.handleResolveClick}
+          onEscalate={(round, maxRound) => {
             setEscalateUser(null);
             setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入处理。`);
             setShowEscalatePopup(true);
-          };
-          const respondBtnDisabled = !canRespond || reachedMax;
-          const negotiateDisabled = !canNegotiate || reachedMax;
-          // 已协商一致（含满回合确认同意）即可推进；!hasNext 时渲染的是「最末阶段结束」按钮，
-          // reachedMax 不参与禁用——未一致时本就不渲染完成按钮。
-          const completeDisabled = !hasNext;
-          return (
-            <div className="detail-card">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <h4 className="detail-card__h" style={{ marginBottom: 0 }}>工单阶段性处理</h4>
-                  {myTurn && !reachedMax && !stepAgreed && !isTerminal && (
-                    <span style={{ fontSize: 12, color: 'var(--blue-2)', fontWeight: 500 }}>
-                      ● 轮到你确认/答复
-                    </span>
-                  )}
-                  {reachedMax && !stepAgreed && (
-                    <span style={{ fontSize: 12, color: '#b91c1c', fontWeight: 500 }}>
-                      {myTurn
-                        ? '● 已达最大回合。'
-                        : '● 已达最大回合，待你确认/升级'}
-                    </span>
-                  )}
-                  {isEscalated && (
-                    <span style={{ fontSize: 12, color: '#92400e', fontWeight: 500 }}>
-                      ● 已升级上报（第{escalateCount}次），协商不受回合限制
-                    </span>
-                  )}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <span
-                    title={isEscalated ? `已升级上报（第${escalateCount}次），协商不受回合限制` : "协商回合：接单人↔提单人来回应答计数"}
-                    style={{
-                      display: 'inline-block', padding: '3px 10px', borderRadius: 999,
-                      background: isEscalated ? '#fef3c7' : pillBg, color: isEscalated ? '#92400e' : pillColor, fontSize: 12, fontWeight: 500, lineHeight: 1.4,
-                    }}
-                  >
-                    {isEscalated ? `已升级×${escalateCount} · 不受回合限制` : `交涉回合 ${round} / ${maxRound}`}
-                  </span>
-                </div>
-              </div>
-              <div style={{ marginBottom: 12 }}>
-                {stepName ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                    <span className="detail-step-current">
-                      <span className="detail-step-current__label">当前阶段</span>
-                      <span className="detail-step-current__name">「{stepName}」</span>
-                    </span>
-                    {total > 0 && (
-                      <span style={{
-                        fontSize: 11, color: 'var(--muted-foreground)',
-                        padding: '1px 8px', borderRadius: 999, background: 'rgba(100,116,139,0.12)',
-                      }}>
-                        第 {currIdx >= 0 ? currIdx + 1 : '-'} / {total} 步
-                      </span>
-                    )}
-                    <span style={{
-                      fontSize: 11, fontWeight: 500, padding: '1px 8px', borderRadius: 999,
-                      background: stepAgreed ? 'rgba(22,163,74,0.12)' : 'rgba(234,179,8,0.18)',
-                      color: stepAgreed ? '#15803d' : '#8a6400',
-                    }}>
-                      {stepAgreed ? '已达成一致' : (myTurn ? '待你确认' : '待对方确认')}
-                    </span>
-                  </div>
-                ) : (
-                  <div style={{ fontSize: 13, color: 'var(--muted-foreground)', marginBottom: 6 }}>
-                    尚未开始阶段性处理
-                  </div>
-                )}
-                {endtimeText && (
-                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <AlarmClock size={13} strokeWidth={2} />
-                    {stepAgreed ? (
-                      <span>预计解决时间 <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>{endtimeText}</span></span>
-                    ) : (
-                      (() => {
-                        // 当前节点时间由谁提出：step_last_updated_by 与本人角色同侧 → 自己提出
-                        const proposerIsMe =
-                          (lastStepBy === 'assigned' && isAssignee) ||
-                          (lastStepBy === 'creator' && isReporter);
-                        return (
-                          <span>
-                            {proposerIsMe ? '你期望在' : '对方期望在'}{' '}
-                            <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>{endtimeText}</span>{' '}
-                            前完成本阶段
-                          </span>
-                        );
-                      })()
-                    )}
-                  </div>
-                )}
-              </div>
-              {latestNegotiateReason && !stepAgreed && (() => {
-                // 协商中：缘由归属与时间提议方一致；已达成一致后不再展示
-                const proposerIsMe =
-                  (lastStepBy === 'assigned' && isAssignee) ||
-                  (lastStepBy === 'creator' && isReporter);
-                return (
-                  <div style={{
-                    fontSize: 12, color: 'var(--foreground)', marginBottom: 12, lineHeight: 1.7,
-                    padding: '8px 12px', background: 'rgba(100,116,139,0.08)',
-                    borderRadius: 6, borderLeft: '3px solid #94a3b8',
-                  }}>
-                    <div style={{ color: 'var(--muted-foreground)', marginBottom: 2 }}>
-                      {proposerIsMe ? '你的提议理由' : '对方提议理由'}
-                    </div>
-                    “{latestNegotiateReason}”
-                  </div>
-                );
-              })()}
-              {!isTerminal && (
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {canOperate ? (
-                  reachedMax ? (
-                    stepAgreed ? (
-                      // 已在最大回合达成一致：处理人推进/结束阶段
-                      isAssignee ? (
-                        hasNext ? (
-                          <Button block size="small" theme="primary" loading={completing} disabled={completeDisabled} onClick={openCompleteStep}>
-                            当前阶段完成
-                          </Button>
-                        ) : (
-                          <Button block size="small" theme="primary" onClick={handleResolveClick}>
-                            最末阶段结束，处理完成
-                          </Button>
-                        )
-                      ) : null
-                    ) : myTurn ? (
-                      // 最后一轮且轮到自己：二选一 —— 确认同意（达成一致）或有异议升级上报
-                      <>
-                        <Button
-                          block
-                          size="small"
-                          theme="primary"
-                          loading={responding}
-                          disabled={!canRespond}
-                          onClick={handleRespond}
-                        >
-                          确认同意
-                        </Button>
-                        <Button block size="small" theme="danger" onClick={openEscalate}>
-                          有异议，升级上报
-                        </Button>
-                      </>
-                    ) : null
-                    // 满回合但不是自己回合：不显示任何操作按钮
-                  ) : stepAgreed ? (
-                    // 协商一致阶段（curr_step_agreed=true）：仅处理人可完成当前阶段，创建人无操作按钮
-                    isAssignee ? (
-                      hasNext ? (
-                        <Button
-                          block
-                          size="small"
-                          theme="primary"
-                          loading={completing}
-                          disabled={completeDisabled}
-                          onClick={openCompleteStep}
-                        >
-                          当前阶段完成
-                        </Button>
-                      ) : (
-                        // 当前已是最后阶段：无下一阶段可推进，完成后工单直接进入"已解决"
-                        <Button
-                          block
-                          size="small"
-                          theme="primary"
-                          onClick={handleResolveClick}
-                        >
-                          最末阶段结束，处理完成
-                        </Button>
-                      )
-                    ) : null
-                  ) : (
-                    // 未一致阶段（curr_step_agreed=false）：仅当前回合操作方可见按钮
-                    myTurn ? (
-                      <>
-                        {isAssignee && (
-                          <Button
-                            block
-                            size="small"
-                            theme="default"
-                            onClick={() => { setReassignUser(null); setReassignReason(''); setShowReassignPopup(true); }}
-                          >
-                            重新指派
-                          </Button>
-                        )}
-                        {isAssignee && isEscalated && (
-                          <Button
-                            block
-                            size="small"
-                            theme="primary"
-                            onClick={() => { setSetStepTimeValue(null); setShowSetStepTimePopup(true); }}
-                          >
-                            设置节点时间
-                          </Button>
-                        )}
-                        <Button
-                          block
-                          size="small"
-                          theme="default"
-                          disabled={negotiateDisabled}
-                          onClick={openNegotiate}
-                        >
-                          协商节点时间
-                        </Button>
-                        <Button
-                          block
-                          size="small"
-                          theme="primary"
-                          loading={responding}
-                          disabled={respondBtnDisabled}
-                          onClick={handleRespond}
-                        >
-                          确认同意
-                        </Button>
-                      </>
-                    ) : null
-                  )
-                ) : (
-                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
-                    仅工单创建人和处理人可执行操作
-                  </span>
-                )}
-              </div>
-              )}
-            </div>
-          );
-        })()}
+          }}
+          onReassign={() => {
+            setReassignUser(null);
+            setReassignReason('');
+            setShowReassignPopup(true);
+          }}
+        />
 
         {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
         {approvalInfo && username === 'admin' && (
@@ -2277,12 +1647,12 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 结束工单确认弹窗：问题 + 工单解决方式 */}
-      <Popup visible={showResolutionPopup} onClose={handleResolveCancel} placement="bottom" showOverlay>
+      {/* 结束工单确认弹窗：问题 + 工单解决方式（抽到 useResolveTicket） */}
+      <Popup visible={resolve.showResolutionPopup} onClose={resolve.handleResolveCancel} placement="bottom" showOverlay>
         <div className="ticket-edit-form">
           <div className="ticket-edit-form__header">
             <span className="ticket-edit-form__title">确认完成工单</span>
-            <span className="ticket-edit-form__close" onClick={handleResolveCancel}>×</span>
+            <span className="ticket-edit-form__close" onClick={resolve.handleResolveCancel}>×</span>
           </div>
           <div className="ticket-edit-form__body">
             {/* 工单问题 */}
@@ -2301,22 +1671,22 @@ export default function TaskDetailPage() {
             <div className="ticket-edit-form__field">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                 <span className="ticket-edit-form__label" style={{ marginBottom: 0 }}>✅ 工单解决方式</span>
-                {resolutionFailed && (
+                {resolve.resolutionFailed && (
                   <span style={{ color: '#faad14', fontSize: '12px' }}>自动总结出错，请手动补充</span>
                 )}
               </div>
-              {resolutionLoading || resolutionPolling ? (
+              {resolve.resolutionLoading || resolve.resolutionPolling ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '20px 0', color: '#666', fontSize: '13px', justifyContent: 'center' }}>
                   <Loading size="20px" /> 正在生成解决方式…
                 </div>
               ) : (
                 <Textarea
-                  value={resolutionText}
-                  onChange={(v) => setResolutionText(String(v))}
+                  value={resolve.resolutionText}
+                  onChange={(v) => resolve.setResolutionText(String(v))}
                   placeholder={
-                    resolutionNoSolution
+                    resolve.resolutionNoSolution
                       ? '当前没有解决方案，请在此补充实际解决方式'
-                      : resolutionFailed
+                      : resolve.resolutionFailed
                         ? 'U老师自动总结出错了，请补充解决方法'
                         : '请填写该工单的解决方式'
                   }
@@ -2327,19 +1697,19 @@ export default function TaskDetailPage() {
             </div>
           </div>
           <div className="ticket-edit-form__footer">
-            <Button theme="default" onClick={handleResolveCancel}>取消</Button>
+            <Button theme="default" onClick={resolve.handleResolveCancel}>取消</Button>
             <Button
-              theme={resolutionFailed ? 'danger' : 'default'}
-              onClick={resolutionFailed ? handleRetryResolution : handleGenerateResolution}
-              loading={resolutionLoading || resolutionPolling}
-              disabled={resolutionSubmitting || resolutionLoading || resolutionPolling}
+              theme={resolve.resolutionFailed ? 'danger' : 'default'}
+              onClick={resolve.resolutionFailed ? resolve.handleRetryResolution : resolve.handleGenerateResolution}
+              loading={resolve.resolutionLoading || resolve.resolutionPolling}
+              disabled={resolve.resolutionSubmitting || resolve.resolutionLoading || resolve.resolutionPolling}
             >
-              {resolutionFailed ? '重试' : '帮我生成'}
+              {resolve.resolutionFailed ? '重试' : '帮我生成'}
             </Button>
             <Button
               theme="primary"
-              onClick={handleConfirmResolve}
-              disabled={resolutionSubmitting || resolutionLoading || resolutionPolling || !resolutionText.trim()}
+              onClick={resolve.handleConfirmResolve}
+              disabled={resolve.resolutionSubmitting || resolve.resolutionLoading || resolve.resolutionPolling || !resolve.resolutionText.trim()}
             >
               确认完成
             </Button>
@@ -2495,95 +1865,10 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 协商节点时间弹窗：时间选择器 + 文字理由（截图暂不实现） */}
-      <Popup
-        visible={showNegotiateStepPopup}
-        onClose={() => { if (!submittingNegotiate) setShowNegotiateStepPopup(false); }}
-        placement="bottom"
-        showOverlay
-        destroyOnClose
-      >
-        <div className="ticket-edit">
-          <h4 className="ticket-edit__title">协商节点时间</h4>
-          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            可将节点调整为当前或之后的任一节点，并设置节点结束时间（SLA），协商理由必填。
-          </p>
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 4 }}>
-              协商节点<span style={{ color: '#e34d59' }}>*</span>
-            </label>
-            <select
-              value={negotiateStepId ?? ''}
-              onChange={(e) => setNegotiateStepId(e.target.value ? Number(e.target.value) : null)}
-              style={{
-                width: '100%', padding: '8px 10px', fontSize: 14,
-                border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
-                background: '#fff',
-              }}
-            >
-              {(() => {
-                // 第一轮（step_phase_round==0，未被"当前阶段完成"推进过）可任选节点；
-                // 之后仅展示 sequence >= 当前节点的可选节点（当前及之后）
-                const isPhaseRound0 = !(detail?.step_phase_round) || detail.step_phase_round === 0;
-                const curSeqForNegotiate = stepTemplate.find((s) => s.id === detail?.curr_step_id)?.sequence ?? -1;
-                const negotiableSteps = (stepTemplate.length > 0 ? stepTemplate : [])
-                  .filter((s) => isPhaseRound0 || s.sequence >= curSeqForNegotiate)
-                  .sort((a, b) => a.sequence - b.sequence);
-                const fallback = detail?.curr_step_id
-                  ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }]
-                  : [];
-                return (negotiableSteps.length > 0 ? negotiableSteps : fallback);
-              })().map((s) => (
-                <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
-              ))}
-            </select>
-          </div>
-          {(() => {
-            // 选择下限 = 工单创建时间，与当前阶段截止时间编辑口径一致
-            const range = getDeadlineRange(detail?.priority, detail?.created_at);
-            return (
-              <DatePicker
-                style={{ width: '100%', marginBottom: 12 }}
-                placeholder="点击选择节点结束时间"
-                format="YYYY-MM-DD HH:mm"
-                showTime={{ defaultValue: dayjs().hour(18).minute(0), format: 'HH:mm', showNow: false }}
-                showNow={false}
-                placement="topLeft"
-                // 面板渲染到 body 并向上弹出，避免遮挡「协商理由」与底部按钮
-                getPopupContainer={() => document.body}
-                value={negotiateEndTime ? parseDeadlineString(negotiateEndTime) : null}
-                disabledDate={range ? makeDisabledDate(range.min) : undefined}
-                disabledTime={range ? makeDisabledTime(range.min) : undefined}
-                onChange={(d: dayjs.Dayjs | null) =>
-                  setNegotiateEndTime(d ? d.second(0).millisecond(0).toISOString() : null)
-                }
-                allowClear
-                styles={{ popup: { root: { zIndex: 13000 } } }}
-              />
-            );
-          })()}
-          <Form initialData={{}}>
-            <FormItem label="协商理由" name="negotiateReason" labelAlign="top" requiredMark>
-              <Textarea
-                value={negotiateReason}
-                onChange={(v) => setNegotiateReason(String(v))}
-                placeholder="请输入协商理由（必填）"
-                autosize={{ minRows: 3, maxRows: 6 }}
-                maxlength={500}
-              />
-            </FormItem>
-          </Form>
-          <div className="ticket-edit__btns">
-            <Button theme="default" disabled={submittingNegotiate} onClick={() => setShowNegotiateStepPopup(false)}>取消</Button>
-            <Button theme="primary" loading={submittingNegotiate} onClick={handleNegotiateStep} disabled={!negotiateEndTime || !negotiateStepId || !negotiateReason.trim()}>保存</Button>
-          </div>
-        </div>
-      </Popup>
-
       {/* 未解决打回弹窗：选择重新开始的阶段 + 节点结束时间，阶段性处理从头开始 */}
       <Popup
-        visible={showReopenPopup}
-        onClose={() => { if (!submittingReopen) setShowReopenPopup(false); }}
+        visible={negotiation.showReopenPopup}
+        onClose={() => { if (!negotiation.submittingReopen) negotiation.setShowReopenPopup(false); }}
         placement="bottom"
         showOverlay
         destroyOnClose
@@ -2598,15 +1883,15 @@ export default function TaskDetailPage() {
               重新开始的阶段<span style={{ color: '#e34d59' }}>*</span>
             </label>
             <select
-              value={reopenStepId ?? ''}
-              onChange={(e) => setReopenStepId(e.target.value ? Number(e.target.value) : null)}
+              value={negotiation.reopenStepId ?? ''}
+              onChange={(e) => negotiation.setReopenStepId(e.target.value ? Number(e.target.value) : null)}
               style={{
                 width: '100%', padding: '8px 10px', fontSize: 14,
                 border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
                 background: '#fff',
               }}
             >
-              {[...stepTemplate].sort((a, b) => a.sequence - b.sequence).map((s) => (
+              {[...negotiation.stepTemplate].sort((a, b) => a.sequence - b.sequence).map((s) => (
                 <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
               ))}
             </select>
@@ -2623,11 +1908,11 @@ export default function TaskDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={() => document.body}
-                value={reopenEndTime ? parseDeadlineString(reopenEndTime) : null}
+                value={negotiation.reopenEndTime ? parseDeadlineString(negotiation.reopenEndTime) : null}
                 disabledDate={range ? makeDisabledDate(range.min) : undefined}
                 disabledTime={range ? makeDisabledTime(range.min) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
-                  setReopenEndTime(d ? d.second(0).millisecond(0).toISOString() : null)
+                  negotiation.setReopenEndTime(d ? d.second(0).millisecond(0).toISOString() : null)
                 }
                 allowClear
                 styles={{ popup: { root: { zIndex: 13000 } } }}
@@ -2635,122 +1920,11 @@ export default function TaskDetailPage() {
             );
           })()}
           <div className="ticket-edit__btns">
-            <Button theme="default" disabled={submittingReopen} onClick={() => setShowReopenPopup(false)}>取消</Button>
-            <Button theme="primary" loading={submittingReopen} onClick={handleReopenStep} disabled={!reopenEndTime || !reopenStepId}>确认打回</Button>
+            <Button theme="default" disabled={negotiation.submittingReopen} onClick={() => negotiation.setShowReopenPopup(false)}>取消</Button>
+            <Button theme="primary" loading={negotiation.submittingReopen} onClick={negotiation.handleReopenStep} disabled={!negotiation.reopenEndTime || !negotiation.reopenStepId}>确认打回</Button>
           </div>
         </div>
       </Popup>
-
-      {/* 当前阶段完成弹窗：选择下一阶段 + 节点结束时间 */}
-      {detail && (() => {
-        const currIdxLocal = stepTemplate.findIndex((s) => s.id === detail.curr_step_id);
-        const currSeqLocal = currIdxLocal >= 0 ? stepTemplate[currIdxLocal].sequence : null;
-        // 仅展示 sequence > 当前的可选下一阶段
-        const nextStepOptions = (stepTemplate.length > 0 ? stepTemplate : [])
-          .filter((s) => currSeqLocal === null || s.sequence > currSeqLocal)
-          .sort((a, b) => a.sequence - b.sequence);
-        const range = getDeadlineRange(detail.priority, detail.created_at);
-        return (
-          <Popup
-            visible={showCompleteStepPopup}
-            onClose={() => { if (!submittingComplete) setShowCompleteStepPopup(false); }}
-            placement="bottom"
-            showOverlay
-            destroyOnClose
-          >
-            <div className="ticket-edit">
-              <h4 className="ticket-edit__title">请选择下一阶段</h4>
-              <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-                完成当前阶段后，工单将进入"未一致"状态，回合交给创建人确认。
-              </p>
-              <div style={{ marginBottom: 12 }}>
-                <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 4 }}>
-                  下一阶段<span style={{ color: '#e34d59' }}>*</span>
-                </label>
-                <select
-                  value={completeNextStepId ?? ''}
-                  onChange={(e) => setCompleteNextStepId(e.target.value ? Number(e.target.value) : null)}
-                  style={{
-                    width: '100%', padding: '8px 10px', fontSize: 14,
-                    border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
-                    background: '#fff',
-                  }}
-                >
-                  {nextStepOptions.length === 0 && (
-                    <option value="" disabled>无可选下一阶段</option>
-                  )}
-                  {nextStepOptions.map((s) => (
-                    <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
-                  ))}
-                </select>
-              </div>
-              <DatePicker
-                style={{ width: '100%', marginBottom: 12 }}
-                placeholder="点击选择下一阶段结束时间"
-                format="YYYY-MM-DD HH:mm"
-                showTime={{ defaultValue: dayjs().hour(18).minute(0), format: 'HH:mm', showNow: false }}
-                showNow={false}
-                placement="topLeft"
-                getPopupContainer={() => document.body}
-                value={completeNextEndTime ? parseDeadlineString(completeNextEndTime) : null}
-                disabledDate={range ? makeDisabledDate(range.min) : undefined}
-                disabledTime={range ? makeDisabledTime(range.min) : undefined}
-                onChange={(d: dayjs.Dayjs | null) =>
-                  setCompleteNextEndTime(d ? d.second(0).millisecond(0).toISOString() : null)
-                }
-                allowClear
-                styles={{ popup: { root: { zIndex: 13000 } } }}
-              />
-              <div className="ticket-edit__btns">
-                <Button theme="default" disabled={submittingComplete} onClick={() => setShowCompleteStepPopup(false)}>取消</Button>
-                <Button theme="primary" loading={submittingComplete} onClick={handleStepComplete} disabled={!completeNextStepId || !completeNextEndTime}>确认</Button>
-              </div>
-            </div>
-          </Popup>
-        );
-      })()}
-
-      {/* 设置节点时间弹窗（已升级工单，处理人一锤定音） */}
-      {detail && (() => {
-        const range = getDeadlineRange(detail.priority, detail.created_at);
-        return (
-          <Popup
-            visible={showSetStepTimePopup}
-            onClose={() => { if (!submittingSetStepTime) setShowSetStepTimePopup(false); }}
-            placement="bottom"
-            showOverlay
-            destroyOnClose
-          >
-            <div className="ticket-edit">
-              <h4 className="ticket-edit__title">设置节点时间</h4>
-              <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-                升级上报后的工单，处理人可直接设置节点时间，无需协商（一锤定音）。
-              </p>
-              <DatePicker
-                style={{ width: '100%', marginBottom: 12 }}
-                placeholder="点击选择节点结束时间"
-                format="YYYY-MM-DD HH:mm"
-                showTime={{ defaultValue: dayjs().hour(18).minute(0), format: 'HH:mm', showNow: false }}
-                showNow={false}
-                placement="topLeft"
-                getPopupContainer={() => document.body}
-                value={setStepTimeValue ? parseDeadlineString(setStepTimeValue) : null}
-                disabledDate={range ? makeDisabledDate(range.min) : undefined}
-                disabledTime={range ? makeDisabledTime(range.min) : undefined}
-                onChange={(d: dayjs.Dayjs | null) =>
-                  setSetStepTimeValue(d ? d.second(0).millisecond(0).toISOString() : null)
-                }
-                allowClear
-                styles={{ popup: { root: { zIndex: 13000 } } }}
-              />
-              <div className="ticket-edit__btns">
-                <Button theme="default" disabled={submittingSetStepTime} onClick={() => setShowSetStepTimePopup(false)}>取消</Button>
-                <Button theme="primary" loading={submittingSetStepTime} onClick={handleSetStepTime} disabled={!setStepTimeValue}>确认</Button>
-              </div>
-            </div>
-          </Popup>
-        );
-      })()}
 
       {/* 驳回原因弹窗 */}
       <Popup
