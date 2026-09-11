@@ -809,11 +809,35 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         `<div class="forward-snapshot__foot-line"></div>` +
         `<div class="forward-snapshot__foot-text">来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行</div>`;
       root.appendChild(foot);
+      // html2canvas 在微信 WebView 里克隆渲染不吃样式表（0911 实锤：产物无任何
+      // CSS 颜色，头部蓝/气泡蓝全丢）——整树把 computedStyle 逐元素内联进 style
+      // 属性，截图引擎只依赖 inline 样式，与样式表应用兼容性解耦
+      const INLINE_PROPS = [
+        'display', 'position', 'flex-direction', 'flex', 'flex-shrink', 'align-items',
+        'justify-content', 'background', 'background-color', 'color', 'border',
+        'border-radius', 'padding', 'margin', 'font-family', 'font-size', 'font-weight',
+        'line-height', 'text-align', 'width', 'height', 'max-width', 'min-height',
+        'box-shadow', 'opacity', 'overflow', 'box-sizing', 'letter-spacing',
+        'white-space', 'word-break', 'text-decoration', 'list-style',
+      ];
+      const inlineComputed = (el: Element) => {
+        if (!(el instanceof HTMLElement)) return;
+        const cs = getComputedStyle(el);
+        const parts: string[] = [];
+        for (const p of INLINE_PROPS) {
+          const v = cs.getPropertyValue(p);
+          if (v && v !== 'none' && v !== 'normal') parts.push(`${p}:${v};`);
+        }
+        el.style.cssText += parts.join('');
+        for (const child of el.children) inlineComputed(child);
+      };
       // html2canvas 按字符 fallback 切字体 run，一行内多基线（英文/数字画沉 6~7px）；
       // 单物理字体无切分必齐：iOS 用 PingFang SC（自带拉丁字形），其余用微软雅黑
       const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
       root.style.fontFamily = isIOS ? '"PingFang SC", sans-serif' : '"Microsoft YaHei", sans-serif';
+      // 必须先挂载再内联：detached 元素的 getComputedStyle 返回空
       document.body.appendChild(root);
+      inlineComputed(root);
       try {
         // 微信 WebView（手机+电脑）对 SVG foreignObject 的内容静默不渲染——
         // toPng 不报错但产出纯背景灰图（0911 iOS/安卓/PC 微信三端实锤），
