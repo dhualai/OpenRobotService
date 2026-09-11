@@ -3379,59 +3379,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           onClose={() => setPreviewUrl(null)}
         />
 
-        {/* 转发图预览：长按图片可保存/转发，也可点按钮下载。
-            样式全 inline：微信旧内核 CSS 兼容（inset/CSS 变量）与样式缓存问题一并绕开 */}
-        {forwardImage && (
-          <div
-            onClick={() => setForwardImage(null)}
-            style={{
-              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 60,
-              background: 'rgba(10, 12, 20, .72)', display: 'flex',
-              alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box',
-            }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                background: '#fff', borderRadius: 14, maxWidth: 420, width: '100%',
-                maxHeight: '86vh', display: 'flex', flexDirection: 'column',
-                overflow: 'hidden', boxSizing: 'border-box',
-              }}
-            >
-              <div style={{ padding: '10px 14px 6px', fontSize: '12.5px', color: '#6b7280', textAlign: 'center', flexShrink: 0 }}>
-                长按图片可直接发送给朋友，或保存图片
-              </div>
-              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px' }}>
-                <img src={forwardImage} alt="转发图" style={{ width: '100%', display: 'block', borderRadius: 8 }} />
-              </div>
-              <div style={{ display: 'flex', gap: 10, padding: 12, flexShrink: 0 }}>
-                <button
-                  style={{
-                    flex: 1.6, background: '#3d9be6', border: 'none', color: '#fff',
-                    fontWeight: 600, borderRadius: 10, padding: '11px 0', fontSize: 14, cursor: 'pointer',
-                  }}
-                  onClick={() => {
-                    const a = document.createElement('a');
-                    a.href = forwardImage;
-                    a.download = `摇人吧对话记录_${Date.now()}.png`;
-                    a.click();
-                  }}
-                >
-                  下载图片
-                </button>
-                <button
-                  style={{
-                    flex: 1, background: '#fff', border: '1px solid #d7dbe4', color: '#374151',
-                    borderRadius: 10, padding: '11px 0', fontSize: 14, cursor: 'pointer',
-                  }}
-                  onClick={() => setForwardImage(null)}
-                >
-                  关闭
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* 转发图预览：复用 ImageLightbox（Portal+TDesign ImageViewer，微信 WebView
+            的 fixed 定位兼容由成熟组件处理——自写弹层在 iOS 微信会随滚动错位贴下半屏） */}
+        <ImageLightbox
+          src={forwardImage}
+          alt="摇人吧对话记录"
+          open={!!forwardImage}
+          onClose={() => setForwardImage(null)}
+        />
       </div>
     </div>
   );
