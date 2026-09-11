@@ -150,6 +150,27 @@ def ticket_fields_block(ticket: TicketContext) -> str:
     )
 
 
+def ticket_type_person_guidance(ticket: TicketContext) -> str:
+    """Step3 画像召回：与 Step1 同一套工单类型尺子，落到「选人」而不是「选部门」。"""
+    key = ticket_type_key(ticket)
+    current = {
+        "problem": "本单是报障(problem)，按【故障现象】对照谁的责任模块能解决",
+        "bug": "本单是缺陷(bug)，按【故障现象】对照谁的责任模块能解决",
+        "feature": "本单是需求(feature)，按【工单涉及的产品/项目】对照产品负责人或功能负责人",
+        "support": "本单是咨询(support)，按【咨询涉及的产品/项目】对照产品负责人或功能负责人",
+        "other": "本单类型是其它或未填，现象和产品都看，对得上责任模块的人优先",
+    }.get(key, "本单类型未填，现象和产品都看，对得上责任模块的人优先")
+    return (
+        "先看工单类型，再用对应尺子选人（不要把所有工单都当故障）：\n"
+        "  - 报障(problem)、缺陷(bug)：看【故障现象】，对照谁的责任模块能解决这类故障\n"
+        "  - 需求(feature)、咨询(support)：看【工单涉及的产品/项目】，"
+        "对照产品负责人或对应功能的负责人\n"
+        "  - 其它(other)或未填：现象和产品都看，对得上的人优先\n"
+        f"  → {current}\n"
+        "若【工单类型】与标题/描述明显不符（例如标成需求但正文是报障），以正文为准重选尺子。"
+    )
+
+
 def person_anti_hallucination() -> str:
     """看人画像时的反幻觉：可以推断谁能接，但不能编造其职责。"""
     return (

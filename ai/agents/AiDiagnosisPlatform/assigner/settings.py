@@ -131,7 +131,7 @@ class AssignerConfig:
         self.job_level_penalty: Dict[int, float] = {}
         # 倾向接单人精排保底：total = max(加权后分数, preferred_floor)。对接人只打标。
         self.preferred_floor: float = 0.9
-        # 用户倾向处理人（预留）：前端未传字段时整体不生效；传了即启用。
+        # 用户倾向处理人：前端未传字段时整体不生效；传了即启用。
         self.preferred_assignee_enabled: bool = True
         self.preferred_assignee_force_keep: bool = True
         self.department_routing: Dict[str, Any] = {}
@@ -181,7 +181,7 @@ class AssignerConfig:
             self.preferred_floor = float(config.get("preferred_floor", 0.9))
         except (TypeError, ValueError):
             self.preferred_floor = 0.9
-        # 用户倾向处理人（预留）总开关与强制保留开关（缺失时默认 True/True，前端传字段即启用）
+        # 用户倾向处理人总开关与强制保留开关（缺失时默认 True/True）
         self.preferred_assignee_enabled = bool(config.get("preferred_assignee_enabled", True))
         self.preferred_assignee_force_keep = bool(config.get("preferred_assignee_force_keep", True))
         self.department_routing = config.get("department_routing", {})

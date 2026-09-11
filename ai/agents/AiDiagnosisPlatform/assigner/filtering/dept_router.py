@@ -28,7 +28,7 @@ class DeptRouter:
     - R-Audit 独立 LLM 单轮复核"部门派得对不对"：
       审查高置信纠正则采纳；纠正不明确则带反馈打回重判 1 次；审查失败则保守降级。
     - 模式：hard_filter 确定部门并过滤；soft_prior 倾向不强制；no_filter 兜底不框部门。
-      审查流程会尽量让工单收敛到单一部门（业务上每个部门负责的产品不同，需明确归属）。
+      soft 与「审查收敛」不冲突：收敛只在 hard / 纠正时发生；soft 故意不框部门、只精排加分。
     - 目标：不派错部门。
     """
 
@@ -93,12 +93,16 @@ class DeptRouter:
         return primary, top, top - second
 
     def _decide_mode(self, primary: str, score: float, margin: float) -> str:
+        """hard：主部门 ≥ hard_filter_score；或 mid 档且与第二名拉开 hard_filter_margin。"""
         if not primary:
             return "no_filter"
         hard_score = float(self._thresholds.get("hard_filter_score", 0.80))
-        hard_margin = float(self._thresholds.get("hard_filter_margin", 0.15))
+        mid_score = float(self._thresholds.get("hard_mid_score", 0.70))
+        hard_margin = float(self._thresholds.get("hard_filter_margin", 0.20))
         soft_score = float(self._thresholds.get("soft_prior_score", 0.55))
-        if score >= hard_score and margin >= hard_margin:
+        if score >= hard_score:
+            return "hard_filter"
+        if score >= mid_score and margin > hard_margin:
             return "hard_filter"
         if score >= soft_score:
             return "soft_prior"
@@ -158,20 +162,24 @@ class DeptRouter:
 
         # ── 部门派发审查（post-validator）：独立 LLM 单轮复核"部门派得对不对" ──
         #   - 审查通过 → 维持；
-        #   - 审查高置信纠正 → 采纳纠正部门（确定性归属）；
+        #   - 审查高置信纠正 → 采纳纠正部门（确定性归属 → hard）；
         #   - 审查判错但纠正不明确 → 带审查反馈打回重判 1 次；
-        #   - 审查失败（LLM 异常）→ 保守降级，不强制硬过滤。
+        #   - 审查失败 / 打回重判异常 → 口径一致：原 hard 降 soft（不硬踢，保留主部门倾向）。
+        # soft 与「收敛单一部门」不冲突：收敛只发生在 hard / 纠正；soft 故意不框部门、只加分。
         if (
             primary
             and bool(getattr(self._config, "dept_audit_enabled", True))
         ):
             audit = await self._audit.audit(ticket, primary)
             result.signals["audit"] = audit
-            audit_min_conf = float(self._audit_cfg.get("min_confidence", 0.6))
+            audit_min_conf = float(self._audit_cfg.get("min_confidence", 0.7))
             if audit.audit_failed:
                 if result.mode == "hard_filter":
-                    logger.warning(f"{ltag} 部门审查失败，hard_filter 降级 no_filter（保守）")
-                    result.mode = "no_filter"
+                    logger.warning(
+                        f"{ltag} 部门审查失败，hard_filter 降级 soft_prior"
+                        f"（与打回异常一致：不硬踢，保留主部门倾向）"
+                    )
+                    result.mode = "soft_prior"
             elif audit.ok:
                 logger.info(f"{ltag} 部门审查通过 → 维持 {primary}")
             elif audit.correct_dept and audit.confidence >= audit_min_conf:

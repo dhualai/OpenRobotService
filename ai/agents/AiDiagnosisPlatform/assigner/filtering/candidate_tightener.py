@@ -22,7 +22,7 @@ logger = get_logger("ASSIGNER")
 
 
 class CandidateTightener:
-    """按 部门 → 产品 逐层收紧候选人池（模块层已移除）。"""
+    """按 部门 → 产品 逐层收紧候选人池。"""
 
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()

@@ -16,17 +16,17 @@ logger = get_logger("ASSIGNER")
 
 
 class LlmRecall:
-    """分层 L1 召回：按人数单轮或分批，产出 {id: score} + 原因给精排。
+    """画像召回：按人数单轮或分批，产出 {id: score} + 原因给精排。
 
-    - 人少（≤ single_round_max）：单轮只要 Top single_top_k（默认 5）
-    - 人多：按 batch_size 分批，每批只要 Top batch_top_k（默认 3），
-      各批胜者全部保留进 Step4，不再合并决选、不再按 5 截断。
-    任一轮 LLM 失败仅跳过该批/该组，不阻断。
+    - 人少（≤ single_round_max）：单轮请模型在 single_top_min～single_top_max 内选人
+    - 人多：按 batch_size 分批，每批 batch_top_min～batch_top_max，并集全部进 Step4，
+      不再合并决选。
+    解析侧只按区间上限封顶，不强制凑到下限。任一轮 LLM 失败仅跳过该批，不阻断。
     """
 
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
-        self.last_reasons: Dict[str, str] = {}  # 最近一次结束时的拷贝；并发下不可信，主链路用 arecall 返回值
+        self.last_reasons: Dict[str, str] = {}
         lr = getattr(self._config, "llm_recall", None) or {}
         if not isinstance(lr, dict):
             lr = {}
@@ -37,11 +37,29 @@ class LlmRecall:
             except (TypeError, ValueError):
                 return default
 
-        if "single_top_k" in lr:
-            self._single_top_k = _i("single_top_k", 5)
+        # 上限：新键优先；兼容旧 single_top_k / final_top_k / batch_top_k
+        if "single_top_max" in lr:
+            self._single_top_max = _i("single_top_max", 6)
+        elif "single_top_k" in lr:
+            self._single_top_max = _i("single_top_k", 6)
         else:
-            self._single_top_k = _i("final_top_k", 5)
-        self._batch_top_k = _i("batch_top_k", 3)
+            self._single_top_max = _i("final_top_k", 6)
+        self._single_top_min = _i("single_top_min", 3)
+        if self._single_top_min > self._single_top_max:
+            self._single_top_min = self._single_top_max
+
+        if "batch_top_max" in lr:
+            self._batch_top_max = _i("batch_top_max", 4)
+        else:
+            self._batch_top_max = _i("batch_top_k", 4)
+        self._batch_top_min = _i("batch_top_min", 2)
+        if self._batch_top_min > self._batch_top_max:
+            self._batch_top_min = self._batch_top_max
+
+        # 兼容旧测试读 _single_top_k / _batch_top_k（表示上限）
+        self._single_top_k = self._single_top_max
+        self._batch_top_k = self._batch_top_max
+
         self._single_round_max = _i("single_round_max", 12)
         self._batch_size = _i("batch_size", 8)
 
@@ -49,7 +67,7 @@ class LlmRecall:
     def _clip_top(
         scores: Dict[str, float], reasons: Dict[str, str], k: int,
     ) -> Tuple[Dict[str, float], Dict[str, str]]:
-        """按分数留前 k 名；k 大于人数则全留。"""
+        """按分数留前 k 名；k 大于人数则全留。不强制凑满。"""
         if not scores or k <= 0:
             return {}, {}
         top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]
@@ -57,22 +75,28 @@ class LlmRecall:
         return dict(top), {eid: (reasons or {}).get(eid, "") for eid in keep}
 
     async def _llm_score_batch(
-        self, ticket: TicketContext, engineers: List[EngineerProfile], top_k: int,
+        self,
+        ticket: TicketContext,
+        engineers: List[EngineerProfile],
+        top_min: int,
+        top_max: int,
     ) -> Tuple[Dict[str, float], Dict[str, str]]:
-        """对一组工程师调 LLM，返回该组 top_k 的 {id: score} 与 {id: reason}。失败返回空。"""
+        """对一组工程师调 LLM；按 top_max 封顶，不强制凑到 top_min。失败返回空。"""
         if not engineers:
             return {}, {}
-        k = min(max(1, top_k), len(engineers))
-        prompt = self._build_prompt(ticket, engineers, top_k=k)
+        hi = min(max(1, top_max), len(engineers))
+        lo = min(max(1, top_min), hi)
+        prompt = self._build_prompt(ticket, engineers, top_min=lo, top_max=hi)
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
             response = await llm.complete(prompt, max_tokens=1200, temperature=0.0)
             logger.info(
-                f"[派单:{ticket.id}] Step3 画像 LLM原始输出(候选{len(engineers)}人,要Top{k}): {response[:800]}"
+                f"[派单:{ticket.id}] Step3 画像 LLM原始输出"
+                f"(候选{len(engineers)}人,要{lo}～{hi}): {response[:800]}"
             )
             scores, reasons = self._parse(response, engineers)
-            return self._clip_top(scores, reasons, k)
+            return self._clip_top(scores, reasons, hi)
         except Exception as e:
             logger.warning(f"[派单:{ticket.id}] Step3 画像召回失败: {e}")
             return {}, {}
@@ -97,32 +121,27 @@ class LlmRecall:
     async def arecall(
         self, ticket: TicketContext, engineers: List[EngineerProfile],
     ) -> Tuple[Dict[str, float], Dict[str, str]]:
-        """人少单轮 Top single_top_k；人多分批每批 Top batch_top_k，合并后全部进精排。
-
-        分批不再做第二轮决选。任一轮 LLM 失败仅跳过该批，不阻断。
-        返回 (分数, 理由)；理由给 Step6 提示词用，跟分数同一趟带走。
-        """
+        """人少单轮按 3～6 选；人多分批每批 2～4，合并后全部进精排，不再决选。"""
         self.last_reasons = {}
         if not engineers:
             return {}, {}
 
         n = len(engineers)
-        k_single = min(self._single_top_k, n)
         reasons: Dict[str, str] = {}
 
-        # ── 候选人数少：单轮只要 Top-K ──
         if n <= self._single_round_max:
             scores, reasons = await self._llm_score_batch(
-                ticket, engineers, top_k=k_single,
+                ticket, engineers,
+                top_min=self._single_top_min,
+                top_max=self._single_top_max,
             )
-            scores, reasons = self._clip_top(scores, reasons, k_single)
             self.last_reasons = reasons
             logger.info(
-                f"[派单:{ticket.id}] Step3 画像 单轮 Top{k_single} 人数={n} 输出={len(scores)}人"
+                f"[派单:{ticket.id}] Step3 画像 单轮 {self._single_top_min}～"
+                f"{self._single_top_max} 人数={n} 输出={len(scores)}人"
             )
             return scores, reasons
 
-        # ── 候选人数多：分批召回，各批胜者全部保留进 Step4 ──
         stage1: Dict[str, float] = {}
         batches = [
             engineers[i:i + self._batch_size]
@@ -130,13 +149,17 @@ class LlmRecall:
         ]
         logger.info(
             f"[派单:{ticket.id}] Step3 画像 分批召回 总人数={n} 分{len(batches)}批 "
-            f"每批Top{self._batch_top_k}（合并后全部进精排，不再决选）"
+            f"每批{self._batch_top_min}～{self._batch_top_max}"
+            f"（合并后全部进精排，不再决选）"
         )
         for bi, batch in enumerate(batches, 1):
             scores, batch_reasons = await self._llm_score_batch(
-                ticket, batch, top_k=min(self._batch_top_k, len(batch)),
+                ticket, batch,
+                top_min=self._batch_top_min,
+                top_max=self._batch_top_max,
             )
-            top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[: self._batch_top_k]
+            hi = min(self._batch_top_max, len(batch))
+            top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:hi]
             stage1.update(dict(top))
             for eid, _ in top:
                 if eid in batch_reasons:
@@ -144,7 +167,9 @@ class LlmRecall:
             top_names = []
             for eid, sc in top:
                 hit = next((e for e in batch if e.id == eid), None)
-                top_names.append(f"{llm_person_label(eng=hit) if hit else llm_person_label(eid)}:{sc:.2f}")
+                top_names.append(
+                    f"{llm_person_label(eng=hit) if hit else llm_person_label(eid)}:{sc:.2f}"
+                )
             logger.debug(
                 f"[派单:{ticket.id}] Step3 画像   批次{bi}/{len(batches)} 人数={len(batch)} "
                 f"命中={len(top)}人 [{', '.join(top_names)}]"
@@ -156,7 +181,8 @@ class LlmRecall:
             logger.warning(f"[派单:{ticket.id}] Step3 画像 分批召回无胜者，返回空")
             return {}, {}
         logger.info(
-            f"[派单:{ticket.id}] Step3 画像 分批合并 {n}→{len(scores)}人（各批 Top{self._batch_top_k} 全保留）"
+            f"[派单:{ticket.id}] Step3 画像 分批合并 {n}→{len(scores)}人"
+            f"（各批最多 Top{self._batch_top_max} 全保留）"
         )
         return scores, reasons
 
@@ -164,14 +190,19 @@ class LlmRecall:
     def _keep_batch_union(
         stage1: Dict[str, float], reasons: Dict[str, str],
     ) -> Tuple[Dict[str, float], Dict[str, str]]:
-        """各批胜者并集全部保留，不按 single_top_k 再截。"""
+        """各批胜者并集全部保留，不再截断。"""
         if not stage1:
             return {}, {}
         return dict(stage1), {eid: (reasons or {}).get(eid, "") for eid in stage1}
 
-    def _build_prompt(self, ticket, engineers, top_k: int = 5):
+    def _build_prompt(
+        self, ticket, engineers, top_min: int = 3, top_max: int = 6, top_k: int | None = None,
+    ):
+        """top_k 仅兼容旧调用：当作 top_max，且 top_min=top_max（钉死人数的旧测例）。"""
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.step3 import build_l1
-        return build_l1(ticket, engineers, top_k)
+        if top_k is not None:
+            top_min = top_max = max(1, int(top_k))
+        return build_l1(ticket, engineers, top_min=top_min, top_max=top_max)
 
     def _parse(
         self, response: str, engineers: List[EngineerProfile],

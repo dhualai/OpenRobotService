@@ -113,12 +113,10 @@ class TicketContext(BaseModel):
         description="提单信息充分性信号: lacking=用户信息不足 / severe=严重不足 ↔ tasks.metadata_info.dispatch_hint",
     )
 
-    # === 派单增强-预留：用户倾向处理人 ===
-    # 前端提单时若新增"倾向处理人"字段，可复用本字段（传工程师 users.id）。
-    # 前端未传时恒为 None，整体不生效、完全向后兼容；传了即作为派单强加权信号启用。
+    # === 用户倾向处理人（重派表单 preferred_assignee） ===
     preferred_assignee: Optional[str] = Field(
         None,
-        description="倾向处理人（用户提单时填写，传工程师 users.id，预留）↔ tasks.metadata_info.preferred_assignee",
+        description="倾向处理人（users.id）↔ tasks.metadata_info.preferred_assignee",
     )
     # 重新派单备注/原因：用户重派时填写的意图说明（如"希望派给熟悉XXX的人/之前派错"等）。
     # 作为 Step6 决策的强信号参考（契合度判断），并有独立字段供决策层/日志使用。

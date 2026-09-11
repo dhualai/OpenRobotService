@@ -7,13 +7,17 @@
     【Step 0 提单人指定】(强信号"[指定处理人:X]" / LLM检测"转给张三" → 直接指派 + tip)
         │ (未指定 / 指定人找不到：写 tip 后继续)
         ▼
+    倾向人（连续两次同 ID → 直派；首次画像完整才准入）
+        │
+        ▼
     【Step 1 候选收紧】部门(R2 LLM + R3 历史融合 + R-Audit) → 产品(项目标记>部门映射>默认)
         │
         ▼
-    【Step 2 打标】(提单人 / 项目对接人 / 倾向接单人 / 原用户不满意的接单人；不踢自提人)
+    【Step 2 打标】提单人 / 对接人 / 倾向接单人 / 原不满意（只打标，不踢人）
+        │ dispatch_hint=severe → 跳过 Step3–6，进 Step7
         ▼
-    【Step 2.5/2.6 强制保留】(对接人 / 用户倾向处理人 被过滤则补回候选)
-        │
+    【Step 2.5–2.6 强制加回】对接人（≠提单人）/ 倾向人；原不满意只打标不加回
+        │ 项目经理不进此步（只做 Step7 兜底）
         ▼
     【Step 3 三路召回】
         ├── 画像召回：看职责卡片推断谁能接
@@ -21,7 +25,7 @@
         └── 问题簇：这类问题堆里的常客（可空）
         │
         ▼
-    【Step 4 精排】三路绝对 0～1 取最高；职级折扣 × 部门soft_prior；倾向人保底；对接人只打标
+    【Step 4 精排】三路绝对 0～1 取最高；职级折扣 × 部门soft_prior；倾向人保底；对接/原不满意只打标
         │
         ▼
     【Step 6 LLM 最终决策】铁律 + 产品附录；失败/很难决策/名单外 → None，不回精排#1
@@ -253,23 +257,50 @@ class DispatchFlow:
         if contact_assignee_id:
             logger.info(f"{ltag} 项目对接人: {contact_name}({contact_assignee_id})（只打标，不加分）")
 
-        # ── 用户倾向处理人（预留：前端传 ticket.preferred_assignee 即启用；未传返回 None 不生效）──
+        # ── 用户倾向处理人（前端传 ticket.preferred_assignee=users.id；未传不生效）──
+        # 连续两次同一倾向人 ID → 无条件直派（不问画像全不全）。
+        # 首次：画像完整 → 精排保底/可强制加回；画像不全 → 不准入 + tip，请再重派一次。
         preferred_assignee_id = None
         pref_name = None
+        pref_incomplete_first_guard = False
         if self._config.preferred_assignee_enabled:
-            preferred_assignee_id = self._resolve_preferred_assignee(
-                ticket_context, engineer_profiles,
-            )
-            if preferred_assignee_id:
-                pref_name = next(
-                    (e.name for e in engineer_profiles if e.id == preferred_assignee_id),
-                    preferred_assignee_id,
+            pref_raw = self._normalize_preferred_id(ticket_context)
+            if pref_raw:
+                prev_pref = self._prev_dispatch_preferred_id(ticket_context.id)
+                if prev_pref and prev_pref == pref_raw:
+                    # 产品保证：重派倾向人来自用户表，ID 一定存在；此处失败只可能是查库异常。
+                    direct = self._assign_preferred_confirmed(
+                        ticket_context, pref_raw, ltag,
+                    )
+                    if direct is not None:
+                        self._log_assignment_result(
+                            ticket=ticket_context, result=direct,
+                            candidates=engineer_profiles, ranked_scores={},
+                            source="倾向人连续两次确认", ltag=ltag,
+                        )
+                        return direct
+                    logger.error(
+                        f"{ltag} 倾向人连续两次确认直派失败（查库异常）{pref_raw}，降级智能派单"
+                    )
+                in_pool = next(
+                    (e for e in engineer_profiles if e.id == pref_raw), None,
                 )
-                logger.info(
-                    f"{ltag} 用户倾向处理人: {pref_name}"
-                    f"（精排保底 {getattr(self._config, 'preferred_floor', 0.9):.1f}"
-                    f"{'，强制保留进候选' if self._config.preferred_assignee_force_keep else ''}）"
-                )
+                if in_pool is not None:
+                    preferred_assignee_id = pref_raw
+                    pref_name = in_pool.name
+                    logger.info(
+                        f"{ltag} 用户倾向处理人: {pref_name}({pref_raw})"
+                        f"（精排保底 {getattr(self._config, 'preferred_floor', 0.9):.1f}"
+                        f"{'，强制保留进候选' if self._config.preferred_assignee_force_keep else ''}）"
+                    )
+                else:
+                    pref_incomplete_first_guard = True
+                    logger.info(
+                        f"{ltag} 用户倾向处理人 {pref_raw} 画像不完整/不在准入池："
+                        f"首次护栏不准入，智能派单结束后 tip 提醒；"
+                        f"若再次选择同一人将无条件直派"
+                        f"（上次 preferred_id={prev_pref or '-'}）"
+                    )
 
         # ── Step 1: 候选收紧（部门 → 产品 → 模块）──
         tighten: TightenResult = await self._tightener.tighten(
@@ -286,16 +317,16 @@ class DispatchFlow:
             f"产品={tighten.product.product or '-'} | 模块层=已移除(不收紧)"
         )
 
-        # ── Step 2: 打标（不踢自提人；标签一路传到仲裁）──
+        # ── Step 2: 解析身份 ID（打标在 Step4 Ranker；此处只解析 + 模糊截断）──
         creator_id = self._resolve_creator_id(ticket_context)
         prev_assignee_id = self._resolve_prev_assignee_id(ticket_context)
         if creator_id:
-            logger.info(f"{ltag} Step2 提单人={creator_id} 保留在候选（标记提单人，交由LLM判断能否接单）")
+            logger.info(f"{ltag} Step2 提单人={creator_id}（打标，不踢人）")
         if prev_assignee_id:
-            logger.info(f"{ltag} Step2 原接单人={prev_assignee_id}（标记原用户不满意的接单人）")
+            logger.info(f"{ltag} Step2 原接单人={prev_assignee_id}（在候选则打标避开，不加回）")
         skip_recall = match_vague_strong_signal(ticket_context, self._config)
         if skip_recall:
-            logger.info(f"{ltag} Step2 模糊强信号命中 → 跳过 Step3–6，进 Step7")
+            logger.info(f"{ltag} Step2 模糊强信号(dispatch_hint=severe) → 跳过 Step3–6，进 Step7")
             result = self._run_step7(
                 ticket_context, contact_assignee_id, contact_name,
                 engineer_profiles, REASON_VAGUE, ltag,
@@ -303,50 +334,34 @@ class DispatchFlow:
             return self._finalize_assignment(
                 ticket_context, result, candidates, {},
                 "Step7兜底", ltag, specified_unresolved, engineer_profiles,
+                pref_incomplete_first_guard=pref_incomplete_first_guard,
             )
 
-        # ── Step 2.5: 强制保留项目对接人（即使被部门/产品/排除提单人过滤掉也加回候选）──
-        # 例外：对接人 == 提单人（自提单）时**不**强制保留，交由 Step2 正常排除（自提不自接）。
-        if contact_assignee_id:
-            creator_raw = (ticket_context.creator or "").strip()
-            try:
-                from app.core.user_identity import to_user_id
-                creator_id = to_user_id(creator_raw) or creator_raw
-            except Exception:
-                creator_id = creator_raw
-            if contact_assignee_id == creator_id:
-                creator_raw_name = next(
-                    (e.name for e in engineer_profiles if e.id == creator_id),
-                    creator_id,
-                )
-                logger.info(
-                    f"{ltag} Step2.5 对接人==提单人({creator_raw_name}({creator_id}))，不强制保留（自提不自接）"
-                )
-            elif not any(e.id == contact_assignee_id for e in candidates):
-                # 对接人可能仍在全量工程师里但被过滤掉 → 强制补回
-                contact_eng = next(
-                    (e for e in engineer_profiles if e.id == contact_assignee_id), None
-                )
-                if contact_eng is not None:
-                    candidates.append(contact_eng)
-                    logger.info(
-                        f"{ltag} Step2.5 强制保留项目对接人 {contact_name}({contact_assignee_id})"
-                        f" -> 候选 {len(candidates)}人"
-                    )
-
-        # ── Step 2.6: 强制保留用户倾向处理人（预留：即使被部门/产品/排除提单人过滤也加回候选）──
-        if (
-            preferred_assignee_id
-            and self._config.preferred_assignee_force_keep
-            and not any(e.id == preferred_assignee_id for e in candidates)
-        ):
-            pref_eng = next(
-                (e for e in engineer_profiles if e.id == preferred_assignee_id), None
+        # ── Step 2.5–2.6: 被 Step1 滤掉但身份仍需进窗口 → 从准入池加回 ──
+        # 对接人：仅当 ≠ 提单人时加回。倾向人：force_keep。
+        # 原不满意：只打标、不加回（不在收紧后候选里则 Step6 看不到该标签）。
+        # 项目经理：不加回、不打标（仅 Step7 兜底）。
+        if contact_assignee_id and contact_assignee_id != creator_id:
+            kept = self._force_keep_engineer(
+                candidates, engineer_profiles, contact_assignee_id,
             )
-            if pref_eng is not None:
-                candidates.append(pref_eng)
+            if kept is not None:
                 logger.info(
-                    f"{ltag} Step2.6 强制保留用户倾向处理人 {pref_name}({preferred_assignee_id})"
+                    f"{ltag} Step2.5 强制加回对接人 {contact_name}({contact_assignee_id})"
+                    f" -> 候选 {len(candidates)}人"
+                )
+        elif contact_assignee_id and contact_assignee_id == creator_id:
+            logger.info(
+                f"{ltag} Step2.5 对接人==提单人({contact_assignee_id})，不加回对接人身份"
+            )
+
+        if preferred_assignee_id and self._config.preferred_assignee_force_keep:
+            kept = self._force_keep_engineer(
+                candidates, engineer_profiles, preferred_assignee_id,
+            )
+            if kept is not None:
+                logger.info(
+                    f"{ltag} Step2.6 强制加回倾向接单人 {pref_name}({preferred_assignee_id})"
                     f" -> 候选 {len(candidates)}人"
                 )
 
@@ -461,6 +476,7 @@ class DispatchFlow:
         return self._finalize_assignment(
             ticket_context, result, candidates, ranked_scores,
             decision_source, ltag, specified_unresolved, engineer_profiles,
+            pref_incomplete_first_guard=pref_incomplete_first_guard,
         )
 
     def _run_step7(
@@ -502,6 +518,7 @@ class DispatchFlow:
     def _finalize_assignment(
         self, ticket, result, candidates, ranked_scores, source, ltag,
         specified_unresolved, engineer_profiles,
+        pref_incomplete_first_guard: bool = False,
     ):
         self._log_assignment_result(
             ticket=ticket, result=result, candidates=candidates,
@@ -529,6 +546,10 @@ class DispatchFlow:
         if specified_unresolved:
             prof = dict(result.profile or {})
             prof["specified_name"] = specified_unresolved
+            result.profile = prof
+        if pref_incomplete_first_guard:
+            prof = dict(result.profile or {})
+            prof["pref_incomplete_first_guard"] = True
             result.profile = prof
         if getattr(self._config, "dept_profiles_missing", False):
             prof = dict(result.profile or {})
@@ -650,18 +671,20 @@ class DispatchFlow:
         else:
             logger.info(f"{ltag} 排名: 无候选排名数据")
 
-    # ── Step 2 实现: 识别提单人 users.id（不再排除，仅标记"提单人"，交由 LLM 判断可否接单）──
+    @staticmethod
+    def _force_keep_engineer(candidates, pool, eid):
+        """若 eid 不在 candidates 且在准入池，则 append 并返回该人；否则 None。"""
+        if not eid or any(e.id == eid for e in candidates):
+            return None
+        hit = next((e for e in pool if e.id == eid), None)
+        if hit is None:
+            return None
+        candidates.append(hit)
+        return hit
+
     @staticmethod
     def _resolve_creator_id(ticket: TicketContext) -> Optional[str]:
-        """识别提单人 users.id。
-
-        原"自提不自接"硬排除已改为"保留 + 标记"：提单人仍留在候选，精排/决策时打上
-        is_creator 标识（[提单人]），由 Step6 LLM 判断该提单人是否恰当接单
-        （如"派单算法 bug"由派单引擎负责人自提时可合理接回给自己）。
-        - 提单人 = TicketContext.creator（存 users.id 或 username）
-        - 匹配不到（如提单人不是工程师）→ 返回 None，不启用自提标识
-        - Step 0（提单人指定）在 Step 1 之前已直接返回，不受本逻辑影响
-        """
+        """识别提单人 users.id；保留在候选并打 [提单人]，由 Step6 判断可否接。"""
         creator = (ticket.creator or "").strip()
         if not creator:
             return None
@@ -757,7 +780,93 @@ class DispatchFlow:
             nm = pm_id
         return str(pm_id), nm
 
-    # ── 用户倾向处理人解析（预留功能，Step 4 加权 / 强制保留用）──
+    # ── 用户倾向处理人（preferred_assignee）──
+    @staticmethod
+    def _normalize_preferred_id(ticket: TicketContext) -> Optional[str]:
+        """取出 ticket.preferred_assignee 并归一成 users.id；空则 None。不校验准入池。"""
+        preferred = (getattr(ticket, "preferred_assignee", None) or "").strip()
+        if not preferred:
+            return None
+        try:
+            from app.core.user_identity import to_user_id
+            return (to_user_id(preferred) or preferred).strip() or None
+        except Exception:
+            return preferred
+
+    @staticmethod
+    def _prev_dispatch_preferred_id(task_id) -> Optional[str]:
+        """上一轮派单日志里的 preferred_id（同一工单最近一条非空）。"""
+        try:
+            from sqlalchemy import select
+            from app.core.db import SessionLocal
+            from app.models.task_dispatch_log import TaskDispatchLog
+
+            tid = int(task_id) if str(task_id).isdigit() else task_id
+            db = SessionLocal()
+            try:
+                row = db.execute(
+                    select(TaskDispatchLog.preferred_id)
+                    .where(TaskDispatchLog.task_id == tid)
+                    .where(TaskDispatchLog.preferred_id.isnot(None))
+                    .where(TaskDispatchLog.preferred_id != "")
+                    .order_by(TaskDispatchLog.dispatch_round.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                return (str(row).strip() if row else None) or None
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"[派单:{task_id}] 读取上一轮 preferred_id 失败: {e}")
+            return None
+
+    def _assign_preferred_confirmed(
+        self,
+        ticket: TicketContext,
+        pref_id: str,
+        ltag: str,
+    ) -> Optional[AssignmentResult]:
+        """连续两次同一倾向人 → 无条件直派（全量 users，不问画像全不全）。
+
+        重派名单来自用户表，pref_id 产品上必然存在；返回 None 仅表示查库/组装异常。
+        """
+        try:
+            from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import (
+                _fetch_from_users_table,
+            )
+            rows = _fetch_from_users_table()
+        except Exception as e:
+            logger.error(f"{ltag} 倾向人连续确认查库失败: {e}")
+            return None
+        hit = next((r for r in (rows or []) if (r.get("id") or "") == pref_id), None)
+        if not hit:
+            logger.error(
+                f"{ltag} 倾向人 {pref_id} 在用户表未命中（违背重派选人来自用户表的约定）"
+            )
+            return None
+        stubs = self._everyone_stubs([hit])
+        if not stubs:
+            logger.error(f"{ltag} 倾向人 {pref_id} 用户行无法组装 EngineerProfile")
+            return None
+        winner = stubs[0]
+        missing = _engineer_profile_dict(winner).get("missing") or []
+        logger.info(
+            f"{ltag} 倾向人连续两次确认 → 无条件直派 {winner.name}({winner.id})"
+            f"{'[画像不完整]' if missing else ''}"
+        )
+        return AssignmentResult(
+            engineer_id=winner.id,
+            engineer_name=winner.name,
+            confidence_score=0.95,
+            reasoning=(
+                f"用户连续两次选择倾向处理人 {winner.name}，按指定无条件指派"
+                + ("（接单人画像不完整）" if missing else "")
+            ),
+            decision_type="auto",
+            preferred_id=winner.id,
+            matched_pref=True,
+            profile=_step0_winner_profile(winner, collision_random=False),
+        )
+
     @staticmethod
     def _resolve_preferred_assignee(
         ticket: TicketContext, engineers: List[EngineerProfile],
@@ -785,7 +894,7 @@ class DispatchFlow:
         return matched.id
 
     def _resolve_prev_assignee_id(self, ticket: TicketContext) -> Optional[str]:
-        """原接单人 users.id（重派时前端传 ticket.prev_assignee）。只打标，不强制入候选。"""
+        """原接单人 users.id（重派时 ticket.prev_assignee）。在候选则打标避开，不强制加回。"""
         prev = (getattr(ticket, "prev_assignee", None) or "").strip()
         if not prev:
             return None
