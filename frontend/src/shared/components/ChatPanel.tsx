@@ -3382,7 +3382,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         {/* 转发图预览：复用 ImageLightbox（Portal+TDesign ImageViewer，微信 WebView
             的 fixed 定位兼容由成熟组件处理——自写弹层在 iOS 微信会随滚动错位贴下半屏） */}
         <ImageLightbox
-          src={forwardImage}
+          src={forwardImage || undefined}
           alt="摇人吧对话记录"
           open={!!forwardImage}
           onClose={() => setForwardImage(null)}
