@@ -25,7 +25,7 @@ const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'sunflower', label: '向日葵' },
   { value: 'other', label: '其他' },
 ];
-import { parseBackendDayjs } from '@/shared/utils/time';
+import { parseBackendDayjs, formatBackendTime } from '@/shared/utils/time';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
@@ -770,19 +770,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   }, [pickedMsgs]);
 
-  const fmtTs = (ts: string) => (ts || '').replace('T', ' ').slice(5, 16);
+  const fmtTs = (ts: string) => formatBackendTime(ts);
   const makeForwardImage = useCallback(async () => {
     if (!pickedMsgs.length || forwardBusy) return;
     setForwardBusy(true);
     try {
-      const { default: html2canvas } = await import('html2canvas-pro');
+      const { toPng } = await import('html-to-image');
       const root = document.createElement('div');
       root.className = 'forward-snapshot';
       const who = name || username || '用户';
       const head = document.createElement('div');
       head.className = 'forward-snapshot__head';
+      // 头像用服务号头像图（public/share-thumb.png，缺图兜底「摇」字块）
       head.innerHTML =
-        `<div class="forward-snapshot__logo">摇</div>` +
+        `<img class="forward-snapshot__logo" src="/share-thumb.png"` +
+        ` alt="摇人吧" onerror="this.outerHTML='<div class=\\'forward-snapshot__logo-txt\\'>摇</div>'">` +
         `<div class="forward-snapshot__titles">` +
         `<div class="forward-snapshot__name">摇人吧 · AI 助手 U老师</div>` +
         `<div class="forward-snapshot__sub">${who} 的提问记录 · ${fmtTs(pickedMsgs[0].timestamp)} 起</div>` +
@@ -803,14 +805,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       root.appendChild(bodyEl);
       const foot = document.createElement('div');
       foot.className = 'forward-snapshot__foot';
-      foot.textContent = '—— 来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行';
+      foot.innerHTML =
+        `<div class="forward-snapshot__foot-line"></div>` +
+        `<div class="forward-snapshot__foot-text">来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行</div>`;
       root.appendChild(foot);
       document.body.appendChild(root);
       try {
-        const canvas = await html2canvas(root, {
-          scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false,
+        // SVG foreignObject 路线：文本由浏览器原生排版，中英文/数字基线与页面一致
+        // （html2canvas 按字符切字体 run，英文数字会被画沉 6~7px）
+        const dataUrl = await toPng(root, {
+          pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
         });
-        setForwardImage(canvas.toDataURL('image/png'));
+        setForwardImage(dataUrl);
         exitSelect();
       } finally {
         document.body.removeChild(root);
@@ -3304,7 +3310,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         {forwardImage && (
           <div className="chat-forward-preview" onClick={() => setForwardImage(null)}>
             <div className="chat-forward-preview__panel" onClick={(e) => e.stopPropagation()}>
-              <div className="chat-forward-preview__hint">长按图片保存，或点按钮下载后转发</div>
+              <div className="chat-forward-preview__hint">长按图片可直接发送给朋友，或保存图片</div>
               <div className="chat-forward-preview__img-wrap">
                 <img src={forwardImage} alt="转发图" />
               </div>

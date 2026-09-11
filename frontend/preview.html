@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>转发图预览（测试）</title>
+<link rel="stylesheet" href="/src/shared/styles/global.css">
+<style>
+  /* 预览页专用：把 off-screen 截图容器改为可见居中展示 */
+  body { display: flex; justify-content: center; padding: 24px 8px; background: #dfe3ea; }
+  .forward-snapshot { position: static !important; align-self: flex-start; box-shadow: 0 8px 40px rgba(15,23,42,.18); border-radius: 4px; }
+  /* 假消息气泡（复刻聊天气泡核心样式；Markdown 手写等价结构） */
+  .pv-demo-wrap { display: flex; flex-direction: column; gap: 10px; }
+  .chat-bubble-wrap.pv { display: flex; }
+  .chat-bubble-wrap.pv.is-left { justify-content: flex-start; }
+  .chat-bubble-wrap.pv.is-right { justify-content: flex-end; }
+  .pv .chat-bubble { max-width: 78%; border-radius: 12px; padding: 9px 12px; font-size: 13.5px; line-height: 1.65; }
+  .pv .is-user { background: #4da2e8; color: #fff; }
+  .pv .is-ai { background: #fff; border: 1px solid #e2e5ea; }
+  .pv .who { font-size: 11px; color: #9aa2af; margin-bottom: 3px; }
+  .pv h4 { margin: 6px 0 2px; font-size: 13px; }
+  .pv ol, .pv ul { margin: 4px 0 4px 18px; }
+  .pv li { margin: 2px 0; }
+  .pv code { background: #eef1f5; border-radius: 4px; padding: 0 5px; font-family: Consolas, monospace; font-size: 12.5px; }
+  .pv .kw { color: #4da2e8; }
+</style>
+</head>
+<body>
+<!-- 与 makeForwardImage 生成的结构完全同构 -->
+<div class="forward-snapshot" id="snap">
+  <div class="forward-snapshot__head">
+    <img class="forward-snapshot__logo" src="/share-thumb.png" alt="摇人吧">
+    <div class="forward-snapshot__titles">
+      <div class="forward-snapshot__name">摇人吧 · AI 助手 U老师</div>
+      <div class="forward-snapshot__sub">胡健楠 的提问记录 · 2026/09/10 16:19 起</div>
+    </div>
+  </div>
+  <div class="forward-snapshot__body pv-demo-wrap">
+    <div class="chat-bubble-wrap pv is-right">
+      <div class="chat-bubble is-user">AGV 报 E813 目标点不可达，车是 XFL-191，B区-03 货架取货失败</div>
+    </div>
+    <div class="chat-bubble-wrap pv is-left">
+      <div class="chat-bubble is-ai">
+        <div class="who">U老师</div>
+        <p>这个报错是取货任务的目标点位不可达。按下面顺序排查：</p>
+        <h4>1. 检查地图点位</h4>
+        <ol>
+          <li>打开<b>地图管理 → 点位列表</b>，搜索 <code>B-03</code>，确认点位存在且未被禁用</li>
+          <li>核对点位坐标与货架实际位置偏差是否 &lt; 50mm</li>
+        </ol>
+        <h4>2. 检查货架位绑定</h4>
+        <ol>
+          <li>在<b>库存管理 → 货架位</b>里看 B-03 绑定的地图点位是否指向有效点位</li>
+          <li>重新绑定后需<b>重发地图</b>生效</li>
+        </ol>
+        <h4>3. 检查车辆定位</h4>
+        <p>车辆定位置信度低于 0.6 时会拒绝移动到目标点——让车跑一圈定位，看定位页面数值。</p>
+        <p>以上三步都正常仍报错，转工单让工程师看日志。</p>
+      </div>
+    </div>
+    <div class="chat-bubble-wrap pv is-right">
+      <div class="chat-bubble is-user">好，我先查下点位</div>
+    </div>
+  </div>
+  <div class="forward-snapshot__foot">
+    <div class="forward-snapshot__foot-line"></div>
+    <div class="forward-snapshot__foot-text">来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行</div>
+  </div>
+</div>
+
+<!-- 复刻「点完生成图片」后的预览弹层（类名与 ChatPanel 完全一致，样式来自 global.css） -->
+<div class="chat-forward-preview" id="pv-layer" style="display:none">
+  <div class="chat-forward-preview__panel">
+    <div class="chat-forward-preview__hint" id="pv-hint">正在生成图片…</div>
+    <div class="chat-forward-preview__img-wrap"><img id="pv-img" alt="转发图"></div>
+    <div class="chat-forward-preview__ops">
+      <button class="chat-forward-bar__btn is-primary" id="pv-dl" disabled>下载图片</button>
+      <button class="chat-forward-bar__btn" id="pv-close">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  // 与 ChatPanel.makeForwardImage 同参跑一遍 html2canvas，弹层里展示真实生成结果
+  const layer = document.getElementById('pv-layer');
+  const hint = document.getElementById('pv-hint');
+  const img = document.getElementById('pv-img');
+  const dl = document.getElementById('pv-dl');
+  let url = '';
+  layer.style.display = 'flex';
+  // 换 SVG foreignObject 路线：文本由浏览器原生排版，中英文基线与页面显示完全一致
+  // （html2canvas 按字符切字体 run，英文/数字会被画沉 6~7px，调 font-family 治不了）
+  const { toPng } = await import('html-to-image');
+  url = await toPng(document.getElementById('snap'),
+    { pixelRatio: 2, backgroundColor: '#eef1f6' });
+  img.src = url;
+  hint.textContent = '长按图片可直接发送给朋友，或保存图片';
+  dl.disabled = false;
+  dl.addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `摇人吧对话记录_${Date.now()}.png`;
+    a.click();
+  });
+  document.getElementById('pv-close').addEventListener('click', () => { layer.style.display = 'none'; });
+  layer.addEventListener('click', (e) => { if (e.target === layer) layer.style.display = 'none'; });
+</script>
+</body>
+</html>
