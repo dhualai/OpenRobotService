@@ -974,6 +974,37 @@ async def _upload_events(
     )
 
 
+@qa_router.post("/forward_image", summary="保存聊天记录转发图（返回同域 URL）")
+async def save_forward_image(
+    file: UploadFile = File(..., description="PNG 图片"),
+    authorization: str = Header(default="", alias="Authorization"),
+):
+    """转发图存本地 + 返回可直链的同域 URL。
+
+    微信对 data:/blob: URL 的图片无法长按保存/转发（只能查看），必须真实
+    http URL——前端生成转发图后先上传到这里换 URL 再展示。静态服务挂载见
+    run.py 的 {media_url_prefix}/forward。
+    """
+    username, _ = _current_user_from_header(authorization)
+    if not username:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+
+    cfg = get_ai_config()
+    fwd_dir = Path(cfg.upload_dir) / "forward"
+    fwd_dir.mkdir(parents=True, exist_ok=True)
+    # 不信任客户端文件名（路径穿越/特殊字符），固定命名；扩展名按上传名兜底取 png
+    ext = ".png"
+    if file.filename and "." in file.filename:
+        tail = file.filename.rsplit(".", 1)[-1].lower()
+        if tail.isalnum() and len(tail) <= 5:
+            ext = f".{tail}"
+    name = f"forward_{int(time.time() * 1000)}{ext}"
+    (fwd_dir / name).write_bytes(await file.read())
+    url = f"{cfg.media_url_prefix}/forward/{name}"
+    logger.info(f"[forward-image] 已保存: user={username}, file={name}, bytes={(fwd_dir / name).stat().st_size}")
+    return {"url": url, "filename": name}
+
+
 @qa_router.post("/upload", summary="上传附件")
 async def upload_files(
     session_id: str = Form(..., description="会话 ID"),

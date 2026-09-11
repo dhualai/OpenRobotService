@@ -380,6 +380,16 @@ if _kb_root.is_dir():
         name="media_kb",
     )
 
+# 聊天记录转发图（qa/forward_image 落盘 uploads/forward/）：微信对 data:/blob: 图
+# 无法长按保存/转发，前端生成后上传换同域真实 URL 再展示
+_forward_dir = Path(_ai_cfg.upload_dir) / "forward"
+_forward_dir.mkdir(parents=True, exist_ok=True)
+app.mount(
+    f"{_media_prefix}/forward",
+    StaticFiles(directory=str(_forward_dir)),
+    name="media_forward",
+)
+
 
 @app.get("/health")
 async def health_check():

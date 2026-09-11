@@ -1,6 +1,7 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ReactNode, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
@@ -31,6 +32,7 @@ import { createConversation, getConversation, appendMessage, readAiSessionId, up
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import { compressImage } from '@/shared/utils/imageCompress';
+import shareThumbUrl from '@/shared/assets/share-thumb.png?inline';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { useInertiaScroll } from '@/shared/hooks/useInertiaScroll';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
@@ -686,13 +688,15 @@ const TICKET_TYPE_LABEL: Record<string, string> = {
 // AI 诊断输入框轮播提示（复刻 DiscussionPanel 讨论区小技巧轮播）。两个目的：
 // ①行为纠正——先描述问题再转工单（有用户上来就说转工单，没描述没法提准）；
 // ②功能引导——查工单/查项目/描述现象/指定处理人。仅 call 场景轮播，其他场景静态文案。
+// 文案须 ≤12 个全角字宽（iPhone 输入框单行实容量）：Textarea autosize 跟 placeholder
+// 行数走，超一行会把输入框撑到两三行并在轮换间跳动（0911 手机实测）。
 export const AI_INPUT_PLACEHOLDER_TIPS = [
-  '先描述问题，再对我说「提单 / 转工单」，或点下方按钮创建工单',
-  '提单时可以直接指定处理人，比如：「帮我提单给张三」',
-  '设备遇到问题，直接描述现象，我来帮您排查',
-  '你可以试着说：「我有哪些工单？」「我的待处理工单有哪些？」',
-  '你可以试着说：「我的xxx工单处理得怎么样了？」',
-  '你可以试着说：「我名下有哪些项目？」',
+  '先描述问题，再说「提单」',
+  '指定处理人：提单给张三',
+  '有问题？直接描述现象',
+  '试试：我有哪些工单？',
+  '我的xxx工单处理得如何？',
+  '试试：我名下有哪些项目？',
 ];
 
 // 按会话 id 的内存消息缓存（模块级）：切走前把当前会话最新 messages（含未落库的乐观消息）存入，
@@ -780,10 +784,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const who = name || username || '用户';
       const head = document.createElement('div');
       head.className = 'forward-snapshot__head';
-      // 头像用服务号头像图（public/share-thumb.png，缺图兜底「摇」字块）
+      // 头像 base64 内联：html2canvas useCORS 会让外链图带跨域标记加载，
+      // 静态服务无 CORS 头则图挂掉落回「摇」字兜底（0911 微信实锤）——dataURL 无请求绝不失败
       head.innerHTML =
-        `<img class="forward-snapshot__logo" src="/share-thumb.png"` +
-        ` alt="摇人吧" onerror="this.outerHTML='<div class=\\'forward-snapshot__logo-txt\\'>摇</div>'">` +
+        `<img class="forward-snapshot__logo" src="${shareThumbUrl}" alt="摇人吧">` +
         `<div class="forward-snapshot__titles">` +
         `<div class="forward-snapshot__name">摇人吧 · AI 助手 U老师</div>` +
         `<div class="forward-snapshot__sub">${who} 的提问记录 · ${fmtTs(pickedMsgs[0].timestamp)} 起</div>` +
@@ -808,30 +812,118 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         `<div class="forward-snapshot__foot-line"></div>` +
         `<div class="forward-snapshot__foot-text">来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行</div>`;
       root.appendChild(foot);
-      document.body.appendChild(root);
-      try {
-        // 微信 WebView（手机+电脑）对 SVG foreignObject 的内容静默不渲染——
-        // toPng 不报错但产出纯背景灰图（0911 iOS/安卓/PC 微信三端实锤），
-        // 微信内一律 html2canvas（PR #51 实证可出图）；其他浏览器才用
-        // html-to-image（文本原生排版，中英数字基线与页面一致）
-        const isWeChat = /MicroMessenger/i.test(navigator.userAgent);
-        let dataUrl = '';
-        if (!isWeChat) {
-          try {
-            const { toPng } = await import('html-to-image');
-            dataUrl = await toPng(root, {
-              pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
-            });
-          } catch (e) {
-            console.warn('[forward] html-to-image 失败，降级 html2canvas', e);
-          }
+      // html2canvas 在微信 WebView 里克隆渲染不吃样式表（0911 实锤：产物无任何
+      // CSS 颜色，头部蓝/气泡蓝全丢）——整树把 computedStyle 逐元素内联进 style
+      // 属性，截图引擎只依赖 inline 样式，与样式表应用兼容性解耦
+      const INLINE_PROPS = [
+        'display', 'position', 'flex-direction', 'flex', 'flex-shrink', 'align-items',
+        'justify-content', 'background', 'background-color', 'color', 'border',
+        'border-radius', 'padding', 'margin', 'font-family', 'font-size', 'font-weight',
+        'line-height', 'text-align', 'width', 'height', 'max-width', 'min-height',
+        'box-shadow', 'opacity', 'overflow', 'box-sizing', 'letter-spacing',
+        'white-space', 'word-break', 'text-decoration', 'list-style',
+      ];
+      const inlineComputed = (el: Element) => {
+        if (!(el instanceof HTMLElement)) return;
+        const cs = getComputedStyle(el);
+        const parts: string[] = [];
+        for (const p of INLINE_PROPS) {
+          const v = cs.getPropertyValue(p);
+          if (v && v !== 'none' && v !== 'normal') parts.push(`${p}:${v};`);
         }
-        if (!dataUrl) {
-          const { default: html2canvas } = await import('html2canvas-pro');
-          const canvas = await html2canvas(root, {
-            scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false,
+        el.style.cssText += parts.join('');
+        for (const child of el.children) inlineComputed(child);
+      };
+      // html2canvas 按字符 fallback 切字体 run，一行内多基线（英文/数字画沉 6~7px）；
+      // 单物理字体无切分必齐：iOS 用 PingFang SC（自带拉丁字形），其余用微软雅黑
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      root.style.fontFamily = isIOS ? '"PingFang SC", sans-serif' : '"Microsoft YaHei", sans-serif';
+      // 必须先挂载再内联：detached 元素的 getComputedStyle 返回空
+      document.body.appendChild(root);
+      inlineComputed(root);
+      try {
+        // 文本预栅格化：html2canvas 按 CJK/拉丁分 baseline 画文本（英文数字画沉 6~7px，
+        // 三平台实锤、字体/行高均治不了）——把文本节点替换成 canvas 亲手画的 img
+        // （fillText 中英混排天然同基线），html2canvas 只画图片+色块，平台无关
+        const rasterizeTexts = (rootEl: HTMLElement) => {
+          const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+          const texts: Text[] = [];
+          while (walker.nextNode()) {
+            const n = walker.currentNode as Text;
+            if (n.textContent && n.textContent.trim()) texts.push(n);
+          }
+          for (const node of texts) {
+            const el = node.parentElement;
+            if (!el) continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+            const raw = node.textContent ?? '';
+            const fontSize = parseFloat(cs.fontSize) || 13;
+            const font = `${cs.fontStyle} ${cs.fontWeight} ${fontSize}px ${cs.fontFamily}`;
+            const meas = document.createElement('canvas').getContext('2d');
+            if (!meas) continue;
+            meas.font = font;
+            const elW = el.getBoundingClientRect().width;
+            const availW = Math.max(elW - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), 40) || 300;
+            const lines: string[] = [];
+            for (const seg of raw.split('\n')) {
+              let cur = '';
+              for (const ch of seg) {
+                if (meas.measureText(cur + ch).width > availW && cur) {
+                  lines.push(cur);
+                  cur = ch;
+                } else cur += ch;
+              }
+              lines.push(cur);
+            }
+            const lh = parseFloat(cs.lineHeight) || fontSize * 1.5;
+            const dpr = 2;
+            const w = Math.ceil(Math.max(...lines.map((l) => meas.measureText(l).width), 1)) + 2;
+            const h = Math.ceil(lines.length * lh) + 2;
+            const c = document.createElement('canvas');
+            c.width = Math.ceil(w * dpr);
+            c.height = Math.ceil(h * dpr);
+            const g = c.getContext('2d');
+            if (!g) continue;
+            g.scale(dpr, dpr);
+            g.font = font;
+            g.fillStyle = cs.color;
+            g.textBaseline = 'alphabetic';
+            lines.forEach((l, i) => g.fillText(l, 1, i * lh + (lh + fontSize * 0.72) / 2));
+            const img = document.createElement('img');
+            img.src = c.toDataURL('image/png');
+            img.style.cssText = `display:inline-block;vertical-align:top;width:${w}px;height:${h}px;`;
+            node.replaceWith(img);
+          }
+        };
+        rasterizeTexts(root);
+        const { default: html2canvas } = await import('html2canvas-pro');
+        const canvas = await html2canvas(root, {
+          scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false,
+        });
+        let dataUrl = canvas.toDataURL('image/png');
+        // 上传换同域真实 URL：微信对 data:/blob: 图无法长按保存/转发（下载按钮
+        // 也只会在查看器里再展示一遍）。失败落回内存图，不比现状差
+        try {
+          const blob = await (await fetch(dataUrl)).blob();
+          const fd = new FormData();
+          fd.append('file', new File([blob], 'forward.png', { type: 'image/png' }));
+          await useAuthStore.getState().ensureFreshToken();
+          const tok = useAuthStore.getState().token;
+          const resp = await fetch(`${API_CONFIG.AI.BASE_URL}/qa/forward_image`, {
+            method: 'POST', body: fd,
+            headers: tok ? { Authorization: `Bearer ${tok}` } : undefined,
           });
-          dataUrl = canvas.toDataURL('image/png');
+          if (resp.ok) {
+            const j = (await resp.json()) as { url?: string };
+            // 后端返回 /api/ai/media/...（media_url_prefix），但测试环境 nginx 前缀是
+            // /t/api/ai——按前端 BASE 重写前缀，否则 img 404 出问号图
+            if (j.url) dataUrl = j.url.replace(/^\/api\/ai/, API_CONFIG.AI.BASE_URL);
+          } else {
+            console.warn('[forward] 上传转发图失败', resp.status);
+          }
+        } catch (e) {
+          console.warn('[forward] 上传转发图失败，用内存图兜底', e);
         }
         setForwardImage(dataUrl);
         exitSelect();
@@ -3329,17 +3421,50 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           onClose={() => setPreviewUrl(null)}
         />
 
-        {/* 转发图预览：长按图片可保存/转发，也可点按钮下载 */}
-        {forwardImage && (
-          <div className="chat-forward-preview" onClick={() => setForwardImage(null)}>
-            <div className="chat-forward-preview__panel" onClick={(e) => e.stopPropagation()}>
-              <div className="chat-forward-preview__hint">长按图片可直接发送给朋友，或保存图片</div>
-              <div className="chat-forward-preview__img-wrap">
-                <img src={forwardImage} alt="转发图" />
+        {/* 转发图预览：小框居中+图片区可滚动+长按提示。
+            必须 createPortal 挂 body——渲染在面板树内会被带 transform 的祖先
+            劫持 fixed 定位基准（iOS 微信贴下半屏的根因）；样式 inline 绕开
+            旧内核 CSS 兼容与样式缓存 */}
+        {forwardImage && createPortal(
+          <div
+            onClick={() => setForwardImage(null)}
+            style={{
+              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1200,
+              background: 'rgba(10, 12, 20, .72)', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box',
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: '#fff', borderRadius: 14, maxWidth: 420, width: '100%',
+                maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+                overflow: 'hidden', boxSizing: 'border-box',
+              }}
+            >
+              <div
+                onContextMenu={(e) => e.preventDefault()}
+                style={{
+                  padding: '10px 14px 6px', fontSize: '12.5px', color: '#6b7280', textAlign: 'center', flexShrink: 0,
+                  // 禁长按弹原生菜单（只设在文本上，不设在容器——安卓长按图片的
+                  // 保存/转发菜单走 contextmenu，容器级拦截会杀掉它）
+                  WebkitTouchCallout: 'none', userSelect: 'none', WebkitUserSelect: 'none',
+                }}
+              >
+                长按图片可直接发送给朋友，或保存图片
               </div>
-              <div className="chat-forward-preview__ops">
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px', WebkitOverflowScrolling: 'touch' }}>
+                <img src={forwardImage} alt="转发图" style={{ width: '100%', display: 'block', borderRadius: 8 }} />
+              </div>
+              <div
+                style={{ display: 'flex', gap: 10, padding: 12, flexShrink: 0, WebkitTouchCallout: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}
+                onContextMenu={(e) => e.preventDefault()}
+              >
                 <button
-                  className="chat-forward-bar__btn is-primary"
+                  style={{
+                    flex: 1.6, background: '#3d9be6', border: 'none', color: '#fff',
+                    fontWeight: 600, borderRadius: 10, padding: '11px 0', fontSize: 14, cursor: 'pointer',
+                  }}
                   onClick={() => {
                     const a = document.createElement('a');
                     a.href = forwardImage;
@@ -3349,12 +3474,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 >
                   下载图片
                 </button>
-                <button className="chat-forward-bar__btn" onClick={() => setForwardImage(null)}>
+                <button
+                  style={{
+                    flex: 1, background: '#fff', border: '1px solid #d7dbe4', color: '#374151',
+                    borderRadius: 10, padding: '11px 0', fontSize: 14, cursor: 'pointer',
+                  }}
+                  onClick={() => setForwardImage(null)}
+                >
                   关闭
                 </button>
               </div>
             </div>
-          </div>
+          </div>,
+          document.body,
         )}
       </div>
     </div>

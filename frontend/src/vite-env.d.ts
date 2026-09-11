@@ -16,3 +16,8 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+declare module '*.png?inline' {
+  const src: string;
+  export default src;
+}

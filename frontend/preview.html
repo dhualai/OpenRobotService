@@ -8,7 +8,7 @@
 <style>
   /* 预览页专用：把 off-screen 截图容器改为可见居中展示 */
   body { display: flex; justify-content: center; padding: 24px 8px; background: #dfe3ea; }
-  .forward-snapshot { position: static !important; align-self: flex-start; box-shadow: 0 8px 40px rgba(15,23,42,.18); border-radius: 4px; }
+  .forward-snapshot { position: static !important; align-self: flex-start; flex-shrink: 0; box-shadow: 0 8px 40px rgba(15,23,42,.18); border-radius: 4px; }
   /* 假消息气泡（复刻聊天气泡核心样式；Markdown 手写等价结构） */
   .pv-demo-wrap { display: flex; flex-direction: column; gap: 10px; }
   .chat-bubble-wrap.pv { display: flex; }
@@ -81,18 +81,98 @@
 </div>
 
 <script type="module">
-  // 与 ChatPanel.makeForwardImage 同参跑一遍 html2canvas，弹层里展示真实生成结果
+  // 复刻微信内路径：html2canvas + 单物理字体（验证单字体下基线是否对齐）
   const layer = document.getElementById('pv-layer');
   const hint = document.getElementById('pv-hint');
   const img = document.getElementById('pv-img');
   const dl = document.getElementById('pv-dl');
   let url = '';
   layer.style.display = 'flex';
-  // 换 SVG foreignObject 路线：文本由浏览器原生排版，中英文基线与页面显示完全一致
-  // （html2canvas 按字符切字体 run，英文/数字会被画沉 6~7px，调 font-family 治不了）
-  const { toPng } = await import('html-to-image');
-  url = await toPng(document.getElementById('snap'),
-    { pixelRatio: 2, backgroundColor: '#eef1f6' });
+  // pane 隐藏时视口塌陷（innerWidth=0）会把 flex 布局压成废尺寸——等可见再截
+  for (let i = 0; i < 40 && window.innerWidth === 0; i++) await new Promise(r => setTimeout(r, 250));
+  // 单物理字体必须落到每个文本元素上（类规则里的 font-family 会盖过根上的继承——
+  // 上轮实验因此无效），递归 !important 强制
+  document.querySelectorAll('#snap, #snap *').forEach(el => {
+    el.style.setProperty('font-family', '"Microsoft YaHei"', 'important');
+  });
+  // 模拟微信「克隆渲染不吃样式表」：整树内联 computedStyle 后禁用全部样式表再截图——
+  // 产物颜色若完好，证明内联方案不依赖样式表，微信里成立
+  const INLINE_PROPS = ['display','position','flex-direction','flex','flex-shrink','align-items','justify-content','background','background-color','color','border','border-radius','padding','margin','font-family','font-size','font-weight','line-height','text-align','width','height','max-width','min-height','box-shadow','opacity','overflow','box-sizing','letter-spacing','white-space','word-break','text-decoration','list-style'];
+  const inlineComputed = (el) => {
+    if (!(el instanceof HTMLElement)) return;
+    const cs = getComputedStyle(el);
+    const parts = [];
+    for (const p of INLINE_PROPS) { const v = cs.getPropertyValue(p); if (v && v !== 'none' && v !== 'normal') parts.push(`${p}:${v};`); }
+    el.style.cssText += parts.join('');
+    for (const child of el.children) inlineComputed(child);
+  };
+  inlineComputed(document.getElementById('snap'));
+  const sheets = [...document.styleSheets];
+  sheets.forEach(s => { s.disabled = true; });
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/node_modules/html2canvas-pro/dist/html2canvas-pro.min.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  // 文本预栅格化：把文本节点替换成 canvas 画的 img（fillText 中英混排天然同基线），
+  // html2canvas 只画图片+色块——基线问题从根上消失，平台无关
+  const rasterizeTexts = (rootEl) => {
+    const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+    const texts = [];
+    while (walker.nextNode()) if (walker.currentNode.textContent && walker.currentNode.textContent.trim()) texts.push(walker.currentNode);
+    for (const node of texts) {
+      const el = node.parentElement;
+      if (!el) continue;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      const raw = node.textContent;
+      const fontSize = parseFloat(cs.fontSize) || 13;
+      const font = `${cs.fontStyle} ${cs.fontWeight} ${fontSize}px ${cs.fontFamily}`;
+      const meas = document.createElement('canvas').getContext('2d');
+      meas.font = font;
+      const availW = Math.max(el.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), 40) || 300;
+      const lines = [];
+      for (const seg of raw.split('\n')) {
+        let cur = '';
+        for (const ch of seg) {
+          if (meas.measureText(cur + ch).width > availW && cur) { lines.push(cur); cur = ch; }
+          else cur += ch;
+        }
+        lines.push(cur);
+      }
+      const lh = parseFloat(cs.lineHeight) || fontSize * 1.5;
+      const dpr = 2;
+      const w = Math.ceil(Math.max(...lines.map(l => meas.measureText(l).width), 1)) + 2;
+      const h = Math.ceil(lines.length * lh) + 2;
+      const c = document.createElement('canvas');
+      c.width = Math.ceil(w * dpr); c.height = Math.ceil(h * dpr);
+      const g = c.getContext('2d');
+      g.scale(dpr, dpr);
+      g.font = font;
+      g.fillStyle = cs.color;
+      g.textBaseline = 'alphabetic';
+      lines.forEach((l, i) => g.fillText(l, 1, i * lh + (lh + fontSize * 0.72) / 2));
+      const img = document.createElement('img');
+      img.src = c.toDataURL('image/png');
+      img.style.cssText = `display:inline-block;vertical-align:top;width:${w}px;height:${h}px;`;
+      node.replaceWith(img);
+    }
+  };
+  rasterizeTexts(document.getElementById('snap'));
+  sheets.forEach(s => { s.disabled = true; });
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/node_modules/html2canvas-pro/dist/html2canvas-pro.min.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  const canvas = await window.html2canvas(document.getElementById('snap'),
+    { scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false });
+  sheets.forEach(s => { s.disabled = false; });
+  url = canvas.toDataURL('image/png');
   img.src = url;
   hint.textContent = '长按图片可直接发送给朋友，或保存图片';
   dl.disabled = false;
