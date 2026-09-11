@@ -75,9 +75,10 @@ TOOL_SCHEMA: Dict[str, Any] = {
                 },
                 "requested_assignee": {
                     "type": "string",
-                    "description": ("用户指名处理人（「提给张三」「交给张三」），没有则省略。"
-                                   "🔴 必须是用户指名的具体的人：本平台/服务号自身的名称、"
-                                   "泛指称呼（工程师/客服/某团队）禁止填入。"),
+                    "description": ("用户指名/建议的处理人（「提给张三」「交给张三」"
+                                   "「建议让产品经理看」），用户原话照抄——具体人名、职位、"
+                                   "描述性称呼都可以；没有则省略。🔴 本平台/服务号自身的"
+                                   "名称不是处理人，禁止填入。"),
                 },
             },
             "required": ["ticket_type", "problem_summary", "required_fields"],
@@ -142,9 +143,10 @@ TOOL_SCHEMA_SUPPLEMENT: Dict[str, Any] = {
                 },
                 "requested_assignee": {
                     "type": "string",
-                    "description": ("用户指名处理人（「提给张三」「交给张三」），没有则省略。"
-                                   "🔴 必须是用户指名的具体的人：本平台/服务号自身的名称、"
-                                   "泛指称呼（工程师/客服/某团队）禁止填入。"),
+                    "description": ("用户指名/建议的处理人（「提给张三」「交给张三」"
+                                   "「建议让产品经理看」），用户原话照抄——具体人名、职位、"
+                                   "描述性称呼都可以；没有则省略。🔴 本平台/服务号自身的"
+                                   "名称不是处理人，禁止填入。"),
                 },
             },
             "required": ["ticket_type", "problem_summary"],
