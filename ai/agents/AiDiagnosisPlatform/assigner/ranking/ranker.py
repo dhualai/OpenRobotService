@@ -23,6 +23,20 @@ class Ranker:
             self._preferred_floor = float(getattr(self._config, "preferred_floor", 0.9))
         except (TypeError, ValueError):
             self._preferred_floor = 0.9
+        # 错派压分：两处各 ×0.7（相似人分 + 精排总分）；仅精排一处时改用 ×0.5。
+        hc = getattr(self._config, "history_recall", None) or {}
+        if not isinstance(hc, dict):
+            hc = {}
+        try:
+            self._misassign_reject_factor = float(hc.get("misassign_reject_factor", 0.70))
+        except (TypeError, ValueError):
+            self._misassign_reject_factor = 0.70
+        try:
+            self._misassign_reject_once = float(hc.get("misassign_reject_once", 0.50))
+        except (TypeError, ValueError):
+            self._misassign_reject_once = 0.50
+        self._misassign_reject_factor = min(max(self._misassign_reject_factor, 0.0), 1.0)
+        self._misassign_reject_once = min(max(self._misassign_reject_once, 0.0), 1.0)
 
     def rank(
         self, recall_result: RecallResult,
@@ -109,7 +123,10 @@ class Ranker:
             was_rejected = eid in (getattr(recall_result, "misassign_rejected", None) or {})
             was_confirmed = eid in (getattr(recall_result, "misassign_confirmed", None) or {})
             if was_rejected:
-                total *= 0.70
+                # 相似路已对人分 ×0.7 时，此处再 ×0.7；否则只压这一处 → ×0.5
+                total *= (
+                    self._misassign_reject_factor if hit_similar else self._misassign_reject_once
+                )
 
             scores[eid] = {
                 "llm_score": llm,

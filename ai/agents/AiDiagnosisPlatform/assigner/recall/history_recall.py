@@ -62,6 +62,8 @@ def score_similar_hits(
 ) -> Tuple[Dict[str, float], Dict[str, str], Dict[str, str]]:
     """把检索命中聚成人分。纠错样本加减分；相似单上发生过派错了也压原处理人。
 
+    与 Step4 各乘一次 reject_factor（现行 0.7）。若将来只保留一处压分，产品口径改为 0.5。
+
     extra_pairs: [{from_id, to_id, reason}]，由相似命中的 ticket_id 反查操作日志。
     """
     per_engineer: Dict[str, List[float]] = {}

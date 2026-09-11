@@ -25,7 +25,9 @@
 #    - cluster_merge / cluster_assign：开发者模式可改，写入 runtime_overrides.yaml（不改本文件正文）
 #    - cluster_top_k:     新单最多落入几个簇
 #    - cluster_count_exp: 次数项 ln(1+n)^exp，越小次数收益越弱（1=旧口径，现用 0.3）
-#    - misassign_confirm_boost / misassign_reject_factor：「派错了」+ 审核不准确的重新派单，压原处理人 ×0.7，不剔除
+#    - misassign_confirm_boost: 相似路上给纠正接手人加分
+#    - misassign_reject_factor: 两处都压时，相似人分与 Step4 总分各乘此值（默认 0.7）
+#    - misassign_reject_once: 仅 Step4 一处压时用此值（默认 0.5；无相似命中时）
 # ══════════════════════════════════════════════════════════════════
 history_recall:
   retrieve_top_k: 30        # 相似工单 Qdrant 检索条数
@@ -40,7 +42,8 @@ history_recall:
   cluster_top_k: 2
   cluster_count_exp: 0.3    # 次数收益：结10张 ≈ 结1张的 1.45 倍（旧口径约 3.5 倍）
   misassign_confirm_boost: 0.15   # 派错纠正：接手人相似分加这么多
-  misassign_reject_factor: 0.70   # 派错纠正：原处理人相似分/精排总分 × 此系数
+  misassign_reject_factor: 0.70   # 两处压：相似人分 × 此值，Step4 总分再 × 此值
+  misassign_reject_once: 0.50    # 仅 Step4 一处压（无相似命中）时用
 
 # ══════════════════════════════════════════════════════════════════
 # 3.3 倾向接单人精排保底
@@ -61,18 +64,21 @@ vague_strong_signals:
   enabled: true
 
 # ══════════════════════════════════════════════════════════════════
-# 3.5 L1 LLM 召回人数（Step3）
+# 3.5 画像召回人数（Step3）
 #    消费方：recall/llm_recall.py
-#    单轮只要 Top single_top_k；人多分批时每批 Top batch_top_k，合并后全部进 Step4，
-#    不再做第二轮决选。不用分数阈值当主开关。
-#    - single_top_k:     单轮（人数 ≤ single_round_max）输出人数（默认 5）
-#    - batch_top_k:      分批时每批输出人数（默认 3）；三批则最多 9 人全进精排
+#    提示模型按区间选人，不钉死人数；解析只按上限封顶，不强制凑满下限。
+#    分批后各批并集全进 Step4，不再第二轮决选。
+#    - single_top_min / single_top_max: 单轮（人数 ≤ single_round_max）选人区间（默认 3～6）
+#    - batch_top_min / batch_top_max:   分批时每批选人区间（默认 2～4）
 #    - single_round_max: 候选人数 ≤ 此值时不分批（默认 12）
 #    - batch_size:       分批每批人数（默认 8）
+#    兼容：仍可读旧键 single_top_k / batch_top_k 当作上限。
 # ══════════════════════════════════════════════════════════════════
 llm_recall:
-  single_top_k: 5
-  batch_top_k: 3
+  single_top_min: 3
+  single_top_max: 6
+  batch_top_min: 2
+  batch_top_max: 4
   single_round_max: 12
   batch_size: 8
 
@@ -102,8 +108,8 @@ job_level_penalty:
 #     - history_bonus:    历史明确偏向该部门（占比 ≥ history_confirm_threshold）时加的分（佐证确认）。
 #     - 历史不足/缺失（占比 < threshold 或 hist=0）→ 不加不减，final = LLM 分，不打折。
 #   阈值：
-#     - hard_filter_score: 与 R2「明确负责」档同一下沿 0.80；只有认准了才硬收紧部门。
-#     - hard_filter_margin: 第一名与第二名的差距门槛，避免"接近并列"还被硬框。
+#     - hard_filter_score: 与 R2「明确负责」档同一下沿 0.80；主部门分达到即硬收紧。
+#     - hard_mid_score + hard_filter_margin: 主部门在 [0.70, 0.80) 且领先第二名 > margin 也可 hard。
 #     - soft_prior_score: 中等信度 → 倾向该部门但不强制（精排给该部门加分）。
 #    说明：R5 强关键词已移除（子串匹配易误触），R-Audit 独立复核兜底（dept_audit_enabled=true）。
 # ══════════════════════════════════════════════════════════════════
@@ -114,7 +120,8 @@ department_routing:
                                     # 注：历史缺失/不足以确认时，LLM 为基础分不打折、不加不减
   thresholds:
     hard_filter_score: 0.80
-    hard_filter_margin: 0.10
+    hard_mid_score: 0.70
+    hard_filter_margin: 0.20
     soft_prior_score: 0.55
     dept_boost: 1.5
   llm:
@@ -129,6 +136,9 @@ department_routing:
     enabled: true
     top_k: 10
     min_similarity: 0.70
+  audit:
+    # 审查给出纠正部门时的最低置信；达到则强制 hard 到纠正部门。
+    min_confidence: 0.7
 
 # R-Audit 部门派发审查开关（true = R2 判完部门后独立 LLM 单轮复核）
 dept_audit_enabled: true

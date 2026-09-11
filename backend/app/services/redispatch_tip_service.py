@@ -119,6 +119,20 @@ def build_redispatch_tip(log, user_map) -> Optional[str]:
     if specified_name and not preferred_id:
         return f"没找到您指定的【{specified_name}】，已按智能派单处理"
 
+    # 倾向人画像不完整：首次护栏不准入智能派单，提醒可再次重派同一人
+    if (
+        preferred_id
+        and log.assigned_id
+        and preferred_id != log.assigned_id
+        and prof.get("pref_incomplete_first_guard")
+    ):
+        return (
+            f"倾向处理人【{preferred_name or preferred_id}】画像不完整，"
+            "系统保护首次将不纳入智能派单；"
+            f"已按智能派单改派给【{assigned_name}】。"
+            "如真实需要指派请再次发起重新派单。"
+        )
+
     # 重派未派到倾向人：详情模板，不再用「暂未采纳」短句
     if preferred_id and log.assigned_id and preferred_id != log.assigned_id:
         return format_unmatched_preferred_tip(

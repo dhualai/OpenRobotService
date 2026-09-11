@@ -125,8 +125,8 @@ class TestPreferredFloor:
 class TestMisassignRanking:
     """派错纠正：精排压低原处理人。"""
 
-    def test_rejected_total_multiplied(self):
-        """正常流程：曾错派人总分 ×0.7，接手人打上转派纠正。"""
+    def test_rejected_once_uses_half(self):
+        """正常流程：无相似命中时只压 Step4 一次 → ×0.5。"""
         recall = RecallResult()
         recall.llm_recall = {"u-a": 1.0, "u-b": 1.0}
         recall.misassign_rejected = {"u-a": "不归硬件"}
@@ -135,7 +135,18 @@ class TestMisassignRanking:
         scores = Ranker(_cfg()).rank(recall, engineers=engineers)
         assert scores["u-a"]["misassign_rejected"] is True
         assert scores["u-b"]["misassign_confirmed"] is True
-        assert scores["u-a"]["total_score"] == round(scores["u-b"]["total_score"] * 0.70, 4)
+        assert scores["u-a"]["total_score"] == round(scores["u-b"]["total_score"] * 0.50, 4)
+
+    def test_rejected_with_similar_uses_double_factor(self):
+        """正常流程：有相似命中 → Step4 再 ×0.7（与相似路各一次）。"""
+        recall = RecallResult()
+        recall.similar_recall = {"u-a": 0.70, "u-b": 1.0}  # u-a 已在相似路乘过 0.7
+        recall.misassign_rejected = {"u-a": "不归硬件"}
+        engineers = [_eng("u-a", "甲"), _eng("u-b", "乙")]
+        scores = Ranker(_cfg()).rank(recall, engineers=engineers)
+        assert scores["u-a"]["hit_similar"] is True
+        assert scores["u-a"]["total_score"] == round(0.70 * 0.70, 4)
+        assert scores["u-b"]["total_score"] == 1.0
 
 
 class TestNoWindowCut:

@@ -122,6 +122,34 @@ def test_departments_db_only_not_merged_with_yaml():
     assert cfg.dept_profiles_missing is False
 
 
+def test_hard_when_primary_score_ge_080_ignores_margin():
+    """正常流程：主部门分 ≥ 0.80 即 hard；0.70～0.80 需 margin > 0.20。"""
+    from ai.agents.AiDiagnosisPlatform.assigner.filtering.dept_router import DeptRouter
+
+    router = DeptRouter(config=SimpleNamespace(
+        departments=[{"name": "智能规划研究院"}],
+        departments_without_profile=[],
+        dept_profiles_missing=False,
+        dept_audit_enabled=False,
+        department_routing={
+            "thresholds": {
+                "hard_filter_score": 0.80,
+                "hard_mid_score": 0.70,
+                "hard_filter_margin": 0.20,
+                "soft_prior_score": 0.55,
+            },
+            "fusion": {},
+        },
+    ))
+    assert router._decide_mode("智能规划研究院", 0.85, 0.05) == "hard_filter"
+    assert router._decide_mode("智能规划研究院", 0.80, 0.0) == "hard_filter"
+    assert router._decide_mode("智能规划研究院", 0.75, 0.21) == "hard_filter"
+    assert router._decide_mode("智能规划研究院", 0.70, 0.25) == "hard_filter"
+    assert router._decide_mode("智能规划研究院", 0.75, 0.20) == "soft_prior"  # 须 >0.20
+    assert router._decide_mode("智能规划研究院", 0.69, 0.50) == "soft_prior"
+    assert router._decide_mode("智能规划研究院", 0.79, 0.10) == "soft_prior"
+
+
 def test_audit_redo_same_dept_respects_thresholds():
     """异常流程：审查打回后仍是原部门，低置信不能无条件 hard_filter。"""
     import asyncio
@@ -141,11 +169,10 @@ def test_audit_redo_same_dept_respects_thresholds():
         department_routing={
             "thresholds": {
                 "hard_filter_score": 0.80,
-                "hard_filter_margin": 0.10,
                 "soft_prior_score": 0.55,
             },
             "fusion": {"history_bonus": 0.05, "history_confirm_threshold": 0.5},
-            "audit": {"min_confidence": 0.6},
+            "audit": {"min_confidence": 0.7},
         },
     )
     router = DeptRouter(config=cfg)
@@ -158,6 +185,96 @@ def test_audit_redo_same_dept_respects_thresholds():
     _cands, result = asyncio.run(router.route(_ticket(), engs))
     assert result.mode == "soft_prior"
     assert result.signals.get("audit_redone") is True
+
+
+def test_audit_failed_hard_degrades_to_soft():
+    """异常流程：审查失败与打回异常一致 — hard → soft_prior。"""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from ai.agents.AiDiagnosisPlatform.assigner.filtering.dept_router import DeptRouter
+    from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.dept_audit_signal import (
+        DeptAuditResult,
+    )
+    from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile
+
+    cfg = SimpleNamespace(
+        departments=[{"name": "智能规划研究院"}],
+        departments_without_profile=[],
+        dept_profiles_missing=False,
+        dept_audit_enabled=True,
+        department_routing={
+            "thresholds": {
+                "hard_filter_score": 0.80,
+                "hard_mid_score": 0.70,
+                "hard_filter_margin": 0.20,
+                "soft_prior_score": 0.55,
+            },
+            "fusion": {"history_bonus": 0.05, "history_confirm_threshold": 0.5},
+            "audit": {"min_confidence": 0.7},
+        },
+    )
+    router = DeptRouter(config=cfg)
+    router._llm.classify = AsyncMock(return_value={"智能规划研究院": 0.90})
+    router._history.aggregate = AsyncMock(return_value={})
+    router._audit.audit = AsyncMock(return_value=DeptAuditResult(
+        audit_failed=True, reason="审查LLM调用失败",
+    ))
+    engs = [
+        EngineerProfile(id="u-a", name="甲", department="智能规划研究院"),
+        EngineerProfile(id="u-b", name="乙", department="智能移动研究院"),
+    ]
+    cands, result = asyncio.run(router.route(_ticket(), engs))
+    assert result.mode == "soft_prior"
+    assert result.primary_dept == "智能规划研究院"
+    assert {e.id for e in cands} == {"u-a", "u-b"}
+
+
+def test_audit_correct_requires_070():
+    """正常流程：纠正 conf≥0.7 才强制 hard；0.65 不够则打回重判。"""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from ai.agents.AiDiagnosisPlatform.assigner.filtering.dept_router import DeptRouter
+    from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.dept_audit_signal import (
+        DeptAuditResult,
+    )
+    from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile
+
+    cfg = SimpleNamespace(
+        departments=[{"name": "智能规划研究院"}, {"name": "机器人事业部"}],
+        departments_without_profile=[],
+        dept_profiles_missing=False,
+        dept_audit_enabled=True,
+        department_routing={
+            "thresholds": {
+                "hard_filter_score": 0.80,
+                "hard_mid_score": 0.70,
+                "hard_filter_margin": 0.20,
+                "soft_prior_score": 0.55,
+            },
+            "fusion": {},
+            "audit": {"min_confidence": 0.7},
+        },
+    )
+    router = DeptRouter(config=cfg)
+    router._llm.classify = AsyncMock(side_effect=[
+        {"智能规划研究院": 0.90},
+        {"机器人事业部": 0.88},
+    ])
+    router._history.aggregate = AsyncMock(return_value={})
+    router._audit.audit = AsyncMock(return_value=DeptAuditResult(
+        ok=False, correct_dept="机器人事业部", confidence=0.65, reason="更像硬件",
+    ))
+    engs = [
+        EngineerProfile(id="u-a", name="甲", department="智能规划研究院"),
+        EngineerProfile(id="u-h", name="硬", department="机器人事业部"),
+    ]
+    _cands, result = asyncio.run(router.route(_ticket(), engs))
+    assert result.signals.get("audit_corrected") is not True
+    assert result.signals.get("audit_redone") is True
+    assert result.primary_dept == "机器人事业部"
+    assert result.mode == "hard_filter"
 
 
 def test_reload_config_clears_history_sync():

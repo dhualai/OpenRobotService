@@ -21,7 +21,9 @@ def _cfg(**kwargs):
         llm_decision_topk=0,
         history_recall={},
         llm_recall={
-            "single_top_k": 5, "batch_top_k": 3, "single_round_max": 12, "batch_size": 8,
+            "single_top_min": 3, "single_top_max": 6,
+            "batch_top_min": 2, "batch_top_max": 4,
+            "single_round_max": 12, "batch_size": 8,
         },
     )
     data.update(kwargs)
@@ -143,7 +145,7 @@ class TestL1PromptHasName:
     """Step3 L1 喂给大模型的候选人必须有姓名和 ID。"""
 
     def test_prompt_lists_name_and_id(self):
-        """正常流程：L1 候选行含 姓名: 与 ID:。"""
+        """正常流程：画像候选行含 姓名: 与 ID:，含刻度与类型尺子。"""
         prompt = LlmRecall(_cfg())._build_prompt(_ticket(), [_eng("u-a", "甲")], top_k=1)
         assert "姓名:甲" in prompt
         assert "ID:u-a" in prompt
@@ -151,8 +153,10 @@ class TestL1PromptHasName:
         assert "职责:负责前端" in prompt
         assert "engineer_name" in prompt
         assert "reason 必填" in prompt
-        assert "这类故障" in prompt
-        assert "产品经理" in prompt
+        assert "【匹配度刻度】" in prompt
+        assert "0.90～1.00" in prompt
+        assert "责任模块是选人的主依据" in prompt
+        assert "先看工单类型" in prompt
         assert "【反幻觉】" in prompt
         assert "禁止编造" in prompt
         assert "字面等于" in prompt
@@ -217,56 +221,72 @@ class TestL1ReasonGoesToStep6:
 
 
 class TestL1TopKCap:
-    """单轮 Top5；分批每批 Top3，合并后全进 Step4，不再决选截断。"""
+    """单轮 3～6；分批每批 2～4，合并后全进 Step4，不再决选截断。"""
 
     def test_clip_keeps_highest_k(self):
-        """正常流程：单轮 7 人打分 → 只留分最高的 5 个。"""
+        """正常流程：按上限封顶，只留分最高的若干人。"""
         scores = {f"u-{i}": 0.1 * i for i in range(1, 8)}
         reasons = {f"u-{i}": f"r{i}" for i in range(1, 8)}
-        out_s, out_r = LlmRecall(_cfg())._clip_top(scores, reasons, 5)
-        assert list(out_s) == ["u-7", "u-6", "u-5", "u-4", "u-3"]
+        out_s, out_r = LlmRecall(_cfg())._clip_top(scores, reasons, 6)
+        assert list(out_s) == ["u-7", "u-6", "u-5", "u-4", "u-3", "u-2"]
         assert set(out_r) == set(out_s)
         assert out_r["u-7"] == "r7"
 
     def test_clip_fewer_than_k_keeps_all(self):
-        """边界：人不足 K → 全留。"""
-        out_s, out_r = LlmRecall(_cfg())._clip_top({"u-a": 0.9}, {"u-a": "甲"}, 5)
+        """边界：人不足上限 → 全留，不凑数。"""
+        out_s, out_r = LlmRecall(_cfg())._clip_top({"u-a": 0.9}, {"u-a": "甲"}, 6)
         assert out_s == {"u-a": 0.9}
         assert out_r == {"u-a": "甲"}
 
-    def test_single_round_prompt_asks_top_k_not_all(self):
-        """正常流程：8 人单轮 → prompt 要 Top5，不是评估全部。"""
+    def test_single_round_prompt_asks_range_not_all(self):
+        """正常流程：8 人单轮 → prompt 要 3～6，不是评估全部。"""
         engs = [_eng(f"u-{i}", f"人{i}") for i in range(8)]
         rec = LlmRecall(_cfg())
-        k = min(rec._single_top_k, len(engs))
-        prompt = rec._build_prompt(_ticket(), engs, top_k=k)
-        assert "Top 5" in prompt
+        prompt = rec._build_prompt(
+            _ticket(), engs,
+            top_min=rec._single_top_min, top_max=rec._single_top_max,
+        )
+        assert "3～6" in prompt
+        assert "不要为凑人数硬选" in prompt
         assert "全部 8 位" not in prompt
 
     def test_batch_union_keeps_all_three_batches(self):
-        """正常流程：三批各 Top3 → 9 人全部保留，不截到 5。"""
-        stage1 = {f"b{b}-{i}": 0.9 - 0.01 * (b * 3 + i) for b in range(3) for i in range(3)}
+        """正常流程：三批各最多 4 人 → 并集全保留，不截到单轮上限。"""
+        stage1 = {f"b{b}-{i}": 0.9 - 0.01 * (b * 4 + i) for b in range(3) for i in range(4)}
         reasons = {k: "r" for k in stage1}
         out_s, out_r = LlmRecall._keep_batch_union(stage1, reasons)
-        assert len(out_s) == 9
+        assert len(out_s) == 12
         assert set(out_s) == set(stage1)
         assert set(out_r) == set(stage1)
 
-    def test_reads_config_values(self):
-        """正常流程：single_top_k / batch_top_k 从配置读。"""
+    def test_reads_range_config_values(self):
+        """正常流程：min/max 区间从配置读；旧键当作上限。"""
         rec = LlmRecall(_cfg(llm_recall={
-            "single_top_k": 4, "batch_top_k": 2, "single_round_max": 10, "batch_size": 6,
+            "single_top_min": 2, "single_top_max": 5,
+            "batch_top_min": 1, "batch_top_max": 3,
+            "single_round_max": 10, "batch_size": 6,
         }))
-        assert rec._single_top_k == 4
-        assert rec._batch_top_k == 2
+        assert rec._single_top_min == 2
+        assert rec._single_top_max == 5
+        assert rec._batch_top_min == 1
+        assert rec._batch_top_max == 3
+        assert rec._single_top_k == 5
+        assert rec._batch_top_k == 3
         assert rec._single_round_max == 10
         assert rec._batch_size == 6
 
+        rec_old = LlmRecall(_cfg(llm_recall={
+            "single_top_k": 4, "batch_top_k": 2, "single_round_max": 10, "batch_size": 6,
+        }))
+        assert rec_old._single_top_max == 4
+        assert rec_old._batch_top_max == 2
+
     def test_final_top_k_alias(self):
-        """兼容：只有旧键 final_top_k 时当作单轮人数。"""
+        """兼容：只有旧键 final_top_k 时当作单轮上限。"""
         rec = LlmRecall(_cfg(llm_recall={
             "final_top_k": 4, "batch_top_k": 3, "single_round_max": 12, "batch_size": 8,
         }))
+        assert rec._single_top_max == 4
         assert rec._single_top_k == 4
 
     def test_unpack_arecall_keeps_reasons_with_scores(self):
@@ -294,7 +314,7 @@ class TestL1TopKCap:
         import asyncio
         rec = LlmRecall(_cfg())
 
-        async def fake_batch(ticket, engineers, top_k):
+        async def fake_batch(ticket, engineers, top_min, top_max):
             return {"u-a": 0.9}, {"u-a": "甲负责前端"}
 
         rec._llm_score_batch = fake_batch
@@ -415,7 +435,7 @@ class TestL3AutoCluster:
         assert similar_person_score([1.25, 0.90]) == 1.0
 
     def test_misassign_hit_boosts_b_and_penalizes_a(self):
-        """正常流程：派错纠正样本给接手人加分、原处理人乘 0.7。"""
+        """正常流程：派错纠正样本给接手人加分、原处理人相似分 ×0.7。"""
         from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
             score_similar_hits,
         )
@@ -449,7 +469,7 @@ class TestL3AutoCluster:
         assert scores["u-b"] == 0.80
 
     def test_extra_pairs_penalize_a_on_similar_ticket(self):
-        """正常流程：相似单上发生过派错了/重派不准确，候选人里的 A 乘 0.7，不改普通命中 feed_type。"""
+        """正常流程：相似单上发生过派错了，候选人里的 A 相似分 ×0.7。"""
         from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
             score_similar_hits,
         )

@@ -434,7 +434,7 @@ class LlmDecision:
         if has_pref:
             extra.append(
                 "名单中带 [倾向接单人] 的是用户勾选。"
-                "正常情况不要拒绝这一选择，除非另有非常合适的人。"
+                "正常情况不要拒绝这一选择，应派给带该标签的人。"
             )
         if remark_line:
             extra.append(remark_line)

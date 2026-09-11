@@ -74,6 +74,8 @@ class TestIronRulesPrompt:
         assert "来源" in prompt
         assert "三路并集" in prompt
         assert "不要拒绝这一选择" in prompt
+        assert "应派给带该标签的人" in prompt
+        assert "另有非常合适" not in prompt
         assert "页面/显示" not in prompt
         assert "【用户重新派单意图】" not in prompt
         assert "用户指定倾向处理人" not in prompt
@@ -97,6 +99,8 @@ class TestRedispatchRemarkOnly:
         assert "用户重派备注：请换更熟现场的人" in prompt
         assert "名单中带 [倾向接单人] 的是用户勾选" in prompt
         assert "正常情况不要拒绝这一选择" in prompt
+        assert "应派给带该标签的人" in prompt
+        assert "另有非常合适" not in prompt
         assert "【用户重新派单意图】" not in prompt
         assert "用户指定倾向处理人" not in prompt
         assert "原处理人（用户重派前要换掉的）" not in prompt

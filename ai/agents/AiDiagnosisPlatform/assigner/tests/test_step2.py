@@ -118,7 +118,7 @@ class TestRankerTags:
         assert score_tag_labels(scores["u-d"]) == [TAG_PREV_UNSATISFIED]
 
     def test_prev_outside_candidates_not_injected(self):
-        """边界：原接单人不在候选集合 → 不强制注入精排。"""
+        """边界：原接单人不在候选 → Ranker 不注入；流程也不强制加回。"""
         recall = RecallResult()
         recall.llm_recall = {"u-a": 0.9}
         engineers = [_eng("u-a", "甲")]
@@ -141,6 +141,30 @@ class TestRankerTags:
         )
         assert scores["u-prev"]["prev_unsatisfied"] is True
         assert TAG_PREV_UNSATISFIED in score_tag_labels(scores["u-prev"])
+
+
+class TestForceKeepEngineer:
+    """Step2.5–2.6 从准入池加回（对接人/倾向人）。"""
+
+    def test_append_when_missing_in_candidates(self):
+        """正常流程：池里有、候选没有 → append。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow import DispatchFlow
+
+        pool = [_eng("u-a", "甲"), _eng("u-prev", "旧人")]
+        cands = [_eng("u-a", "甲")]
+        kept = DispatchFlow._force_keep_engineer(cands, pool, "u-prev")
+        assert kept is not None and kept.id == "u-prev"
+        assert any(e.id == "u-prev" for e in cands)
+
+    def test_noop_when_already_present_or_not_in_pool(self):
+        """边界：已在候选 / 池中无此人 → None。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow import DispatchFlow
+
+        pool = [_eng("u-a", "甲")]
+        cands = [_eng("u-a", "甲")]
+        assert DispatchFlow._force_keep_engineer(cands, pool, "u-a") is None
+        assert DispatchFlow._force_keep_engineer(cands, pool, "u-ghost") is None
+        assert DispatchFlow._force_keep_engineer(cands, pool, None) is None
 
 
 class TestCandidatesSnapshot:
