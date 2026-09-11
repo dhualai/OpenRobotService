@@ -1,6 +1,7 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ReactNode, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
@@ -3379,14 +3380,62 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           onClose={() => setPreviewUrl(null)}
         />
 
-        {/* 转发图预览：复用 ImageLightbox（Portal+TDesign ImageViewer，微信 WebView
-            的 fixed 定位兼容由成熟组件处理——自写弹层在 iOS 微信会随滚动错位贴下半屏） */}
-        <ImageLightbox
-          src={forwardImage || undefined}
-          alt="摇人吧对话记录"
-          open={!!forwardImage}
-          onClose={() => setForwardImage(null)}
-        />
+        {/* 转发图预览：小框居中+图片区可滚动+长按提示。
+            必须 createPortal 挂 body——渲染在面板树内会被带 transform 的祖先
+            劫持 fixed 定位基准（iOS 微信贴下半屏的根因）；样式 inline 绕开
+            旧内核 CSS 兼容与样式缓存 */}
+        {forwardImage && createPortal(
+          <div
+            onClick={() => setForwardImage(null)}
+            style={{
+              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1200,
+              background: 'rgba(10, 12, 20, .72)', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box',
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: '#fff', borderRadius: 14, maxWidth: 420, width: '100%',
+                maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+                overflow: 'hidden', boxSizing: 'border-box',
+              }}
+            >
+              <div style={{ padding: '10px 14px 6px', fontSize: '12.5px', color: '#6b7280', textAlign: 'center', flexShrink: 0 }}>
+                长按图片可直接发送给朋友，或保存图片
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px', WebkitOverflowScrolling: 'touch' }}>
+                <img src={forwardImage} alt="转发图" style={{ width: '100%', display: 'block', borderRadius: 8 }} />
+              </div>
+              <div style={{ display: 'flex', gap: 10, padding: 12, flexShrink: 0 }}>
+                <button
+                  style={{
+                    flex: 1.6, background: '#3d9be6', border: 'none', color: '#fff',
+                    fontWeight: 600, borderRadius: 10, padding: '11px 0', fontSize: 14, cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    const a = document.createElement('a');
+                    a.href = forwardImage;
+                    a.download = `摇人吧对话记录_${Date.now()}.png`;
+                    a.click();
+                  }}
+                >
+                  下载图片
+                </button>
+                <button
+                  style={{
+                    flex: 1, background: '#fff', border: '1px solid #d7dbe4', color: '#374151',
+                    borderRadius: 10, padding: '11px 0', fontSize: 14, cursor: 'pointer',
+                  }}
+                  onClick={() => setForwardImage(null)}
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
       </div>
     </div>
   );
