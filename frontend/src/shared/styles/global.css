@@ -1486,6 +1486,10 @@ html, body, #root {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 16px;
+  /* 禁微信原生长按菜单（iOS 放大镜/callout、文本选择）；复制走每条消息操作钮 */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
   /* 注：不加 overscroll-behavior——iOS/微信 WKWebView 对 contain 支持有缺陷，
      会导致容器滚到顶被卡住（顶部反弹失效）。滚动链透传已由 JS 侧（scrollTop 赋值
      替代 scrollIntoView）+ 外层重置根治，无需 CSS 阻断 */
@@ -7970,7 +7974,7 @@ html, body, #root {
 .chat-bubble-wrap.is-selecting .chat-actions,
 .chat-bubble-wrap.is-selecting .chat-attachment-bar,
 .chat-bubble-wrap.is-selecting .chat-project-choices { pointer-events: none; user-select: none; }
-.chat-bubble-wrap.is-selecting.is-checked .chat-bubble { outline: 1.5px solid var(--td-brand-color, #4f6ef7); outline-offset: 2px; }
+.chat-bubble-wrap.is-selecting.is-checked .chat-bubble { outline: 1.5px solid #4f6ef7; outline-offset: 2px; }
 .chat-select-check {
   position: absolute; top: 8px; width: 22px; height: 22px; border-radius: 50%;
   border: 1.5px solid #c4c9d4; background: #fff; display: flex; align-items: center;
@@ -7978,7 +7982,7 @@ html, body, #root {
 }
 .chat-bubble-wrap.is-left .chat-select-check { left: -2px; }
 .chat-bubble-wrap.is-right .chat-select-check { right: -2px; }
-.chat-select-check.is-on { background: var(--td-brand-color, #4f6ef7); border-color: var(--td-brand-color, #4f6ef7); }
+.chat-select-check.is-on { background: #4f6ef7; border-color: #4f6ef7; }
 /* 顶部选择工具条 */
 .chat-select-bar {
   position: sticky; top: 0; z-index: 5; display: flex; align-items: center;
@@ -7987,7 +7991,7 @@ html, body, #root {
   border-radius: 10px; box-shadow: 0 1px 6px rgba(15, 23, 42, .08);
 }
 .chat-select-bar__info { font-size: 12.5px; color: #6b7280; }
-.chat-select-bar__btn { all: unset; font-size: 13px; color: var(--td-brand-color, #4f6ef7); cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+.chat-select-bar__btn { all: unset; font-size: 13px; color: #4f6ef7; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
 .chat-select-bar__btn:active { background: rgba(79, 110, 247, .1); }
 /* 底部转发操作条（多选时出现在输入栏上方） */
 .chat-forward-bar { display: flex; gap: 10px; padding: 10px 12px; }
@@ -7997,13 +8001,13 @@ html, body, #root {
 }
 .chat-forward-bar__btn:disabled { opacity: .45; cursor: not-allowed; }
 .chat-forward-bar__btn.is-primary {
-  flex: 1.6; background: var(--primary, #3d9be6); border: none; color: #fff; font-weight: 600;
+  flex: 1.6; background: #3d9be6; border: none; color: #fff; font-weight: 600;
 }
 .chat-input-bar.is-select-disabled { opacity: .45; pointer-events: none; }
 /* 转发图预览弹层（min-height:0 是关键：flex 子项默认 min-height:auto，
    长图把 panel 顶出屏幕、overflow 滚不动——0911 实锤上半截在屏幕下端） */
 .chat-forward-preview {
-  position: fixed; inset: 0; z-index: 60; background: rgba(10, 12, 20, .72);
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 60; background: rgba(10, 12, 20, .72);
   display: flex; align-items: center; justify-content: center; padding: 16px;
 }
 .chat-forward-preview__panel {
@@ -8024,7 +8028,7 @@ html, body, #root {
 }
 .forward-snapshot__head {
   display: flex; align-items: center; gap: 10px; padding: 18px 16px 14px;
-  background: var(--primary, #3d9be6); color: #fff;
+  background: #3d9be6; color: #fff;
 }
 .forward-snapshot__logo {
   width: 42px; height: 42px; border-radius: 12px; object-fit: cover;
@@ -8048,7 +8052,7 @@ html, body, #root {
 }
 .forward-snapshot__body { padding: 12px 12px 4px; display: flex; flex-direction: column; gap: 10px; }
 .forward-snapshot__foot { padding: 4px 16px 16px; text-align: center; }
-.forward-snapshot__foot-line { width: 56px; height: 3px; border-radius: 2px; background: var(--primary, #3d9be6); margin: 0 auto 8px; opacity: .55; }
+.forward-snapshot__foot-line { width: 56px; height: 3px; border-radius: 2px; background: #3d9be6; margin: 0 auto 8px; opacity: .55; }
 .forward-snapshot__foot-text {
   font-size: 12px; color: #5d6572; line-height: 1.5;
   font-family: "Microsoft YaHei", "PingFang SC", sans-serif;

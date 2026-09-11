@@ -775,7 +775,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     if (!pickedMsgs.length || forwardBusy) return;
     setForwardBusy(true);
     try {
-      const { toPng } = await import('html-to-image');
       const root = document.createElement('div');
       root.className = 'forward-snapshot';
       const who = name || username || '用户';
@@ -811,11 +810,29 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       root.appendChild(foot);
       document.body.appendChild(root);
       try {
-        // SVG foreignObject 路线：文本由浏览器原生排版，中英文/数字基线与页面一致
-        // （html2canvas 按字符切字体 run，英文数字会被画沉 6~7px）
-        const dataUrl = await toPng(root, {
-          pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
-        });
+        // 微信 WebView（手机+电脑）对 SVG foreignObject 的内容静默不渲染——
+        // toPng 不报错但产出纯背景灰图（0911 iOS/安卓/PC 微信三端实锤），
+        // 微信内一律 html2canvas（PR #51 实证可出图）；其他浏览器才用
+        // html-to-image（文本原生排版，中英数字基线与页面一致）
+        const isWeChat = /MicroMessenger/i.test(navigator.userAgent);
+        let dataUrl = '';
+        if (!isWeChat) {
+          try {
+            const { toPng } = await import('html-to-image');
+            dataUrl = await toPng(root, {
+              pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
+            });
+          } catch (e) {
+            console.warn('[forward] html-to-image 失败，降级 html2canvas', e);
+          }
+        }
+        if (!dataUrl) {
+          const { default: html2canvas } = await import('html2canvas-pro');
+          const canvas = await html2canvas(root, {
+            scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false,
+          });
+          dataUrl = canvas.toDataURL('image/png');
+        }
         setForwardImage(dataUrl);
         exitSelect();
       } finally {
@@ -823,7 +840,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
     } catch (e) {
       console.error('[forward] 生成转发图失败', e);
-      Toast({ message: '生成失败，请重试', theme: 'error' });
+      const why = e instanceof Error ? e.message : String(e);
+      Toast({ message: `生成失败：${why.slice(0, 60)}`, theme: 'error' });
     } finally {
       setForwardBusy(false);
     }
@@ -2751,7 +2769,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   return (
     <div className={`chat-panel${compact ? ' is-compact' : ''}`}>
 
-      <div className="chat-view__messages" ref={messagesContainerRef}>
+      {/* 长按消息区禁微信原生菜单（iOS callout/文本选择、安卓 contextmenu），复制走每条消息的复制钮 */}
+      <div
+        className="chat-view__messages"
+        ref={messagesContainerRef}
+        onContextMenu={(e) => e.preventDefault()}
+      >
         {selectMode && (
           <div className="chat-select-bar">
             <button className="chat-select-bar__btn" onClick={exitSelect}>取消</button>
