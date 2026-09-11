@@ -64,7 +64,7 @@ GitHub Actions 若使用 GitHub 托管 runner，不能直接请求 `9400`，需�
 触发方式：
 
 - 访问层：默认使用 `workflow_dispatch` 手动触发；在 feature 分支验证期间临时增加分支 `push` 触发，验证通过后移除。
-- 业务链路层：只允许 `push develop` 和 `workflow_dispatch`；访问层作为业务链路执行的前置检查。
+- 业务链路层：只允许 `push test` 和 `workflow_dispatch`；访问层作为业务链路执行的前置检查。
 - 定时任务：第一版不启用；链路稳定后再评估是否增加每日巡检。
 - PR：只跑 Mock/无 secret 测试，不连接真实后端。
 
@@ -142,11 +142,11 @@ GitHub Actions 若使用 GitHub 托管 runner，不能直接请求 `9400`，需�
 - U1/U2 的用户名和显示名采用第 4 节参数。
 - 固定问答第一版采用 `problem` 工单类型。
 - GitHub Actions 采用 SSH 端口转发访问测试环境后端。
-- PR 仅跑 Mock/无 secret 测试；真实后端链路仅允许 `push develop` 和 `workflow_dispatch`。
+- PR 仅跑 Mock/无 secret 测试；真实后端链路仅允许 `push test` 和 `workflow_dispatch`。
 - GitHub Actions 专用 SSH key 已限制为只能访问 `127.0.0.1:9400`，不能执行远程命令。
 
 ### 5.2 待确认
 
 1. 手动触发 `real-access-check.yml`，确认 GitHub 托管 runner 可访问真实后端。
 2. 可控 AI 回复的实现/配置方案。
-3. 自动清理接口与权限。
+3. 自动清理：临时清理脚本已提供；长期仍需后端修复管理员硬删除接口或提供测试专用清理接口。

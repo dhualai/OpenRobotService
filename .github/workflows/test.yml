@@ -2,9 +2,9 @@ name: Test
 
 on:
   push:
-    branches: [hxg, develop]
+    branches: [hxg, develop, test]
   pull_request:
-    branches: [develop]
+    branches: [develop, test]
 
 env:
   PYTHON_VERSION: "3.11"
@@ -56,9 +56,9 @@ jobs:
       - name: Run infrastructure tests
         env:
           PYTHONPATH: ${{ github.workspace }}
-          AUTOMATION_ENV: ci
+          AUTOMATION_ENV: local
         run: |
-          pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/runner/tests/ -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-infra.xml
+          pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/ai_metrics/tests/ automation/ci_ai_gen/tests/ automation/tests/infrastructure/ -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-infra.xml
 
       - name: Upload Allure results
         if: always()
@@ -94,8 +94,8 @@ jobs:
           name: allure-results-api
           path: automation/output/allure-results
 
-  test-auth:
-    name: Auth tests (real backend)
+  test-real:
+    name: Real backend smoke tests
     runs-on: ubuntu-latest
     needs: test-infra
 
@@ -141,24 +141,42 @@ jobs:
         run: |
           cd backend && alembic upgrade head
 
-      - name: Run auth tests
+      - name: Start backend
+        run: |
+          cd backend
+          nohup python -m uvicorn app:app --host 0.0.0.0 --port 8400 > backend.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8400/api/health >/dev/null 2>&1; then
+              echo "backend healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend did not become healthy"
+          cat backend.log
+          exit 1
+
+      - name: Run real backend smoke tests
         env:
           PYTHONPATH: ${{ github.workspace }}
-          AUTOMATION_ENV: ci
+          AUTOMATION_ENV: local
+          USE_MOCK: "0"
+          REAL_API_BASE_URL: http://localhost:8400
+          REAL_ADMIN_USERNAME: admin
+          REAL_ADMIN_PASSWORD: usp2026@EP
         run: |
-          pytest automation/tests/auth/ -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-auth.xml
+          pytest automation/tests/real -m smoke -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-real.xml
 
       - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: allure-results-auth
+          name: allure-results-real
           path: automation/output/allure-results
-
   report:
     name: Allure report
     if: always()
-    needs: [test-infra, test-api, test-auth]
+    needs: [test-infra, test-api, test-real]
     runs-on: ubuntu-latest
 
     steps:

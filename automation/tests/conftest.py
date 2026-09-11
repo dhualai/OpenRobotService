@@ -1,5 +1,6 @@
 """Shared test fixtures: mock backend, auth, and shared infrastructure fixtures."""
 import os
+import allure
 import pytest
 from automation.config import load_config
 from automation.config.models import ApiConfig
@@ -42,6 +43,19 @@ async def mock_auth_token(mock_api_client):
 @pytest.fixture
 def mock_auth_header(mock_auth_token):
     return {"Authorization": f"Bearer {mock_auth_token}"}
+
+@pytest.fixture(autouse=True)
+def allure_test_category(request):
+    """按测试文件路径给 Allure 增加顶层分类，便于区分链路和单接口用例。"""
+    normalized = str(request.node.fspath).replace("\\", "/")
+    if "/tests/business_chain/" in normalized or normalized.endswith("/tests/real/test_ticket_lifecycle_real.py"):
+        allure.dynamic.parent_suite("场景用例")
+        allure.dynamic.suite("真实后端工单生命周期" if normalized.endswith("/tests/real/test_ticket_lifecycle_real.py") else "完整业务链路")
+    elif "/tests/" in normalized:
+        module_name = getattr(request.node.module, "__name__", "单接口用例").split(".")[-1]
+        allure.dynamic.parent_suite("单接口用例")
+        allure.dynamic.suite(module_name)
+    yield
 
 @pytest.fixture(autouse=True)
 def allure_flush():

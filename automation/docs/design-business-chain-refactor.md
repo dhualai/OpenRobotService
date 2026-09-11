@@ -22,7 +22,7 @@
 | 链路确认 | 规范由人 review 和确认，确认后的规范作为测试框架的执行源头 |
 | 第一版 CI 范围 | 只自动跑“摇人问答到工单关闭”这一条真实后端业务链路 |
 | 底层接口用例 | 保留，作为底层执行层，暂不进 CI；不承担报告主视角 |
-| 触发边界 | PR 仅跑 Mock/无 secret 测试；真实后端链路仅允许 `push` 到 `develop` 和 `workflow_dispatch` |
+| 触发边界 | PR 仅跑 Mock/无 secret 测试；真实后端链路仅允许 `push` 到 `test` 和 `workflow_dispatch` |
 | 运行目标 | 真实后端环境 |
 | 问答控制 | 固定问题 + 预设/可控回复，先验证业务流程；AI 质量验证后续再做 |
 | 链路角色 | U1：提问、补充信息、确认提单，并在已解决后确认关闭；U2：接收、处理并提交已解决 |
@@ -75,7 +75,7 @@
 ### 5.4 GitHub Actions 与报告
 
 - 已确认最小 repository secrets：`TEST_SSH_PRIVATE_KEY`、`REAL_U1_PASSWORD`、`REAL_U2_PASSWORD`；非敏感地址与账号名写入 workflow。
-- 已确认 PR 不接触 secrets；真实后端链路只允许 `push develop` 和 `workflow_dispatch`。
+- 已确认 PR 不接触 secrets；真实后端链路只允许 `push test` 和 `workflow_dispatch`。
 - 谁有权限在 GitHub 仓库 Settings 中添加 secrets？
 - Workflow 评论 commit 时，`GITHUB_TOKEN` 权限是否已开启？
 - Allure HTML 报告的访问方式：Actions artifact 链接、GitHub Pages，还是其他静态托管？
@@ -118,7 +118,7 @@
 1. 保留现有 `pytest + _api() + Allure` 作为执行底座。
 2. 借 `Hellen-Zhu/python-api-test` 的报告模型：每个 Allure step 展示“角色 + 中文操作 + 接口 + 业务状态 + 断言结果”。
 3. 借 `pytest-bdd` 场景语法或定义“链路剧本 YAML/JSON”，将业务链路规范翻译为多个 `_api()` 步骤。
-4. GitHub Actions 补齐：`push develop` / `workflow_dispatch` → 跑真实后端业务链路 → 生成 Allure HTML → 评论到 commit/PR 并给出报告链接；PR 仅跑 Mock/无 secret 测试。
+4. GitHub Actions 补齐：`push test` / `workflow_dispatch` → 跑真实后端业务链路 → 生成 Allure HTML → 评论到 commit/PR 并给出报告链接；PR 仅跑 Mock/无 secret 测试。
 5. 不整套替换为 `Tavern`、`Robot Framework` 或 `HttpRunner`，避免迁移现有 Excel 用例、Mock、生成器与报告历史。
 
 ### 7.3 待确认点

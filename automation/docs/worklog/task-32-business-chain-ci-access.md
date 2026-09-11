@@ -11,7 +11,7 @@
 
 1. 确认 CI 安全边界：
    - PR 仅运行 Mock/无 secret 测试。
-   - 真实后端链路仅允许 `push` 到 `develop` 和 `workflow_dispatch`。
+   - 真实后端链路仅允许 `push` 到 `test` 和 `workflow_dispatch`。
 2. 创建并验证测试账号：
    - `u1_auto` / 自动化提单用户
    - `u2_auto` / 自动化处理人
@@ -28,7 +28,7 @@
 - 访问层：GitHub runner -> SSH 8802 -> `127.0.0.1:9400` -> `GET /api/health`。
 - 业务链路层：登录 U1/U2 -> 摇人问答 -> 提单 -> 派单 -> 处理 -> 已解决 -> 关闭。
 - 环境：仅 `TestOpenRobotService`（9400 / 9401 / `helpdesk_test`），不包含 8400/8401 实例。
-- 访问层手动触发；业务链路层使用 `push develop` + `workflow_dispatch`。
+- 访问层手动触发；业务链路层使用 `push test` + `workflow_dispatch`。
 - 访问层在 feature 分支验证期间临时使用分支 `push` 触发，验证通过后移除。
 - 第一版不配置定时任务；PR 不接触 secrets。
 
