@@ -717,6 +717,27 @@ _TICKET_FLOW_GUIDE = (
 )
 
 
+def _assignee_is_real(name: str, user_map: dict | None = None) -> bool:
+    """requested_assignee 机械校验（0910 #719 实锤：LLM 把平台名「服务号」填成
+    处理人写进描述前缀）。精确匹配 users 的显示名或 id 才放行——判断归 LLM，
+    校验在系统边界（与项目提及校验/backfill 溯源门同款纪律）。
+    user_map 供测试注入；缺省拉 UserService.get_user_map()（id→显示名），
+    拉取失败时放行（闸门降级为现状，不因异常吞掉正常指名）。"""
+    name = (name or "").strip()
+    if not name:
+        return False
+    if user_map is None:
+        try:
+            from app.services.user_service import UserService
+            user_map = UserService.get_user_map() or {}
+        except Exception as e:
+            logger.warning(f"[build_ticket] 用户名单拉取失败，assignee 闸门降级放行: {e}")
+            return True
+    names = {str(v).strip() for v in user_map.values() if str(v or "").strip()}
+    names |= {str(k).strip() for k in user_map.keys() if str(k or "").strip()}
+    return name in names
+
+
 def _ticket_visible_to(ticket, username: str) -> bool:
     """工单查看权限（0828 新需求）：仅 创建者/处理人 可见，其余回复权限不足。
 
@@ -991,7 +1012,8 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 - **即使用户没催**：信息够了就 submit，不要"再确认一下"。
 - **即使用户催**：必填字段没齐，也先 ask 补齐，不准盲目 submit。
 - **用户指名处理人**（"提单给XX""交给XX""派给XX"）→ 把 XX 写入 collected_info["requested_assignee"]，
-  然后**按场景区分**：
+  🔴 只有用户明确指名一个**具体的人**时才写入——本平台/服务号自身的名称、泛指的称呼
+  （工程师、客服、某团队）都不是处理人，禁止写入。然后**按场景区分**：
   ① 已有工单草稿（出现过「已生成工单草稿」）、用户是给旧草稿**补充指派/备注** → action=answer 简短确认「好的，已记录」，不走提单流程；
   ② 用户这句话**本身是新的服务请求**（如「能让某工程师帮我配置一下设备吗」= 让工程师去干活）→
   这就是提单诉求，正常走提单流程（收集缺口 → submit 弹窗），不能只 answer 记录。
@@ -4035,6 +4057,14 @@ class AiDiagnosisPlatform:
                             f"session={session_id}")
 
         # 通用字段
+        # 指名处理人防幻觉闸门（0910 #719 实锤：LLM 把平台名填成处理人）：
+        # 非真实用户名/显示名一律丢弃——描述前缀与 special_notes 两处消费都在
+        # 此之后读 collected_info，就地清空即可全覆盖
+        _ra_gate = agent_state.collected_info.get("requested_assignee", "").strip()
+        if _ra_gate and not _assignee_is_real(_ra_gate):
+            logger.info(f"[build_ticket] requested_assignee 非真实用户已丢弃: "
+                        f"{_ra_gate!r}, session={session_id}")
+            agent_state.collected_info["requested_assignee"] = ""
         # 指名处理人写进描述，供派单直接看到
         _desc = analysis.get("description", agent_state.problem_summary[:150])
         _assignee = agent_state.collected_info.get("requested_assignee", "").strip()
