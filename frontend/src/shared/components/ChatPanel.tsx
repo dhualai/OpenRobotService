@@ -840,42 +840,53 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       document.body.appendChild(root);
       inlineComputed(root);
       try {
-        // 微信 WebView（手机+电脑）对 SVG foreignObject 的内容静默不渲染——
-        // toPng 不报错但产出纯背景灰图（0911 iOS/安卓/PC 微信三端实锤），
-        // 微信内一律 html2canvas（PR #51 实证可出图）；其他浏览器才用
-        // html-to-image（文本原生排版，中英数字基线与页面一致）
-        const isWeChat = /MicroMessenger/i.test(navigator.userAgent);
+        // 微信 WebView 里 html-to-image 内部的超长 data URL 送图画不出来（静默灰图）——
+        // 手动走 Blob URL 绕开长度限制；产物做空图检测（防 foreignObject 内容不渲染），
+        // 失败自动落回 html2canvas（基线会画沉但保出图）
+        const renderForeignObject = async (): Promise<string> => {
+          const { toSvg } = await import('html-to-image');
+          const svgData = await toSvg(root, {
+            pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
+          });
+          const svgBlob = await (await fetch(svgData)).blob();
+          const svgUrl = URL.createObjectURL(svgBlob);
+          try {
+            const im = await new Promise<HTMLImageElement>((resolve, reject) => {
+              const i = new Image();
+              i.onload = () => resolve(i);
+              i.onerror = () => reject(new Error('svg image load failed'));
+              i.src = svgUrl;
+            });
+            if (!im.naturalWidth || !im.naturalHeight) throw new Error('svg image zero size');
+            const canvas = document.createElement('canvas');
+            canvas.width = im.naturalWidth;
+            canvas.height = im.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('no 2d context');
+            ctx.fillStyle = '#eef1f6';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(im, 0, 0);
+            // 空图检测：头部区域（品牌蓝横条）若仍是背景色 = foreignObject 内容没渲染
+            const probe = ctx.getImageData(
+              Math.floor(canvas.width * 0.75), Math.min(80, canvas.height - 1), 1, 1).data;
+            if (probe[0] > 225 && probe[1] > 230 && probe[2] > 235) {
+              throw new Error('foreignObject rendered empty');
+            }
+            return await new Promise<string>((resolve, reject) => {
+              canvas.toBlob(
+                (b) => (b ? resolve(URL.createObjectURL(b)) : reject(new Error('toBlob failed'))),
+                'image/png',
+              );
+            });
+          } finally {
+            URL.revokeObjectURL(svgUrl);
+          }
+        };
         let dataUrl = '';
-        if (!isWeChat) {
-          try {
-            const { toPng } = await import('html-to-image');
-            dataUrl = await toPng(root, {
-              pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
-            });
-          } catch (e) {
-            console.warn('[forward] html-to-image 失败，降级 html2canvas', e);
-          }
-        } else {
-          // 临时诊断（验完删）：微信里跑一遍 foreignObject 路径仅打点不采用，
-          // 定位灰图成因——看 SVG 尺寸/Image 加载/PNG 导出哪一步坏
-          try {
-            const { toSvg, toPng } = await import('html-to-image');
-            const opts = { pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true } as const;
-            const t0 = performance.now();
-            const svg = await toSvg(root, opts);
-            console.log(`[forward-diag] svgLen=${svg.length} svgMs=${Math.round(performance.now() - t0)}`);
-            await new Promise<void>((res) => {
-              const im = new Image();
-              im.onload = () => { console.log(`[forward-diag] svgImg ok ${im.naturalWidth}x${im.naturalHeight}`); res(); };
-              im.onerror = () => { console.log('[forward-diag] svgImg FAILED'); res(); };
-              im.src = svg;
-            });
-            const t1 = performance.now();
-            const png = await toPng(root, opts);
-            console.log(`[forward-diag] pngLen=${png ? png.length : 'null'} pngMs=${Math.round(performance.now() - t1)}`);
-          } catch (e) {
-            console.warn('[forward-diag] diag threw', e);
-          }
+        try {
+          dataUrl = await renderForeignObject();
+        } catch (e) {
+          console.warn('[forward] foreignObject 路线失败，走 html2canvas', e);
         }
         if (!dataUrl) {
           const { default: html2canvas } = await import('html2canvas-pro');
