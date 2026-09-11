@@ -3418,13 +3418,24 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 overflow: 'hidden', boxSizing: 'border-box',
               }}
             >
-              <div style={{ padding: '10px 14px 6px', fontSize: '12.5px', color: '#6b7280', textAlign: 'center', flexShrink: 0 }}>
+              <div
+                onContextMenu={(e) => e.preventDefault()}
+                style={{
+                  padding: '10px 14px 6px', fontSize: '12.5px', color: '#6b7280', textAlign: 'center', flexShrink: 0,
+                  // 禁长按弹原生菜单（只设在文本上，不设在容器——安卓长按图片的
+                  // 保存/转发菜单走 contextmenu，容器级拦截会杀掉它）
+                  WebkitTouchCallout: 'none', userSelect: 'none', WebkitUserSelect: 'none',
+                }}
+              >
                 长按图片可直接发送给朋友，或保存图片
               </div>
               <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px', WebkitOverflowScrolling: 'touch' }}>
                 <img src={forwardImage} alt="转发图" style={{ width: '100%', display: 'block', borderRadius: 8 }} />
               </div>
-              <div style={{ display: 'flex', gap: 10, padding: 12, flexShrink: 0 }}>
+              <div
+                style={{ display: 'flex', gap: 10, padding: 12, flexShrink: 0, WebkitTouchCallout: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}
+                onContextMenu={(e) => e.preventDefault()}
+              >
                 <button
                   style={{
                     flex: 1.6, background: '#3d9be6', border: 'none', color: '#fff',
