@@ -8007,7 +8007,7 @@ html, body, #root {
 /* 转发图预览弹层（min-height:0 是关键：flex 子项默认 min-height:auto，
    长图把 panel 顶出屏幕、overflow 滚不动——0911 实锤上半截在屏幕下端） */
 .chat-forward-preview {
-  position: fixed; inset: 0; z-index: 60; background: rgba(10, 12, 20, .72);
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 60; background: rgba(10, 12, 20, .72);
   display: flex; align-items: center; justify-content: center; padding: 16px;
 }
 .chat-forward-preview__panel {

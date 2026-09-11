@@ -810,17 +810,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       root.appendChild(foot);
       document.body.appendChild(root);
       try {
-        // 首选 SVG foreignObject 路线（文本原生排版，中英数字基线与页面一致）；
-        // 微信 WebView 对超大 SVG data URL 的 Image 加载可能失败（iOS/安卓实测），
-        // 失败自动降级 html2canvas（英文数字基线会画沉，但保出图）
+        // 微信 WebView（手机+电脑）对 SVG foreignObject 的内容静默不渲染——
+        // toPng 不报错但产出纯背景灰图（0911 iOS/安卓/PC 微信三端实锤），
+        // 微信内一律 html2canvas（PR #51 实证可出图）；其他浏览器才用
+        // html-to-image（文本原生排版，中英数字基线与页面一致）
+        const isWeChat = /MicroMessenger/i.test(navigator.userAgent);
         let dataUrl = '';
-        try {
-          const { toPng } = await import('html-to-image');
-          dataUrl = await toPng(root, {
-            pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
-          });
-        } catch (e) {
-          console.warn('[forward] html-to-image 失败，降级 html2canvas', e);
+        if (!isWeChat) {
+          try {
+            const { toPng } = await import('html-to-image');
+            dataUrl = await toPng(root, {
+              pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
+            });
+          } catch (e) {
+            console.warn('[forward] html-to-image 失败，降级 html2canvas', e);
+          }
         }
         if (!dataUrl) {
           const { default: html2canvas } = await import('html2canvas-pro');
