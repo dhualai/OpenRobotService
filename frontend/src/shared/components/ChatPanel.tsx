@@ -830,6 +830,27 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           } catch (e) {
             console.warn('[forward] html-to-image 失败，降级 html2canvas', e);
           }
+        } else {
+          // 临时诊断（验完删）：微信里跑一遍 foreignObject 路径仅打点不采用，
+          // 定位灰图成因——看 SVG 尺寸/Image 加载/PNG 导出哪一步坏
+          try {
+            const { toSvg, toPng } = await import('html-to-image');
+            const opts = { pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true } as const;
+            const t0 = performance.now();
+            const svg = await toSvg(root, opts);
+            console.log(`[forward-diag] svgLen=${svg.length} svgMs=${Math.round(performance.now() - t0)}`);
+            await new Promise<void>((res) => {
+              const im = new Image();
+              im.onload = () => { console.log(`[forward-diag] svgImg ok ${im.naturalWidth}x${im.naturalHeight}`); res(); };
+              im.onerror = () => { console.log('[forward-diag] svgImg FAILED'); res(); };
+              im.src = svg;
+            });
+            const t1 = performance.now();
+            const png = await toPng(root, opts);
+            console.log(`[forward-diag] pngLen=${png ? png.length : 'null'} pngMs=${Math.round(performance.now() - t1)}`);
+          } catch (e) {
+            console.warn('[forward-diag] diag threw', e);
+          }
         }
         if (!dataUrl) {
           const { default: html2canvas } = await import('html2canvas-pro');
