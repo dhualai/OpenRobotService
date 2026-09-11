@@ -901,7 +901,29 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         const canvas = await html2canvas(root, {
           scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false,
         });
-        setForwardImage(canvas.toDataURL('image/png'));
+        let dataUrl = canvas.toDataURL('image/png');
+        // 上传换同域真实 URL：微信对 data:/blob: 图无法长按保存/转发（下载按钮
+        // 也只会在查看器里再展示一遍）。失败落回内存图，不比现状差
+        try {
+          const blob = await (await fetch(dataUrl)).blob();
+          const fd = new FormData();
+          fd.append('file', new File([blob], 'forward.png', { type: 'image/png' }));
+          await useAuthStore.getState().ensureFreshToken();
+          const tok = useAuthStore.getState().token;
+          const resp = await fetch(`${API_CONFIG.AI.BASE_URL}/qa/forward_image`, {
+            method: 'POST', body: fd,
+            headers: tok ? { Authorization: `Bearer ${tok}` } : undefined,
+          });
+          if (resp.ok) {
+            const j = (await resp.json()) as { url?: string };
+            if (j.url) dataUrl = j.url;
+          } else {
+            console.warn('[forward] 上传转发图失败', resp.status);
+          }
+        } catch (e) {
+          console.warn('[forward] 上传转发图失败，用内存图兜底', e);
+        }
+        setForwardImage(dataUrl);
         exitSelect();
       } finally {
         document.body.removeChild(root);
