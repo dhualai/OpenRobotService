@@ -3,7 +3,7 @@
 // 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin } from 'tdesign-mobile-react';
+import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
@@ -29,6 +29,9 @@ import API_CONFIG from '@/config/api';
 import { readStored } from '@/stores/authStorage';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import TicketDynamicsCard from '@/shared/components/TicketDynamicsCard';
+import StepNegotiationCard from '@/shared/components/StepNegotiationCard';
+import { useStepNegotiation } from '@/shared/hooks/useStepNegotiation';
+import { useResolveTicket } from '@/shared/hooks/useResolveTicket';
 import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
 import { isSameUser } from '@/shared/utils/userIdentity';
@@ -50,6 +53,8 @@ interface AiDiagnosis {
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface AiTicket {
   ticket_id?: string;
+  // Task.id（历史工单页导航用 db_<id>，此处 id 与 ticket_id 同值，供工单阶段性处理等共享 hook 使用）
+  id?: string;
   session_id: string;
   type?: string;
   title?: string;
@@ -74,6 +79,15 @@ interface AiTicket {
   project_id?: string;
   // 当前阶段截止时间（ISO 字符串，编辑弹窗 antd DatePicker 回显/编辑；详情页只读展示。tasks 详情接口返回蛇形 curr_step_endtime）
   curr_step_endtime?: string | null;
+  // 工单阶段性处理（协商节点）：与系统任务详情页同源
+  curr_step_id?: number | null;
+  curr_step_name?: string | null;
+  step_last_updated_by?: 'assigned' | 'creator' | null;
+  step_negotiation_round?: number;
+  step_phase_round?: number;
+  step_neg_max_rounds?: number;
+  curr_step_agreed?: boolean;
+  escalate_count?: number;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -200,7 +214,7 @@ export default function TicketDetailPage() {
       const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
-        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; curr_step_id?: number | null; curr_step_name?: string | null; step_last_updated_by?: 'assigned' | 'creator' | null; step_negotiation_round?: number; step_phase_round?: number; step_neg_max_rounds?: number; curr_step_agreed?: boolean; escalate_count?: number; redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null }>(`/${dbId}?load_comments=true`, { skipCache: true });
         if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
         // 二次派单感知增强（M3）：完整情商话术（未派到指定人时）
         setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
@@ -208,6 +222,7 @@ export default function TicketDetailPage() {
         setDispatchReason(taskDetail.redispatch?.result?.reasoning || '');
         setTicket({
           ticket_id: String(dbId),
+          id: String(dbId),
           session_id: taskDetail.metadata_info?.session_id || '',
           title: taskDetail.title || '',
           description: taskDetail.description ?? '',
@@ -225,6 +240,15 @@ export default function TicketDetailPage() {
           created_at: taskDetail.created_at || '',
           // 当前阶段截止时间：tasks 详情接口 GET /{id} 返回蛇形 curr_step_endtime（见 TicketResponse）
           curr_step_endtime: taskDetail.curr_step_endtime ?? null,
+          // 工单阶段性处理（协商节点）
+          curr_step_id: taskDetail.curr_step_id ?? null,
+          curr_step_name: taskDetail.curr_step_name ?? null,
+          step_last_updated_by: taskDetail.step_last_updated_by ?? null,
+          step_negotiation_round: taskDetail.step_negotiation_round,
+          step_phase_round: taskDetail.step_phase_round,
+          step_neg_max_rounds: taskDetail.step_neg_max_rounds,
+          curr_step_agreed: taskDetail.curr_step_agreed,
+          escalate_count: taskDetail.escalate_count,
           // AI 诊断数据存在 metadata_info.diagnosis（task_adapter 平铺入库）；手动工单无此字段
           diagnosis: taskDetail.metadata_info?.diagnosis,
           // 附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
@@ -242,7 +266,7 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; curr_step_id?: number | null; curr_step_name?: string | null; step_last_updated_by?: 'assigned' | 'creator' | null; step_negotiation_round?: number; step_phase_round?: number; step_neg_max_rounds?: number; curr_step_agreed?: boolean; escalate_count?: number; redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
             // 二次派单感知增强（M3）：完整情商话术随 DB 刷新
             setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
@@ -273,6 +297,15 @@ export default function TicketDetailPage() {
               project_id: taskDetail.project_id || prev.project_id,
               // 当前阶段截止时间以 DB 为准（tasks 详情接口蛇形 curr_step_endtime），覆盖 AI 滞后副本
               curr_step_endtime: taskDetail.curr_step_endtime ?? prev.curr_step_endtime ?? null,
+              // 工单阶段性处理（协商节点）以 DB 为准
+              curr_step_id: taskDetail.curr_step_id ?? prev.curr_step_id ?? null,
+              curr_step_name: taskDetail.curr_step_name ?? prev.curr_step_name ?? null,
+              step_last_updated_by: taskDetail.step_last_updated_by ?? prev.step_last_updated_by ?? null,
+              step_negotiation_round: taskDetail.step_negotiation_round ?? prev.step_negotiation_round,
+              step_phase_round: taskDetail.step_phase_round ?? prev.step_phase_round,
+              step_neg_max_rounds: taskDetail.step_neg_max_rounds ?? prev.step_neg_max_rounds,
+              curr_step_agreed: taskDetail.curr_step_agreed ?? prev.curr_step_agreed,
+              escalate_count: taskDetail.escalate_count ?? prev.escalate_count,
             } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
@@ -289,6 +322,13 @@ export default function TicketDetailPage() {
       if (!silent && !isStale()) setLoading(false);
     }
   }, [sessionId]);
+
+  // 静默刷新详情（供共享 hook 在阶段处理/结束工单操作后刷新）
+  const refreshDetail = () => fetchDetail(true);
+
+  // 工单阶段性处理（协商节点）+ 结束工单（解决方式）：与系统任务详情页复用共享 hook
+  const negotiation = useStepNegotiation(ticket?.id ?? '', ticket, refreshDetail);
+  const resolve = useResolveTicket(ticket?.id ?? '', ticket, refreshDetail);
 
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
 
@@ -353,6 +393,76 @@ export default function TicketDetailPage() {
       (ticket?.created_by_name && (ticket.created_by_name === username || ticket.created_by_name === currentName))
     );
     return { isAssignee, isReporter };
+  };
+
+  // ── 升级上报 + 重新指派（工单阶段性处理卡触发，与系统任务详情页同源）──
+  const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
+  const [showEscalatePopup, setShowEscalatePopup] = useState(false);
+  const [escalateReason, setEscalateReason] = useState('');
+  const [reassignUser, setReassignUser] = useState<UserItem | null>(null);
+  const [showReassignPopup, setShowReassignPopup] = useState(false);
+  const [reassignReason, setReassignReason] = useState('');
+  const [reassignKind, setReassignKind] = useState<'misassign' | 'stage' | 'other' | ''>('');
+
+  const handleEscalate = async () => {
+    if (!ticket?.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    if (!escalateUser) { Toast({ message: '请先选择升级对象', theme: 'warning' }); return; }
+    if (!escalateReason.trim()) { Toast({ message: '请填写变更原因', theme: 'warning' }); return; }
+    const target = escalateUser.name || escalateUser.username;
+    try {
+      await request(`/${ticket.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ assigned_to: escalateUser.id || escalateUser.username, operation_type: 'escalate' }),
+      });
+      try {
+        await request(`/${ticket.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: `升级原因：${escalateReason.trim()}`, is_public: true }),
+        });
+      } catch { /* 评论写入失败不阻断主流程 */ }
+      await refreshDetail();
+      Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
+      setEscalateUser(null);
+      setEscalateReason('');
+      setShowEscalatePopup(false);
+    } catch (err) {
+      Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const handleReassign = async () => {
+    if (!ticket?.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    if (!reassignUser) return;
+    if (!reassignKind) { Toast({ message: '请选择转派类型', theme: 'warning' }); return; }
+    const target = reassignUser.name || reassignUser.username;
+    const remark = reassignReason.trim();
+    try {
+      await request(`/${ticket.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          assigned_to: reassignUser.id || reassignUser.username,
+          operation_type: 'reassign',
+          reassign_kind: reassignKind,
+          reassign_reason: remark || undefined,
+        }),
+      });
+      if (remark) {
+        try {
+          await request(`/${ticket.id}/comments`, {
+            method: 'POST',
+            body: JSON.stringify({ content: `重新指派原因：${remark}`, is_public: true }),
+          });
+        } catch { /* 评论写入失败不阻断主流程 */ }
+      }
+      await refreshDetail();
+      Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
+      setReassignUser(null);
+      setReassignReason('');
+      setReassignKind('');
+      setShowReassignPopup(false);
+    } catch (err) {
+      Toast({ message: `重新指派失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
   };
 
   // WS 工单状态变更（派单完成/改派/状态流转）实时更新详情，替代轮询
@@ -810,7 +920,24 @@ export default function TicketDetailPage() {
           </div>
         )}
 
-
+        {/* 工单阶段性处理（协商节点）：与系统任务详情页同源，抽到共享组件 StepNegotiationCard */}
+        <StepNegotiationCard
+          negotiation={negotiation}
+          detail={ticket}
+          roles={getCurrentUserRoles()}
+          onResolve={resolve.handleResolveClick}
+          onEscalate={(round, maxRound) => {
+            setEscalateUser(null);
+            setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入处理。`);
+            setShowEscalatePopup(true);
+          }}
+          onReassign={() => {
+            setReassignUser(null);
+            setReassignReason('');
+            setReassignKind('');
+            setShowReassignPopup(true);
+          }}
+        />
 
         {/* 工单附件（图片缩略图网格 + 非图片文件卡片；复用统一 AttachmentViewer，与系统任务页一致）*/}
         {ticket.attachments && ticket.attachments.length > 0 && (
@@ -1131,6 +1258,149 @@ export default function TicketDetailPage() {
                 </div>
               ))
             )}
+          </div>
+        </div>
+      </Popup>
+
+      {/* 升级上报弹窗（工单阶段性处理卡触发，与系统任务详情页同源） */}
+      <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay destroyOnClose>
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">升级上报</h4>
+          <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>请选择升级对象</p>
+          <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} title="选择升级对象" />
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="escalateReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={escalateReason}
+                onChange={(v) => setEscalateReason(String(v))}
+                placeholder="请输入升级原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowEscalatePopup(false); setEscalateReason(''); }}>取消</Button>
+            <Button theme="danger" onClick={handleEscalate} disabled={!escalateUser || !escalateReason.trim()}>确认升级</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 重新指派弹窗（工单阶段性处理卡触发，与系统任务详情页同源） */}
+      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); setReassignKind(''); }} placement="bottom" showOverlay destroyOnClose>
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">重新指派</h4>
+          <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
+          <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <div style={{ margin: '12px 0 8px', fontSize: '14px', color: '#333' }}>转派类型<span style={{ color: '#d54941' }}> *</span></div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+            {([
+              { id: 'misassign' as const, label: '派错了', hint: '不该派给当前处理人，同类单会学习' },
+              { id: 'stage' as const, label: '阶段转派', hint: '做到这个阶段该换人，不进入学习' },
+              { id: 'other' as const, label: '其它', hint: '太忙、请假等，不进入学习' },
+            ]).map((opt) => {
+              const on = reassignKind === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setReassignKind(opt.id)}
+                  style={{
+                    textAlign: 'left',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: on ? '1px solid #0052d9' : '1px solid #e7e7e7',
+                    background: on ? '#f2f3ff' : '#fff',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ fontSize: '14px', fontWeight: 600, color: '#222' }}>{opt.label}</div>
+                  <div style={{ fontSize: '12px', color: '#888', marginTop: '2px' }}>{opt.hint}</div>
+                </button>
+              );
+            })}
+          </div>
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="reassignReason" labelAlign="top">
+              <Textarea
+                value={reassignReason}
+                onChange={(v) => setReassignReason(String(v))}
+                placeholder="选填，补充说明（派错了时写上更有助于下次派准）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); setReassignKind(''); }}>取消</Button>
+            <Button theme="primary" onClick={handleReassign} disabled={!reassignUser || !reassignKind}>确认指派</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 结束工单确认弹窗（工单阶段性处理卡触发，与系统任务详情页同源，抽到 useResolveTicket） */}
+      <Popup visible={resolve.showResolutionPopup} onClose={resolve.handleResolveCancel} placement="bottom" showOverlay>
+        <div className="ticket-edit-form">
+          <div className="ticket-edit-form__header">
+            <span className="ticket-edit-form__title">确认完成工单</span>
+            <span className="ticket-edit-form__close" onClick={resolve.handleResolveCancel}>×</span>
+          </div>
+          <div className="ticket-edit-form__body">
+            <div className="ticket-edit-form__field">
+              <span className="ticket-edit-form__label">📌 工单问题</span>
+              <div style={{ fontSize: '14px', fontWeight: 600, color: '#1a1a1a', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ticket?.title}</div>
+              <div style={{
+                fontSize: '13px', color: '#888', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+              }}>
+                {ticket?.description || <span style={{ color: '#bbb' }}>（无描述）</span>}
+              </div>
+            </div>
+            <div className="ticket-edit-form__field">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <span className="ticket-edit-form__label" style={{ marginBottom: 0 }}>✅ 工单解决方式</span>
+                {resolve.resolutionFailed && (
+                  <span style={{ color: '#faad14', fontSize: '12px' }}>自动总结出错，请手动补充</span>
+                )}
+              </div>
+              {resolve.resolutionLoading || resolve.resolutionPolling ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '20px 0', color: '#666', fontSize: '13px', justifyContent: 'center' }}>
+                  <Loading size="20px" /> 正在生成解决方式…
+                </div>
+              ) : (
+                <Textarea
+                  value={resolve.resolutionText}
+                  onChange={(v) => resolve.setResolutionText(String(v))}
+                  placeholder={
+                    resolve.resolutionNoSolution
+                      ? '当前没有解决方案，请在此补充实际解决方式'
+                      : resolve.resolutionFailed
+                        ? 'U老师自动总结出错了，请补充解决方法'
+                        : '请填写该工单的解决方式'
+                  }
+                  autosize={{ minRows: 4, maxRows: 8 }}
+                  maxlength={1000}
+                />
+              )}
+            </div>
+          </div>
+          <div className="ticket-edit-form__footer">
+            <Button theme="default" onClick={resolve.handleResolveCancel}>取消</Button>
+            <Button
+              theme={resolve.resolutionFailed ? 'danger' : 'default'}
+              onClick={resolve.resolutionFailed ? resolve.handleRetryResolution : resolve.handleGenerateResolution}
+              loading={resolve.resolutionLoading || resolve.resolutionPolling}
+              disabled={resolve.resolutionSubmitting || resolve.resolutionLoading || resolve.resolutionPolling}
+            >
+              {resolve.resolutionFailed ? '重试' : '帮我生成'}
+            </Button>
+            <Button
+              theme="primary"
+              onClick={resolve.handleConfirmResolve}
+              disabled={resolve.resolutionSubmitting || resolve.resolutionLoading || resolve.resolutionPolling || !resolve.resolutionText.trim()}
+            >
+              确认完成
+            </Button>
           </div>
         </div>
       </Popup>
