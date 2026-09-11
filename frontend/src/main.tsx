@@ -3,6 +3,11 @@
 // （Promise.withResolvers、Array/String/TypedArray.prototype.at 等），
 // 否则 PDF 预览会在 getDocument 时抛 "undefined is not a function"。
 import '@/shared/polyfills';
+// 真机调试面板：frontend/.env 里 VITE_DEBUG_CONSOLE=1 时启用（微信里看 console/network，
+// 排查转发图等问题用；默认关闭不进 bundle）
+if (import.meta.env.VITE_DEBUG_CONSOLE === '1') {
+  import('vconsole').then(({ default: VConsole }) => new VConsole());
+}
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 // React 19 已移除 findDOMNode，antd v5 浮层（DatePicker 日历面板等）依赖它挂载，

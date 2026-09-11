@@ -31,6 +31,7 @@ import { createConversation, getConversation, appendMessage, readAiSessionId, up
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import { compressImage } from '@/shared/utils/imageCompress';
+import shareThumbUrl from '@/shared/assets/share-thumb.png?inline';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { useInertiaScroll } from '@/shared/hooks/useInertiaScroll';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
@@ -780,10 +781,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const who = name || username || '用户';
       const head = document.createElement('div');
       head.className = 'forward-snapshot__head';
-      // 头像用服务号头像图（public/share-thumb.png，缺图兜底「摇」字块）
+      // 头像 base64 内联：html2canvas useCORS 会让外链图带跨域标记加载，
+      // 静态服务无 CORS 头则图挂掉落回「摇」字兜底（0911 微信实锤）——dataURL 无请求绝不失败
       head.innerHTML =
-        `<img class="forward-snapshot__logo" src="/share-thumb.png"` +
-        ` alt="摇人吧" onerror="this.outerHTML='<div class=\\'forward-snapshot__logo-txt\\'>摇</div>'">` +
+        `<img class="forward-snapshot__logo" src="${shareThumbUrl}" alt="摇人吧">` +
         `<div class="forward-snapshot__titles">` +
         `<div class="forward-snapshot__name">摇人吧 · AI 助手 U老师</div>` +
         `<div class="forward-snapshot__sub">${who} 的提问记录 · ${fmtTs(pickedMsgs[0].timestamp)} 起</div>` +
@@ -808,6 +809,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         `<div class="forward-snapshot__foot-line"></div>` +
         `<div class="forward-snapshot__foot-text">来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行</div>`;
       root.appendChild(foot);
+      // html2canvas 按字符 fallback 切字体 run，一行内多基线（英文/数字画沉 6~7px）；
+      // 单物理字体无切分必齐：iOS 用 PingFang SC（自带拉丁字形），其余用微软雅黑
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      root.style.fontFamily = isIOS ? '"PingFang SC", sans-serif' : '"Microsoft YaHei", sans-serif';
       document.body.appendChild(root);
       try {
         // 微信 WebView（手机+电脑）对 SVG foreignObject 的内容静默不渲染——
@@ -3329,17 +3334,37 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           onClose={() => setPreviewUrl(null)}
         />
 
-        {/* 转发图预览：长按图片可保存/转发，也可点按钮下载 */}
+        {/* 转发图预览：长按图片可保存/转发，也可点按钮下载。
+            样式全 inline：微信旧内核 CSS 兼容（inset/CSS 变量）与样式缓存问题一并绕开 */}
         {forwardImage && (
-          <div className="chat-forward-preview" onClick={() => setForwardImage(null)}>
-            <div className="chat-forward-preview__panel" onClick={(e) => e.stopPropagation()}>
-              <div className="chat-forward-preview__hint">长按图片可直接发送给朋友，或保存图片</div>
-              <div className="chat-forward-preview__img-wrap">
-                <img src={forwardImage} alt="转发图" />
+          <div
+            onClick={() => setForwardImage(null)}
+            style={{
+              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 60,
+              background: 'rgba(10, 12, 20, .72)', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box',
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: '#fff', borderRadius: 14, maxWidth: 420, width: '100%',
+                maxHeight: '86vh', display: 'flex', flexDirection: 'column',
+                overflow: 'hidden', boxSizing: 'border-box',
+              }}
+            >
+              <div style={{ padding: '10px 14px 6px', fontSize: '12.5px', color: '#6b7280', textAlign: 'center', flexShrink: 0 }}>
+                长按图片可直接发送给朋友，或保存图片
               </div>
-              <div className="chat-forward-preview__ops">
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 12px' }}>
+                <img src={forwardImage} alt="转发图" style={{ width: '100%', display: 'block', borderRadius: 8 }} />
+              </div>
+              <div style={{ display: 'flex', gap: 10, padding: 12, flexShrink: 0 }}>
                 <button
-                  className="chat-forward-bar__btn is-primary"
+                  style={{
+                    flex: 1.6, background: '#3d9be6', border: 'none', color: '#fff',
+                    fontWeight: 600, borderRadius: 10, padding: '11px 0', fontSize: 14, cursor: 'pointer',
+                  }}
                   onClick={() => {
                     const a = document.createElement('a');
                     a.href = forwardImage;
@@ -3349,7 +3374,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 >
                   下载图片
                 </button>
-                <button className="chat-forward-bar__btn" onClick={() => setForwardImage(null)}>
+                <button
+                  style={{
+                    flex: 1, background: '#fff', border: '1px solid #d7dbe4', color: '#374151',
+                    borderRadius: 10, padding: '11px 0', fontSize: 14, cursor: 'pointer',
+                  }}
+                  onClick={() => setForwardImage(null)}
+                >
                   关闭
                 </button>
               </div>
