@@ -21,6 +21,7 @@
 6. 验证受限后仍能通过 SSH 隧道访问测试后端 `/api/health`。
 7. 新增手动触发的 `.github/workflows/real-access-check.yml`，用于在 GitHub Actions 中验证同一访问链路。
 8. GitHub repository secrets 已添加：`TEST_SSH_PRIVATE_KEY`、`REAL_U1_PASSWORD`、`REAL_U2_PASSWORD`。
+9. 因默认分支为 `main`、`workflow_dispatch` 在 feature 分支不可见，临时增加仅匹配当前 feature 分支的 `push` 触发用于实测。
 
 ## CI 检查范围与方式
 
@@ -28,6 +29,7 @@
 - 业务链路层：登录 U1/U2 -> 摇人问答 -> 提单 -> 派单 -> 处理 -> 已解决 -> 关闭。
 - 环境：仅 `TestOpenRobotService`（9400 / 9401 / `helpdesk_test`），不包含 8400/8401 实例。
 - 访问层手动触发；业务链路层使用 `push develop` + `workflow_dispatch`。
+- 访问层在 feature 分支验证期间临时使用分支 `push` 触发，验证通过后移除。
 - 第一版不配置定时任务；PR 不接触 secrets。
 
 ## 修改文件

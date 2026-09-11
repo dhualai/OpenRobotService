@@ -37,7 +37,7 @@ push 代码到 GitHub（hxg / develop 分支）
 |----------|------|------|
 | `test.yml` | push（hxg/develop）/ PR → develop | 三层 job：test-infra（框架库 + 容器服务）→ test-api（API 用例）→ test-auth → report（Allure 生成 + GitHub Pages 部署） |
 | `ai-test.yml` | push（hxg/develop）/ PR → develop，后端路径变更 | AI 用例生成流水线（ci_ai_gen）+ 执行 |
-| `real-access-check.yml` | workflow_dispatch | 真实后端连通性检查：专用 SSH key 建立隧道 → 访问 `/api/health` |
+| `real-access-check.yml` | workflow_dispatch / push（临时仅 feature 分支） | 真实后端连通性检查：专用 SSH key 建立隧道 → 访问 `/api/health` |
 
 ## 三、AI 用例生成流水线（ci_ai_gen）
 
