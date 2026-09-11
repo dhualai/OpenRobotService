@@ -717,6 +717,28 @@ _TICKET_FLOW_GUIDE = (
 )
 
 
+def _assignee_is_real(name: str, user_map: dict | None = None) -> bool:
+    """requested_assignee 真名判定（0910 #719 实锤：LLM 把平台名「服务号」填成
+    处理人写进描述前缀）。精确匹配 users 的显示名或 id = 真名 → 走「指定处理人」
+    硬指派；匹配不到（职位/描述性指名）不丢弃，由调用方降级为派单参考进
+    special_notes。判断归 LLM，校验在系统边界（与项目提及校验/backfill 溯源门
+    同款纪律）。user_map 供测试注入；缺省拉 UserService.get_user_map()（id→
+    显示名），拉取失败时返回 True（按真名放行——闸门降级为现状，不吞正常指名）。"""
+    name = (name or "").strip()
+    if not name:
+        return False
+    if user_map is None:
+        try:
+            from app.services.user_service import UserService
+            user_map = UserService.get_user_map() or {}
+        except Exception as e:
+            logger.warning(f"[build_ticket] 用户名单拉取失败，assignee 闸门降级放行: {e}")
+            return True
+    names = {str(v).strip() for v in user_map.values() if str(v or "").strip()}
+    names |= {str(k).strip() for k in user_map.keys() if str(k or "").strip()}
+    return name in names
+
+
 def _ticket_visible_to(ticket, username: str) -> bool:
     """工单查看权限（0828 新需求）：仅 创建者/处理人 可见，其余回复权限不足。
 
@@ -990,8 +1012,10 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 
 - **即使用户没催**：信息够了就 submit，不要"再确认一下"。
 - **即使用户催**：必填字段没齐，也先 ask 补齐，不准盲目 submit。
-- **用户指名处理人**（"提单给XX""交给XX""派给XX"）→ 把 XX 写入 collected_info["requested_assignee"]，
-  然后**按场景区分**：
+- **用户指名处理人**（"提单给XX""交给XX""派给XX""建议让XX负责"）→ 把 XX **原话照抄**写入
+  collected_info["requested_assignee"]（XX 可以是具体人名、职位或描述性称呼，如「负责地图编辑前端的人」；
+  不要改写、补全或丢弃——服务端会分流：真实人名走指定处理人，其余作派单参考）。
+  🔴 本平台/服务号自身的名称不是处理人，禁止写入。然后**按场景区分**：
   ① 已有工单草稿（出现过「已生成工单草稿」）、用户是给旧草稿**补充指派/备注** → action=answer 简短确认「好的，已记录」，不走提单流程；
   ② 用户这句话**本身是新的服务请求**（如「能让某工程师帮我配置一下设备吗」= 让工程师去干活）→
   这就是提单诉求，正常走提单流程（收集缺口 → submit 弹窗），不能只 answer 记录。
@@ -4035,11 +4059,19 @@ class AiDiagnosisPlatform:
                             f"session={session_id}")
 
         # 通用字段
-        # 指名处理人写进描述，供派单直接看到
+        # 指名处理人闸门（0910 #719 实锤：平台名被填成「指定处理人」硬信号误导派单）：
+        # 精确匹配真实用户 → 走「指定处理人」硬指派；匹配不到（职位/描述性指名，
+        # 如「产品经理」「负责地图编辑前端的人」）不丢——降级为派单参考进
+        # special_notes，派单 agent 仍可用它找人
+        _ra = agent_state.collected_info.get("requested_assignee", "").strip()
+        _ra_real = bool(_ra) and _assignee_is_real(_ra)
+        if _ra and not _ra_real:
+            logger.info(f"[build_ticket] requested_assignee 非真实用户，降级为派单参考: "
+                        f"{_ra!r}, session={session_id}")
+        # 指名处理人写进描述，供派单直接看到（只有真实人名才配硬指派前缀）
         _desc = analysis.get("description", agent_state.problem_summary[:150])
-        _assignee = agent_state.collected_info.get("requested_assignee", "").strip()
-        if _assignee and "指定处理人" not in (_desc or ""):
-            _desc = f"[指定处理人：{_assignee}] {_desc or ''}"
+        if _ra and _ra_real and "指定处理人" not in (_desc or ""):
+            _desc = f"[指定处理人：{_ra}] {_desc or ''}"
         result = {
             "ticket_id": f"AI-{session_id[-6:]}-{int(time.time()) % 100000}",
             "session_id": session_id,
@@ -4069,11 +4101,14 @@ class AiDiagnosisPlatform:
             "attachments": _selected_atts,
         }
 
-        # 特殊说明（所有类型通用）：优先取 LLM analysis，兜底取 collected_info["requested_assignee"]
+        # 特殊说明（所有类型通用）：真实人名=指定处理人（硬指派）；职位/描述性
+        # 指名=派单参考（降级保留，不丢——领导建议「让XX负责」这类线索很珍贵）
         _notes = analysis.get("special_notes", "")
-        _assignee = agent_state.collected_info.get("requested_assignee", "").strip()
-        if _assignee and "指定处理人" not in _notes:
-            _notes = f"指定处理人：{_assignee}" + (f"；{_notes}" if _notes else "")
+        if _ra and "指定处理人" not in _notes and "派单参考" not in _notes:
+            if _ra_real:
+                _notes = f"指定处理人：{_ra}" + (f"；{_notes}" if _notes else "")
+            else:
+                _notes = f"派单参考（用户建议）：{_ra}" + (f"；{_notes}" if _notes else "")
         result["special_notes"] = _notes
 
         # 派单提示（信息充分性信号）：LLM 按对话信息量输出 lacking/severe，

@@ -363,7 +363,7 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
         <div style="display:flex;gap:8px;margin:10px 0">
           <button class="btn sm dng" id="sinkstop" disabled>停止</button>
         </div>
-        <div class="term" style="height:150px"><div class="hd">$ 拉取/应用的输出在这里（与「指标生成」页签共用同一运行通道）</div></div>
+        <div class="term" style="height:150px"><div class="hd">$ 工单沉淀的拉取/应用输出在这里（指标生成页另有自己的日志卡，互不串台）</div></div>
       </details>
     </section>
   </main>
@@ -561,7 +561,9 @@ async function followRun(first){
     const q = folN != null ? `?after=${folN}` : "";
     const j = await (await fetch("/api/run_status" + q)).json();
     if(first && (j.running || j.n > 0)){
-      document.querySelector("#logcard").open = true;
+      logScope = String(j.env || "").startsWith("sink") ? "sink" : "dar";
+      const card = logScope === "sink" ? $("#sinklogcard") : document.querySelector("#logcard");
+      if(card) card.open = true;
       if(j.cmd) termLine("hd", `▶ ${j.cmd}${j.running ? "（恢复跟随）" : ""}`);
     }
     (j.logs || []).forEach(l=>termLine("", l));
@@ -587,14 +589,15 @@ async function resetJudge(kind, label){
     const j = await (await fetch("/api/reset_retrieval", {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({env, kind})})).json();
-    document.querySelector("#logcard").open = true;
-    if(j.removed && j.removed.length){
-      termLine("err", `已删当日${label}判定：${j.removed.join("、")}（重跑即全量重判）`);
-      toast(`已删 ${j.removed.length} 个文件，重跑即全量重判`);
-    }else{
-      termLine("", "当日无判定产物（重跑本来就是全量）");
-      toast("当日无判定产物，重跑本来就是全量");
-    }
+  logScope = "dar";  // 重判按钮在指标生成页，反馈写回本页日志卡
+  document.querySelector("#logcard").open = true;
+  if(j.removed && j.removed.length){
+    termLine("err", `已删当日${label}判定：${j.removed.join("、")}（重跑即全量重判）`);
+    toast(`已删 ${j.removed.length} 个文件，重跑即全量重判`);
+  }else{
+    termLine("", "当日无判定产物（重跑本来就是全量）");
+    toast("当日无判定产物，重跑本来就是全量");
+  }
   }catch(e){ toast("删除失败：" + e.message, "err"); }
 }
 $("#resetretr").onclick = ()=>resetJudge("retrieval", "检索");
@@ -605,10 +608,12 @@ async function runSteps(steps, wstepEl, after, opts){
   running = true; stopFollow();
   runUI(true);
   wstepEl?.classList.add("run");
-  document.querySelector("#logcard").open = true;
-  if($("#sinklogcard")) $("#sinklogcard").open = true;
-  document.querySelectorAll(".term").forEach(t => t.innerHTML = "");
   const isSink = opts && opts.kind;
+  logScope = isSink ? "sink" : "dar";
+  (isSink ? $("#sinklogcard") : document.querySelector("#logcard")).open = true;
+  const termSel = isSink ? "#sinklogcard .term" : "#logcard .term";
+  const t = document.querySelector(termSel);
+  if(t) t.innerHTML = "";
   termLine("hd", `$ ${(opts && opts.hdr) || `dar_weekly --env ${env} ${steps.join(" ")}`}`);
   let lastRc = null;
   // sink 命令只发 kind/dir/reviewer——steps/note 是周流程专属，带上会被 /api/run
@@ -653,16 +658,18 @@ $("#advrun").onclick = ()=>{
   runSteps([...chosen], null);
 };
 
+/* 日志按来源分流（0910 用户定调 A）：dar 命令只进指标生成页日志卡，
+   sink 命令只进工单沉淀页日志卡——共用运行通道但互不串台 */
+let logScope = "dar";
 function termLine(cls, txt){
-  // 双终端：指标生成页签与工单沉淀页签各有一块 .term，同一运行内容两处镜像
-  document.querySelectorAll(".term").forEach(t => {
-    const atBottom = t.scrollTop + t.clientHeight >= t.scrollHeight - 30;
-    const d = document.createElement("div");
-    d.className = cls||""; d.textContent = txt;
-    if(t.firstChild?.classList?.contains("hd")) t.innerHTML = "";
-    t.appendChild(d);
-    if(atBottom) t.scrollTop = t.scrollHeight;
-  });
+  const t = document.querySelector(logScope === "sink" ? "#sinklogcard .term" : "#logcard .term");
+  if(!t) return;
+  const atBottom = t.scrollTop + t.clientHeight >= t.scrollHeight - 30;
+  const d = document.createElement("div");
+  d.className = cls||""; d.textContent = txt;
+  if(t.firstChild?.classList?.contains("hd")) t.innerHTML = "";
+  t.appendChild(d);
+  if(atBottom) t.scrollTop = t.scrollHeight;
 }
 /* 运行态 UI：两页签各自的停止按钮/状态徽标同步 */
 function runUI(on){
