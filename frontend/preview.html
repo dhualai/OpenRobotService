@@ -90,7 +90,11 @@
   layer.style.display = 'flex';
   // pane 隐藏时视口塌陷（innerWidth=0）会把 flex 布局压成废尺寸——等可见再截
   for (let i = 0; i < 40 && window.innerWidth === 0; i++) await new Promise(r => setTimeout(r, 250));
-  document.getElementById('snap').style.fontFamily = '"Microsoft YaHei"';
+  // 单物理字体必须落到每个文本元素上（类规则里的 font-family 会盖过根上的继承——
+  // 上轮实验因此无效），递归 !important 强制
+  document.querySelectorAll('#snap, #snap *').forEach(el => {
+    el.style.setProperty('font-family', '"Microsoft YaHei"', 'important');
+  });
   // 模拟微信「克隆渲染不吃样式表」：整树内联 computedStyle 后禁用全部样式表再截图——
   // 产物颜色若完好，证明内联方案不依赖样式表，微信里成立
   const INLINE_PROPS = ['display','position','flex-direction','flex','flex-shrink','align-items','justify-content','background','background-color','color','border','border-radius','padding','margin','font-family','font-size','font-weight','line-height','text-align','width','height','max-width','min-height','box-shadow','opacity','overflow','box-sizing','letter-spacing','white-space','word-break','text-decoration','list-style'];
@@ -112,10 +116,49 @@
     s.onerror = reject;
     document.head.appendChild(s);
   });
-  const canvas = await window.html2canvas(document.getElementById('snap'),
-    { scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false });
+  // blob 版 foreignObject 链路（与 ChatPanel.renderForeignObject 同构）：
+  // toSvg → fetch→blob → objectURL → Image → canvas → 空图探针 → toBlob
+  const { toSvg } = await import('html-to-image');
+  const svgData = await toSvg(document.getElementById('snap'),
+    { pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true });
+  // 整页 <style>（TDesign 全量 CSS）可整体删：截图树已逐元素 inline computedStyle；
+  // 体积从几百 KB 掉到几十 KB，dataURL 不再超 WebView 限度。
+  // 残留外链 url() 也清洗（canvas taint 源）。
+  const svgText0 = await (await fetch(svgData)).text();
+  const cleaned = svgText0
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/url\(\s*['"]?(?!data:|#)[^)]*\)/gi, 'none');
+  window.__pvSvgLen = { before: svgText0.length, after: cleaned.length };
+  // FileReader 产 base64 dataURL（与 html-to-image 内部一致；
+  // btoa+spread 266KB 会爆栈，encodeURIComponent 版 Chrome 下 foreignObject 不渲染）
+  const dataUrl2 = await new Promise((resolve) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.readAsDataURL(new Blob([cleaned], { type: 'image/svg+xml;charset=utf-8' }));
+  });
+  const svgUrl = dataUrl2;
+  let im;
+  try {
+    im = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('svg image load failed'));
+      i.src = svgUrl;
+    });
+    if (!im.naturalWidth || !im.naturalHeight) throw new Error('svg image zero size');
+    const canvas = document.createElement('canvas');
+    canvas.width = im.naturalWidth * 2; canvas.height = im.naturalHeight * 2;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#eef1f6';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(im, 0, 0, canvas.width, canvas.height);
+    const probe = ctx.getImageData(Math.floor(canvas.width * 0.75), 80, 1, 1).data;
+    window.__pvProbe = [probe[0], probe[1], probe[2]];
+    url = await new Promise((resolve, reject) => {
+      canvas.toBlob(b => (b ? (window.__pvBlob = b, resolve(URL.createObjectURL(b))) : reject(new Error('toBlob failed'))), 'image/png');
+    });
+  } finally { URL.revokeObjectURL(svgUrl); }
   sheets.forEach(s => { s.disabled = false; });
-  url = canvas.toDataURL('image/png');
   img.src = url;
   hint.textContent = '长按图片可直接发送给朋友，或保存图片';
   dl.disabled = false;

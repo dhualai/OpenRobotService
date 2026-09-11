@@ -848,39 +848,44 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           const svgData = await toSvg(root, {
             pixelRatio: 2, backgroundColor: '#eef1f6', skipFonts: true,
           });
-          const svgBlob = await (await fetch(svgData)).blob();
-          const svgUrl = URL.createObjectURL(svgBlob);
-          try {
-            const im = await new Promise<HTMLImageElement>((resolve, reject) => {
-              const i = new Image();
-              i.onload = () => resolve(i);
-              i.onerror = () => reject(new Error('svg image load failed'));
-              i.src = svgUrl;
-            });
-            if (!im.naturalWidth || !im.naturalHeight) throw new Error('svg image zero size');
-            const canvas = document.createElement('canvas');
-            canvas.width = im.naturalWidth;
-            canvas.height = im.naturalHeight;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) throw new Error('no 2d context');
-            ctx.fillStyle = '#eef1f6';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(im, 0, 0);
-            // 空图检测：头部区域（品牌蓝横条）若仍是背景色 = foreignObject 内容没渲染
-            const probe = ctx.getImageData(
-              Math.floor(canvas.width * 0.75), Math.min(80, canvas.height - 1), 1, 1).data;
-            if (probe[0] > 225 && probe[1] > 230 && probe[2] > 235) {
-              throw new Error('foreignObject rendered empty');
-            }
-            return await new Promise<string>((resolve, reject) => {
-              canvas.toBlob(
-                (b) => (b ? resolve(URL.createObjectURL(b)) : reject(new Error('toBlob failed'))),
-                'image/png',
-              );
-            });
-          } finally {
-            URL.revokeObjectURL(svgUrl);
+          // 残留外链 url()（字体/图标）会让 canvas taint（getImageData/toBlob 抛
+          // SecurityError）——清洗成 none（系统字体、无背景图，不受影响）
+          const svgText = await (await fetch(svgData)).text();
+          const cleaned = svgText.replace(/url\(\s*['"]?(?!data:|#)[^)]*\)/gi, 'none');
+          // FileReader 产 base64 dataURL：blob URL + foreignObject 会被判跨源污染 canvas，
+          // encodeURIComponent 编码版 foreignObject 不渲染——base64 版两端实证可用
+          const dataUrl = await new Promise<string>((resolve) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(fr.result as string);
+            fr.readAsDataURL(new Blob([cleaned], { type: 'image/svg+xml;charset=utf-8' }));
+          });
+          const im = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const i = new Image();
+            i.onload = () => resolve(i);
+            i.onerror = () => reject(new Error('svg image load failed'));
+            i.src = dataUrl;
+          });
+          if (!im.naturalWidth || !im.naturalHeight) throw new Error('svg image zero size');
+          const canvas = document.createElement('canvas');
+          canvas.width = im.naturalWidth * 2;
+          canvas.height = im.naturalHeight * 2;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('no 2d context');
+          ctx.fillStyle = '#eef1f6';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(im, 0, 0, canvas.width, canvas.height);
+          // 空图检测：头部区域（品牌蓝横条）若仍是背景色 = foreignObject 内容没渲染
+          const probe = ctx.getImageData(
+            Math.floor(canvas.width * 0.75), Math.min(80, canvas.height - 1), 1, 1).data;
+          if (probe[0] > 225 && probe[1] > 230 && probe[2] > 235) {
+            throw new Error('foreignObject rendered empty');
           }
+          return await new Promise<string>((resolve, reject) => {
+            canvas.toBlob(
+              (b) => (b ? resolve(URL.createObjectURL(b)) : reject(new Error('toBlob failed'))),
+              'image/png',
+            );
+          });
         };
         let dataUrl = '';
         try {
