@@ -63,7 +63,7 @@ GitHub Actions 若使用 GitHub 托管 runner，不能直接请求 `9400`，需�
 
 触发方式：
 
-- 访问层：先使用 `workflow_dispatch` 手动触发，便于排查网络和密钥问题。
+- 访问层：默认使用 `workflow_dispatch` 手动触发；在 feature 分支验证期间临时增加分支 `push` 触发，验证通过后移除。
 - 业务链路层：只允许 `push develop` 和 `workflow_dispatch`；访问层作为业务链路执行的前置检查。
 - 定时任务：第一版不启用；链路稳定后再评估是否增加每日巡检。
 - PR：只跑 Mock/无 secret 测试，不连接真实后端。

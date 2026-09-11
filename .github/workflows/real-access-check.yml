@@ -2,6 +2,11 @@ name: Real Environment Access Check
 
 on:
   workflow_dispatch:
+  # workflow_dispatch 只在默认分支可见；此分支触发仅用于当前 feature 分支验证。
+  # 连通性验证通过并合并后，可移除 push 触发。
+  push:
+    branches:
+      - automation-feature-business-chain-ci-access
 
 permissions:
   contents: read
