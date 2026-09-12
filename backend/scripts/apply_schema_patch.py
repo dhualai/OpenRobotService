@@ -41,7 +41,23 @@ PATCHES = {
         ("examples", "JSON NULL COMMENT '典型工单示例（[{title, dept}]）'", None),
     ],
     "tasks": [
+        # 步骤协商（step negotiation）相关列：模型见 app/models/task.py，无对应 alembic 迁移，
+        # 存量库缺列时会让项目列表/任务指标查询报 1054 Unknown column
+        ("step_last_updated_by", "VARCHAR(100) NULL COMMENT '最近一次改step的操作人：assigned/creator侧标识，用于判定待处理回合'", None),
+        ("step_last_updated_at", "DATETIME NULL COMMENT '最近一次step更新时间'", None),
+        ("step_negotiation_round", "INT NOT NULL DEFAULT 0 COMMENT '协商回合数：初始0，对手回应一次+1'", None),
         ("step_phase_round", "INT NOT NULL DEFAULT 0 COMMENT '阶段回合数：complete-step 推进+1，初始0=第一轮；0时协商节点不受sequence下限限制'", None),
+        ("curr_step_agreed", "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '当前协商节点是否已协商一致：respond 置 True；negotiate-step/complete-step 重置为 False'", None),
+        ("escalate_count", "INT NOT NULL DEFAULT 0 COMMENT '升级上报次数：>0 表示已升级，协商回合重置为1且不再受限'", None),
+    ],
+    # 项目列表 GET /api/admin/projects/ 500 的根因列：模型有、存量库无，
+    # 缺列时 select 报 1054 Unknown column 'project.project_manager_id'
+    "project": [
+        ("project_manager_id", "VARCHAR(64) NULL COMMENT '项目经理ID（与 users.id 同长度，用于关联角色）'", None),
+    ],
+    "task_operation_logs": [
+        ("ended_at", "DATETIME NULL COMMENT '查看结束时间（仅 VIEW 有值）'", None),
+        ("duration_seconds", "INT NULL COMMENT '查看时长（秒，仅 VIEW 有值）'", None),
     ],
 }
 

@@ -5163,9 +5163,9 @@ html, body, #root {
 .mac-meta-row__value.is-empty { color: var(--mac-muted-fg); }
 .mac-meta-row__pencil { flex-shrink: 0; color: var(--mac-muted-fg); margin-left: 6px; display: inline-flex; }
 /* 概要卡内嵌的字段行（项目编号）：无边框、弱前景，随概要卡副标题文字显示 */
-.mac-meta-row--plain { border-bottom: none; padding: 0; }
+.mac-meta-row--plain { justify-content: flex-start; gap: 4px; border-bottom: none; padding: 0; }
 .mac-meta-row--plain .mac-meta-row__value { font-size: 11.5px; color: var(--mac-muted-fg); }
-.mac-meta-row--plain .mac-meta-row__pencil { margin-left: 4px; }
+.mac-meta-row--plain .mac-meta-row__pencil { margin-left: 0; }
 
 /* FieldRow（对照原型 FieldRow：标签在上 + 可点行） */
 .mac-field-stack { margin-top: 10px; }
@@ -5197,6 +5197,95 @@ html, body, #root {
 .mac-dates__label { font-size: 11px; color: var(--mac-muted-fg); }
 .mac-dates__value { margin-top: 2px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--mac-fg); }
 .mac-task-exec { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(232, 234, 234, 0.6); font-size: 12px; color: var(--mac-muted-fg); }
+
+/* 项目概况卡（对照原型 ProjectOverviewCard：客户信息行 / 项目经理·对接人双列 / 分隔区块 / AGV·USP + 入口按钮 / AI 摘要） */
+.mac-ov-block { margin-top: 12px; }
+.mac-ov-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(232, 234, 234, 0.6);
+}
+.mac-ov-row__label { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--mac-muted-fg); }
+.mac-ov-row__value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--mac-fg);
+  cursor: pointer;
+  text-align: right;
+}
+.mac-ov-row__value.is-empty { color: var(--mac-muted-fg); }
+.mac-ov-row__value > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.mac-ov-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 10px 0; }
+.mac-ov-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mac-ov-cell__label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--mac-muted-fg); }
+.mac-ov-cell__value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--mac-fg);
+  cursor: pointer;
+  text-align: left;
+}
+.mac-ov-cell__value.is-empty { color: var(--mac-muted-fg); }
+.mac-ov-cell__value > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mac-ov-pencil { flex-shrink: 0; color: var(--mac-muted-fg); display: inline-flex; }
+/* 暂无后端列/接口的字段标记：控件可编辑，但明确标注尚未接入 */
+.mac-ov-pending { flex-shrink: 0; padding: 1px 6px; border-radius: 999px; background: var(--mac-secondary); color: var(--mac-muted-fg); font-size: 10px; font-weight: 500; }
+
+/* 概况卡内的分隔区块（三列日期 / AGV·USP + 搬运效率分析行） */
+.mac-ov-divider { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(232, 234, 234, 0.7); }
+.mac-ov-divider .mac-dates { margin-top: 0; }
+.mac-ov-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  align-items: end;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(232, 234, 234, 0.7);
+}
+.mac-ov-cta { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 10px; font-size: 11.5px; }
+
+/* 概况卡底部 AI 项目摘要（先置空占位，保留展开/收起交互与展示空间） */
+.mac-ai { margin-top: 14px; padding: 12px; background: var(--mac-blue-soft); border-radius: 14px; }
+.mac-ai__head { display: flex; align-items: center; gap: 6px; }
+.mac-ai__icon { flex-shrink: 0; display: inline-flex; color: var(--mac-blue-2); }
+.mac-ai__title { font-size: 12px; font-weight: 600; color: var(--mac-fg); }
+.mac-ai__toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--mac-muted-fg);
+  cursor: pointer;
+}
+.mac-ai__body { margin: 6px 0 0; min-height: 32px; font-size: 12px; line-height: 1.65; color: var(--mac-fg); white-space: pre-wrap; }
+.mac-ai__body.is-collapsed { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.mac-ai__body.is-empty { color: var(--mac-muted-fg); }
 
 /* 生命周期时间线（对照原型：26px 圆点 + 竖线 + 阶段/状态/补充说明） */
 .mac-timeline { position: relative; margin-top: 16px; }

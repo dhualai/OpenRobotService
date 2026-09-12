@@ -10,7 +10,10 @@ import { createRequest, ApiError, clearCache } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
 import { STATUS_OPTIONS, LIFECYCLE_STATUSES, PROJECT_ABORTED, calcLifecycleProgress } from '@/shared/utils/projectLifecycle';
-import { MacCheck, MacChevronRight, MacFileText, MacPencil, MacPlus, MacRefreshCw } from '@/shared/components/macaronIcons';
+import {
+  MacCheck, MacChevronRight, MacChevronDown, MacChevronUp, MacFileText, MacPencil, MacPlus, MacRefreshCw,
+  MacSparkles, MacBarChart3,
+} from '@/shared/components/macaronIcons';
 
 interface ProjectDocument {
   name: string;
@@ -140,6 +143,13 @@ export default function ProjectDetail() {
   const [noteDraft, setNoteDraft] = useState('');
   const [systemIntegrationOpen, setSystemIntegrationOpen] = useState(false);
   const [systemIntegrationDraft, setSystemIntegrationDraft] = useState<string[]>([]);
+  // 项目概况里后端 Project 表暂无对应列的三项：客户信息 / AGV 数量 / USP 版本。
+  // 按要求先置空、保留就地编辑能力；编辑结果暂存在本页 state，待后端补列后再改为 saveField。
+  const [overviewDraft, setOverviewDraft] = useState({ client: '', agvCount: '', uspVersion: '' });
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  // AI 项目摘要：后端暂无项目级摘要（现有 ai_summary 只到工单/任务级），先置空但保留展示空间，
+  // 接入后把这里换成接口返回值即可。
+  const aiSummary = '';
   const [uploading, setUploading] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const [syncFailed, setSyncFailed] = useState(false);
@@ -208,6 +218,13 @@ export default function ProjectDetail() {
         Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
       }
     }
+  };
+
+  // 项目概况中暂无后端列的三项（客户信息 / AGV 数量 / USP 版本）：控件可本地编辑，
+  // 但明确提示尚未保存到后端（待接入），不伪装成已落库。
+  const saveOverviewDraft = (key: 'client' | 'agvCount' | 'uspVersion', label: string) => (value: string) => {
+    setOverviewDraft((draft) => ({ ...draft, [key]: value }));
+    Toast({ message: `「${label}」暂存在本页，后端字段接入后才会保存`, theme: 'warning' });
   };
 
   const handleCreate = async () => {
@@ -346,8 +363,10 @@ export default function ProjectDetail() {
             </button>
           </div>
         )}
-        {/* 概要卡片（对照原型 overview SectionCard：名称/编号 + 右上标签 + MetaRow + 进度 + 三列日期） */}
+        {/* 项目概况（对照原型 ProjectOverviewCard：标题 / 名称·编号·企微记录ID / 客户信息 / 项目经理·对接人
+            / 时间进度 / 三个交付日期 / AGV·USP + 搬运效率分析 / AI 项目摘要） */}
         <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
+          <h3 className="mac-card-title">项目概况</h3>
           <div className="mac-summary-head">
             <div className="mac-summary-head__main">
               <EditableField label="项目名称" value={project.name || '未命名项目'} placeholder="未命名项目" onSave={(v) => saveField('name', v)} title required={isNew} />
@@ -357,9 +376,6 @@ export default function ProjectDetail() {
               </div>
             </div>
             <div className="mac-summary-head__side">
-              <span className="mac-chip mac-chip--tag" style={{ background: 'var(--mac-blue-2)', color: '#fff' }} onClick={() => navigate(`/admin/project-detail/${id}/transport-efficiency`)}>
-                搬运效率分析 ›
-              </span>
               <span
                 className="mac-chip mac-chip--tag"
                 style={{ background: 'var(--mac-black)', color: '#fff' }}
@@ -370,11 +386,21 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {/* 项目经理 / 对接人 —— MetaRow 可编辑；绑定 project_manager / contact_person（企业微信「项目经理」「调度对接人」列实时同步） */}
-          <div style={{ marginTop: 10 }}>
-            <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} meta />
+          {/* 客户信息（Project 表暂无对应列：先置空，可就地编辑）+ 项目经理 / 对接人（企业微信「项目经理」「调度对接人」列实时同步） */}
+          <div className="mac-ov-block">
+            <EditableField
+              variant="row"
+              pending
+              label="客户信息"
+              value={overviewDraft.client}
+              placeholder="未填写"
+              onSave={saveOverviewDraft('client', '客户信息')}
+            />
+            <div className="mac-ov-grid">
+              <EditableField variant="cell" label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} />
+              <EditableField variant="cell" label="对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} />
+            </div>
           </div>
-          <EditableField label="对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} meta strong />
 
           {/* 项目时间进度（与项目进度列表同一口径：按生命周期阶段线性计算；仅「项目中止」隐藏） */}
           {!isAborted && (
@@ -390,24 +416,69 @@ export default function ProjectDetail() {
           )}
 
           {/* 部署 / 近期交付 / 最终交付 */}
-          <div className="mac-dates">
-            <div>
-              <div className="mac-dates__label">部署时间</div>
-              <div className="mac-dates__value">{project.deployment_date || '-'}</div>
+          <div className="mac-ov-divider">
+            <div className="mac-dates">
+              <div>
+                <div className="mac-dates__label">部署时间</div>
+                <div className="mac-dates__value">{project.deployment_date || '-'}</div>
+              </div>
+              <div>
+                <div className="mac-dates__label">近期交付</div>
+                <div className="mac-dates__value">{project.recent_delivery_date || '-'}</div>
+              </div>
+              <div>
+                <div className="mac-dates__label">最终交付</div>
+                <div className="mac-dates__value">{project.final_delivery_date || '-'}</div>
+              </div>
             </div>
-            <div>
-              <div className="mac-dates__label">近期交付</div>
-              <div className="mac-dates__value">{project.recent_delivery_date || '-'}</div>
-            </div>
-            <div>
-              <div className="mac-dates__label">最终交付</div>
-              <div className="mac-dates__value">{project.final_delivery_date || '-'}</div>
-            </div>
+          </div>
+
+          {/* AGV 数量 / USP 版本（Project 表暂无对应列：先置空，可就地编辑）+ 搬运效率分析入口（对照原型：从右上标签移到底部按钮） */}
+          <div className="mac-ov-actions">
+            <EditableField
+              variant="cell"
+              pending
+              label="AGV 数量"
+              value={overviewDraft.agvCount}
+              placeholder="未填写"
+              onSave={saveOverviewDraft('agvCount', 'AGV 数量')}
+            />
+            <EditableField
+              variant="cell"
+              pending
+              label="USP 版本"
+              value={overviewDraft.uspVersion}
+              placeholder="未填写"
+              onSave={saveOverviewDraft('uspVersion', 'USP 版本')}
+            />
+            <button
+              type="button"
+              className="mac-btn mac-btn--primary mac-ov-cta"
+              onClick={() => navigate(`/admin/project-detail/${id}/transport-efficiency`)}
+            >
+              <MacBarChart3 size={14} />搬运效率分析
+            </button>
           </div>
 
           {project.task_execution_status && (
             <div className="mac-task-exec">近7天任务执行：{project.task_execution_status}</div>
           )}
+
+          {/* AI 项目摘要：数据源待接入（后端暂无项目级摘要），先置空占位，保留展开/收起交互与展示空间 */}
+          <div className="mac-ai">
+            <div className="mac-ai__head">
+              <span className="mac-ai__icon"><MacSparkles size={14} /></span>
+              <span className="mac-ai__title">AI 项目摘要</span>
+              <span className="mac-ov-pending">待接入</span>
+              <button type="button" className="mac-ai__toggle" onClick={() => setSummaryExpanded((value) => !value)}>
+                {summaryExpanded ? '收起' : '展开'}
+                {summaryExpanded ? <MacChevronUp size={13} /> : <MacChevronDown size={13} />}
+              </button>
+            </div>
+            <p className={`mac-ai__body${aiSummary ? (summaryExpanded ? '' : ' is-collapsed') : ' is-empty'}`}>
+              {aiSummary || '暂无数据'}
+            </p>
+          </div>
         </section>
 
         {/* 项目基础画像（对照原型 SectionCard + FieldRow） */}
@@ -604,7 +675,7 @@ function PickerField({ label, value, onClick, required }: { label: string; value
 const FIELD_EMPTY_VALUES = ['未设置', '未填写', '未指定', '无', ''];
 function isFieldEmpty(v: string): boolean { return FIELD_EMPTY_VALUES.includes(v); }
 
-function EditableField({ label, value, placeholder, multiline, type, title, meta, plain, strong, inlineLabel, required, onSave }: {
+function EditableField({ label, value, placeholder, multiline, type, title, meta, plain, strong, inlineLabel, required, variant, pending, onSave }: {
   label: string;
   value: string;
   placeholder?: string;
@@ -616,6 +687,10 @@ function EditableField({ label, value, placeholder, multiline, type, title, meta
   strong?: boolean;
   inlineLabel?: string;
   required?: boolean;
+  // 项目概况卡专用排布：row = 左标签右值（客户信息）；cell = 标签在上、值在下（项目经理/对接人/AGV/USP）
+  variant?: 'row' | 'cell';
+  // 后端暂无对应列/接口的字段：标签旁标注「待接入」，编辑仅本地暂存
+  pending?: boolean;
   onSave: (v: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -631,6 +706,45 @@ function EditableField({ label, value, placeholder, multiline, type, title, meta
   const requiredMark = <span style={{ color: '#ad4545', marginLeft: 2 }}>*</span>;
   const InputField = multiline ? Textarea : Input;
   const fieldProps = { ...(!multiline && type ? { type } : {}) };
+
+  // 项目概况·客户信息行（对照原型：左标签 / 右值 + 铅笔，行下细分隔线）
+  if (variant === 'row') {
+    return (
+      <div className="mac-ov-row">
+        <span className="mac-ov-row__label">{label}{required && requiredMark}{pending && <span className="mac-ov-pending">待接入</span>}</span>
+        {editing ? (
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <InputField value={draft} onChange={(v: string | number) => setDraft(String(v))} onBlur={commit} autofocus placeholder={placeholder} {...fieldProps} />
+          </div>
+        ) : (
+          <button type="button" className={`mac-ov-row__value${value ? '' : ' is-empty'}`} onClick={() => setEditing(true)}>
+            <span>{value || placeholder || '未填写'}</span>
+            <span className="mac-ov-pencil"><MacPencil size={13} /></span>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // 项目概况·字段格（对照原型：标签在上 / 值 + 铅笔，无灰底）
+  if (variant === 'cell') {
+    return (
+      <div className="mac-ov-cell">
+        <div className="mac-ov-cell__label">
+          <span>{label}{required && requiredMark}</span>
+          {pending && <span className="mac-ov-pending">待接入</span>}
+        </div>
+        {editing ? (
+          <InputField value={draft} onChange={(v: string | number) => setDraft(String(v))} onBlur={commit} autofocus placeholder={placeholder} {...fieldProps} />
+        ) : (
+          <button type="button" className={`mac-ov-cell__value${value ? '' : ' is-empty'}`} onClick={() => setEditing(true)}>
+            <span>{value || placeholder || '未填写'}</span>
+            <span className="mac-ov-pencil"><MacPencil size={13} /></span>
+          </button>
+        )}
+      </div>
+    );
+  }
 
   // 概要卡 MetaRow（项目经理 / 对接人 / 内嵌项目编号）
   if (meta) {
