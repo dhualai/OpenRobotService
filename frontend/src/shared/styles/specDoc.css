@@ -1,11 +1,12 @@
-/* 问题文档：编辑器弹层（md 在线编辑）+ 提单弹窗字段 + 详情卡片 */
+/* 问题文档：编辑器弹层（md 在线编辑）+ 提单弹窗字段 + 详情卡片
+   配色统一走全局 token（--primary 蒂芙尼蓝 / --border / --muted 等），不再硬编码色值 */
 
 /* ── 编辑器弹层 ── */
 .spec-editor {
   display: flex;
   flex-direction: column;
   height: 92vh;
-  background: #fff;
+  background: var(--card, #fff);
 }
 
 .spec-editor__head {
@@ -13,44 +14,66 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--td-gray-color-3, #eee);
+  border-bottom: 1px solid var(--border, #e5e7eb);
 }
 
 .spec-editor__title {
   font-size: 16px;
   font-weight: 600;
-  color: #222;
+  color: var(--foreground, #222);
 }
 
 .spec-editor__close {
   border: none;
   background: transparent;
-  color: #888;
+  color: var(--gray, #888);
   font-size: 14px;
   padding: 4px 8px;
 }
 
 .spec-editor__tabs {
   display: flex;
+  align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--td-gray-color-3, #eee);
+  border-bottom: 1px solid var(--border, #e5e7eb);
 }
 
 .spec-editor__tab {
   flex: 0 0 auto;
   padding: 6px 18px;
   border-radius: 16px;
-  border: 1px solid #ddd;
-  background: #f7f7f7;
-  color: #555;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--muted, #f5f7f8);
+  color: var(--foreground, #555);
   font-size: 14px;
 }
 
 .spec-editor__tab.is-active {
-  background: #0052d9;
-  border-color: #0052d9;
+  background: var(--primary);
+  border-color: var(--primary);
   color: #fff;
+}
+
+/* 工具区：插入图片 / 导入文档（右侧） */
+.spec-editor__tools {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.spec-editor__tool {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--card, #fff);
+  color: var(--primary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.spec-editor__tool:disabled {
+  opacity: 0.5;
 }
 
 .spec-editor__body {
@@ -70,28 +93,33 @@
   font-size: 15px;
 }
 
+/* 工具栏命令按钮 hover 色跟随全局主色（默认为浅灰，仅微调选中态） */
+.spec-editor__body .w-md-editor-toolbar li.active > button {
+  color: var(--primary);
+}
+
 .spec-editor__btns {
   display: flex;
   gap: 12px;
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--td-gray-color-3, #eee);
+  border-top: 1px solid var(--border, #e5e7eb);
 }
 
 .spec-editor__btn {
   flex: 1;
   height: 44px;
-  border-radius: 8px;
+  border-radius: var(--radius-lg, 10px);
   border: none;
   font-size: 16px;
 }
 
 .spec-editor__btn--cancel {
-  background: #f2f3f5;
-  color: #333;
+  background: var(--muted, #f2f3f5);
+  color: var(--foreground, #333);
 }
 
 .spec-editor__btn--confirm {
-  background: #0052d9;
+  background: var(--primary);
   color: #fff;
 }
 
@@ -119,9 +147,9 @@
 .spec-field__btn {
   padding: 6px 12px;
   border-radius: 6px;
-  border: 1px solid #d0d5dd;
-  background: #fff;
-  color: #0052d9;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--card, #fff);
+  color: var(--primary);
   font-size: 13px;
 }
 
@@ -131,16 +159,16 @@
 
 .spec-field__hint {
   font-size: 12px;
-  color: #999;
+  color: var(--muted-foreground, #999);
   margin-top: 6px;
 }
 
 .spec-field__preview {
   margin-top: 8px;
-  border: 1px solid #eee;
-  border-radius: 8px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-lg, 10px);
   padding: 10px 12px;
-  background: #fafbfc;
+  background: var(--muted, #fafbfc);
   max-height: 220px;
   overflow-y: auto;
 }
@@ -150,14 +178,14 @@
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #666;
+  color: var(--gray, #666);
   margin-top: 6px;
 }
 
 .spec-field__clear {
   border: none;
   background: transparent;
-  color: #e34d59;
+  color: var(--danger, #e34d59);
   font-size: 12px;
   padding: 2px 4px;
 }
@@ -165,9 +193,9 @@
 /* ── 详情页「问题文档」卡片 ── */
 .spec-card {
   margin: 12px 0;
-  border: 1px solid #eee;
-  border-radius: 10px;
-  background: #fff;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--card, #fff);
   overflow: hidden;
 }
 
@@ -176,18 +204,18 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border, #eee);
 }
 
 .spec-card__title {
   font-size: 15px;
   font-weight: 600;
-  color: #222;
+  color: var(--foreground, #222);
 }
 
 .spec-card__meta {
   font-size: 12px;
-  color: #999;
+  color: var(--muted-foreground, #999);
 }
 
 .spec-card__actions {
@@ -198,9 +226,9 @@
 .spec-card__btn {
   padding: 5px 12px;
   border-radius: 6px;
-  border: 1px solid #d0d5dd;
-  background: #fff;
-  color: #0052d9;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--card, #fff);
+  color: var(--primary);
   font-size: 13px;
 }
 
@@ -212,17 +240,17 @@
 
 .spec-card__empty {
   padding: 16px 14px;
-  color: #999;
+  color: var(--muted-foreground, #999);
   font-size: 13px;
 }
 
 .spec-card__files {
   padding: 8px 14px 12px;
-  border-top: 1px dashed #eee;
+  border-top: 1px dashed var(--border, #eee);
 }
 
 .spec-card__file {
   font-size: 12px;
-  color: #666;
+  color: var(--gray, #666);
   margin-top: 4px;
 }

@@ -48,3 +48,8 @@ class SpecDocParseResult(BaseModel):
     filename: str = Field(..., description="原始文件名")
     size: int = Field(..., description="原始文件大小（bytes）")
     object_path: str = Field("", description="原始文件 MinIO object_path（上传失败为空串）")
+
+
+class SpecDocImageResult(BaseModel):
+    """图片上传结果（编辑器插入图片/粘贴用）。"""
+    url: str = Field(..., description="图片代理 URL（/api/tasks/files/{object_path}）")

@@ -10,6 +10,7 @@ import { Toast } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import SpecDocEditor from '@/shared/components/SpecDocEditor';
 import { parseSpecDocFile, type SpecDocSourceFile } from '@/api/specDoc';
+import { SPEC_DOC_ACCEPT } from '@/shared/utils/fileKind';
 
 /** 提单弹窗内暂存的「问题文档」草稿（随 overrides.spec_doc 透传给后端） */
 export interface SpecDocDraft {
@@ -88,7 +89,7 @@ export default function SpecDocField({ value, onChange, disabled = false }: Spec
       <input
         ref={fileInputRef}
         type="file"
-        accept=".md,.markdown,.txt,.doc,.docx"
+        accept={SPEC_DOC_ACCEPT}
         style={{ display: 'none' }}
         onChange={(e) => {
           const f = e.target.files?.[0];

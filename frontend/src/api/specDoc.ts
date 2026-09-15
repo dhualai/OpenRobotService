@@ -87,3 +87,26 @@ export const parseSpecDocFile = async (file: File): Promise<SpecDocParseResult> 
   }
   return (await res.json()) as SpecDocParseResult;
 };
+
+/** 上传单张图片（编辑器插入图片/粘贴用），返回代理 URL（/api/tasks/files/...） */
+export const uploadSpecDocImage = async (file: File): Promise<string> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const token = getToken() || readStored('AUTH_TOKEN') || '';
+  const res = await fetch(`${API_CONFIG.TASKS.BASE_URL}/spec-doc/image`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  if (!res.ok) {
+    let detail = `图片上传失败: ${res.status}`;
+    try {
+      const err = await res.json();
+      if (err?.detail) detail = typeof err.detail === 'string' ? err.detail : detail;
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+  const data = (await res.json()) as { url?: string };
+  if (!data.url) throw new Error('图片上传失败');
+  return data.url;
+};

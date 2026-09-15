@@ -1,13 +1,14 @@
-"""工单「问题文档」API：读取 / 保存（md 在线编辑）/ 上传解析。
+"""工单「问题文档」API：读取 / 保存（md 在线编辑）/ 上传解析 / 图片上传。
 
 路由（挂在 /api/tasks 下）：
 - GET  /{task_id}/spec-doc   读文档（无则 exists=false）
 - PUT  /{task_id}/spec-doc   保存正文（乐观锁 revision，冲突返回 409）
 - POST /spec-doc/parse       上传 .md/.doc/.docx 解析为 markdown（并保留原文件到 MinIO）
+- POST /spec-doc/image       上传图片（编辑器粘贴/插入图片用），返回代理 URL
 
-鉴权：GET 需登录；PUT 需登录 + 属主/接单人/管理员。
+鉴权：GET 需登录；PUT 需登录 + 属主/接单人/管理员；parse/image 需登录。
 安全：上传走扩展名白名单 + 魔数 + 大小上限（见 spec_doc_parser）；
-     原文件 object_path 用 uuid 目录 + 安全化文件名，规避路径穿越。
+     原文件/图片 object_path 均为服务端 uuid 命名，规避路径穿越与覆盖。
 """
 import logging
 import os
@@ -26,6 +27,7 @@ from app.core.database import get_async_db as get_db
 from app.core.user_identity import actor_username, is_admin_user, user_matches
 from app.models.task import Task, TaskSpecDoc
 from app.modules.tasks.schemas.spec_doc import (
+    SpecDocImageResult,
     SpecDocParseResult,
     SpecDocResponse,
     SpecDocUpdate,
@@ -34,6 +36,7 @@ from app.utils.minio_client import minio_client
 from app.utils.spec_doc_parser import (
     MAX_DOC_SIZE,
     SpecDocParseError,
+    ext_of,
     parse_spec_document,
 )
 
@@ -41,6 +44,39 @@ router = APIRouter(tags=["task-spec-doc"])
 logger = logging.getLogger(__name__)
 
 _UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+# 编辑器图片上传：扩展名白名单 + 大小上限
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+MAX_IMAGE_SIZE = 10 * 1024 * 1024
+# 魔数 → content_type（RIFF 需再校验 WEBP 标识）
+_IMAGE_MAGICS: List[tuple] = [
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"BM", "image/bmp"),
+]
+# mammoth image_handler 的 content_type → 扩展名（emf/wmf 转存为 png 后缀名不合适，按原样保存）
+_CONTENT_TYPE_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+    "image/x-emf": ".emf",
+    "image/x-wmf": ".wmf",
+}
+
+
+def _sniff_image_mime(raw: bytes) -> str:
+    """按魔数嗅探图片 MIME；RIFF 容器须为 WEBP。非图片返回空串。"""
+    for magic, mime in _IMAGE_MAGICS:
+        if raw.startswith(magic):
+            return mime
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
 
 
 def _safe_filename(name: str) -> str:
@@ -167,7 +203,9 @@ async def parse_spec_doc(
 ):
     """上传 .md/.markdown/.txt/.doc/.docx → 解析为 markdown；原文件保留到 MinIO。
 
-    解析在成人心智：mammoth/soffice 为阻塞调用，走线程池避免卡事件循环。
+    Word 内嵌图片外置到 MinIO（markdown 只存代理 URL，治本 base64 内联），
+    外置失败自动降级内联 base64（见 spec_doc_parser._mammoth_image_converter）。
+    mammoth/soffice/minio 均为阻塞调用，走线程池避免卡事件循环。
     """
     raw = await file.read()
     if not raw:
@@ -175,9 +213,18 @@ async def parse_spec_doc(
     if len(raw) > MAX_DOC_SIZE:
         raise HTTPException(status_code=400, detail="文件过大，上限 5MB")
 
+    def _upload_image(data: bytes, content_type: str) -> str:
+        """mammoth image_handler：内嵌图片落 MinIO，返回 /api/tasks/files 代理 URL。"""
+        ct = (content_type or "").strip().lower() or "image/png"
+        ext = _CONTENT_TYPE_EXT.get(ct, ".png")
+        object_path = f"{settings.COMMENT_BUCKET}/spec-doc/images/{uuid.uuid4().hex}{ext}"
+        if not minio_client.upload_bytes(data, object_path, ct):
+            return ""  # 空串 → parser 侧降级 base64 内联
+        return f"/api/tasks/files/{object_path}"
+
     filename = file.filename or "document"
     try:
-        content = await run_in_threadpool(parse_spec_document, filename, raw)
+        content = await run_in_threadpool(parse_spec_document, filename, raw, _upload_image)
     except SpecDocParseError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -202,3 +249,41 @@ async def parse_spec_doc(
     return SpecDocParseResult(
         content=content, filename=filename, size=len(raw), object_path=object_path
     )
+
+
+@router.post("/spec-doc/image", response_model=SpecDocImageResult)
+async def upload_spec_doc_image(
+    file: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """上传单张图片（问题文档编辑器「插入图片」/粘贴/拖拽用），返回代理 URL。
+
+    安全：扩展名白名单 + 魔数校验 + 10MB 上限 + 服务端 uuid 命名，
+    markdown 引用 /api/tasks/files/{object_path}（附件代理，免预签名 host 问题）。
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    if len(raw) > MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=400, detail="图片过大，上限 10MB")
+
+    filename = file.filename or "image.png"
+    ext = ext_of(filename)
+    if ext not in _IMAGE_EXTS:
+        raise HTTPException(
+            status_code=400, detail="仅支持 png / jpg / jpeg / gif / webp / bmp 图片"
+        )
+    content_type = _sniff_image_mime(raw)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="文件不是有效的图片（魔数校验失败）")
+
+    object_path = f"{settings.COMMENT_BUCKET}/spec-doc/images/{uuid.uuid4().hex}{ext}"
+    try:
+        ok = await run_in_threadpool(minio_client.upload_bytes, raw, object_path, content_type)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[spec_doc] 图片上传异常: %s", e)
+        ok = False
+    if not ok:
+        raise HTTPException(status_code=500, detail="图片上传失败，请稍后重试")
+
+    return SpecDocImageResult(url=f"/api/tasks/files/{object_path}")
