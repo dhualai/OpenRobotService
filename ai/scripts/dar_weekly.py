@@ -76,7 +76,7 @@ SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 EXPORT_TABLES = {
     "users": "id,username,name",
     "conversations": "id,user_id,title,created_at,service_ticket_id,metadata_",
-    "messages": "id,conversation_id,role,message_type,sequence,created_at,content",
+    "messages": "id,conversation_id,role,message_type,sequence,created_at,content,file_urls",
     "tasks": ("id,title,task_type,status,created_by,project_name,source,"
               "external_id,created_at,metadata_info"),
 }
@@ -812,10 +812,8 @@ def step_report():
         tk_rows = [r for r in real if r["seg_ticketed"] == "1"]
         if tk_rows:
             tk_lab = Counter(r["l2_label"] or "未标" for r in tk_rows)
-            sug = sum(1 for r in real if r["suggest_no_ticket"] == "1")
             rep["ticket_quality"] = {
-                "出单段L2构成": dict(tk_lab.most_common()),
-                "建议转单未提单": f"{sug} 段（AI 建议了但用户没提）"}
+                "出单段L2构成": dict(tk_lab.most_common())}
             print(f"转单质量：{rep['ticket_quality']}")
     if j_path:
         prec = _precision_by_label(rows)

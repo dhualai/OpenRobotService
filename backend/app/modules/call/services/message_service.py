@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from typing import Optional, List, Dict
 from app.modules.call.models.message import Message, MessageRole, MessageType
+from app.modules.call.models.conversation import Conversation
 from app.modules.call.schemas.message import MessageCreate, MessageUpdate
 from app.utils.database_utils import DatabaseUtils
 from app.utils.data_utils import safe_json_loads, safe_json_dumps, generate_content_preview
@@ -10,6 +11,14 @@ from app.utils.data_utils import safe_json_loads, safe_json_dumps, generate_cont
 class MessageService:
     @staticmethod
     async def create_message(db: AsyncSession, message: MessageCreate) -> Message:
+        # seq 分配串行化：MAX+1 在并发插入下撞号（用户附件消息 × AI 流程消息同时
+        # 落库各自读到相同 MAX——0912 生产库审计实锤 470 组 (conv,seq) 撞号）。
+        # 对会话行加 FOR UPDATE 锁，把同会话的并发分配串成先后。无 DDL。
+        await db.execute(
+            select(Conversation.id)
+            .where(Conversation.id == message.conversation_id)
+            .with_for_update()
+        )
         max_sequence = await db.scalar(
             select(func.max(Message.sequence))
             .filter(Message.conversation_id == message.conversation_id)

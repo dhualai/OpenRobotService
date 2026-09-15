@@ -13,6 +13,7 @@ import csv
 import gzip
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 
@@ -63,8 +64,10 @@ def _repair_inversions(lst):
     created_at 与提问同秒），排序后回答会挂到上一轮——表现为某轮没人答、上一轮
     多一句没头没尾的回答。只搬两类高置信情形，其余保持原序：
 
-    1. 同秒 + 内容实锤：助手消息后面紧跟一条同秒的用户消息，且两者文本有 ≥5 字
-       连续公共片段（回答引用了问题原文）→ 移到该用户消息之后；
+    1. 同秒相邻：助手消息后面紧跟一条同秒的用户消息 → 移到该用户消息之后。
+       0913 生产库审计：sequence 撞号 470 组、撞号组内按 id 94% 是「AI 在前
+       USER 在后」的倒挂形态——原「≥5 字引文公共片段」门槛把绝大多数真倒挂
+       挡在门外（回答不引用原文是常态），放宽为同秒即搬；
     2. 开头孤儿块：会话开头的助手消息（正常对话不会以 AI 回答开场）→ 整体归给
        第一条用户消息（原逻辑这类消息没有归属回合，直接丢弃）。
 
@@ -91,8 +94,7 @@ def _repair_inversions(lst):
             continue
         nxt = lst[i + 1] if i + 1 < len(lst) else None
         if (nxt is not None and nxt["role"] == "USER"
-                and m["created_at"] == nxt["created_at"]
-                and _share_substr(m["content"], nxt["content"])):
+                and m["created_at"] == nxt["created_at"]):
             out.append(nxt)
             out.append(m)
             moves += 1
@@ -101,6 +103,22 @@ def _repair_inversions(lst):
             out.append(m)
             i += 1
     return out, moves
+
+
+def _ticket_action(text):
+    """识别工单动作消息（AI 提单流程落库的 JSON 行），提取 db_id/ticket_id。
+    走查页展示为「生成工单草稿 #xx」徽章；不进 L1/L3 的回答文本（纯噪音）。"""
+    t = (text or "").lstrip()
+    if not t.startswith('{"db_id"'):
+        return None
+    try:
+        j = json.loads(t)
+        return {"db_id": j.get("db_id"), "ticket_id": j.get("ticket_id")}
+    except Exception:
+        m = re.search(r'"db_id":\s*(\d+)', t)
+        tm = re.search(r'"ticket_id":\s*"([^"]+)"', t)
+        return {"db_id": int(m.group(1)) if m else None,
+                "ticket_id": tm.group(1) if tm else None}
 
 
 def main():
@@ -159,14 +177,31 @@ def main():
                 if m["role"] == "USER":
                     if cur:
                         rounds.append(cur)
-                    cur = {"q": m["content"] or "", "a": [], "at": m["created_at"],
-                           "task_ids": []}
+                    files = []
+                    fu = m.get("file_urls")
+                    if fu:
+                        try:
+                            files = [f for f in (json.loads(fu) or [])
+                                     if isinstance(f, dict) and f.get("object_path")]
+                        except Exception:
+                            files = []
+                    cur = {"q": m["content"] or "", "a": [], "a_seg": [],
+                           "at": m["created_at"], "task_ids": [], "files": files}
                 elif m["role"] == "ASSISTANT" and cur is not None:
-                    cur["a"].append(m["content"] or "")
+                    text = m["content"] or ""
+                    act = _ticket_action(text)
+                    seg = {"text": text, "at": m["created_at"]}
+                    if act:
+                        seg.update({"action": "ticket_draft", **act})
+                    cur["a_seg"].append(seg)
+                    # 工单动作 JSON 不进 a（L1/L3 prompt 噪音、走查页视觉合并的元凶）
+                    if not act:
+                        cur["a"].append(text)
             if cur:
                 rounds.append(cur)
             for r in rounds:
                 r["a"] = [a for a in r["a"] if a.strip()]
+                r["a_seg"] = [s for s in r["a_seg"] if s["text"].strip()]
             is_tester = c["user_id"] in testers
             has_task = bool(conv_tasks)
             n_rows += 1

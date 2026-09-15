@@ -42,14 +42,16 @@ def test_no_move_when_ts_differs():
     assert out == lst
 
 
-def test_same_ts_without_overlap_kept():
-    """同秒但无内容重叠（问候 → 用户接着提问）不搬——精度护栏。"""
+def test_same_ts_adjacent_swapped():
+    """同秒相邻的 AI→USER 一律搬（0913 放宽：撞号组 94% 是此形态，原「≥5 字引文」
+    门槛把绝大多数真倒挂挡在门外——回答不引用原文是常态）。"""
     lst = [_m("USER", "你好", "T1"),
            _m("ASSISTANT", "您好，我是AI客服，请问有什么可以帮您", "T1"),
            _m("USER", "AGV怎么上线部署", "T1")]
     out, moves = dp._repair_inversions(lst)
-    assert moves == 0
-    assert out == lst
+    assert moves == 1
+    # AI 的回应被归位到它紧跟的 USER 之后
+    assert [x["role"] for x in out] == ["USER", "USER", "ASSISTANT"]
 
 
 def test_leading_orphans_attach_to_first_user():

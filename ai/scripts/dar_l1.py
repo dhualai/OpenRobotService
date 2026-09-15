@@ -35,9 +35,30 @@ DATA = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed/conversations_spl
 TOPIC_TYPES = ["故障处置", "操作指引", "功能咨询", "状态查询", "资料查询", "其他"]
 
 
+# 长会话分窗：单次输出 max_tokens 有限，rounds 过多时 JSON 被截断、
+# 后半段落回默认值（q=true/topic=0）——切分质量崩。按窗滑判，窗口间话题续号。
+CLASSIFY_WINDOW = 40
+
+
 async def classify(rounds):
-    """逐回合 {q,t} + 末尾 {n_topics}。失败降级全算提问（方向：保守）。"""
-    fb = [{"q": True, "t": False, "topic": 0} for _ in rounds] + [{"n_topics": 0}]
+    """逐回合 {q,t} + 末尾 {n_topics}。失败降级全算提问（方向：保守）。
+    超过 CLASSIFY_WINDOW 条按窗滑判，窗口间话题编号续接。"""
+    if len(rounds) <= CLASSIFY_WINDOW:
+        return await _classify_once(rounds, 0)
+    out = []
+    base = 0
+    for s in range(0, len(rounds), CLASSIFY_WINDOW):
+        part = await _classify_once(rounds[s:s + CLASSIFY_WINDOW], base)
+        base += part[-1]["n_topics"]
+        out.extend(part[:-1])
+    out.append({"n_topics": base})
+    return out
+
+
+async def _classify_once(rounds, topic_base):
+    """单窗判定：topic 编号从 topic_base 起续接（0=完整会话）。"""
+    fb = [{"q": True, "t": False, "topic": topic_base} for _ in rounds] + [
+        {"n_topics": (1 if topic_base else 0)}]
     if not rounds:
         return fb
     try:
@@ -45,9 +66,15 @@ async def classify(rounds):
         llm = await get_dar_client()
         lines = []
         for i, r in enumerate(rounds):
-            head = (r["a"][0] if r["a"] else "")[:120]
+            # 每条 AI 回答的开头都给（不只第一条——多段回答/追问的判定需要全貌）
+            heads = " / ".join(((a or "")[:80]).strip() for a in (r.get("a") or []))
             when = (r["at"] or "")[5:16]
-            lines.append(f"{i}. [{when}] 用户说：{(r['q'] or '')[:200]} → 助手答（开头）：{head}")
+            lines.append(f"{i}. [{when}] 用户说：{(r['q'] or '')[:300]} → 助手答（开头）：{heads[:220]}")
+        cont = (
+            f"\n（这是长对话的中段：前文已有 {topic_base} 个话题，本段话题编号从 {topic_base} 起；"
+            f"若本段开头延续前面的话题，请继续用编号 {max(0, topic_base - 1)}。）\n"
+            if topic_base else ""
+        )
         prompt = (
             "下面是一场客服对话里用户的每条消息（含时间）和助手回答的开头。"
             "请把对话切分成话题段，再逐条判断：\n"
@@ -67,28 +94,30 @@ async def classify(rounds):
             "功能咨询=功能是否存在、有什么能力、概念含义；"
             "状态查询=查某个单据/任务/数据的当前状态；"
             "资料查询=要文档、参数、清单等资料；其他=以上都不是。\n"
+            + cont +
             "只输出 JSON：{\"rounds\": [{\"i\":0,\"topic\":0,\"q\":true,\"t\":false}, ...],"
             " \"topics\": [{\"topic\":0,\"type\":\"操作指引\"}, ...], \"n\": 2}，"
             "不要输出其他内容。\n\n"
             + "\n".join(lines)
         )
-        raw = await llm.complete(prompt=prompt, max_tokens=2000, temperature=0,
+        raw = await llm.complete(prompt=prompt, max_tokens=4000, temperature=0,
                                  thinking=False)
         obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
-        out = [{"q": True, "t": False, "topic": 0} for _ in rounds]
+        out = [{"q": True, "t": False, "topic": topic_base} for _ in rounds]
         for it in obj.get("rounds") or []:
             i = int(it.get("i", -1))
             if 0 <= i < len(out):
                 out[i] = {"q": bool(it.get("q", True)), "t": bool(it.get("t", False)),
                           "topic": max(0, int(it.get("topic", 0) or 0))}
-        # topic 编号归一化（按首次出现顺序重编，防 LLM 跳号乱序）+ type 随映射同步
+        # topic 编号归一化（按首次出现顺序重编，防 LLM 跳号乱序）+ type 随映射同步；
+        # 分窗续接：归一化从 topic_base 起编，跨窗编号天然递增不冲突
         ttype = {}
         for it in obj.get("topics") or []:
             try:
                 ttype[int(it.get("topic", -1))] = str(it.get("type", "其他"))[:12]
             except (TypeError, ValueError):
                 continue
-        remap, nxt, tmap = {}, 0, {}
+        remap, nxt, tmap = {}, topic_base, {}
         for o in out:
             if o["topic"] not in remap:
                 remap[o["topic"]] = nxt
@@ -198,6 +227,14 @@ async def main():
             if len(starts) != n_before:
                 n_fix += 1
         print(f"人工切分覆盖 {len(seg)} 个会话（其中段数有变化 {n_fix} 个）")
+        # 覆盖后写回 classified.jsonl（0915 修 bug：原先只在 LLM 判定后写盘、
+        # review 覆盖仅改内存且 replay 模式不写——落盘文件永远是 LLM 原始切分，
+        # 漏斗等下游读到的边界与人工核对的不一致，人工标签按段首匹配大面积错位）
+        with open(cls_path, "w", encoding="utf-8") as fh:
+            for c in convs:
+                fh.write(json.dumps({"conversation_id": c["conversation_id"],
+                                     "cls": c["_cls"]}, ensure_ascii=False) + "\n")
+        print(f"人工边界版 classified 已落盘: {cls_path}")
     print("聚合…")
 
     # ---------------- 聚合 ----------------
