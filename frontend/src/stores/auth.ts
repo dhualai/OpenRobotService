@@ -293,12 +293,25 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: false });
   },
 
-  hasPermission: (prefix: string) => {
+  hasPermission: (required: string) => {
     const { permissions } = get();
     if (!permissions || permissions.length === 0) return false;
     // admin 通配权限：与后端 require_permission 的「permissions 含 admin 直通」对齐，
     // 否则 admin 用户（permissions=['admin']）在前端看不到「其他」等按权限码控制的入口
     if (permissions.includes('admin')) return true;
-    return permissions.some(p => p.startsWith(prefix) || p === `${prefix}:*` || p === '*');
+    // 段级通配匹配：与后端 _match_permission 的语义完全对齐
+    // - 段数必须一致
+    // - `*` 段匹配任意值
+    // 例：'backend:resource:base:*' 命中 'backend:resource:base:read' / 'download' 等
+    //     但不命中 'backend:resource:base:read:extra'（段数不同）
+    //     也不命中 'backend:project:license:export'（前缀不同）
+    const matchSegments = (pattern: string, required: string): boolean => {
+      if (pattern === required) return true;
+      const pp = pattern.split(':');
+      const rp = required.split(':');
+      if (pp.length !== rp.length) return false;
+      return pp.every((seg, i) => seg === '*' || seg === rp[i]);
+    };
+    return permissions.some(p => matchSegments(p, required));
   },
 }));
