@@ -59,6 +59,8 @@ class OperationType(str, enum.Enum):
     UPDATE = "update"              # 修改字段
     COMMENT = "comment"            # 添加评论
     VIEW = "view"                  # 查看工单
+    FOLLOW = "follow"              # 关注工单（卡片星标）
+    UNFOLLOW = "unfollow"          # 取消关注工单（取消星标）
     AI_DIAGNOSE = "ai_diagnose"    # AI 诊断
     AI_ASSIGN = "ai_assign"        # AI 派单
 

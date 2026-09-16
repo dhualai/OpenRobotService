@@ -513,8 +513,9 @@ async def follow_task(
 
     归属人由服务端 token 解析（actor_username），前端无法替他人关注。
     """
-    exists = await db.execute(select(Task.id).where(Task.id == task_id))
-    if exists.scalar_one_or_none() is None:
+    task_result = await db.execute(select(Task).where(Task.id == task_id))
+    task = task_result.scalar_one_or_none()
+    if task is None:
         raise HTTPException(status_code=404, detail="任务未找到")
 
     username = actor_username(current_user)
@@ -523,6 +524,22 @@ async def follow_task(
     stmt = stmt.on_duplicate_key_update(created_at=func.now())
     await db.execute(stmt)
     await db.commit()
+
+    # 记录关注操作日志（与 log_view 同口径：补全操作人显示名 + 角色前缀）
+    try:
+        user_name = current_user.get('name') or current_user.get('username') if current_user else None
+        role = get_role_prefix(task.created_by, task.assigned_to, username)
+        display_name = user_name or username
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.FOLLOW,
+            operator=username,
+            operator_name=user_name,
+            description=f"{role}{display_name} 关注了工单" if role else f"{display_name} 关注了工单",
+        )
+    except Exception as log_err:
+        logger_task.warning(f"Failed to log follow for task {task_id}: {log_err}")
 
     return {"ok": True, "task_id": task_id, "followed": True}
 
@@ -534,6 +551,11 @@ async def unfollow_task(
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
     """取消关注（取消星标）。幂等：未关注时返回 0 行影响，不报错。"""
+    task_result = await db.execute(select(Task).where(Task.id == task_id))
+    task = task_result.scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
     username = actor_username(current_user)
     await db.execute(
         delete(TaskFollower).where(
@@ -542,6 +564,22 @@ async def unfollow_task(
         )
     )
     await db.commit()
+
+    # 记录取消关注操作日志（与 follow_task 同口径：补全操作人显示名 + 角色前缀）
+    try:
+        user_name = current_user.get('name') or current_user.get('username') if current_user else None
+        role = get_role_prefix(task.created_by, task.assigned_to, username)
+        display_name = user_name or username
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.UNFOLLOW,
+            operator=username,
+            operator_name=user_name,
+            description=f"{role}{display_name} 取消关注了工单" if role else f"{display_name} 取消关注了工单",
+        )
+    except Exception as log_err:
+        logger_task.warning(f"Failed to log unfollow for task {task_id}: {log_err}")
 
     return {"ok": True, "task_id": task_id, "followed": False}
 
