@@ -65,8 +65,8 @@ def _store_snapshot(payload: Dict, snapshot_date: Optional[date] = None) -> int:
 async def run_user_info_snapshot(snapshot_date: Optional[date] = None) -> Optional[Dict]:
     """执行一次快照：拉取 batch-user-info 同源数据并写入 user_info 表。
 
-    返回落库的接口返回值 dict；users 表无真实用户或微信拉取失败时返回 None
-    （失败不落库，下个整点重试）。
+    返回落库的接口返回值 dict；users 表无真实用户、微信拉取失败或返回空
+    user_info_list 时均返回 None（不落库，下个整点重试），保留历史有效快照。
     """
     user_list = await asyncio.to_thread(_build_full_user_list)
     if not user_list:
@@ -79,10 +79,18 @@ async def run_user_info_snapshot(snapshot_date: Optional[date] = None) -> Option
         logger.error(f'拉取用户信息失败，本次快照不落库: {result}')
         return None
 
+    items = result.get('user_info_list') or []
+    if not items:
+        logger.warning(
+            '微信返回空 user_info_list（可能凭据不匹配或 openid 不被识别），'
+            '跳过落库，保留历史快照'
+        )
+        return None
+
     payload = {
         'success': True,
-        'user_info_list': result.get('user_info_list', []),
-        'total': len(result.get('user_info_list', [])),
+        'user_info_list': items,
+        'total': len(items),
     }
 
     target_date = snapshot_date or date.today()
