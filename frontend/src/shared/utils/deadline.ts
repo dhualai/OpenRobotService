@@ -63,6 +63,28 @@ export function makeDisabledDate(min: Dayjs, max?: Dayjs | null) {
     !!current && (current.isBefore(min, 'day') || (max ? current.isAfter(max, 'day') : false));
 }
 
+/**
+ * 已超时时长文案：「3天2小时」/「5小时12分」/「8分钟」。
+ *
+ * 入参 deadlineAt 为后端 naive UTC ISO（统一经 parseBackendDayjs 解析，禁止裸 dayjs 解析）。
+ * 未超时（截止时间还没到）、无法解析或入参为空时返回 ''，调用方据此决定是否展示。
+ * 供超时工单列表标注「已超时 X」——与列表「超时最久在前」的排序相互印证。
+ */
+export function formatOverdueDuration(deadlineAt: string | number | null | undefined): string {
+  const deadline = parseBackendDayjs(deadlineAt);
+  if (!deadline) return '';
+  const minutes = dayjs().diff(deadline, 'minute');
+  if (minutes <= 0) return '';
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  if (days > 0) return `${days}天${hours > 0 ? `${hours}小时` : ''}`;
+  if (hours > 0) {
+    const mins = minutes % 60;
+    return `${hours}小时${mins > 0 ? `${mins}分` : ''}`;
+  }
+  return `${minutes}分钟`;
+}
+
 /** antd DatePicker disabledTime：小时精度限制（分钟固定整点）；
  *  创建当天按 min 的小时截断下限，max 传值时其当天按 max 的小时截断上限，不传则不限制未来上限。 */
 export function makeDisabledTime(min: Dayjs, max?: Dayjs | null) {

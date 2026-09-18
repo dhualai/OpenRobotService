@@ -158,6 +158,8 @@ export async function fetchTicketAvgCloseTime(projectIds?: string[]): Promise<Ti
 export interface TicketListItem {
   id: string; title: string; status: string; priority: string;
   assignee_name?: string; created_at: string;
+  /** 截止时间（后端 naive UTC ISO）。超时工单列表据此展示「已超时 X」；挂起判定见 status */
+  deadline_at?: string | null;
 }
 
 /**
@@ -167,6 +169,7 @@ export interface TicketListItem {
  *   all     全部工单（监控中的六种状态，含 new，与 summary.total 同口径）
  *   pending 待处理（处理中 + 暂停/挂起，与 summary.pending_count 同口径）
  *   overdue 超时工单（deadline_at < now 且未完成，与 summary.overdue_count 同口径）
+ *     —— 排序由后端完成：挂起工单始终置顶，其余按超时最久在前（deadline_at 升序），前端不再重排
  * projectIds 传入后仅返回这些项目内的工单。
  */
 export async function fetchTicketsByStatus(status: string, projectIds?: string[]): Promise<{ items: TicketListItem[]; total: number }> {

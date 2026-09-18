@@ -1,0 +1,445 @@
+# 项目初始化模板（ext_info + info_nodes）
+#
+# 新建项目时按 project_type 选择 {type}.yaml，找不到回退本文件。
+# 增加新模板：在本目录新建 {project_type}.yaml，无需改代码。
+#
+# 三部分：
+#   overview  → project.ext_info.overview  （主表 JSON 列，展示型标量）
+#   activity  → project.ext_info.activity  （append-only 事件数组）
+#   info_nodes → project_info_node 表       （邻接表，Service 实例化时生成 UUID）
+
+# ── ext_info 部分 ──────────────────────────────────────
+
+overview:
+  progress: 0
+  tags: []
+  wecom_id: ""
+  ai_summary: ""
+
+activity:
+  version_changes: []
+  stage_changes: []
+
+# ── info_nodes 部分 ───────────────────────────────────
+# 节点字段：
+#   title        节点标题（必填）
+#   sort_order   同级排序，缺省按书写顺序
+#   content_type 内容形式：text（默认）/ select / file / image
+#   options      仅 content_type: select 使用；实例化时写入 value 为
+#                {"selected": "", "options": [...]}，与前端下拉解码一致
+#   value        预置值（可选）：text 用字符串，其余按 content_type 的结构
+#   children     子节点
+#
+# 硬约束（与前端一致，改结构时必须满足）：
+#   1. 整棵树最深 4 层（前端 PROJECT_INFO_MAX_DEPTH = 4，第 4 层不可再挂子节点）
+#   2. 一级标签（根节点）只作分组、自己不填值，类型一律按 text 处理
+# 一个节点可以既带值又有子节点（如「车型1」是下拉，下面还挂「数量」）——
+# 原先「select 必须是末级」的限制已取消，别再按那条写结构。
+#
+# 思维导图里的「可选值清单」型节点统一用 content_type: select 表达，
+# 不再展开成子节点（那会撑爆 4 层上限，且语义上本就是单选）。
+#
+# ⚠ 本文件只在播种迁移（alembic 7c1e9a4b2d38）执行时被读一次。之后模板的权威来源
+#   是库里的全局节点行，「详情模板」页改的就是它。改本文件对已建好的库没有任何影响。
+
+info_nodes:
+  - title: 基础信息
+    sort_order: 0
+    children:
+      - title: 客户信息
+        sort_order: 0
+      - title: 订单信息
+        sort_order: 1
+        children:
+          - title: ERP
+            sort_order: 0
+      - title: 评审信息
+        sort_order: 2
+      - title: 项目区域/地点
+        sort_order: 3
+        children:
+          # 原图：区域选项 → 大陆(China Mainland) → 省份 / 地区
+          # 前端联动：区域选项选「大陆」时显示 省份/地区，选其它区域时显示 具体国家，
+          # 未选择时三者都不显示（节点保留，切回大陆时原值还在）——见 projectInfoTree.ts
+          # 的 isInfoNodeVisible；三个细分字段的标题不能改名，否则联动失效
+          - title: 区域选项
+            sort_order: 0
+            content_type: select
+            options:
+              - 大陆(China Mainland)
+              - 亚洲Asia
+              - 欧洲Europe
+              - 北美North America
+              - 南美South America
+              - 非洲Africa
+          - title: 省份
+            sort_order: 1
+          - title: 地区
+            sort_order: 2
+          - title: 具体国家
+            sort_order: 3
+      # 原图注明「对接权用户开放新增」
+      - title: 项目类型
+        sort_order: 4
+        content_type: select
+        options:
+          - 受关注项目
+          - 大客户项目
+          - 展会/演示项目
+          - 展厅项目
+          - PK项目
+          - 试点项目
+          - 试用项目
+          - 内部/测试项目
+      - title: 进厂要求
+        sort_order: 5
+        children:
+          - title: 着装
+            sort_order: 0
+          - title: 预约信息
+            sort_order: 1
+
+  - title: 硬件
+    sort_order: 1
+    children:
+      # 车型1/车型2 在播种后由迁移 9d2f4a6b8c01 改成下拉（选项=AGV 车型目录，
+      # 现为 66 款，见迁移 4a7c2e9d1b53）。
+      # 目录不在本文件里抄一份——模板页有「填入车型目录」按钮，改选项去那里改。
+      - title: 车辆
+        sort_order: 0
+        children:
+          - title: 车型1
+            sort_order: 0
+            children:
+              - title: 数量
+                sort_order: 0
+          - title: 车型2
+            sort_order: 1
+            children:
+              - title: 数量
+                sort_order: 0
+      - title: 载具类型
+        sort_order: 1
+        content_type: select
+        options:
+          - 托盘
+          - 料笼
+          - 料架
+          - 料车
+
+  - title: 车端软件
+    sort_order: 2
+    children:
+      # 原图注明「对接权用户支持新增」
+      - title: 控制器品牌
+        sort_order: 0
+        content_type: select
+        options:
+          - 自研
+          - 睿芯行
+          - 利科钛
+          - 海康
+          - 华睿
+          - 中兴
+          - 科聪
+      - title: 软件版本
+        sort_order: 1
+      - title: 数据同步方式
+        sort_order: 2
+      - title: 是否已与USP对接过
+        sort_order: 3
+        content_type: select
+        options:
+          - 是
+          - 否
+
+  - title: 调度软件
+    sort_order: 3
+    children:
+      - title: 版本
+        sort_order: 0
+        children:
+          - title: 子模块
+            sort_order: 0
+            children:
+              - title: 调度配置
+                sort_order: 0
+          - title: 通用配置
+            sort_order: 1
+      - title: license
+        sort_order: 1
+        children:
+          - title: 到期时间
+            sort_order: 0
+          - title: 续期记录
+            sort_order: 1
+
+  - title: 网络信息
+    sort_order: 4
+    children:
+      - title: 外网
+        sort_order: 0
+      - title: 公网ip
+        sort_order: 1
+        children:
+          - title: 服务器参数配置
+            sort_order: 0
+      - title: 远程方式
+        sort_order: 2
+        children:
+          - title: SSH
+            sort_order: 0
+            children:
+              - title: IP
+                sort_order: 0
+              - title: 端口
+                sort_order: 1
+              - title: 远程码
+                sort_order: 2
+          - title: Todesk
+            sort_order: 1
+            children:
+              # 原图：密码 → 动态密码 / 静态密码（第 5 层），改为单选选项
+              - title: 密码
+                sort_order: 0
+                content_type: select
+                options:
+                  - 动态密码
+                  - 静态密码
+          - title: AngDek
+            sort_order: 2
+            children:
+              - title: 远程码
+                sort_order: 0
+              - title: 密码
+                sort_order: 1
+                content_type: select
+                options:
+                  - 动态密码
+                  - 静态密码
+
+  - title: 服务器部署
+    sort_order: 5
+    children:
+      - title: 中力服务器
+        sort_order: 0
+        children:
+          - title: 是否与其他系统共用
+            sort_order: 0
+            content_type: select
+            options:
+              - 是
+              - 否
+      - title: 客户服务器
+        sort_order: 1
+        children:
+          - title: 是否与其他系统共用
+            sort_order: 0
+            content_type: select
+            options:
+              - 是
+              - 否
+      - title: 云服务器
+        sort_order: 2
+        children:
+          - title: 是否与其他系统共用
+            sort_order: 0
+            content_type: select
+            options:
+              - 是
+              - 否
+
+  - title: 环境
+    sort_order: 6
+    children:
+      - title: 地图布局
+        sort_order: 0
+        children:
+          - title: CAD源文件
+            sort_order: 0
+            children:
+              - title: 库位
+                sort_order: 0
+              - title: 库区形式/数量
+                sort_order: 1
+          - title: AGV路线动线
+            sort_order: 1
+          - title: 通道与托盘间距尺寸
+            sort_order: 2
+      - title: 外设
+        sort_order: 1
+        children:
+          - title: 电梯
+            sort_order: 0
+            children:
+              - title: 厂家品牌(协议)
+                sort_order: 0
+                content_type: select
+                options:
+                  - Modbus Tcp
+                  - ST
+                  - 中力PLC
+          - title: 自动门
+            sort_order: 1
+          - title: 呼叫器
+            sort_order: 2
+          - title: 输送线/隔离线
+            sort_order: 3
+          - title: 红绿灯
+            sort_order: 4
+          - title: 机械臂
+            sort_order: 5
+          - title: 码垛机/盘盘机
+            sort_order: 6
+          - title: 缠绕机
+            sort_order: 7
+          - title: 光电
+            sort_order: 8
+          - title: 无外设声明
+            sort_order: 9
+          - title: 其他(自定义)
+            sort_order: 10
+
+  - title: 业务系统
+    sort_order: 7
+    children:
+      - title: 系统
+        sort_order: 0
+        children:
+          - title: DAS
+            sort_order: 0
+          - title: 客户WMS
+            sort_order: 1
+          - title: 客户MES/ERP
+            sort_order: 2
+          - title: 客户系统
+            sort_order: 3
+            children:
+              - title: 其他上层系统
+                sort_order: 0
+          - title: 数字孪生
+            sort_order: 4
+            children:
+              # 原图：接口协议 → 接口标准 / 是否对接（第 5 层），展开为同级末级节点
+              - title: 接口协议
+                sort_order: 0
+              - title: 接口标准
+                sort_order: 1
+              - title: 是否对接
+                sort_order: 2
+                content_type: select
+                options:
+                  - 是
+                  - 否
+              - title: ip/url
+                sort_order: 3
+          - title: PDA
+            sort_order: 5
+          - title: 平板
+            sort_order: 6
+
+  - title: 业务流程
+    sort_order: 8
+    children:
+      - title: 搬运场景
+        sort_order: 0
+        children:
+          - title: 搬运类型
+            sort_order: 0
+            content_type: select
+            options:
+              - 线边搬运
+              - 仓储搬运
+              - 电梯接驳
+              - 室外搬运
+          - title: 装卸
+            sort_order: 1
+          - title: 分拣
+            sort_order: 2
+      - title: 节拍
+        sort_order: 1
+        children:
+          - title: 节拍
+            sort_order: 0
+          - title: 效率要求数值/无效率声明
+            sort_order: 1
+      - title: 物料类型
+        sort_order: 2
+
+  - title: 人员信息
+    sort_order: 9
+    children:
+      - title: 客户对象
+        sort_order: 0
+      - title: 实施
+        sort_order: 1
+      - title: 车端
+        sort_order: 2
+      - title: 调度
+        sort_order: 3
+      - title: 业务
+        sort_order: 4
+      - title: 项目经理
+        sort_order: 5
+      - title: 销售
+        sort_order: 6
+      - title: 售前
+        sort_order: 7
+      - title: 集成商
+        sort_order: 8
+
+  - title: 项目特性
+    sort_order: 10
+    children:
+      - title: 风险点
+        sort_order: 0
+        content_type: select
+        options:
+          - 数据同步错误
+          - 公司评审不通过
+          - 缺前置承接
+          - 高风险承接
+          - 中风险承接
+          - 低风险承接
+      - title: 注意事项
+        sort_order: 1
+      - title: 时间线
+        sort_order: 2
+        children:
+          - title: 大节点
+            sort_order: 0
+            content_type: select
+            options:
+              - 售前方案
+              - 签单洽谈
+              - 已签合同
+              - 出厂测试
+              - 即将进场
+              - 延期进场
+              - 正在进场
+              - 实施暂停
+              - 实施运行
+              - 试运行中
+              - 验收运行
+              - 项目结束
+          - title: 小节点
+            sort_order: 1
+
+  - title: 项目配置
+    sort_order: 11
+    children:
+      - title: 识别
+        sort_order: 0
+
+  - title: 项目定制
+    sort_order: 12
+    children:
+      - title: 接口
+        sort_order: 0
+      - title: 大屏
+        sort_order: 1
+        children:
+          - title: 页面
+            sort_order: 0
+      - title: 功能
+        sort_order: 2

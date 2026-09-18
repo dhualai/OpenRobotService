@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from collections import Counter
 
-from sqlalchemy import select, func, and_, distinct, text
+from sqlalchemy import select, func, and_, case, distinct, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -112,7 +112,7 @@ class TaskDashboardService:
         # 组合 scope key（对应仪表盘统计卡下钻，与 get_ticket_summary 同口径）：
         #   all     总工单数 = 监控中的六种状态（含 new）
         #   pending 待处理   = 处理中 + 暂停/挂起
-        #   overdue 超时工单 = 截止时间已过且仍处于未完成状态
+        #   overdue 超时工单 = 截止时间已过且仍处于未完成状态（挂起置顶 + 超时最久在前，见下方 order_by）
         if status_key == "all":
             filters = [Task.status.in_([FRONTEND_STATUS_MAP[k] for k in MONITORED_STATUS_KEYS])]
         elif status_key == "pending":
@@ -138,8 +138,17 @@ class TaskDashboardService:
         list_query = select(Task).where(*filters)
         if project_ids is not None:
             list_query = list_query.where(Task.project_id.in_(project_ids))
+        # 超时工单排序：挂起工单（TaskStatus.PENDING，前端「暂停/挂起」）始终置顶，
+        # 组内与其余工单均按「超时最久」在前 —— deadline_at 越早超时越久，故升序。
+        # 本 scope 的过滤条件已保证 deadline_at 非空，无 NULL 排序歧义。
+        # 其余 scope 维持创建时间倒序。
+        order_by = (
+            (case((Task.status == TaskStatus.PENDING, 0), else_=1), Task.deadline_at.asc())
+            if status_key == "overdue"
+            else (Task.created_at.desc(),)
+        )
         result = await db.execute(
-            list_query.order_by(Task.created_at.desc()).offset(skip).limit(limit)
+            list_query.order_by(*order_by).offset(skip).limit(limit)
         )
         tasks = result.scalars().all()
 
@@ -153,6 +162,8 @@ class TaskDashboardService:
                 "priority": t.priority.value if t.priority else "",
                 "assignee_name": user_map.get(t.assigned_to, t.assigned_to) if t.assigned_to else None,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
+                # 截止时间：超时工单列表据此展示「已超时 X」（排序也在后端按此字段完成）
+                "deadline_at": t.deadline_at.isoformat() if t.deadline_at else None,
             }
             for t in tasks
         ]

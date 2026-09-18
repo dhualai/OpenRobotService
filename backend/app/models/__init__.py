@@ -29,6 +29,11 @@ from app.models.delivery import (
     ProjectLicense,
     ProjectTransportEfficiency,
     ProjectTransportEfficiencyRobot,
+    ProjectInfoNode,
+    ProjectInfoNodeMark,
+    ProjectInfoValue,
+    ProjectInfoValueHistory,
+    ProjectBlockingConfig,
 )
 
 # 任务（承工单语义升格）
@@ -96,6 +101,11 @@ __all__ = [
     "RealtimeData", "HistoryData", "CollectionData",
     "Risk", "ProjectDailyReport", "ProjectLicense",
     "ProjectTransportEfficiency", "ProjectTransportEfficiencyRobot",
+    "ProjectInfoNode",
+    "ProjectInfoNodeMark",
+    "ProjectInfoValue",
+    "ProjectInfoValueHistory",
+    "ProjectBlockingConfig",
     # task
     "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping", "TaskStep",
     # task dispatch log

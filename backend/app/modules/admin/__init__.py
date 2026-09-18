@@ -18,6 +18,8 @@ from app.modules.admin.api.dashboard import dashboard_router
 from app.modules.admin.api.module_tree import router as module_tree_router
 from app.modules.admin.api.module_tree_ws import router as module_tree_ws_router
 from app.modules.admin.api.dispatch_dev import router as dispatch_dev_router
+from app.modules.admin.api.info_nodes import info_node_router
+from app.modules.admin.api.project_tickets import project_tickets_router
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -36,3 +38,5 @@ admin_router.include_router(dashboard_router)
 admin_router.include_router(module_tree_router)
 admin_router.include_router(module_tree_ws_router)
 admin_router.include_router(dispatch_dev_router)
+admin_router.include_router(info_node_router)
+admin_router.include_router(project_tickets_router)

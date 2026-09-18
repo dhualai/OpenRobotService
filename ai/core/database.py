@@ -119,11 +119,30 @@ class ProjectDelivery(Base):
     task_execution_status = Column(String(50), nullable=True, comment="任务执行情况")
     field_links = Column(String(1000), nullable=True, comment="字段链接(JSON格式)")
     category_basis = Column(String(20), nullable=False, default="重要紧急", comment="分类依据")
+    # 项目扩展信息（递归嵌套 JSON），结构由服务层约定
+    ext_info = Column(JSON, nullable=True, comment="项目扩展信息(递归嵌套 JSON)")
+    # 乐观锁版本号（backend update_project 维护，AI 侧仅读取）
+    version = Column(Integer, nullable=False, default=1, comment="乐观锁版本号")
 
     __table_args__ = (
         Index("idx_project_code", "code", unique=True),
         Index("idx_project_status", "status"),
     )
+
+
+class ProjectInfoNode(Base):
+    """项目信息树节点（仅查询，字段对齐 backend/app/models/delivery.py ProjectInfoNode）"""
+    __tablename__ = "project_info_node"
+
+    id = Column(String(64), primary_key=True, comment="节点UUID(客户端生成)")
+    project_id = Column(String(64), nullable=False, comment="所属项目ID")
+    parent_id = Column(String(64), nullable=True, comment="父节点ID, NULL=根节点")
+    title = Column(String(255), nullable=False, comment="节点标题")
+    content_type = Column(String(32), nullable=False, default="text", comment="内容类型")
+    value = Column(Text, nullable=True, comment="节点值")
+    sort_order = Column(Integer, nullable=False, default=0, comment="同级排序")
+    created_at = Column(String(30), nullable=False, comment="创建时间")
+    updated_at = Column(String(30), nullable=False, comment="更新时间")
 
 
 class Risk(Base):

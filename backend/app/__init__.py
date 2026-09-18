@@ -65,6 +65,14 @@ async def startup_event():
     
     init_users_db()
 
+    # 空库（测试环境/新机器）自动播下全局项目信息节点：结构来自 default.yaml，
+    # 不依赖 alembic 迁移是否在本机跑过；已有全局节点的库原样跳过。
+    try:
+        from app.modules.admin.services.info_node_seed_service import ensure_global_info_nodes
+        ensure_global_info_nodes()
+    except Exception as e:  # noqa: BLE001
+        print(f"[项目信息节点] 播种失败（不影响启动）: {e}")
+
     # 确保对象存储 bucket 存在（MinIO 未启动仅告警，不阻塞启动）
     try:
         from app.utils.minio_client import ensure_minio_buckets

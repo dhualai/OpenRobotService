@@ -154,6 +154,8 @@ class ProjectBase(BaseModel):
     system_integration: Optional[List[SystemIntegrationType]] = None
     server_deployment_status: Optional[ServerDeploymentStatus] = None
     settlement_period: Optional[str] = None
+    # 项目扩展信息（递归嵌套 JSON，如 robots[].name、network.vlan）
+    ext_info: Optional[Dict[str, Any]] = None
 
 
 class ProjectCreate(ProjectBase):
@@ -202,6 +204,10 @@ class ProjectUpdate(BaseModel):
     system_integration: Optional[List[SystemIntegrationType]] = None
     server_deployment_status: Optional[ServerDeploymentStatus] = None
     settlement_period: Optional[str] = None
+    # 项目扩展信息（递归嵌套 JSON，如 robots[].name、network.vlan）
+    ext_info: Optional[Dict[str, Any]] = None
+    # 乐观锁：前端编辑时带回详情接口返回的 version，服务端不一致则返回 409
+    version: Optional[int] = None
 
 
 class ProjectResponse(ProjectBase):
@@ -220,6 +226,9 @@ class ProjectResponse(ProjectBase):
     # latest_manual_switch_count = collection_data 最新一天的 averageManualCount
     task_execution_stats: Optional[Dict[str, Any]] = None
     latest_manual_switch_count: Optional[float] = None
+    # 项目扩展信息（递归嵌套 JSON 列）与乐观锁版本号
+    ext_info: Optional[Dict[str, Any]] = None
+    version: int = 1
 
     class Config:
         from_attributes = True
