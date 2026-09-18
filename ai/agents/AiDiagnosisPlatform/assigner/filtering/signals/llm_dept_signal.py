@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext
+from ai.agents.AiDiagnosisPlatform.assigner.prompts.step1 import build_r2
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
@@ -24,41 +25,8 @@ class LlmDeptSignal:
     def enabled(self) -> bool:
         return bool(self._llm_cfg.get("enabled", True)) and bool(self._departments)
 
-    def _build_prompt(self, ticket: TicketContext) -> str:
-        dept_blocks = []
-        for dept in self._departments:
-            name = dept.get("name") or ""
-            if not name:
-                continue
-            profile = (dept.get("profile_text") or "").strip()
-            examples = dept.get("examples") or []
-            ex_lines = []
-            for ex in examples[:3]:
-                if isinstance(ex, dict):
-                    ex_lines.append(f"  示例：{ex.get('title', '')} → {ex.get('dept', name)}")
-            dept_blocks.append(
-                f"---\n部门：{name}\n{profile}\n" + ("\n".join(ex_lines) if ex_lines else "")
-            )
-
-        hypotheses = ""
-        if ticket.diagnosis_hypotheses:
-            hypotheses = "；".join(ticket.diagnosis_hypotheses[:5])
-
-        return (
-            "你是工单部门路由专家。根据工单内容，判断最可能负责处理的部门。\n"
-            "只能从下列部门中选择，按 confidence 降序输出最多 3 个。\n\n"
-            "【部门清单】\n"
-            + "\n".join(dept_blocks)
-            + "\n\n【工单】\n"
-            f"标题：{ticket.title or ''}\n"
-            f"描述：{ticket.problem_description or ''}\n"
-            f"故障码：{ticket.fault_code or '无'}\n"
-            f"车型：{ticket.robot_type or '无'}\n"
-            f"项目：{ticket.project_name or '无'}\n"
-            f"Agent假设：{hypotheses or '无'}\n\n"
-            "输出 JSON（不要其它文字）：\n"
-            '{"departments":[{"name":"部门名","confidence":0.0,"reason":"一句话"}]}'
-        )
+    def _build_prompt(self, ticket: TicketContext, feedback: str = "") -> str:
+        return build_r2(ticket, self._departments, feedback)
 
     @staticmethod
     def _parse(response: str, allowed: set) -> List[dict]:
@@ -88,8 +56,8 @@ class LlmDeptSignal:
         out.sort(key=lambda x: x["confidence"], reverse=True)
         return out[:3]
 
-    async def classify(self, ticket: TicketContext) -> Dict[str, float]:
-        """返回 {部门名: confidence}。"""
+    async def classify(self, ticket: TicketContext, feedback: str = "") -> Dict[str, float]:
+        """返回 {部门名: confidence}。feedback 可选：附加"上一轮审查意见"供重判参考。"""
         if not self.enabled:
             return {}
 
@@ -97,8 +65,8 @@ class LlmDeptSignal:
         if not allowed:
             return {}
 
-        min_conf = float(self._llm_cfg.get("min_confidence", 0.75))
-        prompt = self._build_prompt(ticket)
+        min_conf = float(self._llm_cfg.get("min_confidence", 0.3))
+        prompt = self._build_prompt(ticket, feedback=feedback)
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()

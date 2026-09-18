@@ -15,11 +15,19 @@ from app.wechat import wechat_api_router
 from app.modules.admin import admin_router
 from app.modules.tasks import tasks_router
 from app.modules.call import call_router
+from app.modules.dataqa import dataqa_router
 
 import app.integrations  # noqa: E402  装载外部任务源插件（按 TASK_SOURCES_ENABLED 自注册）
 from app.integrations.api import router as integrations_sources_router
 from app.integrations.mappings_api import router as integrations_mappings_router
-
+from app.wechat.services.user_info_snapshot import (
+    start_user_info_snapshot_scheduler,
+    stop_user_info_snapshot_scheduler,
+)
+from app.wechat.services.user_statistics_snapshot import (
+    start_user_statistics_scheduler,
+    stop_user_statistics_scheduler,
+)
 security = HTTPBearer()
 
 app = FastAPI(
@@ -57,12 +65,32 @@ async def startup_event():
     
     init_users_db()
 
+    # 空库（测试环境/新机器）自动播下全局项目信息节点：结构来自 default.yaml，
+    # 不依赖 alembic 迁移是否在本机跑过；已有全局节点的库原样跳过。
+    try:
+        from app.modules.admin.services.info_node_seed_service import ensure_global_info_nodes
+        ensure_global_info_nodes()
+    except Exception as e:  # noqa: BLE001
+        print(f"[项目信息节点] 播种失败（不影响启动）: {e}")
+
     # 确保对象存储 bucket 存在（MinIO 未启动仅告警，不阻塞启动）
     try:
         from app.utils.minio_client import ensure_minio_buckets
         ensure_minio_buckets()
     except Exception as e:  # noqa: BLE001
         print(f"[MinIO] 初始化 bucket 失败: {e}")
+
+    # 整点拉取 batch-user-info 存入 user_info 表（每天仅保留最新一条快照）
+    start_user_info_snapshot_scheduler()
+
+    # 每个整点拉取昨日用户增减数据，并覆盖为该日期最新渠道明细
+    start_user_statistics_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    stop_user_info_snapshot_scheduler()
+    stop_user_statistics_scheduler()
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,6 +107,7 @@ app.include_router(admin_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(integrations_sources_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(call_router, prefix=f"{settings.API_V1_STR}")
+app.include_router(dataqa_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(wechat_api_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(integrations_mappings_router, prefix=f"{settings.API_V1_STR}/admin")
 

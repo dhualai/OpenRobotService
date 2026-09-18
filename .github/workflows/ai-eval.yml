@@ -1,0 +1,115 @@
+name: AI Evaluation (continuous)
+
+on:
+  schedule:
+    - cron: "0 20 * * 5"              # 每周五 20:00 UTC
+  workflow_dispatch:
+  push:
+    branches: [hxg, develop]
+    paths:
+      - 'ai/core/**'
+      - 'ai/agents/**'
+      - 'ai/ingestion/**'
+      - 'ai/docs/**'
+      - 'automation/testdata/fixtures/ai/**'
+      - 'automation/src/ai_metrics/**'
+      - 'automation/tests/ai/**'
+
+env:
+  PYTHON_VERSION: "3.11"
+  AI_EVAL_RUN_ID: ${{ github.sha }}-${{ github.run_number }}
+
+jobs:
+  ai-eval:
+    name: AI eval (L1/L2/L3 regression)
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      qdrant:
+        image: qdrant/qdrant:v1.10
+        ports:
+          - "6333:6333"
+          - "6334:6334"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate - AI eval enabled?
+        id: gate
+        run: |
+          if [ "${{ vars.AI_EVAL_ENABLED }}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AI_EVAL_ENABLED 未开启，跳过真实评测（本地可跑 pytest tests/ai/）"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          pip install -r ai/requirements.txt 2>/dev/null || pip install -e ai/
+          pip install -e automation/
+
+      - name: Start AI service
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          REDIS_HOST: localhost
+          QDRANT_HOST: localhost
+        run: |
+          nohup python -m uvicorn ai.app.main:app --host 0.0.0.0 --port 8401 > ai-service.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8401/api/ai/qa/health > /dev/null 2>&1; then
+              echo "AI service healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::AI service did not become healthy; tests will skip gracefully"
+          exit 0
+
+      - name: Run AI evaluation
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AI_EVAL_BASE_URL: http://localhost:8401
+          AI_EVAL_RUN_ID: ${{ env.AI_EVAL_RUN_ID }}
+        run: |
+          cd automation
+          pytest tests/ai/ -m ai -v \
+            --alluredir=output/allure-results \
+            --junitxml=output/junit-ai-eval.xml || true
+
+      - name: Upload run record
+        if: steps.gate.outputs.enabled == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-eval-runs-${{ env.AI_EVAL_RUN_ID }}
+          path: automation/output/ai-eval-runs/
+
+      - name: Upload Allure results
+        if: steps.gate.outputs.enabled == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-ai-eval
+          path: automation/output/allure-results
+
+      - name: Fail on real failures
+        if: steps.gate.outputs.enabled == 'true' && always()
+        run: |
+          if [ -f automation/output/junit-ai-eval.xml ]; then
+            grep -q 'failures="0"' automation/output/junit-ai-eval.xml || { echo "AI eval 存在真实失败，详见 Allure 报告"; exit 1; }
+          fi

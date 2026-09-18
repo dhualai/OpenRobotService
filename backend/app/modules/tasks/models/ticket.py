@@ -12,6 +12,7 @@
 from app.models.task import (
     Task,
     TaskComment,
+    TaskSpecDoc,
     TaskStatus,
     TaskPriority,
     TaskType,
@@ -26,6 +27,7 @@ TicketType = TaskType
 __all__ = [
     "Task",
     "TaskComment",
+    "TaskSpecDoc",
     "TaskStatus",
     "TaskPriority",
     "TaskType",

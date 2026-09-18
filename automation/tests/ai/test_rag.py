@@ -15,7 +15,7 @@ CASES = load_ai_cases("rag_retrieval")
 class TestRagRetrievalEval:
     @pytest.mark.parametrize("case", CASES, ids=lambda c: c["id"])
     async def test_recall(self, case):
-        result = await run_rag_case(case)
+        result = await run_rag_case(case, suite="rag")
         if result.get("skipped_all"):
             pytest.skip(result.get("detail", "AI runtime deps unavailable"))
         assert result["passed"], f"{case['id']} recall failed: {result['detail']}"

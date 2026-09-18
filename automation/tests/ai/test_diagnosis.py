@@ -11,5 +11,9 @@ CASES = load_ai_cases("diagnosis")
 class TestDiagnosisEval:
     @pytest.mark.parametrize("case", CASES, ids=lambda c: c["id"])
     async def test_eval(self, ai_client, case):
-        result = await run_ai_case(ai_client, case)
-        assert result.passed, f"{result.case_id} failed: {result.summary}"
+        result = await run_ai_case(ai_client, case, suite="diagnosis")
+        if result.failed_checks:
+            pytest.fail(f"{result.case_id} failed: {result.summary}")
+        if result.skipped:
+            detail = "; ".join(f"{c['layer']}:{c['metric']}" for c in result.skipped)
+            pytest.skip(f"L2/L3 judge unavailable: {detail}")

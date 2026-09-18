@@ -45,7 +45,8 @@ def ensure_conversation(
     db = _get_session()
     try:
         row = db.query(Conversation).filter(
-            Conversation.service_ticket_id == session_id
+            Conversation.service_ticket_id == session_id,
+            Conversation.is_deleted.is_(False),  # 软删会话不复用、不可改标题（用户已删除）
         ).first()
         if row:
             row.updated_at = _now()
@@ -80,7 +81,8 @@ def rename_conversation(session_id: str, title: str) -> None:
     db = _get_session()
     try:
         row = db.query(Conversation).filter(
-            Conversation.service_ticket_id == session_id
+            Conversation.service_ticket_id == session_id,
+            Conversation.is_deleted.is_(False),  # 软删会话不复用、不可改标题（用户已删除）
         ).first()
         if row:
             row.title = title
@@ -96,7 +98,8 @@ def get_conversation_title(session_id: str) -> str:
     db = _get_session()
     try:
         row = db.query(Conversation).filter(
-            Conversation.service_ticket_id == session_id
+            Conversation.service_ticket_id == session_id,
+            Conversation.is_deleted.is_(False),  # 软删会话不复用、不可改标题（用户已删除）
         ).first()
         return row.title if row else ""
     finally:
@@ -156,7 +159,8 @@ def get_history(session_id: str) -> List[dict]:
     db = _get_session()
     try:
         conv = db.query(Conversation).filter(
-            Conversation.service_ticket_id == session_id
+            Conversation.service_ticket_id == session_id,
+            Conversation.is_deleted.is_(False),  # 软删会话不再从 MySQL 降级恢复
         ).first()
         if not conv:
             return []
@@ -171,6 +175,7 @@ def get_history(session_id: str) -> List[dict]:
                 "content": r.content,
                 "message_type": r.message_type,
                 "created_at": r.created_at.isoformat() if r.created_at else "",
+                "metadata_": r.metadata_,
             }
             for r in rows
         ]
@@ -199,6 +204,7 @@ def list_sessions(user_id: str = "", limit: int = 50) -> List[dict]:
 
         if user_id:
             q = q.filter(Conversation.user_id == user_id)
+        q = q.filter(Conversation.is_deleted.is_(False))
 
         q = q.group_by(Conversation.id).order_by(
             Conversation.updated_at.desc()

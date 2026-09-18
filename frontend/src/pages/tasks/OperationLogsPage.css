@@ -1,11 +1,14 @@
 .operation-logs-page {
   min-height: 100vh;
-  background: #f5f5f5;
+  /* 与全站一致的页面底渐变（此前为孤立灰底 #f5f5f5，与其它页面割裂） */
+  background: var(--gradient-surface);
+  background-attachment: fixed;
 }
 
 .operation-logs-page__content {
   padding: 12px 16px;
   padding-top: 60px;
-  max-width: 600px;
+  /* 与全站内容区同宽（此前 600px 与其它页面 768px 不一致） */
+  max-width: 768px;
   margin: 0 auto;
 }

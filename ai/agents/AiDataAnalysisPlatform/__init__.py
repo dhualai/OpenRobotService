@@ -9,6 +9,9 @@
     - LLMClient: 统一 LLM 客户端
     - DataAnalyzer: 数据分析引擎
     - router: FastAPI 路由
+    - metric_registry: 指标注册表（按需分析的指标目录）
+    - ReportDataCollector: 数据采集器（支持全量采集 + 按指标采集）
+    - AnalysisPlanner: 指标意图解析器（问题 → AnalysisPlan）
 
 快速开始::
 
@@ -29,6 +32,7 @@ from .llm_client import LLMClient
 from .router import router
 from .schemas import (
     AnalysisInsight,
+    AnalysisPlan,
     AnalysisRequest,
     AnalysisResult,
     AnalysisType,
@@ -36,6 +40,8 @@ from .schemas import (
     DataSource,
     HealthResponse,
     QuickChatRequest,
+    ScopeSpec,
+    TimeRangeSpec,
 )
 from .report_schemas import (
     ReportPeriod,
@@ -48,6 +54,19 @@ from .report_schemas import (
     CollectedData,
 )
 from .report_generator import ReportGenerator, generate_report, generate_report_stream
+from .report_generator import ReportDataCollector
+from .metric_registry import (
+    MetricDef,
+    MetricDimension,
+    MetricOutputType,
+    TimeRangeType,
+    DIMENSION_GROUPS,
+    get_metric_def,
+    list_metrics_by_dimension,
+    catalog_for_llm_prompt,
+    resolve_time_range,
+)
+from .metric_planner import AnalysisPlanner, PlanConversationCache
 
 __all__ = [
     # Agent
@@ -65,6 +84,7 @@ __all__ = [
     "router",
     # Schemas
     "AnalysisInsight",
+    "AnalysisPlan",
     "AnalysisRequest",
     "AnalysisResult",
     "AnalysisType",
@@ -72,6 +92,8 @@ __all__ = [
     "DataSource",
     "HealthResponse",
     "QuickChatRequest",
+    "ScopeSpec",
+    "TimeRangeSpec",
     # Report
     "ReportPeriod",
     "ReportRequest",
@@ -84,4 +106,18 @@ __all__ = [
     "ReportGenerator",
     "generate_report",
     "generate_report_stream",
+    # Metric Registry
+    "MetricDef",
+    "MetricDimension",
+    "MetricOutputType",
+    "TimeRangeType",
+    "DIMENSION_GROUPS",
+    "get_metric_def",
+    "list_metrics_by_dimension",
+    "catalog_for_llm_prompt",
+    "resolve_time_range",
+    "ReportDataCollector",
+    # Metric Planner
+    "AnalysisPlanner",
+    "PlanConversationCache",
 ]

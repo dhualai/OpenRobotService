@@ -29,6 +29,13 @@ from ai.core.memory import (
     SessionMemory,
     get_memory_manager,
 )
+from ai.core.knowledge_worker import (
+    run_knowledge_worker,
+    start_knowledge_worker,
+)
+from ai.core.verified_backfill import (
+    backfill_verified_batch,
+)
 __all__ = [
     # LLM
     "LLMClient",
@@ -50,4 +57,8 @@ __all__ = [
     "MemoryManager",
     "SessionMemory",
     "get_memory_manager",
+    # 知识沉淀（core 共享，任务 Agent / 派单共用）
+    "run_knowledge_worker",
+    "start_knowledge_worker",
+    "backfill_verified_batch",
 ]

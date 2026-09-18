@@ -7,7 +7,7 @@
 """
 import enum
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, Text, Enum, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -48,6 +48,11 @@ class Conversation(Base):
 
     service_ticket_id = Column(String(255), nullable=False)
     metadata_ = Column(Text, nullable=True, default=None)
+
+    # 逻辑删除：用户删除会话只打标记（messages 全量保留，供 AI 侧直达/派单准确率分析）。
+    # 所有对外查询必须过滤 is_deleted；AI 统计直连库读全量（不筛该字段）即可。
+    is_deleted = Column(Boolean, nullable=False, default=False, server_default="0")
+    deleted_at = Column(DateTime(timezone=True), nullable=True, default=None)
 
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
 

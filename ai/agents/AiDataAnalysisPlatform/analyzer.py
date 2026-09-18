@@ -84,6 +84,7 @@ class DataAnalyzer:
         analysis_type: AnalysisType = AnalysisType.GENERAL,
         question: str | None = None,
         context: str | None = None,
+        session_id: str | None = None,
     ) -> AnalysisResult:
         """执行数据分析并返回结构化结果。
 
@@ -93,6 +94,8 @@ class DataAnalyzer:
             analysis_type: 分析类型。
             question: 用户的具体分析问题（可选）。
             context: 补充上下文（可选）。
+            session_id: 会话 ID；传入后注入该会话历史（多轮记忆），
+                不传则每次无状态分析。
 
         Returns:
             结构化分析结果。
@@ -116,7 +119,9 @@ class DataAnalyzer:
             data_source.value,
             len(processed_data),
         )
-        raw_response, usage = await self._llm.chat(system_prompt, user_prompt)
+        raw_response, usage = await self._llm.chat(
+            system_prompt, user_prompt, session_id=session_id
+        )
 
         # 4. 解析结果
         result = self._parse_result(raw_response, analysis_type)
@@ -134,11 +139,12 @@ class DataAnalyzer:
         analysis_type: AnalysisType = AnalysisType.GENERAL,
         question: str | None = None,
         context: str | None = None,
+        session_id: str | None = None,
     ):
         """流式分析，逐 chunk 返回文本。
 
         Args:
-            同 :meth:`analyze`。
+            同 :meth:`analyze`；session_id 传入后注入会话历史（多轮记忆）。
 
         Yields:
             模型输出的文本片段。
@@ -153,7 +159,9 @@ class DataAnalyzer:
             context=context,
         )
 
-        async for chunk in self._llm.chat_stream(system_prompt, user_prompt):
+        async for chunk in self._llm.chat_stream(
+            system_prompt, user_prompt, session_id=session_id
+        ):
             yield chunk
 
     # ── 结果解析 ────────────────────────────────────────────

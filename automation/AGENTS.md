@@ -8,7 +8,7 @@
 
 你的职责不是一次性生成代码，而是持续参与自动化测试平台的设计、开发、优化和维护。
 
-所有工作必须遵循本文档规定的流程。
+所有工作必须遵循本文档规定的流程。测试运行、Trace、Fast/Pro 路由和 AI 探索规则见 `automation/rules.md`；MCP 工具接入见 `automation/mcp_server/README.md`。
 
 ---
 
@@ -503,7 +503,7 @@ automation/docs/worklog/task-12-ci-setup.md
 
 ## 修改文件
 
-- `automation/testdata/cases/api-test-cases.xlsx`: 新增 XX 行
+- `automation/tests/{module}/test_{module}_code.py`: 新增 XX 条用例
 - `automation/src/mocks/backend_mock.py`: 新增 XX 路由
 
 ## 测试结果

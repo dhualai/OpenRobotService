@@ -1,26 +1,20 @@
 """module_tree（产品→界面→功能 责任树）业务服务层。
 
 职责：
-- 读写 DB 中的 product→tree（每个产品一行，JSON 存接口树）
-- 保存后将**所有产品**的树导出覆盖到 AI Assigner 的 config.yaml（作为启动快照）
-- 导出后通知 AI 服务热更新，让运行中派单流水线感知新配置
+- 读写 DB 中功能级行模型 module_tree_nodes（每功能一行）。
+- 保存后同步工程师到 users.responsibility_modules（三层画像），并通知 AI 服务 reload。
 """
+import hashlib
 import json
 import logging
-from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from pypinyin import pinyin, Style
 
 from app.core.database import db_manager
-from app.models.module_tree import ModuleTree
+from app.models.module_tree_node import ModuleTreeNode
 
 logger = logging.getLogger(__name__)
-
-# config.yaml 相对项目根的路径（本文件位于 backend/app/modules/admin/services/）
-# parents[5] = 项目根（services->admin->modules->app->backend->root）
-_PROJECT_ROOT = Path(__file__).resolve().parents[5]
-_ASSIGNER_CONFIG_PATH = _PROJECT_ROOT / "ai" / "agents" / "AiDiagnosisPlatform" / "assigner" / "config" / "config.yaml"
 
 
 def _pinyin_head(zh_name: str) -> str:
@@ -90,64 +84,88 @@ def _get_db():
     return db_manager.get_db()
 
 
-def get_all_trees() -> Dict[str, Any]:
-    """返回 {产品: {"interfaces": [...]}}，供前端展示 / 导出 config。"""
+def _aggregate_from_nodes(products: Optional[List[str]] = None) -> Dict[str, Any]:
+    """从行表 module_tree_nodes 聚合出 {产品: {interfaces:[...]}}。
+
+    - 界面按 iface_name 分组、iface_order 排序；功能按 func_order 排序。
+    - 每个功能带上行 id、iface_order/func_order。
+    - 聚合后补界面/功能 key（用于展示折叠；业务定位靠行 id 与 func_name）。
+    """
     db = _get_db()
     try:
-        rows = db.query(ModuleTree).all()
+        q = db.query(ModuleTreeNode)
+        if products:
+            q = q.filter(ModuleTreeNode.product.in_(products))
+        rows = q.all()
+        rows.sort(key=lambda r: (r.product, r.iface_order, r.func_order))
         result: Dict[str, Any] = {}
-        for row in rows:
-            result[row.product] = row.tree_json or {"interfaces": []}
-        return result
+        for r in rows:
+            tree = result.setdefault(r.product, {"interfaces": []})
+            iface = next((it for it in tree["interfaces"] if it["name"] == r.iface_name), None)
+            if iface is None:
+                iface = {"name": r.iface_name, "functions": []}
+                tree["interfaces"].append(iface)
+            iface["functions"].append({
+                "id": r.id,
+                "name": r.func_name,
+                "keywords": r.keywords or [],
+                "anchor": r.anchor or "",
+                "engineers": r.engineers or [],
+                "iface_order": r.iface_order,
+                "func_order": r.func_order,
+            })
+        return renormalize_keys(result)
     finally:
         db.close()
+
+
+def get_all_trees() -> Dict[str, Any]:
+    """返回 {产品: {"interfaces": [...]}}，从功能行模型 module_tree_nodes 聚合。"""
+    return _aggregate_from_nodes()
 
 
 def get_product_tree(product: str) -> Optional[Dict[str, Any]]:
-    """返回单产品的接口树（该产品名下的 interfaces 结构）。"""
-    db = _get_db()
-    try:
-        row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
-        return row.tree_json if row else None
-    finally:
-        db.close()
+    """返回单产品的接口树（该产品名下的 interfaces 结构），从行模型聚合。"""
+    return _aggregate_from_nodes([product]).get(product)
 
 
-def upsert_product_tree(product: str, tree: Dict[str, Any]) -> bool:
-    """写入或更新某个产品的接口树（tree 为 {"interfaces": [...]}）。"""
-    db = _get_db()
+def product_hash(tree: Optional[Dict[str, Any]]) -> str:
+    """对产品树生成稳定哈希（乐观锁版本标识）。
+
+    用 sort_keys + ensure_ascii=False 稳定序列化（与前端加载时一致），
+    内容或顺序变化都会导致哈希变化，用于检测"产品是否被他人改过"。
+    """
     try:
-        row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
-        if row:
-            row.tree_json = tree
-        else:
-            db.add(ModuleTree(product=product, tree_json=tree))
-        db.commit()
-        return True
+        raw = json.dumps(tree or {"interfaces": []}, ensure_ascii=False, sort_keys=True, default=str)
     except Exception:
-        db.rollback()
-        logger.exception("upsert module_tree 失败: %s", product)
-        return False
-    finally:
-        db.close()
+        raw = str(tree)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
-def replace_all_trees(trees: Dict[str, Any]) -> bool:
-    """整体覆盖所有产品的树（前端整树保存用）。"""
-    db = _get_db()
-    try:
-        # 删除现有全部
-        db.query(ModuleTree).delete()
-        for product, tree in trees.items():
-            db.add(ModuleTree(product=product, tree_json=tree or {"interfaces": []}))
-        db.commit()
-        return True
-    except Exception:
-        db.rollback()
-        logger.exception("replace_all_trees 失败")
-        return False
-    finally:
-        db.close()
+def get_product_hashes() -> Dict[str, str]:
+    """返回 {产品: 产品树哈希}，供前端加载时记录"本地基准版本"用于乐观锁。"""
+    trees = get_all_trees()
+    return {product: product_hash(tree) for product, tree in trees.items()}
+
+
+def get_func_hashes() -> Dict[str, Dict[str, str]]:
+    """返回 {产品: {'界面名||功能名': 功能节点哈希}}，供前端记录"本地加载时的各功能版本"
+    用于功能级冲突检测（只有同一产品同一界面同一功能被双方修改才判定冲突）。"""
+    trees = get_all_trees()
+    result: Dict[str, Dict[str, str]] = {}
+    for product, tree in trees.items():
+        m: Dict[str, str] = {}
+        for it in (tree or {}).get("interfaces", []) or []:
+            iname = _norm_name(it.get("name"))
+            if not iname:
+                continue
+            for f in (it.get("functions", []) or []):
+                fnm = _norm_name(f.get("name"))
+                if fnm:
+                    m[f"{iname}||{fnm}"] = func_node_hash(f)
+        if m:
+            result[product] = m
+    return result
 
 
 def find_function(trees: Dict[str, Any], product: str, iface_key: str, func_key: str):
@@ -165,117 +183,55 @@ def find_function(trees: Dict[str, Any], product: str, iface_key: str, func_key:
 
 
 def apply_function_change(product: str, iface_key: str, func_key: str, new_json: Dict[str, Any]) -> bool:
-    """审批通过后，把某功能节点的修改应用到 DB，并导出 config + 同步用户画像。
+    """审批通过后，把某功能行的修改应用到 DB（行表 module_tree_nodes）。
 
-    只替换该功能节点的字段（name/keywords/anchor/engineers），不动其它。
-    返回是否成功。
+    以 new_json 里的功能名定位（其次用 func_key），只替换存在的字段
+    （name/keywords/anchor/engineers），不动其它。返回是否成功。
     """
+    func_name = _norm_name((new_json or {}).get("name")) or _norm_name(func_key)
     db = _get_db()
     try:
-        row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
-        if not row:
-            logger.error("apply_function_change: 产品不存在 %s", product)
+        node = (
+            db.query(ModuleTreeNode)
+            .filter(ModuleTreeNode.product == product, ModuleTreeNode.func_name == func_name)
+            .first()
+        )
+        if not node:
+            logger.error("apply_function_change: 功能行不存在 %s/%s", product, func_name)
             return False
-        tree = row.tree_json or {"interfaces": []}
-        found = find_function({product: tree}, product, iface_key, func_key)
-        if not found:
-            logger.error("apply_function_change: 功能定位失败 %s/%s/%s", product, iface_key, func_key)
-            return False
-        _, iface, fn, iface_idx, fn_idx = found
-        # 合并新值：仅覆盖给定的键，保留未提及字段
-        merged = dict(fn)
-        merged.update(new_json or {})
-        tree["interfaces"][iface_idx]["functions"][fn_idx] = merged
-        row.tree_json = tree
+        if new_json:
+            if "name" in new_json:
+                node.func_name = _norm_name(new_json["name"])
+            if "keywords" in new_json:
+                node.keywords = new_json.get("keywords") or []
+            if "anchor" in new_json:
+                node.anchor = new_json.get("anchor") or ""
+            if "engineers" in new_json:
+                node.engineers = new_json.get("engineers") or []
+            iface = new_json.get("iface_name") or new_json.get("iface")
+            if iface:
+                node.iface_name = _norm_name(iface)
         db.commit()
-
-        # 导出 config + 同步用户画像（尽力而为）
-        all_trees = get_all_trees()
-        export_to_config(all_trees)
-        sync_to_user_profiles(all_trees)
+        # 统一收尾
+        after_write()
         return True
     except Exception:
         db.rollback()
-        logger.exception("apply_function_change 失败 %s/%s/%s", product, iface_key, func_key)
+        logger.exception("apply_function_change 失败 %s/%s", product, func_name)
         return False
     finally:
         db.close()
 
 
-
-def export_to_config(trees: Optional[Dict[str, Any]] = None) -> bool:
-    """把 DB 中的产品树导出覆盖到 config.yaml 的 module_tree 块。
-
-    采用"保留文件头注释 + 只替换 module_tree 数据段"的策略：
-    读取现有 config.yaml，替换 module_tree 块的 YAML 文本，保留其它一切。
-    """
-    trees = trees if trees is not None else get_all_trees()
-    # 组装成 settings.py 期望的结构：{产品: {"interfaces": [...]}}
-    module_tree_block = {}
-    for product, tree in trees.items():
-        if tree and "interfaces" in tree:
-            module_tree_block[product] = tree
-        else:
-            module_tree_block[product] = {"interfaces": []}
-
-    path = _ASSIGNER_CONFIG_PATH
-    if not path.exists():
-        logger.error("config.yaml 不存在: %s", path)
-        return False
-
-    try:
-        raw = path.read_text(encoding="utf-8")
-        # 用 yaml 序列化新的 module_tree 块
-        import yaml
-        block_yaml = yaml.safe_dump(
-            {"module_tree": module_tree_block},
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=False,
-            width=120,
-        )
-
-        # 定位旧的 module_tree 块边界（从 "module_tree:" 行到下一个顶级键/注释分节）
-        lines = raw.splitlines(keepends=True)
-        start_idx = None
-        for i, ln in enumerate(lines):
-            if ln.rstrip() == "module_tree:" or ln.rstrip().startswith("module_tree: "):
-                start_idx = i
-                break
-        if start_idx is None:
-            # 没有 module_tree：追加到文件头注释后
-            new_content = raw + "\n" + block_yaml
-        else:
-            # 从 start_idx 到下一个顶格非注释非空行的前一行结束
-            end_idx = len(lines)
-            for j in range(start_idx + 1, len(lines)):
-                ln = lines[j]
-                # 下一个顶级键（无缩进的 key+冒号，且非注释）
-                if (not ln.startswith(" ") and ":" in ln and not ln.startswith("#") and ln.strip()):
-                    end_idx = j
-                    break
-            new_content = "".join(lines[:start_idx]) + block_yaml + "".join(lines[end_idx:])
-
-        path.write_text(new_content, encoding="utf-8")
-        logger.info("已导出 module_tree 到 config.yaml: %s", path)
-        return True
-    except Exception:
-        logger.exception("导出 module_tree 到 config.yaml 失败")
-        return False
-
-
 def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
     """把树上分配的工程师同步回 users.responsibility_modules（三层结构）。
 
-    以 module_tree 为唯一权威：对每个涉及其产品的工程师，
-    重算 responsibility_modules[产品] = {界面名: [该工程师负责的功能名]}。
-    仅覆盖本次涉及的产品 key，工程师在其它产品的已有模块保留（避免误清车端等）。
-
-    返回：被更新的工程师数。
+    以 module_tree 为权威：重算 responsibility_modules[产品] = {界面名: [功能名]}。
+    仅覆盖树中涉及的产品 key，工程师在其它产品的模块保留。返回被更新的工程师数。
     """
     from app.models.identity import UserDB
 
-    # 1. 收集 { 产品: { 工程师id: {界面名: set(功能名)} } }
+    # 收集 { 产品: { 工程师id: {界面名: set(功能名)} } }
     product_engineers: Dict[str, Dict[str, Dict[str, set]]] = {}
     for product, tree in trees.items():
         pe = product_engineers.setdefault(product, {})
@@ -296,7 +252,7 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
     if not product_engineers:
         return 0
 
-    # 2. 收集所有涉及的产品和工程师 id
+    # 收集所有涉及的工程师 id
     all_eids = set()
     for pe in product_engineers.values():
         all_eids.update(pe.keys())
@@ -311,7 +267,7 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
                 u = user_map.get(eid)
                 if not u:
                     continue
-                # 读取现有模块，保留其它产品的 key，只覆盖当前产品
+                # 保留其它产品 key，只覆盖当前产品
                 current = u.responsibility_modules
                 if isinstance(current, str):
                     try:
@@ -321,7 +277,6 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
                 if not isinstance(current, dict):
                     current = {}
                 current = {k: v for k, v in current.items() if v is not None}
-                # 覆盖当前产品 = 该工程师负责的「界面 → 功能名列表」（三层）
                 if by_iface:
                     current[product] = {
                         iface_name: sorted(funcs)
@@ -330,7 +285,6 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
                     }
                 else:
                     current.pop(product, None)
-                # 存回
                 try:
                     u.responsibility_modules = current
                     updated += 1
@@ -347,16 +301,169 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
         db.close()
 
 
-def save_trees(trees: Dict[str, Any]) -> Dict[str, Any]:
-    """统一保存：写 DB + 同步用户画像 + 导出 config。
+def _clear_removed_products_from_profiles(removed: List[str]) -> int:
+    """删除产品后，清理 users.responsibility_modules 中这些产品 key（不影响其它产品）。"""
+    if not removed:
+        return 0
+    from app.models.identity import UserDB
 
-    保存前统一重算 界面/功能 的 key（前端中文名 → 前两字拼音+哈希，保证唯一且格式统一）。
-    返回 {"db": bool, "synced": int, "export": bool}。
+    db = _get_db()
+    try:
+        # 只扫描有画像的用户，避免全表空扫
+        rows = db.query(UserDB).filter(UserDB.responsibility_modules.isnot(None)).all()
+        updated = 0
+        removed_set = set(removed)
+        for u in rows:
+            current = u.responsibility_modules
+            if isinstance(current, str):
+                try:
+                    current = json.loads(current)
+                except Exception:
+                    current = {}
+            if not isinstance(current, dict):
+                continue
+            hit = False
+            for product in list(current.keys()):
+                if product in removed_set:
+                    del current[product]
+                    hit = True
+            if hit:
+                try:
+                    u.responsibility_modules = current
+                    updated += 1
+                except Exception:
+                    logger.exception("清理被删产品责任模块失败: %s", u.id)
+        db.commit()
+        logger.info("已清理被删产品的 responsibility_modules: %d 人", updated)
+        return updated
+    except Exception:
+        db.rollback()
+        logger.exception("清理被删产品责任模块失败")
+        return 0
+    finally:
+        db.close()
+
+
+def _norm_name(s) -> str:
+    return (s or "").strip()
+
+
+def func_node_hash(fn: Optional[Dict[str, Any]]) -> str:
+    """单功能节点内容哈希（功能级冲突检测基准）。"""
+    try:
+        raw = json.dumps(fn or {}, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        raw = str(fn)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def upsert_node(
+    product: str,
+    iface_name: str,
+    iface_order: int,
+    func_name: str,
+    func_order: int,
+    keywords: Optional[list] = None,
+    anchor: Optional[str] = None,
+    engineers: Optional[list] = None,
+    node_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """按 id 新增/更新一个功能行（id 有则 update，否则 insert）。
+
+    按行 id 精确定位，多人改不同行互不覆盖。写成功后统一收尾 after_write()，
+    返回 {"id": 行id, "synced": n, "ai_reload": ...}；失败返回 {"id": None}。
     """
-    normalized = renormalize_keys(trees)
-    ok_db = replace_all_trees(normalized)
-    if not ok_db:
-        return {"db": False, "synced": 0, "export": False}
-    synced = sync_to_user_profiles(normalized)
-    ok_export = export_to_config(normalized)
-    return {"db": True, "synced": synced, "export": ok_export}
+    db = _get_db()
+    try:
+        if node_id:
+            node = db.query(ModuleTreeNode).filter(ModuleTreeNode.id == node_id).first()
+            if not node:
+                return {"id": None}
+            node.iface_name = _norm_name(iface_name)
+            node.iface_order = iface_order
+            node.func_name = _norm_name(func_name)
+            node.func_order = func_order
+            node.keywords = keywords or []
+            node.anchor = anchor or ""
+            node.engineers = engineers or []
+        else:
+            node = ModuleTreeNode(
+                product=product,
+                iface_name=_norm_name(iface_name),
+                iface_order=iface_order or 0,
+                func_name=_norm_name(func_name),
+                func_order=func_order or 0,
+                keywords=keywords or [],
+                anchor=anchor or "",
+                engineers=engineers or [],
+            )
+            db.add(node)
+        db.commit()
+        db.refresh(node)
+        w = after_write()  # 统一收尾
+        return {"id": node.id, **w}
+    except Exception:
+        db.rollback()
+        logger.exception("upsert node 失败: product=%s func=%s", product, func_name)
+        return {"id": None}
+    finally:
+        db.close()
+
+
+def delete_nodes(ids: List[int]) -> Dict[str, Any]:
+    """按行 id 批量删除功能行。返回 {"deleted": n, "synced": ..., "ai_reload": ...}。
+
+    前端删除整个产品时会一次删光该产品所有行；删除前先收集这些行所属的产品，
+    交给 after_write(removed=...) 清理这些产品在画像里残留的 key。
+    """
+    db = _get_db()
+    try:
+        rows = db.query(ModuleTreeNode).filter(ModuleTreeNode.id.in_(ids)).all()
+        removed_products = sorted({r.product for r in rows if r.product})
+        n = db.query(ModuleTreeNode).filter(ModuleTreeNode.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        w = after_write(removed=removed_products)  # 统一收尾 + 清理被删产品画像
+        return {"deleted": n or 0, "products": removed_products, **w}
+    except Exception:
+        db.rollback()
+        logger.exception("delete nodes 失败: ids=%s", ids)
+        return {"deleted": 0, "products": []}
+    finally:
+        db.close()
+
+
+def _notify_ai_reload() -> Optional[str]:
+    """通知 AI 服务重载派单配置与画像缓存（尽力而为，失败不阻断）。
+
+    AI 服务不可用时返回错误串，不影响后端写库。
+    """
+    try:
+        import httpx
+        from app.core.config import settings
+        ai_url = settings.AI_SERVICE_URL.rstrip("/")
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{ai_url}/api/ai/assigner/reload")
+            if resp.status_code == 200:
+                return "ok"
+        return str(resp.status_code)
+    except Exception as e:
+        logger.warning("通知AI画像重载失败: %s", e)
+        return f"AI 热更新失败: {e}"
+
+
+def after_write(removed: Optional[List[str]] = None) -> Dict[str, Any]:
+    """写树后的统一收尾：同步用户画像 + 清理被删产品画像 + 通知 AI。
+
+    适用：单行写/删（upsert_node / delete_node）、审批应用（apply_function_change）。
+    - 以行表当前全量树为权威重算 users.responsibility_modules（三层画像）；
+    - removed：被整产品删除的产品名，额外清理其在画像里的 key；
+    - 最后通知 AI reload。
+
+    返回 {"synced": n, "ai_reload": 通知结果}。
+    """
+    all_trees = _aggregate_from_nodes()
+    synced = sync_to_user_profiles(all_trees)
+    if removed:
+        synced += _clear_removed_products_from_profiles(removed)
+    ai_reload = _notify_ai_reload()
+    return {"synced": synced, "ai_reload": ai_reload}

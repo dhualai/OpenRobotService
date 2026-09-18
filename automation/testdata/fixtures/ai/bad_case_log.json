@@ -1,0 +1,4 @@
+{
+  "description": "AI 评测 Bad Case 台账：长期沉淀表（非单轮报告）。只录入 P0/P1、反复出现、代表性失败案例。更新方式：python scripts/cli-update-bad-cases.py --input <failures.json> [--dry-run]。",
+  "log": []
+}

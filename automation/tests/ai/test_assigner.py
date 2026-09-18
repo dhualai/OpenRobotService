@@ -15,7 +15,7 @@ CASES = load_ai_cases("assigner")
 class TestAssignerEval:
     @pytest.mark.parametrize("case", CASES, ids=lambda c: c["id"])
     async def test_assign(self, case):
-        result = await run_assigner_case(case)
+        result = await run_assigner_case(case, suite="assigner")
         if result.get("skipped_all"):
             pytest.skip(result.get("detail", "AI runtime deps unavailable"))
         assert result["passed"], f"{case['id']} assigner check failed: {result['detail']}"

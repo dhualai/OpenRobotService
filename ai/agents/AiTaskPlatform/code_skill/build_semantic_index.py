@@ -35,9 +35,9 @@ async def main() -> None:
     print(f"[build_semantic] 加载 {indexer.function_count} 个函数，构建语义索引（本地 bge 模型）...")
     await indexer.build_semantic(str(json_path))
     if indexer.semantic is not None and indexer.semantic.is_ready:
-        print(f"[build_semantic] ✅ 完成：{len(indexer.semantic)} 个函数已向量化")
+        print(f"[build_semantic] OK: 完成，{len(indexer.semantic)} 个函数已向量化")
     else:
-        print("[build_semantic] ⚠️ 构建失败或返回空，请检查 embedding 环境")
+        print("[build_semantic] WARN: 构建失败或返回空，请检查 embedding 环境")
 
 
 if __name__ == "__main__":

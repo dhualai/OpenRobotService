@@ -1,5 +1,5 @@
 """
-候选收紧流程冒烟测试：使用真实工程师画像，验证 部门 → 产品 → 模块。
+候选收紧流程冒烟测试：使用真实工程师画像，验证 部门 → 产品（模块层已从收紧中移除）。
 
 用法（项目根目录）：
     python ai/agents/AiDiagnosisPlatform/assigner/eval/smoke_tighten_flow.py
@@ -130,10 +130,7 @@ def _print_tighten(case_name: str, tighten, engineers: list[EngineerProfile]):
         f"  Layer2 产品: mode={tighten.product.mode} "
         f"product={tighten.product.product or '-'} ({tighten.product.source})"
     )
-    print(
-        f"  Layer3 模块: mode={tighten.module.mode} "
-        f"categories={tighten.module.matched_categories}"
-    )
+    print("  Layer3 模块: 已从收紧中移除（不再做模块收紧）")
     print(f"  候选人: {names}")
     for e in tighten.candidates[:8]:
         prods = list((e.responsibility_modules or {}).keys())

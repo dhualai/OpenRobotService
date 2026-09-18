@@ -15,6 +15,7 @@ import tarfile
 import gzip
 import io
 from pathlib import Path as _Path
+from typing import Optional
 
 import httpx
 
@@ -69,9 +70,13 @@ def extract_log_errors(text: str) -> str:
     return "\n".join(summary_lines)[:2000]
 
 
-def materialize_path(raw_path: str, tmp_dirs: list) -> str:
+def materialize_path(raw_path: str, tmp_dirs: list, task_id: Optional[str] = None, obj_key: str = "") -> str:
     """path 归一化：本地路径原样返回；MinIO 预签名 URL 解析出桶名 + 资源路径，
-    通过后端 minio_client 下载到本地临时目录后返回本地文件路径。
+    通过后端 minio_client 下载到本地稳定缓存目录后返回本地文件路径。
+
+    传入 task_id（工单 ID）时，下载到按 (task_id, object_key) 稳定命名的缓存目录，
+    同一份日志附件跨讨论复用（不重复下载），工单关闭时才清理。
+    未传 task_id 时回退到旧的 mkdtemp 临时目录（兼容未感知工单的调用方）。
 
     解析或下载失败返回 ""。
     """
@@ -101,21 +106,38 @@ def materialize_path(raw_path: str, tmp_dirs: list) -> str:
 
     try:
         from ai.core.minio_client import minio_client
-        tmp_dir = tempfile.mkdtemp(prefix="log_dl_")
-        tmp_dirs.append(tmp_dir)
+        resolve_key = minio_client.resolve_key(object_name)
         local_name = os.path.basename(object_name) or "download.bin"
-        local_path = os.path.join(tmp_dir, local_name)
-        object_name = minio_client.resolve_key(object_name)
-        minio_client.client.fget_object(bucket_name, object_name, local_path)
-        logger.info(f"附件下载完成: {bucket_name}/{object_name} -> {local_path}")
+        if task_id is not None:
+            # 稳定缓存目录：同一对象跨讨论复用，不重复下载
+            from ai.core.log_cache import get_log_cache_dir
+            _key = obj_key or raw_path or f"{bucket_name}/{object_name}"
+            dest_dir = get_log_cache_dir(task_id, _key)
+            local_path = os.path.join(str(dest_dir), local_name)
+            # mtime/size 判定：已下载过且大小一致则复用
+            try:
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    logger.info(f"[log_cache] 复用已下载附件: {bucket_name}/{resolve_key} -> {local_path}")
+                    return local_path
+            except Exception:
+                pass
+        else:
+            tmp_dir = tempfile.mkdtemp(prefix="log_dl_")
+            tmp_dirs.append(tmp_dir)
+            local_path = os.path.join(tmp_dir, local_name)
+        minio_client.client.fget_object(bucket_name, resolve_key, local_path)
+        logger.info(f"附件下载完成: {bucket_name}/{resolve_key} -> {local_path}")
         return local_path
     except Exception as e:
         logger.warning(f"MinIO 下载失败 {bucket_name}/{object_name}: {e}")
         return ""
 
 
-def extract_log_paths(attachments: list) -> tuple[list, list]:
-    """从附件列表中提取日志文件路径（压缩包先解压到临时目录）。
+def extract_log_paths(attachments: list, task_id: Optional[str] = None) -> tuple[list, list]:
+    """从附件列表中提取日志文件路径（压缩包先解压）。
+
+    传入 task_id 时下载/解压到稳定缓存目录（不重复下载/解压、不随讨论清理，工单关闭才删）；
+    未传时回退到 mkdtemp 临时目录。
 
     Returns:
         (log_paths, tmp_dirs): 日志文件绝对路径列表 + 待清理的临时目录列表
@@ -128,11 +150,12 @@ def extract_log_paths(attachments: list) -> tuple[list, list]:
         if not isinstance(att, dict):
             continue
         raw_path = att.get("path") or att.get("url") or ""
+        obj_key = att.get("object_path") or att.get("path") or att.get("url") or ""
         name = (att.get("filename") or att.get("name") or "").lower()
         if not raw_path:
             continue
 
-        path = materialize_path(raw_path, tmp_dirs)
+        path = materialize_path(raw_path, tmp_dirs, task_id=task_id, obj_key=obj_key)
         if not path:
             continue
 
@@ -142,16 +165,22 @@ def extract_log_paths(attachments: list) -> tuple[list, list]:
 
         if name.endswith((".zip", ".tar", ".tgz", ".gz")) and os.path.isfile(path):
             try:
-                tmp_dir = tempfile.mkdtemp(prefix="log_extract_")
-                tmp_dirs.append(tmp_dir)
+                # 稳定缓存解压目录：同一 (task_id, obj_key) 复用，不重复解压
+                if task_id is not None:
+                    from ai.core.log_cache import get_log_cache_dir
+                    extract_dir = get_log_cache_dir(task_id, f"{obj_key or raw_path}::extract")
+                else:
+                    extract_dir = _Path(tempfile.mkdtemp(prefix="log_extract_"))
+                    tmp_dirs.append(str(extract_dir))
 
                 if name.endswith(".zip"):
                     with zipfile.ZipFile(path) as zf:
                         for info in zf.infolist()[:_ARCHIVE_MAX]:
                             if info.is_dir():
                                 continue
-                            zf.extract(info, tmp_dir)
-                            inner = os.path.join(tmp_dir, info.filename)
+                            inner = os.path.join(str(extract_dir), info.filename)
+                            if not os.path.exists(inner):  # 已解压则跳过（稳定缓存复用）
+                                zf.extract(info, str(extract_dir))
                             iname = info.filename.lower()
                             if iname.endswith((".log", ".txt", ".csv")) or (".log." in iname):
                                 log_paths.append(inner)
@@ -164,8 +193,9 @@ def extract_log_paths(attachments: list) -> tuple[list, list]:
                         for member in tf.getmembers()[:_ARCHIVE_MAX]:
                             if member.isdir():
                                 continue
-                            tf.extract(member, tmp_dir)
-                            inner = os.path.join(tmp_dir, member.name)
+                            inner = os.path.join(str(extract_dir), member.name)
+                            if not os.path.exists(inner):
+                                tf.extract(member, str(extract_dir))
                             iname = member.name.lower()
                             if iname.endswith((".log", ".txt", ".csv")) or (".log." in iname):
                                 log_paths.append(inner)

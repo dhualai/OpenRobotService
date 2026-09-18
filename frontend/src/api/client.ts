@@ -4,11 +4,14 @@
 import { getApiBaseUrl } from '../config/api';
 import { WECHAT_CONFIG } from '../config/wechat';
 import { buildWechatAuthUrl, buildStateFromPath } from '../shared/utils/url';
+import { persistAuthTokens, readStored, removeStored } from '../stores/authStorage';
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 1000;
 const REQUEST_TIMEOUT = 30000;
 const CACHE_EXPIRY_TIME = 5 * 60 * 1000; // 5分钟
+// 主动预刷新阈值：token 剩余不足该时长即先刷新，避免「到期 → 401 → 重试」这条被动链路
+const REFRESH_AHEAD_MS = 2 * 60 * 1000;
 
 type Subscriber = (token: string | null) => void;
 
@@ -86,7 +89,8 @@ function buildErrorMessage(errorData: Record<string, unknown>, status: number): 
 export function initToken(): string {
   if (userToken) return userToken;
   try {
-    const savedToken = localStorage.getItem('auth_token');
+    // 读当前环境命名空间 key；升级前老用户回退无前缀 legacy key
+    const savedToken = readStored('AUTH_TOKEN');
     if (savedToken) {
       userToken = savedToken;
       return userToken;
@@ -108,7 +112,8 @@ export function clearToken(): void {
 }
 
 async function refreshTokenRequest(): Promise<string> {
-  const storedRefreshToken = localStorage.getItem('refresh_token');
+  // 优先读当前环境 scoped key，未迁移前回退 legacy key
+  const storedRefreshToken = readStored('REFRESH_TOKEN');
   if (!storedRefreshToken) {
     throw new Error('No refresh token available');
   }
@@ -123,10 +128,45 @@ async function refreshTokenRequest(): Promise<string> {
   if (!data.access_token) throw new Error('No access token in refresh response');
   const expiresAt = Date.now() + data.expires_in * 1000;
   userToken = data.access_token;
-  localStorage.setItem('auth_token', data.access_token);
-  localStorage.setItem('refresh_token', data.refresh_token);
-  localStorage.setItem('token_expires_at', String(expiresAt));
+  // 刷新结果写回当前环境命名空间 key
+  persistAuthTokens(data.access_token, data.refresh_token, expiresAt);
   return data.access_token;
+}
+
+/**
+ * 主动预刷新：access token 剩余不足 REFRESH_AHEAD_MS 时先换新，再发业务请求。
+ *
+ * 背景：access token 默认仅 30 分钟，前端原先只在收到 401 后才刷新重试——
+ * 用户在网络面板能看到成批 401，且每个 401 都多一次往返。这里用 TOKEN_EXPIRES_AT
+ * （此前只写不读）在请求发出前预判，从源头消掉这批可见 401。
+ *
+ * 失败静默：不清 token、不跳登录，交给既有 401 分支兜底；否则「预刷新失败」
+ * 会把仍可用的旧 token 提前作废，反而扩大故障面。
+ */
+async function ensureFreshToken(): Promise<void> {
+  let expiresAt: number;
+  try {
+    const raw = readStored('TOKEN_EXPIRES_AT');
+    if (!raw) return; // 无过期时间（legacy 数据）→ 不预判，走 401 兜底
+    expiresAt = Number(raw);
+  } catch {
+    return; // SSR / 存储不可用
+  }
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return;
+  if (expiresAt - Date.now() > REFRESH_AHEAD_MS) return;
+
+  // 已有刷新在飞：不重复触发（后续请求会自然带上新 token）
+  if (isRefreshing) return;
+
+  isRefreshing = true;
+  try {
+    const newToken = await refreshTokenRequest();
+    onRefreshSuccess(newToken);
+  } catch (error) {
+    onRefreshFailed(error);
+  } finally {
+    isRefreshing = false;
+  }
 }
 
 function onRefreshSuccess(newToken: string): void {
@@ -173,6 +213,12 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
       if (cached && Date.now() - cached.timestamp < CACHE_EXPIRY_TIME) {
         return cached.data as T;
       }
+    }
+
+    // 主动预刷新：token 临近过期先换新，避免「到期 → 401 → 重试」的可见 401。
+    // 置于 GET 缓存命中判断之后：缓存直接返回时无需触发刷新。
+    if (!options.skipAuth) {
+      await ensureFreshToken();
     }
 
     const defaultHeaders: Record<string, string> = {
@@ -229,6 +275,15 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
               if (loggingOut) {
                 throw refreshError;
               }
+              // 先清掉已失效的 token 再跳转：否则整页重载后 main.tsx 的
+              // checkLoginStatus 会用 localStorage 里的旧 token 恢复登录态并再次请求，
+              // 又 401 又跳回来，形成无限重载循环（对齐 kickToLogin 先登出清 token 再跳转的做法）。
+              userToken = null;
+              try {
+                removeStored('AUTH_TOKEN');
+                removeStored('REFRESH_TOKEN');
+                removeStored('TOKEN_EXPIRES_AT');
+              } catch { /* SSR safe */ }
               if (WECHAT_CONFIG.loginEnabled) {
                 const state = buildStateFromPath(window.location.pathname);
                 window.location.href = buildWechatAuthUrl(state);

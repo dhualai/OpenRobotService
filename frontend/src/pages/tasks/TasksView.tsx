@@ -1,28 +1,44 @@
 // 系统任务（供给视角）—— 上：AI 任务助手 / 下：工单卡片列表
 // 马卡龙极简风格（参考 macaron-minimal-ui 设计）：胶囊筛选 + 灰阶卡片信息层级；
 // 「待我处理」为按天时间轴。跨视图流转：消费 ticketDraft 自动建单。
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
+import AvatarImg from '@/shared/components/AvatarImg';
+import ParticipantStack, { type ParticipantItem } from '@/shared/components/ParticipantStack';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { POLL_INTERVAL_MS } from '@/config/poll';
 import Pagination from '@/shared/components/Pagination';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
-import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
+import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP, TICKET_TYPE_VALUE_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 // 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
-import { Search, ArrowRight, Calendar, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import { Search, Calendar, SlidersHorizontal, ChevronDown, Star } from 'lucide-react';
+import PersonArrow from '@/shared/components/PersonArrow';
+import { isSameUser } from '@/shared/utils/userIdentity';
 import { avatarUrl } from '@/api/profile';
 import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import { getMyProjects, type ProjectItem } from '@/api/projects';
+import { uploadCommentAttachment } from '@/api/ticket';
+import { toggleTaskFollow } from '@/api/taskFollow';
+
+/** 远程方式选项：默认空（无需填），可选 ToDesk / 向日葵 / 其他 */
+const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: '无需远程（默认）' },
+  { value: 'todesk', label: 'ToDesk' },
+  { value: 'sunflower', label: '向日葵' },
+  { value: 'other', label: '其他' },
+];
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -30,7 +46,15 @@ interface Ticket {
   contact?: string; created_at: string; updated_at: string;
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
-  participants?: string[];
+  /** 评论区参与讨论人员（头像堆叠；后端已按评论数→评论时间降序排好，见 participant_service） */
+  participants?: ParticipantItem[];
+  // 阶段性协商（用于「轮到我且未达成一致」标识）
+  curr_step_id?: number | null;
+  curr_step_name?: string | null;
+  curr_step_agreed?: boolean;
+  step_last_updated_by?: 'assigned' | 'creator' | null;
+  // 当前登录用户是否已关注（卡片星标）
+  is_followed?: boolean;
 }
 
 /** username / user_id → avatar_resource_id 的查找表；缺失时回退为首字母头像 */
@@ -38,18 +62,14 @@ type AvatarMap = Map<string, number>;
 
 const pageSize = 20;
 
-const PRIORITY_WEIGHT_MAP: Record<string, number> = {
-  urgent: 4,
-  high: 3,
-  medium: 2,
-  low: 1,
-};
-
-// 默认选中的任务状态：新建 / 进行中 / 已挂起 / 已解决（排除 已取消 / 已关闭）
+// 默认选中的任务状态：待处理 / 进行中 / 已挂起 / 已解决（排除 已取消 / 已关闭）
 const DEFAULT_STATUS_VALUES: string[] = ['new', 'in_progress', 'pending', 'resolved'];
 const ALL_STATUS_VALUES: string[] = Object.keys(STATUS_DISPLAY_MAP);
 // 优先级默认全选（low / medium / high / urgent）
 const ALL_PRIORITY_VALUES: string[] = Object.keys(PRIORITY_DISPLAY_MAP);
+// 工单类型默认全选（bug / feature / support / problem / other）
+// 取 TICKET_TYPE_VALUE_MAP 的值集（与后端 TaskType 枚举一致），排除仅做展示用的 question 别名
+const ALL_TYPE_VALUES: string[] = Object.values(TICKET_TYPE_VALUE_MAP);
 
 // 从 URL 查询参数解析筛选状态的工具函数
 const parseFilterFromUrl = (params: URLSearchParams) => {
@@ -73,10 +93,20 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     const parsed = rawPriority.split(',').map((s) => s.trim()).filter(Boolean);
     priorityFilter = parsed.length > 0 ? parsed : [...ALL_PRIORITY_VALUES];
   }
+  // 工单类型多选：缺失或 'all' 视为全选，否则按逗号分隔解析
+  const rawType = params.get('type');
+  let typeFilter: string[];
+  if (rawType === null || rawType === 'all') {
+    typeFilter = [...ALL_TYPE_VALUES];
+  } else {
+    const parsed = rawType.split(',').map((s) => s.trim()).filter(Boolean);
+    typeFilter = parsed.length > 0 ? parsed : [...ALL_TYPE_VALUES];
+  }
   return {
     search: params.get('q') || '',
     statusFilter,
     priorityFilter,
+    typeFilter,
     relevanceFilter: params.get('relevance') || 'mine',
     // 项目过滤：空字符串表示「全部」（不过滤）
     projectFilter: params.get('project') || '',
@@ -100,6 +130,24 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
 // 数组对比：判断两个无序数组是否包含相同元素
 const sameSet = (a: string[], b: string[]) =>
   a.length === b.length && a.every((v) => b.includes(v));
+
+// 工单列表数据级比较：id/更新时间/状态/协商字段一致即视为未变化。
+// 轮询回包去重用——数据没变时复用旧数组引用，配合 TicketCard memo 跳过整列表重渲染。
+const sameTicketItems = (a: Ticket[], b: Ticket[]) =>
+  a.length === b.length &&
+  a.every((t, i) => {
+    const o = b[i];
+    return t.id === o.id && t.updated_at === o.updated_at && t.status === o.status
+      && t.curr_step_id === o.curr_step_id && t.curr_step_agreed === o.curr_step_agreed
+      && !!t.is_followed === !!o.is_followed;
+  });
+
+// 角标计数浅比较：键集与值完全一致即视为未变化
+const sameCounts = (a: Record<string, number>, b: Record<string, number>) => {
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
+};
 
 // 创建时间起止统一使用原生 datetime-local：PC 为浏览器日期面板，移动端自动唤起系统原生滚轮选择器
 //（tdesign DateTimePicker 拖动时存在跳变问题，已弃用）
@@ -171,7 +219,7 @@ function DateRangeField({ startValue, endValue, onStartChange, onEndChange, star
 
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
-  search: string; statusFilter: string[]; priorityFilter: string[];
+  search: string; statusFilter: string[]; priorityFilter: string[]; typeFilter: string[];
   relevanceFilter: string; projectFilter: string; assigneeFilter: string; creatorFilter: string;
   createdStart: string; createdEnd: string; resolvedStart: string; resolvedEnd: string; closedStart: string; closedEnd: string; page: number; sortBy: string; sortOrder: string;
 }) => {
@@ -189,6 +237,10 @@ const buildFilterParams = (filter: {
   // 优先级：全选时省略；否则按逗号分隔输出（空数组不设置参数，等同于默认全选）
   if (filter.priorityFilter.length > 0 && !sameSet(filter.priorityFilter, ALL_PRIORITY_VALUES)) {
     params.set('priority', filter.priorityFilter.join(','));
+  }
+  // 工单类型：全选时省略；否则按逗号分隔输出（空数组不设置参数，等同于默认全选）
+  if (filter.typeFilter.length > 0 && !sameSet(filter.typeFilter, ALL_TYPE_VALUES)) {
+    params.set('type', filter.typeFilter.join(','));
   }
   if (filter.relevanceFilter !== 'mine') params.set('relevance', filter.relevanceFilter);
   // 项目过滤：非空时才输出（空 = 全部）
@@ -214,12 +266,28 @@ const buildFilterParams = (filter: {
 // 马卡龙极简工单卡片：状态为唯一带色文字（蓝阶），优先级蓝阶色块，
 // 头像统一灰底白字（无头像时）/ 圆形头像图片（有 avatar_resource_id 时），
 // 信息层级靠字号与字重区分（参考 macaron-minimal-ui 设计）。
-function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap }) {
+// memo 包装：轮询回包数据不变时（sameTicketItems 复用旧引用）跳过卡片重渲染。
+const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserId, currentUsername, onToggleFollow, onLocateParticipant }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap; currentUserId?: string; currentUsername?: string; onToggleFollow?: (id: string, follow: boolean) => void; onLocateParticipant?: (id: string, p: ParticipantItem) => void }) {
   const creator = t.created_by_name || t.created_by || '-';
   const assignee = t.assigned_to_name || t.assigned_to || '-';
   const participants = (t.participants || []).filter(Boolean);
   const creatorAvatarId = t.created_by ? avatarMap?.get(t.created_by) : undefined;
   const assigneeAvatarId = t.assigned_to ? avatarMap?.get(t.assigned_to) : undefined;
+
+  // 「轮到我且未达成一致」：当前用户是提单人/处理人、工单进入阶段性协商、
+  // 最近一次 step 操作来自对方（或尚无操作且我是处理人）、且尚未协商一致。
+  // 身份比对与详情页同口径：created_by/assigned_to 可能存 user_id 或 username，需双重匹配。
+  const isCreator = isSameUser(t.created_by, currentUserId, currentUsername);
+  const isAssignee = isSameUser(t.assigned_to, currentUserId, currentUsername);
+  const lastStepBy = t.step_last_updated_by;
+  const myTurn = (!lastStepBy && isAssignee)
+    || (lastStepBy === 'assigned' && isCreator)
+    || (lastStepBy === 'creator' && isAssignee);
+  const stepPendingMyResponse = !!t.curr_step_id
+    && !t.curr_step_agreed
+    && (t.status === 'new' || t.status === 'in_progress')
+    && myTurn;
+
   return (
     <div className="task-card2" onClick={() => onOpen(t.id)}>
       <div className="task-card2__head">
@@ -230,62 +298,75 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
           <span className="task-card2__priority" data-priority={(t.priority || '').toLowerCase()}>
             {PRIORITY_DISPLAY_MAP[t.priority] || t.priority || '中'}
           </span>
+          {stepPendingMyResponse && (
+            <span
+              title="阶段性协商轮到你操作，且双方尚未达成一致"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '2px 8px', borderRadius: 999, fontSize: 12, fontWeight: 600,
+                color: 'var(--apricot)', background: 'var(--apricot-soft)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <span
+                style={{
+                  width: 6, height: 6, borderRadius: '50%', background: 'var(--apricot)',
+                  animation: 'task-card2-pulse 1.2s ease-in-out infinite',
+                }}
+              />
+              时间节点 · 待确认
+              {/* 待你确认{t.curr_step_name ? ` · ${t.curr_step_name}` : ''} */}
+            </span>
+          )}
         </div>
         <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
+        {/* 关注星标：stopPropagation 阻止冒泡到卡片 onClick（避免误开详情）；乐观更新由父层处理 */}
+        {onToggleFollow && (
+          <button
+            type="button"
+            className={`task-card2__star${t.is_followed ? ' is-followed' : ''}`}
+            aria-label={t.is_followed ? '取消关注' : '添加关注'}
+            title={t.is_followed ? '取消关注' : '添加关注'}
+            aria-pressed={!!t.is_followed}
+            onClick={(e) => { e.stopPropagation(); onToggleFollow(t.id, !t.is_followed); }}
+          >
+            <Star size={17} strokeWidth={2} fill={t.is_followed ? 'currentColor' : 'none'} />
+          </button>
+        )}
       </div>
 
       <div className="task-card2__title">
         <TitleEllipsis text={t.title} lines={2} titleClassName="task-card2__title-inner" as="span" fontSize={18} lineHeight={1.35} />
       </div>
 
-      {/* 人员流转：发起人 →（参与人）→ 处理人 */}
+      {/* 人员流转：发起人 | 流线区（细线贯穿、参与人头像堆叠骑线居中） | 处理人 */}
       <div className="task-card2__people">
         <div className="task-card2__person" title={`发起人：${creator}`} aria-label={`发起人：${creator}`}>
-          {creatorAvatarId ? (
-            <img
-              className="task-card2__avatar task-card2__avatar--img"
-              src={avatarUrl(creatorAvatarId)}
-              alt={creator}
-            />
-          ) : (
-            <span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>
-          )}
+          <AvatarImg
+            className="task-card2__avatar task-card2__avatar--img"
+            src={creatorAvatarId ? avatarUrl(creatorAvatarId) : null}
+            alt={creator}
+            fallback={<span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>}
+          />
           <span className="task-card2__person-name">{creator}</span>
         </div>
-        {participants.length > 0 && (
-          <span className="task-card2__participants" title={`参与人：${participants.join('、')}`} aria-label={`参与人：${participants.join('、')}`}>
-            {participants.slice(0, 3).map((p, i) => {
-              const pid = avatarMap?.get(p);
-              return pid ? (
-                <img
-                  key={`${p}-${i}`}
-                  className="task-card2__participant task-card2__participant--img"
-                  src={avatarUrl(pid)}
-                  alt={p}
-                />
-              ) : (
-                <span key={`${p}-${i}`} className="task-card2__participant">{p.slice(0, 1).toUpperCase()}</span>
-              );
-            })}
-            {participants.length > 3 && (
-              <span className="task-card2__participant task-card2__participant--overflow">+{participants.length - 3}</span>
-            )}
-          </span>
-        )}
-        <span className="task-card2__person-arrow">
-          <ArrowRight size={14} strokeWidth={2} />
-        </span>
+        <div className={participants.length > 0 ? 'task-card2__flow task-card2__flow--stacked' : 'task-card2__flow'}>
+          {/* 线在前、堆叠在后：有堆叠时线退到底部作下划线，头像在线上方 */}
+          <PersonArrow />
+          <ParticipantStack
+            participants={participants}
+            avatarMap={avatarMap}
+            onLocate={onLocateParticipant ? (p) => onLocateParticipant(t.id, p) : undefined}
+          />
+        </div>
         <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`} aria-label={`处理人：${assignee}`}>
           <span className="task-card2__person-name">{assignee}</span>
-          {assigneeAvatarId ? (
-            <img
-              className="task-card2__avatar task-card2__avatar--img task-card2__avatar--assignee"
-              src={avatarUrl(assigneeAvatarId)}
-              alt={assignee}
-            />
-          ) : (
-            <span className="task-card2__avatar task-card2__avatar--assignee">{assignee.slice(0, 1).toUpperCase()}</span>
-          )}
+          <AvatarImg
+            className="task-card2__avatar task-card2__avatar--img task-card2__avatar--assignee"
+            src={assigneeAvatarId ? avatarUrl(assigneeAvatarId) : null}
+            alt={assignee}
+            fallback={<span className="task-card2__avatar task-card2__avatar--assignee">{assignee.slice(0, 1).toUpperCase()}</span>}
+          />
         </div>
       </div>
 
@@ -300,7 +381,7 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
       </div>
     </div>
   );
-}
+});
 
 // 「待我处理」原先按日期分组的时间轴已移除：所有分类统一走扁平卡片列表，
 // 排序完全由 fetchTickets 中的 sortBy/sortOrder 决定，快捷排序对所有分类生效。
@@ -325,6 +406,8 @@ function ChipDropdown({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // 面板打开时间戳：用于忽略打开瞬间移动端软键盘弹起引发的首批 scroll/resize
+  const openedAtRef = useRef(0);
 
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
@@ -354,6 +437,7 @@ function ChipDropdown({
     setCoords({ top, left, minWidth, maxHeight });
     setKeyword('');
     setOpen(true);
+    openedAtRef.current = Date.now();
   }, []);
 
   // 面板展开时聚焦搜索框（延迟一帧，避免与打开面板的 click 冲突）
@@ -366,6 +450,9 @@ function ChipDropdown({
   // 点击外部 / Esc / 滚动 / 窗口尺寸变化 关闭面板
   useEffect(() => {
     if (!open) return;
+    // 移动端面板打开即自动聚焦搜索框 → 软键盘弹起，浏览器会把输入框滚入视口并触发 resize；
+    // 宽限期内的首批 scroll/resize 属于键盘动画，不关闭面板（否则下拉与系统键盘会「一闪即关」）。
+    const OPEN_GRACE_MS = 500;
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (triggerRef.current?.contains(t)) return;
@@ -373,16 +460,27 @@ function ChipDropdown({
       setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    const close = () => setOpen(false);
+    // 焦点仍在面板内（用户正在搜索框输入）时，软键盘弹起/收起引发的视口变化不关闭面板
+    const isKeyboardInduced = () =>
+      Date.now() - openedAtRef.current < OPEN_GRACE_MS
+      || !!panelRef.current?.contains(document.activeElement);
+    // 页面滚动才关闭；面板内部（选项列表）滚动不关闭
+    const onScroll = (e: Event) => {
+      const t = e.target;
+      if (t instanceof Node && panelRef.current?.contains(t)) return;
+      if (isKeyboardInduced()) return;
+      setOpen(false);
+    };
+    const onResize = () => { if (!isKeyboardInduced()) setOpen(false); };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
-    window.addEventListener('scroll', close, true);
-    window.addEventListener('resize', close);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onResize);
     return () => {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
-      window.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onResize);
     };
   }, [open]);
 
@@ -520,9 +618,25 @@ export default function TasksView() {
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
+  // 搜索双 state：searchInput 即时反映输入（URL 同步），search 防抖 400ms 后提交（触发列表请求）
+  const [searchInput, setSearchInput] = useState(() => initialFilter.current.search);
   const [search, setSearch] = useState(() => initialFilter.current.search);
+  // 已提交搜索值：挂载时与 searchInput 相等 → 跳过首次 commit（避免 URL 恢复的 page 被重置为 1）
+  const committedSearchRef = useRef(initialFilter.current.search);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (searchInput !== committedSearchRef.current) {
+        committedSearchRef.current = searchInput;
+        setSearch(searchInput);
+        setPage(1);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchInput]);
   const [statusFilter, setStatusFilter] = useState(() => initialFilter.current.statusFilter);
   const [priorityFilter, setPriorityFilter] = useState<string[]>(() => initialFilter.current.priorityFilter);
+  // 工单类型多选过滤（全部选中时表示不过滤）
+  const [typeFilter, setTypeFilter] = useState<string[]>(() => initialFilter.current.typeFilter);
   const [relevanceFilter, setRelevanceFilter] = useState(() => initialFilter.current.relevanceFilter);
   // 项目过滤：空字符串 = 「全部」；否则为选中项目的 id
   const [projectFilter, setProjectFilter] = useState(() => initialFilter.current.projectFilter);
@@ -551,7 +665,7 @@ export default function TasksView() {
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   // 筛选弹窗草稿：弹窗内选择先写入草稿，点「确定」才提交生效；关闭（遮罩/返回）则丢弃。
   const [draft, setDraft] = useState<{
-    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[];
+    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[]; type: string[];
     createdStart: string; createdEnd: string;
     resolvedStart: string; resolvedEnd: string;
     closedStart: string; closedEnd: string;
@@ -572,9 +686,10 @@ export default function TasksView() {
     let cancelled = false;
     (async () => {
       try {
+        // 精简接口：仅 id/username/name/avatar_resource_id 四字段，避免全字段大 payload
         const data = await adminRequest<Array<{
           username?: string; id?: string; name?: string | null; avatar_resource_id?: number | null;
-        }>>('/users/?skip=0&limit=1000');
+        }>>('/users/lite');
         if (cancelled) return;
         const m: AvatarMap = new Map();
         const list: Array<{ username: string; name?: string }> = [];
@@ -615,7 +730,12 @@ export default function TasksView() {
     description: '',
     priority: 'medium',
     ticket_type: 'problem',
+    remote_type: '',           // 远程方式：''（默认无需填）/ todesk / sunflower / other
   });
+  // 远程方式截图（object_path 数组，上传后随建单一并落库）
+  const [remoteShots, setRemoteShots] = useState<{ objectPath: string; fileName: string }[]>([]);
+  const [uploadingShot, setUploadingShot] = useState(false);
+  const remoteShotInputRef = useRef<HTMLInputElement | null>(null);
 
   const isFetchingRef = useRef(false);
   const fetchTicketsRef = useRef<typeof fetchTickets>(async () => {});
@@ -668,6 +788,70 @@ export default function TasksView() {
     setFabDragging(false);
   };
 
+  // 当前列表过滤条件中「非相关性」的部分（搜索/状态/优先级/类型/项目/处理人/创建人/时间范围）。
+  // 抽成 memo 供 fetchTickets 与 fetchRelevanceCounts 共用，保证角标口径与列表完全一致。
+  const listExtraFilters = useMemo<TicketFilterCondition[]>(() => {
+    const filters: TicketFilterCondition[] = [];
+    if (search) {
+      const keyword = search.trim();
+      const searchConditions: TicketFilterCondition[] = [
+        { field: 'title', op: 'contains', value: keyword },
+      ];
+      // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
+      if (/^\d+$/.test(keyword)) {
+        searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
+      }
+      filters.push({ or: searchConditions });
+    }
+    // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
+    if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
+      filters.push({ field: 'status', op: 'in', value: statusFilter });
+    }
+    // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
+    if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
+      filters.push({ field: 'priority', op: 'in', value: priorityFilter });
+    }
+    // 工单类型多选过滤：未全选时按 in 操作过滤（后端 /filter 的 ticketType 为 enum 字段）
+    if (typeFilter.length > 0 && !sameSet(typeFilter, ALL_TYPE_VALUES)) {
+      filters.push({ field: 'ticketType', op: 'in', value: typeFilter });
+    }
+    // 项目过滤：选中具体项目时按 projectId 精确过滤（空 = 全部，不施加条件）
+    if (projectFilter) {
+      filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
+    }
+    // 处理人过滤：选中具体处理人时按 assignedTo 精确过滤（空 = 全部，不施加条件）
+    // 后端对 assignedTo 双键解析（username / users.id 都认）
+    if (assigneeFilter) {
+      filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
+    }
+    if (creatorFilter) {
+      filters.push({ field: 'createdBy', op: 'eq', value: creatorFilter });
+    }
+    // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
+    // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
+    if (createdStart) {
+      filters.push({ field: 'createdAt', op: 'ge', value: toBoundaryISO(createdStart, false) });
+    }
+    if (createdEnd) {
+      filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
+    }
+    // 解决时间过滤（resolved_at）
+    if (resolvedStart) {
+      filters.push({ field: 'resolvedAt', op: 'ge', value: toBoundaryISO(resolvedStart, false) });
+    }
+    if (resolvedEnd) {
+      filters.push({ field: 'resolvedAt', op: 'le', value: toBoundaryISO(resolvedEnd, true) });
+    }
+    // 关单时间过滤（closed_at）
+    if (closedStart) {
+      filters.push({ field: 'closedAt', op: 'ge', value: toBoundaryISO(closedStart, false) });
+    }
+    if (closedEnd) {
+      filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
+    }
+    return filters;
+  }, [search, statusFilter, priorityFilter, typeFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd]);
+
   const fetchTickets = useCallback(async (silent = false) => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -676,65 +860,19 @@ export default function TasksView() {
       // 相关性基础过滤（全部/项目相关/待我处理/与我相关）；
       // 「全部」无权限时按项目相关口径处理，与可见的分类选项一致。
       const relevanceKey = relevanceFilter === 'global' && !canViewAllTasks ? 'all' : relevanceFilter;
-      const filters: TicketFilterCondition[] = buildRelevanceFilters(relevanceKey, userId || username, projectIds);
+      const filters: TicketFilterCondition[] = [
+        ...buildRelevanceFilters(relevanceKey, userId || username, projectIds),
+        ...listExtraFilters,
+      ];
 
-      if (search) {
-        const keyword = search.trim();
-        const searchConditions: TicketFilterCondition[] = [
-          { field: 'title', op: 'contains', value: keyword },
-        ];
-        // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
-        if (/^\d+$/.test(keyword)) {
-          searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
-        }
-        filters.push({ or: searchConditions });
-      }
-      // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
-      if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
-        filters.push({ field: 'status', op: 'in', value: statusFilter });
-      }
-      // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
-      if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
-        filters.push({ field: 'priority', op: 'in', value: priorityFilter });
-      }
-      // 项目过滤：选中具体项目时按 projectId 精确过滤（空 = 全部，不施加条件）
-      if (projectFilter) {
-        filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
-      }
-      // 处理人过滤：选中具体处理人时按 assignedTo 精确过滤（空 = 全部，不施加条件）
-      // 后端对 assignedTo 双键解析（username / users.id 都认）
-      if (assigneeFilter) {
-        filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
-      }
-      if (creatorFilter) {
-        filters.push({ field: 'createdBy', op: 'eq', value: creatorFilter });
-      }
-      // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
-      // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
-      if (createdStart) {
-        filters.push({ field: 'createdAt', op: 'ge', value: toBoundaryISO(createdStart, false) });
-      }
-      if (createdEnd) {
-        filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
-      }
-      // 解决时间过滤（resolved_at）
-      if (resolvedStart) {
-        filters.push({ field: 'resolvedAt', op: 'ge', value: toBoundaryISO(resolvedStart, false) });
-      }
-      if (resolvedEnd) {
-        filters.push({ field: 'resolvedAt', op: 'le', value: toBoundaryISO(resolvedEnd, true) });
-      }
-      // 关单时间过滤（closed_at）
-      if (closedStart) {
-        filters.push({ field: 'closedAt', op: 'ge', value: toBoundaryISO(closedStart, false) });
-      }
-      if (closedEnd) {
-        filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
-      }
-
-      const sorts = sortBy === 'priority'
-        ? []
-        : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
+      // 排序全部下沉后端（priority 由后端 CASE 加权保证权重序，避免页内排序错位）
+      const sortFieldMap: Record<string, string> = {
+        priority: 'priority',
+        created_at: 'createdAt',
+        updated_at: 'updatedAt',
+        deadline_at: 'deadlineAt',
+      };
+      const sorts = [{ field: sortFieldMap[sortBy] || 'updatedAt', direction: sortOrder }];
 
       const data = await request<{ items: Ticket[]; total: number }>('/filter', {
         method: 'POST',
@@ -747,15 +885,9 @@ export default function TasksView() {
         skipCache: true,
       });
 
-      let sortedItems = data.items || [];
-      if (sortBy === 'priority') {
-        sortedItems = [...sortedItems].sort((a, b) => {
-          const weightA = PRIORITY_WEIGHT_MAP[a.priority] || 0;
-          const weightB = PRIORITY_WEIGHT_MAP[b.priority] || 0;
-          return sortOrder === 'desc' ? weightB - weightA : weightA - weightB;
-        });
-      }
-      setTickets(sortedItems);
+      // 回包与当前数据一致时复用旧引用，避免轮询触发整列表无效重渲染
+      const items = data.items || [];
+      setTickets((prev) => (sameTicketItems(prev, items) ? prev : items));
       setTotal(data.total || 0);
     } catch (err) {
       if (!silent) {
@@ -765,30 +897,64 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
+  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
-  // 筛选状态变化时同步到 URL
+  // 星标关注切换：乐观更新星标，失败回滚 + 提示；关注变化会影响「我关注的」角标数。
+  const handleToggleFollow = useCallback(async (id: string, follow: boolean) => {
+    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, is_followed: follow } : t)));
+    const ok = await toggleTaskFollow(id, follow);
+    if (!ok) {
+      setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, is_followed: !follow } : t)));
+      Toast({ message: follow ? '关注失败，请重试' : '取消关注失败，请重试', theme: 'error' });
+      return;
+    }
+    // 刷新分类角标（不整表重拉，避免打断滚动位置）
+    fetchCountsRef.current();
+    // 正在「我关注的」视图取消关注：该卡片应从列表消失，静默重拉一次
+    if (relevanceFilter === 'followed' && !follow) {
+      fetchTicketsRef.current(true);
+    }
+  }, [relevanceFilter]);
+
+  // 筛选状态变化时同步到 URL（搜索用即时值 searchInput，列表请求用防抖后的 search）
   useEffect(() => {
     const newParams = buildFilterParams({
-      search, statusFilter, priorityFilter,
+      search: searchInput, statusFilter, priorityFilter, typeFilter,
       relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
+  }, [searchInput, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
 
+  // 轮询刷新：按 VITE_POLL_INTERVAL_MS（默认 10s，见 @/config/poll）静默拉取列表与角标；
+  // 页面不可见时暂停（省电省请求），恢复可见时立即同步一次再恢复轮询。
   useEffect(() => {
-    const interval = setInterval(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(() => {
+        fetchTicketsRef.current(true);
+        fetchCountsRef.current();
+      }, POLL_INTERVAL_MS);
+    };
+    const stop = () => {
+      if (timer) { clearInterval(timer); timer = null; }
+    };
+    const onVisibility = () => {
+      if (document.hidden) { stop(); return; }
       fetchTicketsRef.current(true);
       fetchCountsRef.current();
-    }, 2000);
-    return () => clearInterval(interval);
+      start();
+    };
+    if (!document.hidden) start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility); };
   }, []);
 
   useEffect(() => {
@@ -807,7 +973,23 @@ export default function TasksView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketDraft]);
 
-  const openDetail = (id: string) => { navigate(`/tasks/${id}`); };
+  const openDetail = useCallback((id: string) => { navigateInWechat(navigate, `/tasks/${id}`); }, [navigate]);
+
+  // 点列表卡片上的参与人头像 → 进详情页并定位到讨论区。
+  // 与详情页 DiscussionPanel.locateComment 同口径：URL 带 focus=discussion 落到讨论区，
+  // 带 commentId 时再做锚点定位 + is-flash 高亮（目标页读取并消费该参数）。
+  const openParticipantDiscussion = useCallback((id: string, p: ParticipantItem) => {
+    const qs = new URLSearchParams({ focus: 'discussion' });
+    if (p?.username) qs.set('author', p.username);
+    navigateInWechat(navigate, `/tasks/${id}?${qs.toString()}`);
+  }, [navigate]);
+
+  // PC 微信下点工单是整页跳转（详情页/操作记录页均为懒加载 chunk），列表挂载即预取，
+  // 缩短首次点击后的下载等待；普通浏览器 / SPA 路径不受影响。
+  useEffect(() => {
+    import('@/pages/tasks/TaskDetailPage');
+    import('@/pages/tasks/OperationLogsPage');
+  }, []);
 
   
 
@@ -817,50 +999,51 @@ export default function TasksView() {
       { value: 'all', label: '项目相关' },
       { value: 'mine', label: '待我处理' },
       { value: 'related', label: '与我相关' },
+      { value: 'followed', label: '我关注的' },
     ];
     return canViewAllTasks
       ? [{ value: 'global', label: '全部' }, ...base]
       : base;
   }, [canViewAllTasks]);
 
-  // 拉取各分类角标条数：与列表共用同一套相关性过滤口径（不受搜索/状态/优先级影响），
-  // 每次只取 total（size=1）；单个分类失败静默跳过，保留旧值。
+  // 拉取各分类角标条数：与列表共用同一套过滤口径（含搜索/状态/优先级/类型/项目/人员/时间范围），
+  // 仅相关性维度按各分类切换——这样角标数 = 「切到该分类后列表会显示的总数」，与列表动态对齐。
+  // 批量接口一次网络往返取全部分类 total（替代原先 3~4 个并发 POST /filter）。
   const fetchRelevanceCounts = useCallback(async () => {
     if (countsFetchingRef.current) return;
     countsFetchingRef.current = true;
     try {
-      const entries = await Promise.all(
-        relevanceOptions.map(async (option) => {
-          try {
-            // 「全部」无权限时按项目维度计数，与列表回退口径一致
-            const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
-            const data = await request<{ total: number }>('/filter', {
-              method: 'POST',
-              body: JSON.stringify({
-                filters: buildRelevanceFilters(key, userId || username, projectIds),
-                sorts: [],
-                page: 1,
-                size: 1,
-              }),
-              skipCache: true,
-            });
-            return [option.value, data.total] as const;
-          } catch {
-            return null;
-          }
-        }),
-      );
-      const next: Record<string, number> = {};
-      entries.forEach((entry) => {
-        if (entry) next[entry[0]] = entry[1];
+      const queries = relevanceOptions.map((option) => {
+        // 「全部」无权限时按项目维度计数，与列表回退口径一致
+        const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
+        return {
+          filters: [
+            ...buildRelevanceFilters(key, userId || username, projectIds),
+            ...listExtraFilters,
+          ],
+          sorts: [],
+          page: 1,
+          size: 1,
+        };
       });
-      setRelevanceCounts(next);
+      const totals = await request<number[]>('/filter/counts', {
+        method: 'POST',
+        body: JSON.stringify({ queries }),
+        skipCache: true,
+      });
+      const next: Record<string, number> = {};
+      relevanceOptions.forEach((option, i) => {
+        const v = totals?.[i];
+        if (typeof v === 'number') next[option.value] = v;
+      });
+      // 计数没变化时复用旧引用，避免轮询触发无效重渲染；整批失败保持旧角标
+      setRelevanceCounts((prev) => (sameCounts(prev, next) ? prev : next));
     } catch {
       // 计数失败保持旧角标，不打扰页面
     } finally {
       countsFetchingRef.current = false;
     }
-  }, [relevanceOptions, username, userId, projectIds, canViewAllTasks]);
+  }, [relevanceOptions, listExtraFilters, username, userId, projectIds, canViewAllTasks]);
   fetchCountsRef.current = fetchRelevanceCounts;
 
   useEffect(() => { fetchRelevanceCounts(); }, [fetchRelevanceCounts]);
@@ -870,9 +1053,13 @@ export default function TasksView() {
 
   const priorityOptions = Object.entries(PRIORITY_DISPLAY_MAP).map(([value, label]) => ({ value, label }));
 
+  // 工单类型选项：与后端 TaskType 枚举一致的五个值（bug/feature/support/problem/other）
+  const typeOptions = ALL_TYPE_VALUES.map((value) => ({ value, label: TICKET_TYPE_DISPLAY_MAP[value] || value }));
+
   const sortOptions = [
     { value: 'created_at', label: '创建时间' },
     { value: 'updated_at', label: '更新时间' },
+    { value: 'deadline_at', label: '截止时间' },
   ];
 
   const handleRelevanceChange = (value: string) => {
@@ -988,6 +1175,21 @@ export default function TasksView() {
     setPage(1);
   };
 
+  // 多选：单个类型点击切换选中/取消；'all' 表示全选/取消全选；空时回退为全选
+  const handleTypeToggle = (value: string) => {
+    setTypeFilter((prev) => {
+      if (value === 'all') {
+        return sameSet(prev, ALL_TYPE_VALUES) ? [] : [...ALL_TYPE_VALUES];
+      }
+      if (prev.includes(value)) {
+        const next = prev.filter((v) => v !== value);
+        return next.length > 0 ? next : [...ALL_TYPE_VALUES]; // 至少保留一项
+      }
+      return [...prev, value];
+    });
+    setPage(1);
+  };
+
   // 打开筛选弹窗：以当前生效的过滤值初始化草稿，弹窗内改动只作用于草稿
   const openFilterMenu = () => {
     setDraft({
@@ -997,6 +1199,7 @@ export default function TasksView() {
       assignee: assigneeFilter,
       creator: creatorFilter,
       priority: [...priorityFilter],
+      type: [...typeFilter],
       createdStart,
       createdEnd,
       resolvedStart,
@@ -1008,7 +1211,7 @@ export default function TasksView() {
   };
   // 草稿字段更新（单选类）
   const setDraftField = (patch: Partial<{
-    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[];
+    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[]; type: string[];
     createdStart: string; createdEnd: string;
     resolvedStart: string; resolvedEnd: string;
     closedStart: string; closedEnd: string;
@@ -1047,7 +1250,19 @@ export default function TasksView() {
     }
     return { ...d, priority: [...d.priority, value] };
   });
-  // 清空草稿（弹窗内「清空选择」）：相关性回默认、状态回默认集（新建/进行中/已挂起/已解决）、
+  // 草稿类型切换（与 handleTypeToggle 同逻辑，但作用于草稿）
+  const draftTypeToggle = (value: string) => setDraft((d) => {
+    if (!d) return d;
+    if (value === 'all') {
+      return { ...d, type: sameSet(d.type, ALL_TYPE_VALUES) ? [] : [...ALL_TYPE_VALUES] };
+    }
+    if (d.type.includes(value)) {
+      const next = d.type.filter((v) => v !== value);
+      return { ...d, type: next.length > 0 ? next : [...ALL_TYPE_VALUES] };
+    }
+    return { ...d, type: [...d.type, value] };
+  });
+  // 清空草稿（弹窗内「清空选择」）：相关性回默认、状态回默认集（待处理/进行中/已挂起/已解决）、
   // 优先级回「全部」、项目/处理人回「全部」、创建时间清空。仅作用于草稿，未点「确定」前不生效。
   const draftClear = () => setDraft({
     relevance: 'mine',
@@ -1056,6 +1271,7 @@ export default function TasksView() {
     assignee: '',
     creator: '',
     priority: [...ALL_PRIORITY_VALUES],
+    type: [...ALL_TYPE_VALUES],
     createdStart: '',
     createdEnd: '',
     resolvedStart: '',
@@ -1072,6 +1288,7 @@ export default function TasksView() {
     setAssigneeFilter(draft.assignee);
     setCreatorFilter(draft.creator);
     setPriorityFilter(draft.priority);
+    setTypeFilter(draft.type);
     setCreatedStart(draft.createdStart);
     setCreatedEnd(draft.createdEnd);
     setResolvedStart(draft.resolvedStart);
@@ -1089,6 +1306,7 @@ export default function TasksView() {
   const dAssignee = draft?.assignee ?? assigneeFilter;
   const dCreator = draft?.creator ?? creatorFilter;
   const dPriority = draft?.priority ?? priorityFilter;
+  const dType = draft?.type ?? typeFilter;
   const dCreatedStart = draft?.createdStart ?? createdStart;
   const dCreatedEnd = draft?.createdEnd ?? createdEnd;
   const dResolvedStart = draft?.resolvedStart ?? resolvedStart;
@@ -1128,6 +1346,33 @@ export default function TasksView() {
     }
   };
 
+  /** 上传远程方式截图：走评论附件接口拿到 object_path，本地暂存，随建单一并落库 */
+  const handleRemoteShotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // 清空 value，保证再次选择同一文件也能触发 onChange
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      Toast({ message: '仅支持上传图片截图', theme: 'warning' });
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      Toast({ message: '截图不能超过 5MB', theme: 'warning' });
+      return;
+    }
+    setUploadingShot(true);
+    try {
+      const tempId = `remote-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const objectPath = await uploadCommentAttachment(file, tempId);
+      if (!objectPath) throw new Error('未获取到附件路径');
+      setRemoteShots((p) => [...p, { objectPath, fileName: file.name }]);
+    } catch (err) {
+      Toast({ message: `截图上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setUploadingShot(false);
+    }
+  };
+
   const handleCreateTask = async () => {
     if (!createForm.title.trim()) {
       Toast({ message: '请输入工单标题', theme: 'warning' });
@@ -1139,13 +1384,26 @@ export default function TasksView() {
     }
     setCreatingTask(true);
     try {
+      // 远程方式写入 metadata_info（结构化，便于后续查询/展示），截图 object_path 数组写入 attachments
+      const metadata_info = createForm.remote_type
+        ? { remote_type: createForm.remote_type }
+        : null;
+      const payload = {
+        ...createForm,
+        metadata_info,
+        // 附件统一 dict 结构 {path, object_path, filename}，与 tasks.attachments 约定对齐
+        // （path 供详情页下载，object_path 供 AI 路径去重）
+        attachments: remoteShots.length > 0 ? remoteShots.map((s) => ({ path: s.objectPath, object_path: s.objectPath, filename: s.fileName })) : null,
+      };
+      delete (payload as Record<string, unknown>).remote_type;
       await request<Ticket>('/', {
         method: 'POST',
-        body: JSON.stringify(createForm),
+        body: JSON.stringify(payload),
       });
       Toast({ message: '工单创建成功', theme: 'success' });
       setShowCreateModal(false);
-      setCreateForm({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
+      setCreateForm({ title: '', description: '', priority: 'medium', ticket_type: 'problem', remote_type: '' });
+      setRemoteShots([]);
       refreshTasks();
       setPage(1);
     } catch (err) {
@@ -1195,8 +1453,8 @@ export default function TasksView() {
               <input
                 className="tasks-search"
                 placeholder="搜索工单（支持编号/标题）…"
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                value={searchInput}
+                onChange={(e) => { setSearchInput(e.target.value); }}
               />
             </div>
           </div>
@@ -1253,7 +1511,7 @@ export default function TasksView() {
                   {option.label}
                   {typeof relevanceCounts[option.value] === 'number' && (
                     <span className="tasks-count-badge">
-                      {relevanceCounts[option.value] > 99 ? '99+' : relevanceCounts[option.value]}
+                      {relevanceCounts[option.value] > 999 ? '999+' : relevanceCounts[option.value]}
                     </span>
                   )}
                 </button>
@@ -1271,6 +1529,24 @@ export default function TasksView() {
                   key={option.value}
                   className={`tasks-view__filter-chip ${statusFilter.includes(option.value) ? 'is-active' : ''}`}
                   onClick={() => { handleStatusToggle(option.value); }}
+                >
+                  {option.label}
+                </button>
+              ))}
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 工单类型过滤：多选 chip（全部 + 各类型），与状态/优先级同一模式 */}
+              <button
+                key="type_all"
+                className={`tasks-view__filter-chip ${sameSet(typeFilter, ALL_TYPE_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handleTypeToggle('all'); }}
+              >
+                全部
+              </button>
+              {typeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  className={`tasks-view__filter-chip ${typeFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handleTypeToggle(option.value); }}
                 >
                   {option.label}
                 </button>
@@ -1340,7 +1616,7 @@ export default function TasksView() {
             <div className="tasks-empty">暂无工单</div>
           ) : (
             tickets.map((t) => (
-              <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} />
+              <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} currentUserId={userId} currentUsername={username} onToggleFollow={handleToggleFollow} onLocateParticipant={openParticipantDiscussion} />
             ))
           )}
           <Pagination current={page} total={total} pageSize={pageSize} onChange={setPage} />
@@ -1362,7 +1638,7 @@ export default function TasksView() {
                   {option.label}
                   {typeof relevanceCounts[option.value] === 'number' && (
                     <span className="tasks-count-badge">
-                      {relevanceCounts[option.value] > 99 ? '99+' : relevanceCounts[option.value]}
+                      {relevanceCounts[option.value] > 999 ? '999+' : relevanceCounts[option.value]}
                     </span>
                   )}
                 </button>
@@ -1385,6 +1661,28 @@ export default function TasksView() {
                   key={option.value}
                   className={`filter-menu__item ${dStatus.includes(option.value) ? 'is-active' : ''}`}
                   onClick={() => { draftStatusToggle(option.value); }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">工单类型（多选）</h4>
+            <div className="filter-menu__items">
+              <button
+                key="type_all"
+                className={`filter-menu__item ${sameSet(dType, ALL_TYPE_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { draftTypeToggle('all'); }}
+              >
+                全部
+              </button>
+              {typeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  className={`filter-menu__item ${dType.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { draftTypeToggle(option.value); }}
                 >
                   {option.label}
                 </button>
@@ -1582,6 +1880,59 @@ export default function TasksView() {
                 rows={4}
               />
             </FormItem>
+            <FormItem label="远程方式">
+              <select
+                className="tasks-create-modal__select"
+                value={createForm.remote_type}
+                onChange={(e) => setCreateForm((p) => ({ ...p, remote_type: e.target.value }))}
+              >
+                {REMOTE_TYPE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </FormItem>
+            {createForm.remote_type && (
+              <FormItem label="远程截图">
+                <div className="tasks-create-modal__remote">
+                  <p className="tasks-create-modal__remote-tip">
+                    请上传 {REMOTE_TYPE_OPTIONS.find((o) => o.value === createForm.remote_type)?.label || '远程'} 的设备码/连接码截图，便于远程协助（选填）。
+                  </p>
+                  {remoteShots.length > 0 && (
+                    <ul className="tasks-create-modal__remote-list">
+                      {remoteShots.map((s, i) => (
+                        <li key={s.objectPath} className="tasks-create-modal__remote-item">
+                          <span className="tasks-create-modal__remote-name">{s.fileName}</span>
+                          <button
+                            type="button"
+                            className="tasks-create-modal__remote-remove"
+                            onClick={() => setRemoteShots((p) => p.filter((_, idx) => idx !== i))}
+                            aria-label="移除截图"
+                          >
+                            移除
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <input
+                    ref={remoteShotInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={handleRemoteShotChange}
+                  />
+                  <Button
+                    theme="default"
+                    size="small"
+                    onClick={() => remoteShotInputRef.current?.click()}
+                    loading={uploadingShot}
+                    disabled={creatingTask}
+                  >
+                    {uploadingShot ? '上传中…' : '+ 上传截图'}
+                  </Button>
+                </div>
+              </FormItem>
+            )}
             <FormItem>
               <div className="tasks-create-modal__actions">
                 <Button theme="default" block onClick={() => setShowCreateModal(false)}>取消</Button>

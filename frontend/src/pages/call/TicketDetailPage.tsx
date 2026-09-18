@@ -2,8 +2,8 @@
 // 数据源：tasks 服务 GET /api/tasks/{dbId}?load_comments=true（DB id 唯一定位，AI 诊断数据从 metadata_info 提取）；操作：催办 / 上报（任务服务通知）
 // 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin } from 'tdesign-mobile-react';
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
+import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
@@ -11,7 +11,8 @@ import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
-import { ArrowRight, Folder, UserRound, Clock, AlarmClock, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bell, Upload, Undo2, Pencil } from 'lucide-react';
+import { Folder, UserRound, Clock, AlarmClock, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bell, Upload, Undo2, Pencil } from 'lucide-react';
+import PersonArrow from '@/shared/components/PersonArrow';
 import { getMyProjects, getProjectMembers, type ProjectItem, type ProjectMember } from '@/api/projects';
 import { qaGetTicket, fetchWithAuth } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
@@ -26,15 +27,22 @@ import {
 } from '@/shared/constants/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { readStored } from '@/stores/authStorage';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
+import TicketDynamicsCard from '@/shared/components/TicketDynamicsCard';
+import StepNegotiationCard from '@/shared/components/StepNegotiationCard';
+import SpecDocCard from '@/shared/components/SpecDocCard';
+import { useStepNegotiation } from '@/shared/hooks/useStepNegotiation';
+import { useResolveTicket } from '@/shared/hooks/useResolveTicket';
 import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import DispatchFold from '@/shared/components/DispatchFold';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
-import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 
 interface AiDiagnosis {
@@ -47,6 +55,8 @@ interface AiDiagnosis {
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface AiTicket {
   ticket_id?: string;
+  // Task.id（历史工单页导航用 db_<id>，此处 id 与 ticket_id 同值，供工单阶段性处理等共享 hook 使用）
+  id?: string;
   session_id: string;
   type?: string;
   title?: string;
@@ -54,8 +64,8 @@ interface AiTicket {
   priority?: string;
   status?: string;
   contact?: string;
-  // AI 接口返回 Unix 秒（number）；DB TicketResponse 返回 ISO 字符串（string），两者都支持
-  created_at?: number | string;
+  // 统一为 ISO 字符串（AI 接口 task_to_dict 与 DB TicketResponse 均已显式 isoformat）
+  created_at?: string;
   diagnosis?: AiDiagnosis;
   attachments?: Array<Record<string, unknown>>;
   comments?: Comment[];
@@ -69,8 +79,17 @@ interface AiTicket {
   project_name?: string;
   // 所属项目编码（DB TicketResponse 返回，编辑回显与提交用）
   project_id?: string;
-  // 最晚解决时间（ISO 字符串，编辑弹窗 antd DatePicker 回显/编辑；详情页只读展示。tasks 详情接口返回蛇形 deadline_at）
-  deadline_at?: string | null;
+  // 当前阶段截止时间（ISO 字符串，编辑弹窗 antd DatePicker 回显/编辑；详情页只读展示。tasks 详情接口返回蛇形 curr_step_endtime）
+  curr_step_endtime?: string | null;
+  // 工单阶段性处理（协商节点）：与系统任务详情页同源
+  curr_step_id?: number | null;
+  curr_step_name?: string | null;
+  step_last_updated_by?: 'assigned' | 'creator' | null;
+  step_negotiation_round?: number;
+  step_phase_round?: number;
+  step_neg_max_rounds?: number;
+  curr_step_agreed?: boolean;
+  escalate_count?: number;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -151,6 +170,11 @@ export default function TicketDetailPage() {
   const { id: sessionId = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  // 从历史工单列表点参与人头像跳进来时的讨论区定位参数
+  const [searchParams] = useSearchParams();
+  const focusDiscussion = searchParams.get('focus') === 'discussion';
+  const focusCommentId = searchParams.get('commentId');
+  const focusAuthor = searchParams.get('author');
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
   const { username, userId, name, isAdmin } = useAuthStore();
 
@@ -159,10 +183,16 @@ export default function TicketDetailPage() {
   const [msg, setMsg] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [aiSummary, setAiSummary] = useState('');
+  // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
+  const [redispatchTipDetail, setRedispatchTipDetail] = useState('');
+  // 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可看到，详情页 redispatch.result.reasoning）
+  const [dispatchReason, setDispatchReason] = useState('');
   const tempIdRef = useRef<string>(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
+  const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
   // @U老师 AI 讨论中标记
   const [askingAI, setAskingAI] = useState(false);
 
@@ -191,10 +221,15 @@ export default function TicketDetailPage() {
       const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
-        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; curr_step_id?: number | null; curr_step_name?: string | null; step_last_updated_by?: 'assigned' | 'creator' | null; step_negotiation_round?: number; step_phase_round?: number; step_neg_max_rounds?: number; curr_step_agreed?: boolean; escalate_count?: number; redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null }>(`/${dbId}?load_comments=true`, { skipCache: true });
         if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
+        // 二次派单感知增强（M3）：完整情商话术（未派到指定人时）
+        setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
+        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        setDispatchReason(taskDetail.redispatch?.result?.reasoning || '');
         setTicket({
           ticket_id: String(dbId),
+          id: String(dbId),
           session_id: taskDetail.metadata_info?.session_id || '',
           title: taskDetail.title || '',
           description: taskDetail.description ?? '',
@@ -210,8 +245,17 @@ export default function TicketDetailPage() {
           project_name: taskDetail.project_name || '',
           project_id: taskDetail.project_id || '',
           created_at: taskDetail.created_at || '',
-          // 最晚解决时间：tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
-          deadline_at: taskDetail.deadline_at ?? null,
+          // 当前阶段截止时间：tasks 详情接口 GET /{id} 返回蛇形 curr_step_endtime（见 TicketResponse）
+          curr_step_endtime: taskDetail.curr_step_endtime ?? null,
+          // 工单阶段性处理（协商节点）
+          curr_step_id: taskDetail.curr_step_id ?? null,
+          curr_step_name: taskDetail.curr_step_name ?? null,
+          step_last_updated_by: taskDetail.step_last_updated_by ?? null,
+          step_negotiation_round: taskDetail.step_negotiation_round,
+          step_phase_round: taskDetail.step_phase_round,
+          step_neg_max_rounds: taskDetail.step_neg_max_rounds,
+          curr_step_agreed: taskDetail.curr_step_agreed,
+          escalate_count: taskDetail.escalate_count,
           // AI 诊断数据存在 metadata_info.diagnosis（task_adapter 平铺入库）；手动工单无此字段
           diagnosis: taskDetail.metadata_info?.diagnosis,
           // 附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
@@ -229,8 +273,12 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; curr_step_id?: number | null; curr_step_name?: string | null; step_last_updated_by?: 'assigned' | 'creator' | null; step_negotiation_round?: number; step_phase_round?: number; step_neg_max_rounds?: number; curr_step_agreed?: boolean; escalate_count?: number; redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
+            // 二次派单感知增强（M3）：完整情商话术随 DB 刷新
+            setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
+            // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+            setDispatchReason(taskDetail.redispatch?.result?.reasoning || '');
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
             // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
@@ -244,8 +292,7 @@ export default function TicketDetailPage() {
               created_by_name: taskDetail.created_by_name || prev.created_by_name,
               assigned_to: taskDetail.assigned_to || prev.assigned_to,
               assigned_to_name: taskDetail.assigned_to_name || prev.assigned_to_name,
-              // 创建时间以 DB 真实创建时间为准：AI 接口 get_ticket 每次读取都用 int(time.time()) 重写，
-              // 并非工单真实创建时间，故用 DB 的 created_at 覆盖（与 status/created_by 同口径）。
+              // 创建时间以 DB 真实创建时间为准（DB 的 created_at 覆盖 AI 接口返回值，与 status/created_by 同口径）。
               created_at: taskDetail.created_at ?? prev.created_at,
               title: taskDetail.title || prev.title,
               description: taskDetail.description ?? prev.description,
@@ -255,8 +302,17 @@ export default function TicketDetailPage() {
               project_name: taskDetail.project_name || prev.project_name || prev.project,
               // 项目编码以 DB 为准（编辑回显与提交用），AI 接口不返回该字段
               project_id: taskDetail.project_id || prev.project_id,
-              // 最晚解决时间以 DB 为准（tasks 详情接口蛇形 deadline_at），覆盖 AI 滞后副本
-              deadline_at: taskDetail.deadline_at ?? prev.deadline_at ?? null,
+              // 当前阶段截止时间以 DB 为准（tasks 详情接口蛇形 curr_step_endtime），覆盖 AI 滞后副本
+              curr_step_endtime: taskDetail.curr_step_endtime ?? prev.curr_step_endtime ?? null,
+              // 工单阶段性处理（协商节点）以 DB 为准
+              curr_step_id: taskDetail.curr_step_id ?? prev.curr_step_id ?? null,
+              curr_step_name: taskDetail.curr_step_name ?? prev.curr_step_name ?? null,
+              step_last_updated_by: taskDetail.step_last_updated_by ?? prev.step_last_updated_by ?? null,
+              step_negotiation_round: taskDetail.step_negotiation_round ?? prev.step_negotiation_round,
+              step_phase_round: taskDetail.step_phase_round ?? prev.step_phase_round,
+              step_neg_max_rounds: taskDetail.step_neg_max_rounds ?? prev.step_neg_max_rounds,
+              curr_step_agreed: taskDetail.curr_step_agreed ?? prev.curr_step_agreed,
+              escalate_count: taskDetail.escalate_count ?? prev.escalate_count,
             } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
@@ -274,12 +330,19 @@ export default function TicketDetailPage() {
     }
   }, [sessionId]);
 
+  // 静默刷新详情（供共享 hook 在阶段处理/结束工单操作后刷新）
+  const refreshDetail = () => fetchDetail(true);
+
+  // 工单阶段性处理（协商节点）+ 结束工单（解决方式）：与系统任务详情页复用共享 hook
+  const negotiation = useStepNegotiation(ticket?.id ?? '', ticket, refreshDetail);
+  const resolve = useResolveTicket(ticket?.id ?? '', ticket, refreshDetail);
+
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
 
   // 获取项目成员用于 @ 提及（与系统任务详情页同款逻辑）
   useEffect(() => {
     const tid = ticket?.ticket_id;
-    if (!tid) { setProjectMembers([]); return; }
+    if (!tid) { setProjectMembers([]); setAllUsers([]); return; }
     getProjectMembers(tid)
       .then((members) => {
         const reporterUsername = ticket?.created_by || '';
@@ -291,6 +354,10 @@ export default function TicketDetailPage() {
         setProjectMembers(sorted);
       })
       .catch(() => setProjectMembers([]));
+    // 获取全部在职用户（@ 输入过滤字时扩展到项目外的人）
+    getProjectMembers(tid, true)
+      .then((u) => setAllUsers(u))
+      .catch(() => setAllUsers([]));
   }, [ticket?.ticket_id, ticket?.created_by]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
@@ -320,6 +387,90 @@ export default function TicketDetailPage() {
 
   // 操作人标签（与系统任务详情页同款）
   const getOperatorLabel = (): string => name || username || '当前用户';
+
+  // 当前用户角色判定（与系统任务详情页 getCurrentUserRoles 同源）：用于派单理由可见性
+  const getCurrentUserRoles = () => {
+    const currentName = name || username;
+    const isAssignee = !!(
+      isSameUser(ticket?.assigned_to, userId, username) ||
+      (ticket?.assigned_to_name && (ticket.assigned_to_name === username || ticket.assigned_to_name === currentName))
+    );
+    const isReporter = !!(
+      isSameUser(ticket?.created_by, userId, username) ||
+      (ticket?.created_by_name && (ticket.created_by_name === username || ticket.created_by_name === currentName))
+    );
+    return { isAssignee, isReporter };
+  };
+
+  // ── 升级上报 + 重新指派（工单阶段性处理卡触发，与系统任务详情页同源）──
+  const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
+  const [showEscalatePopup, setShowEscalatePopup] = useState(false);
+  const [escalateReason, setEscalateReason] = useState('');
+  const [reassignUser, setReassignUser] = useState<UserItem | null>(null);
+  const [showReassignPopup, setShowReassignPopup] = useState(false);
+  const [reassignReason, setReassignReason] = useState('');
+  const [reassignKind, setReassignKind] = useState<'misassign' | 'stage' | 'other' | ''>('');
+
+  const handleEscalate = async () => {
+    if (!ticket?.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    if (!escalateUser) { Toast({ message: '请先选择升级对象', theme: 'warning' }); return; }
+    if (!escalateReason.trim()) { Toast({ message: '请填写变更原因', theme: 'warning' }); return; }
+    const target = escalateUser.name || escalateUser.username;
+    try {
+      await request(`/${ticket.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ assigned_to: escalateUser.id || escalateUser.username, operation_type: 'escalate' }),
+      });
+      try {
+        await request(`/${ticket.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: `升级原因：${escalateReason.trim()}`, is_public: true }),
+        });
+      } catch { /* 评论写入失败不阻断主流程 */ }
+      await refreshDetail();
+      Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
+      setEscalateUser(null);
+      setEscalateReason('');
+      setShowEscalatePopup(false);
+    } catch (err) {
+      Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const handleReassign = async () => {
+    if (!ticket?.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    if (!reassignUser) return;
+    if (!reassignKind) { Toast({ message: '请选择转派类型', theme: 'warning' }); return; }
+    const target = reassignUser.name || reassignUser.username;
+    const remark = reassignReason.trim();
+    try {
+      await request(`/${ticket.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          assigned_to: reassignUser.id || reassignUser.username,
+          operation_type: 'reassign',
+          reassign_kind: reassignKind,
+          reassign_reason: remark || undefined,
+        }),
+      });
+      if (remark) {
+        try {
+          await request(`/${ticket.id}/comments`, {
+            method: 'POST',
+            body: JSON.stringify({ content: `重新指派原因：${remark}`, is_public: true }),
+          });
+        } catch { /* 评论写入失败不阻断主流程 */ }
+      }
+      await refreshDetail();
+      Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
+      setReassignUser(null);
+      setReassignReason('');
+      setReassignKind('');
+      setShowReassignPopup(false);
+    } catch (err) {
+      Toast({ message: `重新指派失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
 
   // WS 工单状态变更（派单完成/改派/状态流转）实时更新详情，替代轮询
   const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
@@ -404,10 +555,10 @@ export default function TicketDetailPage() {
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
-  // 最晚解决时间区间：基准 = 工单创建时间（ticket.created_at），而非用户操作时刻
+  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; curr_step_endtime?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
+  // 当前阶段截止时间区间：基准 = 工单创建时间（ticket.created_at），而非用户操作时刻
   const editDeadlineRange = getDeadlineRange(editForm.priority, ticket?.created_at);
-  // 优先级仅在「尚未派单」（新建/待派单）可修改；已派单及后续状态禁止（置灰不可点）
+  // 优先级仅在「尚未派单」（待处理/待派单）可修改；已派单及后续状态禁止（置灰不可点）
   const priorityDisabled = !canEditPriority(ticket?.status);
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
@@ -450,11 +601,11 @@ export default function TicketDetailPage() {
       ticket_type: ticket.type || 'problem',
       project_id: ticket.project_id || '',
       project_name: ticket.project_name || ticket.project || '',
-      deadline_at: ticket.deadline_at || undefined,
+      curr_step_endtime: ticket.curr_step_endtime || undefined,
     });
     setShowEdit(true);
   };
-  // ── 最晚解决时间（截止时间）：编辑弹窗用 antd DatePicker 下拉选择（双端可用）──
+  // ── 当前阶段截止时间：编辑弹窗用 antd DatePicker 下拉选择（双端可用）──
   // 浮层 z-index 通过 styles.popup.root 提到高于 tdesign 编辑弹窗（z-index 11500），避免被遮挡
   const handleEditSave = async () => {
     if (!ticket?.ticket_id) return;
@@ -470,7 +621,7 @@ export default function TicketDetailPage() {
           ticket_type: editForm.ticket_type,
           project_name: editForm.project_name,
           project_id: editForm.project_id,
-          deadline_at: editForm.deadline_at || null,
+          curr_step_endtime: editForm.curr_step_endtime || null,
         }),
       });
       const operator = getOperatorLabel();
@@ -519,7 +670,9 @@ export default function TicketDetailPage() {
         method: 'POST',
         body: JSON.stringify({
           task_id: String(ticket.ticket_id),
-          query: userMsg.replace(/^@U老师\s*/, ''),
+          // 去掉文本中任意位置的 @U老师 标记（可能有空格/重复），保留整段话作为 query，
+          // 兼容"先说话、句尾@U老师"的场景（否则 @U老师 在尾部时 query 会带残留或丢失）
+          query: userMsg.replace(/\s*@U老师\s*/g, ' ').trim(),
           context: { recent_comments: recentComments },
         }),
       });
@@ -541,9 +694,11 @@ export default function TicketDetailPage() {
   };
 
   // 发送评论（附件上传 + POST /api/tasks/{ticket_id}/comments）；返回 true=成功（组件清空输入）
-  // 检测 @U老师 前缀：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
+  // 检测 @U老师（任意位置，前缀或句尾均触发）：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
   const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
-    if (text.startsWith('@U老师 ')) {
+    // 只要文本里含 @U老师（@ 在开头/中间/结尾都算）就走 AI 讨论；
+    // 兼容"说完话后句尾手动@U老师"（否则会被当成普通评论发出、AI 不回复）
+    if (text.includes('@U老师')) {
       return handleAIDiscuss(text, files, options);
     }
     if (!ticket?.ticket_id) {
@@ -615,7 +770,7 @@ export default function TicketDetailPage() {
       if (!parsed) return null;
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
-    const authToken = localStorage.getItem('auth_token') || '';
+    const authToken = readStored('AUTH_TOKEN') || '';
     // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
     // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
     // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
@@ -705,14 +860,14 @@ export default function TicketDetailPage() {
               <span className="detail-info-item__icon"><Clock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">创建时间</span>
-                <span className="detail-info-item__value">{ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''}</span>
+                <span className="detail-info-item__value">{ticket.created_at ? formatDateTime(ticket.created_at) : ''}</span>
               </div>
             </div>
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
-                <span className="detail-info-item__label">最晚解决时间</span>
-                <span className="detail-info-item__value">{ticket.deadline_at ? formatRawDateTime(String(ticket.deadline_at)) : '未设置'}</span>
+                <span className="detail-info-item__label">当前阶段截止时间</span>
+                <span className="detail-info-item__value">{ticket.curr_step_endtime ? formatRawDateTime(String(ticket.curr_step_endtime)) : '未设置'}</span>
               </div>
             </div>
           </div>
@@ -731,7 +886,9 @@ export default function TicketDetailPage() {
                   <span className="task-card2__person-name">{ticket.created_by_name || ticket.created_by || '-'}</span>
                 </span>
               </div>
-              <span className="task-card2__person-arrow"><ArrowRight size={16} strokeWidth={2} /></span>
+              <div className="task-card2__flow">
+                <PersonArrow />
+              </div>
               {isDispatching ? (
                 <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单，稍候自动更新" aria-label="U老师 正在派单，稍候自动更新">
                   <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
@@ -750,6 +907,17 @@ export default function TicketDetailPage() {
                 </div>
               )}
             </div>
+            {/* 二次派单感知增强（M3）：未派到指定人时的完整情商话术（仅 matched_pref=false 时有） */}
+            {redispatchTipDetail && (
+              <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
+            )}
+            {/* 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可见，与系统任务详情页同源） */}
+            {(() => {
+              if (!dispatchReason || redispatchTipDetail) return null;
+              const { isAssignee } = getCurrentUserRoles();
+              if (!isAssignee && !isAdmin) return null;
+              return <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />;
+            })()}
           </div>
         )}
 
@@ -761,7 +929,27 @@ export default function TicketDetailPage() {
           </div>
         )}
 
+        {/* 问题文档：提单人结构化描述 + 接单人补充（md 在线编辑） */}
+        {ticket.id && <SpecDocCard taskId={ticket.id} canEdit={canEdit} />}
 
+        {/* 工单阶段性处理（协商节点）：与系统任务详情页同源，抽到共享组件 StepNegotiationCard */}
+        <StepNegotiationCard
+          negotiation={negotiation}
+          detail={ticket}
+          roles={getCurrentUserRoles()}
+          onResolve={resolve.handleResolveClick}
+          onEscalate={(round, maxRound) => {
+            setEscalateUser(null);
+            setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入处理。`);
+            setShowEscalatePopup(true);
+          }}
+          onReassign={() => {
+            setReassignUser(null);
+            setReassignReason('');
+            setReassignKind('');
+            setShowReassignPopup(true);
+          }}
+        />
 
         {/* 工单附件（图片缩略图网格 + 非图片文件卡片；复用统一 AttachmentViewer，与系统任务页一致）*/}
         {ticket.attachments && ticket.attachments.length > 0 && (
@@ -865,6 +1053,9 @@ export default function TicketDetailPage() {
           </div>
         )}
 
+        {/* 工单动态（与系统任务详情页同源，点击跳转操作日志全量页）*/}
+        {ticket?.ticket_id && <TicketDynamicsCard taskId={ticket.ticket_id} />}
+
         {/* AI 讨论摘要（与系统任务共用 tasks 表 metadata_info.ai_summary）*/}
         {ticket?.ticket_id && (
           <div className="detail-card">
@@ -886,20 +1077,23 @@ export default function TicketDetailPage() {
           enableAttach
           enableAI
           mentionUsers={projectMembers}
+          mentionAllUsers={allUsers}
           taskId={ticket?.ticket_id}
           onTaskUpdated={handleWsTaskUpdated}
+          focusCommentId={focusDiscussion ? focusCommentId : null}
+          focusAuthor={focusDiscussion ? focusAuthor : null}
         />
 
         {/* 操作：与历史工单列表页完全一致 —— 终态（已解决/已取消/已关闭）整组不显示；
-            新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用；
+            待处理/已挂起可催办、撤回；处理中仅可上报；不可用按钮禁用；
             正在操作的按钮单独禁用（acting 标记当前动作） */}
         {!isTerminalTicketStatus(ticket.status) && (
           <div className="detail-actions__btns">
             <AppButton
               tone="primary" size="small" icon={<Bell size={13} strokeWidth={2} />}
               disabled={!canUrgeTicket(ticket.status) || acting === 'urge'}
-              title={canUrgeTicket(ticket.status) ? undefined : '仅新建/待处理工单可催办'}
-              aria-label={canUrgeTicket(ticket.status) ? undefined : '催办（仅新建/待处理工单可催办）'}
+              title={canUrgeTicket(ticket.status) ? undefined : '仅待处理/已挂起工单可催办'}
+              aria-label={canUrgeTicket(ticket.status) ? undefined : '催办（仅待处理/已挂起工单可催办）'}
               onClick={() => openActionPopup('urge')}
             >催办</AppButton>
             <AppButton
@@ -981,13 +1175,13 @@ export default function TicketDetailPage() {
                     key={label}
                     type="button"
                     disabled={priorityDisabled}
-                    title={priorityDisabled ? '仅新建工单可修改优先级' : undefined}
-                    aria-label={priorityDisabled ? `优先级${label}（仅新建工单可修改优先级）` : `优先级${label}`}
+                    title={priorityDisabled ? '仅待处理工单可修改优先级' : undefined}
+                    aria-label={priorityDisabled ? `优先级${label}（仅待处理工单可修改优先级）` : `优先级${label}`}
                     className={`tasks-create-modal__radio-btn ${editForm.priority === PRIORITY_EN[label] ? 'is-active' : ''} ${priorityDisabled ? 'is-disabled' : ''}`}
                     onClick={() => {
                       const v = PRIORITY_EN[label];
                       const r = getDeadlineRange(v, ticket?.created_at);
-                      setEditForm((p) => ({ ...p, priority: v, ...(r ? { deadline_at: r.max.toISOString() } : {}) }));
+                      setEditForm((p) => ({ ...p, priority: v, ...(r ? { curr_step_endtime: r.max.toISOString() } : {}) }));
                     }}
                   >{label}</button>
                 ))}
@@ -1015,9 +1209,9 @@ export default function TicketDetailPage() {
                 <span className="ticket-edit-form__select-arrow">▾</span>
               </div>
             </div>
-            {/* 最晚解决时间：antd DatePicker 下拉选择（双端可用），浮层 z-index 高于编辑弹窗避免被遮挡 */}
+            {/* 当前阶段截止时间：antd DatePicker 下拉选择（双端可用），浮层 z-index 高于编辑弹窗避免被遮挡 */}
             <div className="ticket-edit-form__field">
-              <label className="ticket-edit-form__label">最晚解决时间</label>
+              <label className="ticket-edit-form__label">当前阶段截止时间</label>
               <DatePicker
                 style={{ width: '100%' }}
                 placeholder="点击选择"
@@ -1026,13 +1220,13 @@ export default function TicketDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
+                value={editForm.curr_step_endtime ? parseDeadlineString(editForm.curr_step_endtime) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
                   setEditForm((p) => ({
                     ...p,
-                    deadline_at: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,
+                    curr_step_endtime: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,
                   }))
                 }
                 allowClear
@@ -1078,6 +1272,149 @@ export default function TicketDetailPage() {
                 </div>
               ))
             )}
+          </div>
+        </div>
+      </Popup>
+
+      {/* 升级上报弹窗（工单阶段性处理卡触发，与系统任务详情页同源） */}
+      <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay destroyOnClose>
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">升级上报</h4>
+          <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px' }}>请选择升级对象</p>
+          <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} title="选择升级对象" />
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="escalateReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={escalateReason}
+                onChange={(v) => setEscalateReason(String(v))}
+                placeholder="请输入升级原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowEscalatePopup(false); setEscalateReason(''); }}>取消</Button>
+            <Button theme="danger" onClick={handleEscalate} disabled={!escalateUser || !escalateReason.trim()}>确认升级</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 重新指派弹窗（工单阶段性处理卡触发，与系统任务详情页同源） */}
+      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); setReassignKind(''); }} placement="bottom" showOverlay destroyOnClose>
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">重新指派</h4>
+          <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
+          <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <div style={{ margin: '12px 0 8px', fontSize: '14px', color: 'var(--foreground)' }}>转派类型<span style={{ color: 'var(--danger)' }}> *</span></div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+            {([
+              { id: 'misassign' as const, label: '派错了', hint: '不该派给当前处理人，同类单会学习' },
+              { id: 'stage' as const, label: '阶段转派', hint: '做到这个阶段该换人，不进入学习' },
+              { id: 'other' as const, label: '其它', hint: '太忙、请假等，不进入学习' },
+            ]).map((opt) => {
+              const on = reassignKind === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setReassignKind(opt.id)}
+                  style={{
+                    textAlign: 'left',
+                    padding: '10px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    border: on ? '1px solid var(--primary)' : '1px solid var(--border)',
+                    background: on ? 'var(--primary-soft)' : 'var(--card)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--foreground)' }}>{opt.label}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--muted-foreground)', marginTop: '2px' }}>{opt.hint}</div>
+                </button>
+              );
+            })}
+          </div>
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="reassignReason" labelAlign="top">
+              <Textarea
+                value={reassignReason}
+                onChange={(v) => setReassignReason(String(v))}
+                placeholder="选填，补充说明（派错了时写上更有助于下次派准）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); setReassignKind(''); }}>取消</Button>
+            <Button theme="primary" onClick={handleReassign} disabled={!reassignUser || !reassignKind}>确认指派</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 结束工单确认弹窗（工单阶段性处理卡触发，与系统任务详情页同源，抽到 useResolveTicket） */}
+      <Popup visible={resolve.showResolutionPopup} onClose={resolve.handleResolveCancel} placement="bottom" showOverlay>
+        <div className="ticket-edit-form">
+          <div className="ticket-edit-form__header">
+            <span className="ticket-edit-form__title">确认完成工单</span>
+            <span className="ticket-edit-form__close" onClick={resolve.handleResolveCancel}>×</span>
+          </div>
+          <div className="ticket-edit-form__body">
+            <div className="ticket-edit-form__field">
+              <span className="ticket-edit-form__label">📌 工单问题</span>
+              <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--foreground)', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ticket?.title}</div>
+              <div style={{
+                fontSize: '13px', color: 'var(--muted-foreground)', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+              }}>
+                {ticket?.description || <span style={{ color: 'var(--gray-light)' }}>（无描述）</span>}
+              </div>
+            </div>
+            <div className="ticket-edit-form__field">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <span className="ticket-edit-form__label" style={{ marginBottom: 0 }}>✅ 工单解决方式</span>
+                {resolve.resolutionFailed && (
+                  <span style={{ color: 'var(--apricot)', fontSize: '12px' }}>自动总结出错，请手动补充</span>
+                )}
+              </div>
+              {resolve.resolutionLoading || resolve.resolutionPolling ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '20px 0', color: 'var(--muted-foreground)', fontSize: '13px', justifyContent: 'center' }}>
+                  <Loading size="20px" /> 正在生成解决方式…
+                </div>
+              ) : (
+                <Textarea
+                  value={resolve.resolutionText}
+                  onChange={(v) => resolve.setResolutionText(String(v))}
+                  placeholder={
+                    resolve.resolutionNoSolution
+                      ? '当前没有解决方案，请在此补充实际解决方式'
+                      : resolve.resolutionFailed
+                        ? 'U老师自动总结出错了，请补充解决方法'
+                        : '请填写该工单的解决方式'
+                  }
+                  autosize={{ minRows: 4, maxRows: 8 }}
+                  maxlength={1000}
+                />
+              )}
+            </div>
+          </div>
+          <div className="ticket-edit-form__footer">
+            <Button theme="default" onClick={resolve.handleResolveCancel}>取消</Button>
+            <Button
+              theme={resolve.resolutionFailed ? 'danger' : 'default'}
+              onClick={resolve.resolutionFailed ? resolve.handleRetryResolution : resolve.handleGenerateResolution}
+              loading={resolve.resolutionLoading || resolve.resolutionPolling}
+              disabled={resolve.resolutionSubmitting || resolve.resolutionLoading || resolve.resolutionPolling}
+            >
+              {resolve.resolutionFailed ? '重试' : '帮我生成'}
+            </Button>
+            <Button
+              theme="primary"
+              onClick={resolve.handleConfirmResolve}
+              disabled={resolve.resolutionSubmitting || resolve.resolutionLoading || resolve.resolutionPolling || !resolve.resolutionText.trim()}
+            >
+              确认完成
+            </Button>
           </div>
         </div>
       </Popup>

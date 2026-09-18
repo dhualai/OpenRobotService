@@ -1,19 +1,137 @@
 from typing import List, Optional, Dict
 import json
+import copy
+import logging
+import uuid
+from pathlib import Path
+from datetime import datetime
+import yaml
 import requests
-from sqlalchemy import create_engine, text, inspect
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text, inspect, bindparam
+from sqlalchemy.exc import IntegrityError
+from app.core.db import SessionLocal, engine  # 共享引擎（pool_pre_ping/pool_recycle），见 app/core/db.py
+from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
+from app.models.identity import user_project_roles
 from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate
 from app.modules.admin.models_das.models import Project
-from app.modules.admin.utils_das.config import DATABASE_URL, AUTH_SERVICE_BASE_URL
+from app.modules.admin.utils_das.config import AUTH_SERVICE_BASE_URL
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# ext_info 默认模板目录：backend/app/config/project_templates/
+# 按 project_type 选 {type}.yaml，找不到回退 default.yaml；增加模板只需加文件
+_TPL_DIR = Path(__file__).resolve().parent.parent.parent.parent / "config" / "project_templates"
+_tpl_cache: Dict[str, dict] = {}
+
+logger = logging.getLogger(__name__)
+
+
+def _get_ext_info_template(project_type: Optional[str] = None) -> dict:
+    """按 project_type 读取模板，返回深拷贝。
+
+    模板含 overview / activity / info_nodes 三部分：
+    - overview + activity → project.ext_info
+    - info_nodes → project_info_node 表（由 _init_info_nodes 实例化）
+
+    模板是外部 YAML 文件，写坏了（缩进/编码错误）不能让项目接口整体 500：
+    解析失败记 error 日志并按空模板处理，新建项目退化为「不初始化信息树」。
+    """
+    key = (project_type or "default").strip()
+    if key not in _tpl_cache:
+        path = _TPL_DIR / f"{key}.yaml"
+        if not path.exists():
+            path = _TPL_DIR / "default.yaml"
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            _tpl_cache[key] = data if isinstance(data, dict) else {}
+        except Exception as exc:  # yaml.YAMLError / OSError / UnicodeDecodeError
+            logger.error("项目模板解析失败，已按空模板处理：%s（%s）", path, exc)
+            _tpl_cache[key] = {}
+    return copy.deepcopy(_tpl_cache[key])
+
+
+def get_info_nodes_template_from_yaml(project_type: Optional[str] = None) -> list:
+    """YAML 里的信息树模板（未实例化）：节点含 title/sort_order/children 与可选
+    content_type/options/value。
+
+    仅作参考来源（YAML 里没有 node_key，也没有层级外的元信息）；
+    **权威定义是数据库里的全局节点行**，见 get_info_nodes_template。
+    """
+    return _get_ext_info_template(project_type).get("info_nodes", []) or []
+
+
+def get_info_nodes_template(project_type: Optional[str] = None) -> list:
+    """全局字段定义（未实例化）：project_info_node 里 project_id 为 NULL 的节点树。
+
+    权威来源是数据库（首次由 alembic 迁移从 {project_type}.yaml 播种，之后由管理员
+    在编辑页的「详情模板」里维护）；读库失败时回退到 YAML，保证不拖垮调用方。
+    新结构下没有「项目节点副本」，所以这里返回的就是**所有项目共用**的那一份定义。
+
+    project_type 参数保留只为兼容旧调用签名：全局模板只有一份，不再按项目类型分。
+    """
+    try:
+        from app.modules.admin.services.info_template_service import info_template_service
+
+        nodes = info_template_service.get_template_nodes()
+        if nodes:
+            return nodes
+    except Exception as exc:  # 表缺失/解析失败等：不能拖垮调用方
+        logger.warning("读取数据库详情模板失败，回退 YAML 模板：%s", exc)
+    return get_info_nodes_template_from_yaml(project_type)
+
+
+def _split_template(project_type: Optional[str] = None) -> tuple[dict, list]:
+    """拆分 YAML 模板：返回 (ext_info dict, info_nodes list)。
+
+    ext_info 含 overview + activity，写入 project.ext_info；
+    info_nodes 只作兜底参考（新结构下建项目不再实例化信息树节点）。
+    """
+    tpl = _get_ext_info_template(project_type)
+    ext_info = {
+        "overview": tpl.get("overview", {}),
+        "activity": tpl.get("activity", {"version_changes": [], "stage_changes": []}),
+    }
+    info_nodes = tpl.get("info_nodes", [])
+    return ext_info, info_nodes
+
 
 _PROJECT_COLUMNS = {c.key for c in inspect(Project).mapper.column_attrs}
 
+
+class ProjectConflictError(Exception):
+    """乐观锁冲突：客户端提交的 version 与库中当前值不一致（HTTP 409）。"""
+
 def _filter_project_fields(data: Dict) -> Dict:
     return {k: v for k, v in data.items() if k in _PROJECT_COLUMNS}
+
+# 轻量查询字段（仪表盘统计专用）：跳过 project_summary / risk_list / stage_notes /
+# project_documents / system_integration 等重 JSON 列的加载与逐行 json.loads
+_LIGHT_PROJECT_COLUMNS = (
+    Project.code,
+    Project.name,
+    Project.contact_person,
+    Project.settlement_period,
+    Project.category_basis,
+    Project.undertake_status,
+)
+
+def _light_project_row_to_dict(row) -> Dict:
+    code, name, contact_person, settlement_period, category_basis, undertake_status = row
+    return {
+        "project_code": code,
+        "name": name,
+        "contact_person": contact_person,
+        "settlement_period": settlement_period,
+        "category_basis": category_basis,
+        "undertake_status": undertake_status,
+    }
+
+def _to_float_or_none(value) -> Optional[float]:
+    """将 JSON 提取出的值转 float；None/空串/非法值返回 None。"""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 def get_db():
     db = SessionLocal()
@@ -189,6 +307,7 @@ class ProjectService:
             "sales": project.sales,
             "pre_sales": project.pre_sales,
             "project_manager": project.project_manager,
+            "project_manager_id": project.project_manager_id,
             "field_engineer": project.field_engineer,
             "internal_code": project.internal_code,
             "project_region": project.project_region,
@@ -197,28 +316,68 @@ class ProjectService:
             "system_integration": json.loads(project.system_integration) if project.system_integration else None,
             "server_deployment_status": project.server_deployment_status,
             "settlement_period": project.settlement_period,
+            "undertake_status": project.undertake_status,
+            # 递归嵌套扩展信息（JSON 列 ORM 已反序列化为 dict）与乐观锁版本号。
+            # ext_info 为空时按模板 lazy 初始化：迁移前创建的老项目无 ext_info，
+            # 读取时自动填充默认结构，避免前端渲染拿到 null 无从展开。
+            # 只取 overview+activity 部分；info_nodes 走独立表，不在 ext_info 里。
+            "ext_info": project.ext_info or _split_template(project.project_type)[0],
+            "version": project.version or 1,
         }
         return project_dict
     
-    def get_projects(self, skip: int = 0, limit: int = 999999999) -> List[Dict]:
+    def get_projects(self, skip: int = 0, limit: int = 999999999, include_pending: bool = False,
+                     light: bool = False) -> List[Dict]:
+        """项目列表。默认只返回已承接项目（undertake_status='是'）。
+
+        include_pending=True 时把「待定」项目一并返回，目前仅仪表盘月柱图
+        （dashboard.py get_project_monthly_summary）使用，用于统计浅色段数量；
+        其余列表/统计都不应放开，否则项目总数、紧急度看板等口径会跟着变。
+
+        light=True 时仅查询统计所需的 6 个轻量字段（见 _LIGHT_PROJECT_COLUMNS），
+        供仪表盘聚合统计使用，避免全表加载重 JSON 列。
+        """
         db = SessionLocal()
         try:
-            projects = db.query(Project).filter(Project.id != None, Project.id != "").offset(skip).limit(limit).all()
+            query = db.query(Project).filter(
+                Project.id != None,
+                Project.id != "",
+                Project.status != PROJECT_DELETED,
+            )
+            if not include_pending:
+                query = query.filter(Project.undertake_status == UNDERTAKE_YES)
+            if light:
+                query = query.with_entities(*_LIGHT_PROJECT_COLUMNS)
+            projects = query.offset(skip).limit(limit).all()
+            if light:
+                return [_light_project_row_to_dict(row) for row in projects]
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
 
-    def get_projects_by_ids(self, project_ids: List[str]) -> List[Dict]:
-        """按项目 ID 列表批量查询项目，用于仪表盘按当前用户关联项目过滤统计。"""
+    def get_projects_by_ids(self, project_ids: List[str], include_pending: bool = False,
+                            light: bool = False) -> List[Dict]:
+        """按项目 ID 列表批量查询项目，用于仪表盘按当前用户关联项目过滤统计。
+
+        同 get_projects：默认只返回已承接项目；light=True 仅返回统计所需轻量字段。
+        """
         if not project_ids:
             return []
         db = SessionLocal()
         try:
-            projects = db.query(Project).filter(
-                Project.id != None,
-                Project.id != "",
-                Project.id.in_(project_ids),
-            ).all()
+            query = db.query(Project).filter(
+            Project.id != None,
+            Project.id != "",
+            Project.id.in_(project_ids),
+            Project.status != PROJECT_DELETED,
+        )
+            if not include_pending:
+                query = query.filter(Project.undertake_status == UNDERTAKE_YES)
+            if light:
+                query = query.with_entities(*_LIGHT_PROJECT_COLUMNS)
+            projects = query.all()
+            if light:
+                return [_light_project_row_to_dict(row) for row in projects]
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
@@ -226,11 +385,29 @@ class ProjectService:
     def get_project(self, project_id: int) -> Optional[Dict]:
         db = SessionLocal()
         try:
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
+            return self._convert_to_dict(project) if project else None
+        finally:
+            db.close()
+
+    def get_project_include_deleted(self, project_id) -> Optional[Dict]:
+        """按 id 查询项目，包含软删除行。
+
+        get_project 已过滤软删除行；当 get_project 返回 None 而本方法返回非 None，
+        说明该 id 被一个软删除行占用，其主键不可被新 INSERT 复用
+        （见 delete_project：软删除保留行以阻止编号复用）。供 wecom 同步在
+        create 前判断是否撞软删除主键，避免 Duplicate entry 主键冲突。
+        """
+        db = SessionLocal()
+        try:
             project = db.query(Project).filter(Project.id == project_id).first()
             return self._convert_to_dict(project) if project else None
         finally:
             db.close()
-    
+
     def get_project_code_by_system_id(self, system_id: str) -> Optional[str]:
         db = SessionLocal()
         try:
@@ -286,20 +463,53 @@ class ProjectService:
 
             project_data = _filter_project_fields(project_data)
 
+            # 按模板初始化 ext_info（overview+activity）。
+            # 若调用方已传入 ext_info 则以传入值为准。
+            project_type = project_data.get("project_type")
+            ext_info_tpl = _split_template(project_type)[0]
+            if not project_data.get("ext_info"):
+                project_data["ext_info"] = ext_info_tpl
+
             db_project = Project(**project_data)
             db.add(db_project)
             db.commit()
             db.refresh(db_project)
+
+            # 不再为项目复制一份信息树节点：新结构下全局字段定义（project_info_node 里
+            # project_id 为 NULL 的行）是所有项目共用的一份，项目只在自己的
+            # project_info_value 里存值（SKILL 第 4 节）。旧实现每次建项目都递归
+            # 拷贝一整棵树，既冗余又导致「改模板要同步 N 个项目」。
             return self._convert_to_dict(db_project)
         finally:
             db.close()
     
     def update_project(self, project_id: int, update_data: Dict) -> Optional[Dict]:
+        """更新项目。
+
+        乐观锁：update_data 中带 version（前端从详情接口拿到后随提交带回）时，
+        与库中当前 version 不一致则抛 ProjectConflictError（API 层转 409），
+        防止 ext_info 整文档读改写模式下并发编辑互相覆盖。
+        不带 version 的内部调用（如企业微信同步）保持原行为，不做校验。
+
+        成功后 version 自增 1。
+        """
         db = SessionLocal()
         try:
-            project = db.query(Project).filter(Project.id == project_id).first()
+            client_version = update_data.pop("version", None)
+
+            # with_for_update 行锁：读到 commit 前锁定该行，串行化同项目的并发更新
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).with_for_update().first()
             if not project:
                 return None
+
+            if client_version is not None and (project.version or 1) != client_version:
+                db.rollback()  # 释放行锁
+                raise ProjectConflictError(
+                    f"项目已被他人修改（当前版本 {project.version or 1}，提交版本 {client_version}），请刷新后重试"
+                )
 
             if "project_code" in update_data:
                 update_data["code"] = update_data.pop("project_code")
@@ -332,23 +542,36 @@ class ProjectService:
 
             for field, value in update_data.items():
                 setattr(project, field, value)
-            
+
+            project.version = (project.version or 1) + 1
+
             db.commit()
             db.refresh(project)
             return self._convert_to_dict(project)
         finally:
             db.close()
     
-    def delete_project(self, project_id: int) -> bool:
+    def delete_project(self, project_id: str) -> bool:
         db = SessionLocal()
         try:
             project = db.query(Project).filter(Project.id == project_id).first()
-            if not project:
+            if not project or project.status == PROJECT_DELETED:
                 return False
-            
-            db.delete(project)
+
+            # 先清理 user_project_roles 中引用本项目的关联记录，否则外键约束
+            # user_project_roles_ibfk_2（project_id → project.id）会阻止删除
+            db.execute(user_project_roles.delete().where(
+                user_project_roles.c.project_id == str(project.id)))
+
+            # 软删除：保留 project 记录，仅标记为已删除。
+            # 后续创建新项目时 check_project_duplicate 仍会命中本记录（按编号/名称），
+            # 从而阻止编号/名称被复用，达到去重目的。
+            project.status = PROJECT_DELETED
             db.commit()
             return True
+        except IntegrityError:
+            db.rollback()
+            raise
         finally:
             db.close()
     
@@ -356,7 +579,9 @@ class ProjectService:
         db = SessionLocal()
         try:
             projects = db.query(Project).filter(
-                (Project.name.ilike(f"%{keyword}%") | 
+                Project.undertake_status == UNDERTAKE_YES,
+                Project.status != PROJECT_DELETED,
+                (Project.name.ilike(f"%{keyword}%") |
                  Project.description.ilike(f"%{keyword}%") |
                  Project.code.ilike(f"%{keyword}%") |
                  Project.contact_person.ilike(f"%{keyword}%"))
@@ -370,8 +595,11 @@ class ProjectService:
                        contact_person_id: Optional[str] = None) -> List[Dict]:
         db = SessionLocal()
         try:
-            query = db.query(Project)
-            
+            query = db.query(Project).filter(
+            Project.undertake_status == UNDERTAKE_YES,
+            Project.status != PROJECT_DELETED,
+        )
+
             if status:
                 query = query.filter(Project.status == status)
             
@@ -386,6 +614,116 @@ class ProjectService:
         finally:
             db.close()
     
+    def get_task_execution_metrics_7d_batch(self, project_codes: List[str]) -> Dict[str, Dict]:
+        """批量获取多项目任务执行指标（一次批量查询，取近 7 天内最新一天的数据）。
+
+        替代循环内逐项目调用 get_task_execution_status_7d / get_task_execution_stats_7d
+        （两者 SQL 几乎相同，逐项目时为 2N 条 JSON 聚合查询，是 /projects?include_analysis
+        列表接口的主要耗时来源）。数据源为 collection_data 表（indicator='GroupEfficiency'），
+        某一天的数据整体存在 `data` JSON 字段（data[0] 为该日指标），按项目取
+        近 7 天内最新一天（MAX start_time_int）：
+        - 任务总数/已完成任务：dataIndicators.taskNumber.totalTasks / finishedTasks；
+        - 任务完成率：dataIndicators.taskNumber.completionRate（如 "90%"，解析为小数）；
+        - 切手动次数：averageManualCount.averageManualCount（如 6.5）。
+        返回：
+        {
+          code: {
+            "status": "搬运任务：X，移动任务：Y，任务总数：Z，完成总数：W" | "无数据",
+            "stats": {
+                "total_tasks": int, "finished_tasks": int,
+                "completion_rate": float|None, "manual_switch_count": float|None,
+            },
+          }
+        }
+        未出现在返回 dict 中的项目码表示无数据（status="无数据"、stats 全 0）。
+        """
+        if not project_codes:
+            return {}
+        db = SessionLocal()
+        try:
+            sql = text("""
+            SELECT
+                cd.project,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.carry'
+                ) AS total_carry,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.navigate'
+                ) AS total_navigate,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.totalTasks'
+                ) AS total_totalTasks,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.finishedTasks'
+                ) AS total_finishedTasks,
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(
+                        JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.completionRate'
+                    )
+                ) AS latest_completion_rate,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].averageManualCount'),
+                    '$.averageManualCount'
+                ) AS latest_manual_count
+            FROM collection_data cd
+            JOIN (
+                SELECT project, MAX(start_time_int) AS max_start
+                FROM collection_data
+                WHERE indicator = 'GroupEfficiency'
+                AND start_time_int >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+                AND project IN :codes
+                GROUP BY project
+            ) t ON t.project = cd.project AND cd.start_time_int = t.max_start
+            WHERE cd.indicator = 'GroupEfficiency'
+            """).bindparams(bindparam("codes", expanding=True))
+            rows = db.execute(sql, {"codes": list(project_codes)}).fetchall()
+
+            metrics: Dict[str, Dict] = {}
+            for row in rows:
+                total_carry = int(_to_float_or_none(row.total_carry) or 0)
+                total_navigate = int(_to_float_or_none(row.total_navigate) or 0)
+                total_tasks = int(_to_float_or_none(row.total_totalTasks) or 0)
+                finished_tasks = int(_to_float_or_none(row.total_finishedTasks) or 0)
+                metrics[row.project] = {
+                    "status": (
+                        f"搬运任务：{total_carry}，移动任务：{total_navigate}，"
+                        f"任务总数：{total_tasks}，完成总数：{finished_tasks}"
+                    ),
+                    "stats": {
+                        "total_tasks": total_tasks,
+                        "finished_tasks": finished_tasks,
+                        "completion_rate": self._parse_completion_rate(
+                            row.latest_completion_rate, total_tasks, finished_tasks
+                        ),
+                        "manual_switch_count": _to_float_or_none(row.latest_manual_count),
+                    },
+                }
+            return metrics
+        finally:
+            db.close()
+
+    @staticmethod
+    def _parse_completion_rate(raw, total_tasks: int, finished_tasks: int) -> Optional[float]:
+        """解析 collection_data 中的完成率字段为小数。
+
+        字段为百分比字符串（如 "90%"、"90.5%"）或小数（如 0.9），
+        缺失/非法时回退为 finished_tasks / total_tasks。
+        """
+        if raw is not None:
+            try:
+                text = str(raw).strip()
+                if text.endswith("%"):
+                    return round(float(text[:-1]) / 100, 4)
+                return round(float(text), 4)
+            except (TypeError, ValueError):
+                pass
+        return round(finished_tasks / total_tasks, 4) if total_tasks else None
+
     def get_task_execution_status_7d(self, project_code: str) -> str:
         db = SessionLocal()
         try:

@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import io
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, and_, func
 from sqlalchemy.orm import sessionmaker
 
 from app.modules.admin.models_das.models import (
@@ -152,18 +152,56 @@ class TransportEfficiencyService:
         finally:
             db.close()
 
+    def get_latest_manual_switch_counts(self, project_codes: List[str]) -> Dict[str, Optional[float]]:
+        """批量获取多项目最新一条记录的切手动次数（一条自连接查询）。
+
+        替代循环内逐项目调用 get_latest_manual_switch_count（N 条查询 → 1 条）。
+        返回 {project_code: avg_manual_switch_count|None}；无数据的项目不出现在 dict 中。
+        排序口径与单条版本一致：report_date 为 String 列，按字符串 desc 取最大（格式统一 YYYY-MM-DD）。
+        """
+        if not project_codes:
+            return {}
+        db = SessionLocal()
+        try:
+            latest = (
+                db.query(
+                    ProjectTransportEfficiency.project_code.label("pc"),
+                    func.max(ProjectTransportEfficiency.report_date).label("md"),
+                )
+                .filter(ProjectTransportEfficiency.project_code.in_(project_codes))
+                .group_by(ProjectTransportEfficiency.project_code)
+                .subquery()
+            )
+            rows = (
+                db.query(
+                    ProjectTransportEfficiency.project_code,
+                    ProjectTransportEfficiency.avg_manual_switch_count,
+                )
+                .join(
+                    latest,
+                    and_(
+                        ProjectTransportEfficiency.project_code == latest.c.pc,
+                        ProjectTransportEfficiency.report_date == latest.c.md,
+                    ),
+                )
+                .all()
+            )
+            return {row.project_code: row.avg_manual_switch_count for row in rows}
+        finally:
+            db.close()
+
     def get_collection_summary_and_robots(self, project_code: str, date: str) -> Tuple[Optional[Dict], List[Dict], Optional[str]]:
         """从数据导入落库的 CollectionData 读取 GroupEfficiency 数据，计算搬运效率汇总。
 
         返回 (summary, robots, collection_time)。找不到当日数据时 summary 为 None、robots 为空。
         计算逻辑与参考页 ProjectMetricsList.jsx 的 calculateAverages / 各组数据对比一致。
         """
-        # end 取次日零点，兼容两种时间约定：
-        # - 正常导入数据使用当天 23:59:59（end_time_int <= 次日零点成立）
-        # - 迁移数据使用次日 00:00:00（end_time_int == 次日零点成立）
-        start = f"{date} 00:00:00"
-        next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-        end = f"{next_day} 00:00:00"
+        # 查询窗口前后各放宽 1 天：记录的 start/end 时间戳按数据源自身时区（如 +02:00）的当日零点落库，
+        # 与服务器本地时区（如 +08:00）的日期零点存在时区错位，直接按目标日查询会把记录过滤掉。
+        # 宽窗口保证记录能被查到，之后再用记录自带 start_time（ISO 字符串，含原始时区）与目标日期精确匹配。
+        day = datetime.strptime(date, "%Y-%m-%d")
+        start = (day - timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+        end = (day + timedelta(days=2)).strftime("%Y-%m-%d 00:00:00")
         result = AdminDataService.get_collection_data_for_indicators(
             project=project_code,
             tag="GroupEfficiency",
@@ -175,11 +213,26 @@ class TransportEfficiencyService:
         if not content:
             return None, [], result.get("collection_time") if isinstance(result, dict) else None
 
+        # 宽窗口可能同时捞出相邻日期的记录（记录 end 为次日零点、且含数据源时区偏移），
+        # 必须按记录自带 start_time 的日期归属严格匹配目标日；只有全部记录都缺失 start_time
+        # （老数据）时才退回第一条，避免 09-03 的记录在查询 09-04 时被错误命中。
         metrics = None
+        dateless_metrics = None
+        saw_dated_record = False
         for data_obj in content:
-            metrics = _find_metrics(data_obj)
-            if metrics:
-                break
+            found = _find_metrics(data_obj)
+            if not found:
+                continue
+            start_iso = data_obj.get("start_time") if isinstance(data_obj, dict) else None
+            if isinstance(start_iso, str) and len(start_iso) >= 10:
+                saw_dated_record = True
+                if start_iso[:10] == date:
+                    metrics = found
+                    break
+            elif dateless_metrics is None:
+                dateless_metrics = found
+        if metrics is None and not saw_dated_record:
+            metrics = dateless_metrics
         if not metrics:
             return None, [], result.get("collection_time") if isinstance(result, dict) else None
 
@@ -217,7 +270,7 @@ class TransportEfficiencyService:
             "avg_fault_duration_minutes": round(total_per_error / 60 / group_count, 2),
             "avg_carry_duration_minutes": round(total_per_carry / 60 / carry_len, 2),
             "avg_manual_switch_count": (metrics.get("averageManualCount") or {}).get("averageManualCount"),
-            "manual_intervention_rate": (metrics.get("rateArtificialIntervention") or {}).get("rateArtificialIntervention"),
+            "manual_intervention_rate": _parse_rate((metrics.get("rateArtificialIntervention") or {}).get("rateArtificialIntervention")),
         }
 
         error_map = {e.get("robotGroup"): e for e in per_error_time if e.get("robotGroup")}
@@ -338,6 +391,23 @@ class TransportEfficiencyService:
             "avg_carry_duration_minutes": record.avg_carry_duration_minutes,
             "created_at": record.created_at,
         }
+
+
+def _parse_rate(value) -> Optional[float]:
+    """人工干预率解析为小数（0~1），供前端按百分比展示。
+
+    数据源为 "10.0%" 之类百分比字符串时除以 100；已是数值则原样返回。
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    try:
+        num = float(text.rstrip('%'))
+    except ValueError:
+        return None
+    return round(num / 100, 4) if text.endswith('%') else num
 
 
 def _find_metrics(obj, depth: int = 0) -> Optional[Dict]:

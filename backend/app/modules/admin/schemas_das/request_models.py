@@ -1,5 +1,5 @@
 from pydantic import BaseModel, validator, Field
-from typing import List, Optional, Dict, Union
+from typing import List, Optional, Dict, Union, Any
 import re
 from datetime import datetime
 from enum import Enum
@@ -145,6 +145,7 @@ class ProjectBase(BaseModel):
     sales: Optional[str] = None
     pre_sales: Optional[str] = None
     project_manager: Optional[str] = None
+    project_manager_id: Optional[str] = None
     field_engineer: Optional[str] = None
     internal_code: Optional[str] = None
     project_region: Optional[ProjectRegion] = None
@@ -153,6 +154,8 @@ class ProjectBase(BaseModel):
     system_integration: Optional[List[SystemIntegrationType]] = None
     server_deployment_status: Optional[ServerDeploymentStatus] = None
     settlement_period: Optional[str] = None
+    # 项目扩展信息（递归嵌套 JSON，如 robots[].name、network.vlan）
+    ext_info: Optional[Dict[str, Any]] = None
 
 
 class ProjectCreate(ProjectBase):
@@ -192,6 +195,7 @@ class ProjectUpdate(BaseModel):
     sales: Optional[str] = None
     pre_sales: Optional[str] = None
     project_manager: Optional[str] = None
+    project_manager_id: Optional[str] = None
     field_engineer: Optional[str] = None
     internal_code: Optional[str] = None
     project_region: Optional[ProjectRegion] = None
@@ -200,6 +204,10 @@ class ProjectUpdate(BaseModel):
     system_integration: Optional[List[SystemIntegrationType]] = None
     server_deployment_status: Optional[ServerDeploymentStatus] = None
     settlement_period: Optional[str] = None
+    # 项目扩展信息（递归嵌套 JSON，如 robots[].name、network.vlan）
+    ext_info: Optional[Dict[str, Any]] = None
+    # 乐观锁：前端编辑时带回详情接口返回的 version，服务端不一致则返回 409
+    version: Optional[int] = None
 
 
 class ProjectResponse(ProjectBase):
@@ -213,7 +221,15 @@ class ProjectResponse(ProjectBase):
     controller_vendor: Optional[Union[str, ControllerVendor]] = None
     system_integration: Optional[List[Union[str, SystemIntegrationType]]] = None
     server_deployment_status: Optional[Union[str, ServerDeploymentStatus]] = None
-    
+    # 运行时附加的分析字段（服务层就地补充，非 Project 表列）：
+    # task_execution_stats = {"total_tasks", "finished_tasks", "completion_rate", "manual_switch_count"}
+    # latest_manual_switch_count = collection_data 最新一天的 averageManualCount
+    task_execution_stats: Optional[Dict[str, Any]] = None
+    latest_manual_switch_count: Optional[float] = None
+    # 项目扩展信息（递归嵌套 JSON 列）与乐观锁版本号
+    ext_info: Optional[Dict[str, Any]] = None
+    version: int = 1
+
     class Config:
         from_attributes = True
 

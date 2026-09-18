@@ -1,0 +1,94 @@
+# ============================================================
+# 组织回答基准用例 — 真实 LLM（oneshot 全链路），改 prompt/检索后跑
+# 入口：_agent_think_stream（含意图分类 + 检索 + oneshot 生成）
+# 字段：
+#   name:         用例名
+#   query:        用户问句
+#   must_reference: 硬断言：回答必须全部包含（逐个检查）
+#   forbid:       硬断言：回答不得包含（任一）
+#   max_chars:    硬断言：回答长度上限
+#   images_in_allowlist: 硬断言：回答里的 KB 图片全在本轮注入白名单（拦幻觉链接）
+#   min_images:   硬断言：回答至少带 N 张图（拦弃图——资料有截图的操作章节丢图=不完整，0904 XNA/RXX 事故）
+#   warn_analysis: WARN 不 FAIL：fault=应有分析段开头 / support=不应有伪分析段
+#   strict:       默认 false=断言失败只 WARN（LLM 行为有波动）；true=FAIL
+# judge：--judge 开关下 flash 按检查单评分，只 WARN 不 FAIL
+# ============================================================
+
+- name: 故障类报错码回答
+  query: 我的AGV报错813，这是啥问题
+  must_reference: ["813"]
+  max_chars: 1200
+  images_in_allowlist: true
+  warn_analysis: fault
+
+- name: 操作咨询直接给步骤
+  query: 货叉怎么配置
+  max_chars: 1500
+  warn_analysis: support
+
+- name: 闲聊问候短回答
+  query: 你好
+  max_chars: 200
+  strict: true
+
+- name: 故障现象分析段
+  query: 货叉到位不准，有时候还会自己往下掉，怎么处理
+  must_reference: ["标定"]
+  max_chars: 1200
+  warn_analysis: fault
+
+- name: 带截图操作不编造图片
+  query: 怎么给车做重定位
+  images_in_allowlist: true
+  max_chars: 1000
+
+- name: 车端日志主体用车端资料
+  query: 车端日志怎么看
+  must_reference: ["ep_path_follower"]
+  forbid: ["实时日志管理"]
+  max_chars: 1200
+  images_in_allowlist: true
+  strict: true
+
+- name: 调度系统日志仍答手册
+  query: 怎么在调度系统上下载日志
+  must_reference: ["实时日志管理"]
+  max_chars: 1200
+  images_in_allowlist: true
+  strict: true
+
+# ---- 0904 生产事故复刻（XNA 无图自称截断 / RXX 主体跑偏讲二维码）----
+# 手册 2.1.1 自研车上线：6 图，步骤词 vda5050/机器人报表/地图单元编号
+- name: 自研车上线完整步骤带图（0904事故）
+  query: 自研XNA如何上线调度
+  must_reference: ["vda5050", "机器人报表", "地图单元编号"]
+  forbid: ["截断"]
+  min_images: 3
+  max_chars: 1600
+  images_in_allowlist: true
+  strict: true
+
+# 手册 2.1.2 睿芯行/RXX车上线：4 图；主体必须是上线步骤，
+# 二维码/腿识别等 FAQ 至多结尾一句（主体断言靠 must_reference 三词全中）
+- name: RXX车上线主体是上线步骤（0904事故）
+  query: rxx潜伏车怎么上线
+  must_reference: ["rxx_vda5050", "server_ip", "机器人类型"]
+  forbid: ["截断"]
+  min_images: 2
+  max_chars: 1600
+  images_in_allowlist: true
+  strict: true
+
+# ── 0916 新增：车型目录 + 绕远路原理回答（受众适配：hujiannan=调度研发）──
+- name: 车型目录查询
+  query: XFC001是什么车
+  must_reference: ["XFC001"]
+  max_chars: 900
+
+- name: 绕远路原理回答不带接口直出
+  query: 车规划绕远路咋回事
+  must_reference: ["路径"]
+  # 受众适配回归（0916）：调度研发用户可讲原理，但禁止把校验接口/字段名
+  # 原样甩给用户（前版实锤：POST /usp_algorithm 直出）
+  forbid: ["POST /usp", "error_reason"]
+  max_chars: 2000

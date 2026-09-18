@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from automation.config.paths import AUTOMATION_ROOT
+
 
 # ANSI color codes
 _COLORS = {
@@ -69,6 +71,8 @@ class RotatingFileHandler(logging.handlers.RotatingFileHandler):
     def __init__(self, file_path: str, max_bytes: int = 10 * 1024 * 1024,
                  backup_count: int = 5, fmt: str = 'json'):
         path = Path(file_path)
+        if not path.is_absolute():
+            path = AUTOMATION_ROOT / path
         path.parent.mkdir(parents=True, exist_ok=True)
         super().__init__(str(path), maxBytes=max_bytes, backupCount=backup_count,
                          encoding='utf-8')

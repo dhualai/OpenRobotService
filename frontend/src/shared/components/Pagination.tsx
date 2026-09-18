@@ -129,7 +129,7 @@ export default function Pagination({
               key={`ellipsis-${idx}`}
               style={{
                 padding: '6px 4px',
-                color: '#999',
+                color: 'var(--mac-muted-fg)',
                 userSelect: 'none' as const,
               }}
             >

@@ -2,6 +2,7 @@
 // POST /api/admin/resource-manager/resources/（头像上传，复用项目文档上传的资源管理中心接口）
 import { createRequest } from './client';
 import API_CONFIG from '@/config/api';
+import { readStored } from '@/stores/authStorage';
 
 /** external_credentials 中的 USP 凭据片段 */
 export interface UspCredentials {
@@ -112,5 +113,7 @@ export async function uploadAvatar(file: File, ownerId: string): Promise<{ id: n
 }
 
 export function avatarUrl(resourceId: number): string {
-  return `${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${resourceId}/download`;
+  // <img> 标签无法携带 Authorization 头，token 走查询参数，与任务附件下载一致
+  const token = encodeURIComponent(readStored('AUTH_TOKEN') || '');
+  return `${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${resourceId}/download?token=${token}`;
 }

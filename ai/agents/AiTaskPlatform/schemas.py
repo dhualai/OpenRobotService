@@ -1,50 +1,7 @@
 """任务 Agent 数据模型"""
 
-from dataclasses import dataclass, field as _dc_field
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
-
-
-# ============================================================
-# 结构化根因（P1：知识闭环质量提升）
-# ============================================================
-
-@dataclass
-class ResolvedRootCause:
-    """结构化根因 — submit 时由 LLM 从方案草稿提炼。
-
-    存入 Qdrant project domain，作为后续排查可复用、可验证的"经验"，
-    支持"经验证提权 / 已被推翻降权"的闭环（verified 字段由 P2 回填）。
-    用 dataclass（非 Pydantic），轻量、支持默认值、无位置参数约束。
-    """
-    # —— 现象侧 ——
-    symptom: str = ""
-    robot_type: str = ""
-    error_codes: List[str] = _dc_field(default_factory=list)
-    scenario: str = ""
-    # —— 根因侧 ——
-    root_cause: str = ""
-    root_cause_type: str = "unknown"   # 版本缺陷/配置错误/环境问题/竞态/硬件/未知
-    evidence: str = ""
-    # —— 解法侧 ——
-    resolution: str = ""
-    resolution_actions: List[str] = _dc_field(default_factory=list)
-    # —— 元信息 ——
-    confidence: float = 0.0
-    severity: str = "unknown"          # 影响面/严重度
-    is_common_bug: bool = False        # 是否通用缺陷（非个案）
-    verified: str = "unknown"          # unknown|confirmed|rejected|recurred（验证状态，P2 回填）
-
-    def to_payload(self) -> Dict:
-        """转 Qdrant payload 子集（供 index_task_resolution 写入）。"""
-        return {
-            "symptom": self.symptom,
-            "root_cause_type": self.root_cause_type,
-            "error_codes": list(self.error_codes),
-            "severity": self.severity,
-            "is_common_bug": bool(self.is_common_bug),
-            "verified": self.verified,
-        }
 
 
 # ============================================================
@@ -60,14 +17,6 @@ class TaskAnalyzeRequest(BaseModel):
 class TaskListRequest(BaseModel):
     """列出待处理工单请求"""
     username: str = Field(..., description="当前用户（从 token 解析）")
-
-
-class TaskSubmitRequest(BaseModel):
-    """方案提交请求"""
-    task_id: str = Field(..., description="工单 ID")
-    session_id: str = Field(..., description="对话 session")
-    final_solution: "SolutionDraft" = Field(..., description="工程师编辑后的最终方案")
-    resolution: str = Field(default="resolved", description="resolved | escalated | needs_review")
 
 
 # ============================================================
@@ -133,10 +82,15 @@ class TaskContext(BaseModel):
     location: str = ""
     diagnosis_rounds: int = 0
 
-    # ── 最终解决方案（任务 Agent 工程师确认方案后，写入 metadata_info.diagnosis.solution）──
-    # 结构：{root_cause_analysis, suggested_actions[], references[], confidence, needs_more_info, resolved_by_agent}
-    # 这是"参考相似案例怎么解决"最有价值的内容；只有已提交过方案的工单才有。
+    # ── 最终解决方案 ──
+    # solution: 历史「任务 Agent 提交方案」流程曾写入 metadata_info.diagnosis.solution（dict），
+    #            该流程前端未启用且已移除 submit 接口，此字段多为空，仅作兼容保留。
+    # resolution_summary: 「结束工单」时工程师填写的解决方式（metadata_info.resolution_summary，纯字符串），
+    #            这是实际生产唯一会写入的解决方式字段，@# 引用读取时优先用它。
     solution: Optional[dict] = None
+    resolution_summary: str = ""
+    # AI 讨论摘要（metadata_info.ai_summary），作为"怎么解决"的补充说明
+    ai_summary: str = ""
 
 
 # ============================================================
@@ -157,12 +111,6 @@ class TaskBrief(BaseModel):
 
 class TaskListResponse(BaseModel):
     """工单列表响应"""
-    code: int = 0
-    data: dict = Field(default_factory=dict)
-
-
-class TaskSubmitResponse(BaseModel):
-    """方案提交响应"""
     code: int = 0
     data: dict = Field(default_factory=dict)
 

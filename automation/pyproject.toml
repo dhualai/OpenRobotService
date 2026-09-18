@@ -13,11 +13,24 @@ dependencies = [
     "pyyaml",
     "pydantic", "pydantic-settings",
     "openai",
+    "python-dotenv",
+    "tenacity",
+    "pymysql",
+    "redis",
+    "qdrant-client",
+    "mcp>=1.26.0",
+    "schemathesis>=4.27,<5",
+]
+
+[project.optional-dependencies]
+external-eval = [
+    "deepeval>=4.2,<5",
+    "ragas>=0.4,<1",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["src", "config", "ci_ai_gen", "tests"]
+testpaths = ["src", "config", "ci_ai_gen", "mcp_server", "tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -29,6 +42,7 @@ markers = [
     "e2e: End-to-end workflow tests",
     "slow: Tests that take longer than 30 seconds",
     "smoke: Smoke tests (fast lane)",
+    "contract: OpenAPI contract tests (Schemathesis)",
     "flaky: Known flaky tests",
     "mock: Tests using mock services",
     "judge: Tests that invoke the LLM judge (L3, higher cost)",

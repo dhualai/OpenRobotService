@@ -278,6 +278,73 @@ cd automation; pytest tests/ai/ -m "not judge" -v                # L1+L2（服�
 cd automation; pytest tests/ai/ -v                               # 全部（含 judge 调用）
 ```
 
+---
+
+## 11. 否决规则与 Bad Case 台账（P0，2026-08-12）
+
+> 对齐 ai-evaluation-skill 方法论：平均分不覆盖否决；失败案例长期沉淀。
+
+### 11.1 一票否决（`src/ai_metrics/veto.py`）
+
+- golden 用例 `expect.l3.veto_rules: [str]` 声明一票否决项（可选字段，缺失时行为不变）
+- 判定独立于 rubric：命中任一否决规则 → 用例失败，rubric 高分不覆盖
+- judge 输出不可解析 → `veto_pending=True`（uncertain fail-safe，待人工复核，不当"无违规"）
+- runner 集成：`_eval_l3` 打分后执行 `_eval_veto`；用例失败时 Allure 附加 `bad-case-suggestion`（含 risk_level：veto→P0，其余→P1）
+
+### 11.2 Bad Case 台账
+
+- 台账文件：`testdata/fixtures/ai/bad_case_log.json`（长期沉淀表，仅 CLI 写入）
+- 字段：case_id / failure_mode / risk_level / repro_input / first_seen / last_seen / count / status(open|fixed|wonfix) / note
+- 合并工具：`python scripts/cli-update-bad-cases.py --input <failures.json> [--dry-run]`
+  - 去重键：case_id + failure_mode；命中则 count+1/更新 last_seen，未命中追加（status=open）
+  - 自动备份 `.bak`；`--dry-run` 只打印合并计划
+- pytest 运行期间不写台账（testdata 只读）
+
+### 11.3 自测
+
+```powershell
+cd automation; pytest src/ai_metrics/tests/test_veto.py -v   # 9 条（FakeJudge）
+```
+
+---
+
+## 12. 评测运行版本化与持续评测（P1，2026-08-12）
+
+> 对齐 ai-evaluation-skill 方法论：每次评测独立成 run，支持跨版本对比；变更/定期触发持续评测。
+
+### 12.1 运行记录（`src/ai_metrics/run_recorder.py`）
+
+- 每次 `pytest tests/ai/` 会话结束自动生成 `output/ai-eval-runs/{run-id}/`（gitignored）
+- run-id：`AI_EVAL_RUN_ID` 环境变量（版本对比时显式命名，如 `before-prompt-v2`）或自动 `run-YYYYmmdd-HHMMSS`
+- `run.json`：run_id / 起止时间 / counts(total/passed/failed/skipped) / env / **golden_fingerprint**（suite→用例数，检测 golden 变更）
+- `results.csv` 长表：`run_id, case_id, suite, passed, skipped_all, veto_pending, n_checks, n_failed, failed_metrics, ts`（case×run 一行）
+- skipped_all（RAG/派单依赖缺失）记 skipped 不占失败；无记录不写目录；`AI_EVAL_NO_RUN=1` 禁用
+
+### 12.2 版本对比（`scripts/cli-compare-ai-runs.py`）
+
+```powershell
+cd automation; python scripts/cli-compare-ai-runs.py --base demo-1 --new demo-2
+cd automation; python scripts/cli-compare-ai-runs.py --latest-two [--fail-on-regression]
+```
+
+- 用例级状态迁移：ok / regression / fixed / new_failure / still_failing / skipped / removed
+- 指标级回归清单（case_id + failed metrics）；golden fingerprint 不一致 → 警告
+- `--fail-on-regression`：存在回归 → 退出码 1（CI 门禁用）
+
+### 12.3 持续评测（`.github/workflows/ai-eval.yml`）
+
+- 触发：每周五定时 + 手动 + `ai/core`/`ai/agents`/`ai/ingestion`/`ai/docs`/AI 评测文件变更
+- 服务：redis + qdrant（GitHub Actions services）；启动 AI 服务后跑 `pytest tests/ai/`
+- 门控：仓库变量 `AI_EVAL_ENABLED=true` 才真跑（CI 无 AI 服务环境默认关闭，本地 `pytest tests/ai/` 等效）
+- 服务不可达 → 用例优雅 skip 不红 CI；真实失败 → junit 门禁红 CI + Allure 报告 + run 记录 artifact
+
+### 12.4 自测
+
+```powershell
+cd automation; pytest src/ai_metrics/tests/test_run_recorder.py -v            # 10 条
+cd automation; pytest src/ai_metrics/tests/test_cli_compare_ai_runs.py -v     # 4 条
+```
+
 ### 环境要求
 
 | 评估 | 需要 |

@@ -7,7 +7,12 @@ import { Loading, Toast, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
-import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import {
+  useAuthStore,
+  PERMISSION_VIEW_ALL,
+  PERMISSION_LICENSE_EXPORT,
+  PERMISSION_USER_EXPORT,
+} from '@/stores/auth';
 import ProjectImport from './ProjectImport';
 import ProjectAuth from './ProjectAuth';
 import ProjectPeople from './ProjectPeople';
@@ -46,6 +51,10 @@ export default function ProjectManage() {
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
   const { hasPermission } = useAuthStore();
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
+  // 基于权限代码管控导出按钮：license / users 各自独立，all 需两者皆有
+  const canExportLicense = hasPermission(PERMISSION_LICENSE_EXPORT);
+  const canExportUsers = hasPermission(PERMISSION_USER_EXPORT);
+  const canExportAll = canExportLicense && canExportUsers;
 
   // 共享状态：当前选中的项目（供授权、人员关联两个子模块使用）
   const [projects, setProjects] = useState<Project[]>([]);
@@ -160,33 +169,41 @@ export default function ProjectManage() {
           <ProjectPeople selectedProject={selectedProject} />
         </CollapsibleSection>
 
-        {/* 导出按钮组 */}
-        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid rgba(232,234,234,0.6)', paddingTop: 12 }}>
-          <button
-            type="button"
-            className="mac-btn mac-btn--outline mac-btn--block"
-            disabled={!selectedProject || exportLoading !== null}
-            onClick={() => handleExport('license')}
-          >
-            {exportLoading === 'license' ? '导出中...' : '导出licence授权'}
-          </button>
-          <button
-            type="button"
-            className="mac-btn mac-btn--outline mac-btn--block"
-            disabled={!selectedProject || exportLoading !== null}
-            onClick={() => handleExport('users')}
-          >
-            {exportLoading === 'users' ? '导出中...' : '导出人员授权'}
-          </button>
-          <button
-            type="button"
-            className="mac-btn mac-btn--primary mac-btn--block"
-            disabled={!selectedProject || exportLoading !== null}
-            onClick={() => handleExport('all')}
-          >
-            {exportLoading === 'all' ? '导出中...' : '导出完整授权'}
-          </button>
-        </div>
+        {/* 导出按钮组：基于权限代码分别管控 license / users / all 三个导出按钮 */}
+        {(canExportLicense || canExportUsers || canExportAll) && (
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid rgba(232,234,234,0.6)', paddingTop: 12 }}>
+            {canExportLicense && (
+              <button
+                type="button"
+                className="mac-btn mac-btn--outline mac-btn--block"
+                disabled={!selectedProject || exportLoading !== null}
+                onClick={() => handleExport('license')}
+              >
+                {exportLoading === 'license' ? '导出中...' : '导出licence授权'}
+              </button>
+            )}
+            {canExportUsers && (
+              <button
+                type="button"
+                className="mac-btn mac-btn--outline mac-btn--block"
+                disabled={!selectedProject || exportLoading !== null}
+                onClick={() => handleExport('users')}
+              >
+                {exportLoading === 'users' ? '导出中...' : '导出人员授权'}
+              </button>
+            )}
+            {canExportAll && (
+              <button
+                type="button"
+                className="mac-btn mac-btn--primary mac-btn--block"
+                disabled={!selectedProject || exportLoading !== null}
+                onClick={() => handleExport('all')}
+              >
+                {exportLoading === 'all' ? '导出中...' : '导出完整授权'}
+              </button>
+            )}
+          </div>
+        )}
       </CollapsibleSection>
 
       {/* 项目选择弹层 */}

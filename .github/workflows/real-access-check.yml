@@ -1,0 +1,84 @@
+name: Real Environment Access Check
+
+on:
+  workflow_dispatch:
+  # workflow_dispatch 只在默认分支可见；此分支触发仅用于当前 feature 分支验证。
+  # 连通性验证通过并合并后，可移除 push 触发。
+  push:
+    branches:
+      - automation-feature-business-chain-ci-access
+
+permissions:
+  contents: read
+
+env:
+  TEST_SSH_HOST: "125.122.97.107"
+  TEST_SSH_PORT: "8802"
+  TEST_SSH_USER: "usp-a"
+  REAL_API_BASE_URL: "http://127.0.0.1:9400"
+
+jobs:
+  access-check:
+    name: Verify SSH tunnel to real backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Prepare SSH key
+        env:
+          TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$TEST_SSH_PRIVATE_KEY"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$TEST_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/ci_key"
+          chmod 600 "$HOME/.ssh/ci_key"
+
+      - name: Start SSH tunnel
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/ci_key" \
+            -p "$TEST_SSH_PORT" \
+            -N \
+            -o BatchMode=yes \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -o StrictHostKeyChecking=accept-new \
+            -L 9400:127.0.0.1:9400 \
+            "$TEST_SSH_USER@$TEST_SSH_HOST" \
+            > /tmp/real-access-ssh.log 2>&1 &
+          echo $! > /tmp/real-access-ssh.pid
+          sleep 3
+          if ! kill -0 "$(cat /tmp/real-access-ssh.pid)" 2>/dev/null; then
+            echo "SSH tunnel process exited early"
+            cat /tmp/real-access-ssh.log
+            exit 1
+          fi
+
+      - name: Check backend health through tunnel
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl -fsS "$REAL_API_BASE_URL/api/health" -o /tmp/real-health.json; then
+              cat /tmp/real-health.json
+              if grep -Eq '"status"[[:space:]]*:[[:space:]]*"healthy"' /tmp/real-health.json; then
+                echo "Real backend access check passed"
+                exit 0
+              fi
+            fi
+            echo "waiting for real backend health check ($attempt/30)"
+            sleep 1
+          done
+          echo "Real backend health check failed"
+          cat /tmp/real-health.json 2>/dev/null || true
+          exit 1
+
+      - name: Stop SSH tunnel
+        if: always()
+        run: |
+          if [ -f /tmp/real-access-ssh.pid ]; then
+            pid="$(cat /tmp/real-access-ssh.pid)"
+            kill "$pid" 2>/dev/null || true
+          fi
+          rm -f /tmp/real-access-ssh.pid

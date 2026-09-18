@@ -5,4 +5,5 @@
 - llm_server.py：DeepSeek API Mock（三种模式）
 - qdrant_server.py：内存向量库
 
-这些 Mock 通过 conftest.py 的 Fixture 管理生命周期。
+当前实际可用的是 `backend_mock.py`（httpx.MockTransport，供 API Mock 用例使用）。
+`wechat_server.py` / `llm_server.py` / `qdrant_server.py` 目前仅为占位，待建设。

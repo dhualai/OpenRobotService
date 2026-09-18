@@ -7,7 +7,7 @@
 """
 import os
 from pathlib import Path
-from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Text, DateTime, JSON, Index, UniqueConstraint, Enum as SQLEnum
+from sqlalchemy import Boolean, create_engine, Column, String, Integer, BigInteger, Text, DateTime, JSON, Index, UniqueConstraint, Enum as SQLEnum
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
 
@@ -80,6 +80,13 @@ class Task(Base):
     source = Column(String(32), nullable=False, default="manual", index=True, comment="任务来源: manual/zentao/...")
     external_id = Column(String(64), nullable=True, index=True, comment="外部系统任务ID")
     external_url = Column(String(512), nullable=True, comment="外部系统跳转链接")
+    # 当前步骤（关联 task_steps 模板；冗余存名称/结束时间便于直接展示，与 backend/app/models/task.py Task 对齐）
+    curr_step_id = Column(BigInteger, nullable=True, index=True, comment="当前步骤ID")
+    curr_step_name = Column(String(128), nullable=True, comment="当前步骤名称")
+    curr_step_endtime = Column(DateTime, nullable=True, comment="当前步骤结束时间")
+    step_last_updated_by = Column(String(100), nullable=True)
+    step_last_updated_at = Column(DateTime, nullable=True)
+    step_negotiation_round = Column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         UniqueConstraint("source", "external_id", name="uq_task_source_external"),
@@ -112,11 +119,30 @@ class ProjectDelivery(Base):
     task_execution_status = Column(String(50), nullable=True, comment="任务执行情况")
     field_links = Column(String(1000), nullable=True, comment="字段链接(JSON格式)")
     category_basis = Column(String(20), nullable=False, default="重要紧急", comment="分类依据")
+    # 项目扩展信息（递归嵌套 JSON），结构由服务层约定
+    ext_info = Column(JSON, nullable=True, comment="项目扩展信息(递归嵌套 JSON)")
+    # 乐观锁版本号（backend update_project 维护，AI 侧仅读取）
+    version = Column(Integer, nullable=False, default=1, comment="乐观锁版本号")
 
     __table_args__ = (
         Index("idx_project_code", "code", unique=True),
         Index("idx_project_status", "status"),
     )
+
+
+class ProjectInfoNode(Base):
+    """项目信息树节点（仅查询，字段对齐 backend/app/models/delivery.py ProjectInfoNode）"""
+    __tablename__ = "project_info_node"
+
+    id = Column(String(64), primary_key=True, comment="节点UUID(客户端生成)")
+    project_id = Column(String(64), nullable=False, comment="所属项目ID")
+    parent_id = Column(String(64), nullable=True, comment="父节点ID, NULL=根节点")
+    title = Column(String(255), nullable=False, comment="节点标题")
+    content_type = Column(String(32), nullable=False, default="text", comment="内容类型")
+    value = Column(Text, nullable=True, comment="节点值")
+    sort_order = Column(Integer, nullable=False, default=0, comment="同级排序")
+    created_at = Column(String(30), nullable=False, comment="创建时间")
+    updated_at = Column(String(30), nullable=False, comment="更新时间")
 
 
 class Risk(Base):
@@ -148,6 +174,32 @@ class Risk(Base):
     )
 
 
+class CollectionData(Base):
+    """采集数据表（仅查询，字段对齐 backend/app/models/delivery.py CollectionData）。
+
+    存储各项目指标采集数据：project 为项目ID，indicator 为指标标签
+    （如 GroupEfficiency 搬运效率），start_time_int / end_time_int 为采集
+    窗口的秒级时间戳（与 backend iso_to_timestamp_ms 的落库口径一致），
+    data 为各指标 JSON 数据。
+    """
+    __tablename__ = "collection_data"
+
+    id = Column(Integer, primary_key=True)
+    project = Column(String(50), nullable=False)
+    indicator = Column(String(100), nullable=False)
+    start_time_int = Column(BigInteger, nullable=False, comment="数据采集开始时间戳用于查询")
+    end_time_int = Column(BigInteger, nullable=False, comment="数据采集结束时间戳用于查询")
+    data = Column(Text, nullable=False)
+    collection_time = Column(String(50), nullable=False)
+    record_time = Column(String(50), nullable=False)
+    time_str = Column(String(100), nullable=False)
+
+    __table_args__ = (
+        Index("idx_coll_unique_key", "project", "indicator", "start_time_int", "end_time_int"),
+        Index("idx_coll_time", "start_time_int"),
+    )
+
+
 class UserProjectRole(Base):
     """用户-项目-角色关联表（仅查询，字段对齐 backend/app/models/identity.py）"""
     __tablename__ = "user_project_roles"
@@ -166,9 +218,11 @@ class Conversation(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False, default="新会话", comment="会话标题")
     user_id = Column(String(255), nullable=False, default="", comment="用户ID")
-    scene_type = Column(String(255), nullable=False, default="chat", comment="场景类型: chat/faq/support/consultation/other")
+    scene_type = Column(String(255), nullable=False, default="chat", comment="场景类型: chat/faq/support/consultation/other/dataqa")
     service_ticket_id = Column(String(255), nullable=False, default="", comment="关联工单ID")
     metadata_ = Column(Text, nullable=True, comment="元数据")
+    is_deleted = Column(Boolean, nullable=False, default=False, server_default="0", comment="逻辑删除：1=用户已删除（列表隐藏，数据保留供统计）")
+    deleted_at = Column(DateTime, nullable=True, comment="逻辑删除时间（UTC）")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
 
@@ -187,3 +241,31 @@ class Message(Base):
     sequence = Column(Integer, nullable=False, default=0, comment="消息序号")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     metadata_ = Column(Text, nullable=True, comment="元数据")
+
+
+class TaskParticipant(Base):
+    """任务参与人表（只读，字段对齐 backend/app/models/task.py TaskParticipant）。
+
+    历史工单列表卡片「评论区参与人头像堆叠」的数据源；评论成功后由后端同事务幂等
+    upsert 写入（见 backend 评论端点）。AI 侧仅查询，不写入。
+    """
+    __tablename__ = "task_participants"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="参与记录ID")
+    task_id = Column(BigInteger, nullable=False, index=True, comment="任务ID")
+    username = Column(String(50), nullable=False, index=True, comment="参与人username")
+    created_at = Column(DateTime, comment="首次参与时间")
+    last_active_at = Column(DateTime, comment="最近一次参与时间")
+
+
+class TaskCommentRead(Base):
+    """评论已读游标表（只读，字段对齐 backend/app/models/task.py TaskCommentRead）。
+
+    红点判定口径：存在「作者不是我、且 comment_id > 我的游标」的评论 ⇒ 该作者头像亮红点。
+    """
+    __tablename__ = "task_comment_read"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    task_id = Column(BigInteger, nullable=False, index=True, comment="任务ID")
+    username = Column(String(50), nullable=False, index=True, comment="用户username")
+    last_read_comment_id = Column(BigInteger, nullable=True, comment="已读到的最后一条评论ID")

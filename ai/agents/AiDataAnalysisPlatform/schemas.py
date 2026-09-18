@@ -10,6 +10,94 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .report_schemas import ReportPeriod
+
+
+# ── 分析计划（新增：指标对话解析结果）──────────────────────
+
+
+class TimeRangeSpec(BaseModel):
+    """解析后的时间范围说明。"""
+
+    type: str = Field(
+        default="recent_days",
+        description="时间范围类型：today/yesterday/recent_days/this_week/last_week/this_month/last_month/custom",
+    )
+    days: int | None = Field(
+        default=7, description="recent_days 时的天数"
+    )
+    start: str | None = Field(
+        default=None, description="自定义起始日期 YYYY-MM-DD"
+    )
+    end: str | None = Field(
+        default=None, description="自定义结束日期 YYYY-MM-DD"
+    )
+    label: str = Field(
+        default="", description="时间范围的中文描述，如「近7天」"
+    )
+    explicit: bool = Field(
+        default=False,
+        description="用户是否在问题中明确提到了时间范围；未提及时解析器用于触发澄清",
+    )
+
+
+class ScopeSpec(BaseModel):
+    """解析后的项目范围说明。"""
+
+    type: str = Field(
+        default="global",
+        description="范围类型：global(全局)/single_project(单项目)/user_projects(用户关联项目)",
+    )
+    project_code: str | None = Field(
+        default=None, description="单项目时的项目代码"
+    )
+    project_name: str | None = Field(
+        default=None, description="单项目时的项目名称"
+    )
+    user_id: str | None = Field(
+        default=None, description="按用户关联项目时的用户ID"
+    )
+
+
+class AnalysisPlan(BaseModel):
+    """对话式指标分析的解析结果。
+
+    由问题文本解析得到，包含：
+    - 要查哪些指标（metric_keys）
+    - 时间范围（time_range）
+    - 项目范围（scope）
+    - 分析动作（action）
+    - 置信度（confidence）
+
+    低置信度或缺必要字段时，应触发澄清（clarify）。
+    """
+
+    metric_keys: list[str] = Field(
+        default_factory=list,
+        description="要查询的指标 key 列表，如 ['ticket.total', 'ticket.resolve_rate']",
+    )
+    time_range: TimeRangeSpec = Field(
+        default_factory=TimeRangeSpec, description="时间范围"
+    )
+    scope: ScopeSpec = Field(
+        default_factory=ScopeSpec, description="项目范围"
+    )
+    action: str = Field(
+        default="summary",
+        description="分析动作：summary(汇总)/trend(趋势)/distribution(分布)/compare(对比)/top(排名)",
+    )
+    confidence: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="解析置信度(0~1)；低于阈值时触发澄清",
+    )
+    missing_fields: list[str] = Field(
+        default_factory=list,
+        description="解析后缺失的必要字段列表，如 ['time_range', 'project_code']",
+    )
+    original_question: str = Field(
+        default="", description="原始用户问题"
+    )
+
 
 # ── 分析类型 ────────────────────────────────────────────────
 
@@ -54,11 +142,86 @@ class AnalysisRequest(BaseModel):
     stream: bool = Field(default=False, description="是否流式输出")
 
 
+class ChatContextMeta(BaseModel):
+    """前端页面上下文元信息，用于补全分析范围。"""
+
+    scene: str | None = Field(
+        default=None,
+        description="当前页面/场景标识，如 project_detail / dashboard",
+    )
+    project_code: str | None = Field(
+        default=None,
+        description="页面上下文中的项目代码；仅在请求未显式传 project_code 时兜底",
+    )
+    project_name: str | None = Field(
+        default=None,
+        description="页面上下文中的项目名称，仅用于补充可读上下文",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="页面上下文中的用户ID；仅在请求未显式传 user_id 时兜底",
+    )
+    period: ReportPeriod | None = Field(
+        default=None,
+        description="页面上下文中的周期；仅在请求未显式传 period 时兜底",
+    )
+    date: str | None = Field(
+        default=None,
+        description="页面上下文中的目标日期 YYYY-MM-DD；仅在请求未显式传 date 时兜底",
+    )
+    analysis_type: AnalysisType | None = Field(
+        default=None,
+        description="页面上下文中的推荐分析类型；仅在请求未显式传 analysis_type 时兜底",
+    )
+
+
 class QuickChatRequest(BaseModel):
-    """快速对话请求（无数据，仅文本问答）。"""
+    """快速对话请求。
+
+    - 仅传 ``question`` / ``context``：自动识别是普通问答还是数据分析。
+    - 额外传 ``data``：走带数据上下文的分析问答。
+    - 不传 ``data`` 但传 ``project_code`` / ``user_id``：后端自动从 MySQL 采集项目数据后分析。
+    - 也可传 ``context_meta`` 作为页面上下文，用于补全分析范围。
+    """
 
     question: str = Field(..., description="用户问题")
     context: str | None = Field(default=None, description="补充上下文")
+    data: str | None = Field(
+        default=None,
+        description="待分析的数据内容；传入后 /chat 会执行数据分析",
+    )
+    data_source: DataSource = Field(
+        default=DataSource.JSON,
+        description="data 的数据格式",
+    )
+    analysis_type: AnalysisType = Field(
+        default=AnalysisType.GENERAL,
+        description="分析类型；传入 data 或启用自动查库分析时生效",
+    )
+    project_code: str | None = Field(
+        default=None,
+        description="项目代码；未传 data 时可用于自动查询该项目数据",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="用户ID或用户名；未传 data 且未传 project_code 时，查询该用户关联项目数据",
+    )
+    period: ReportPeriod = Field(
+        default=ReportPeriod.DAILY,
+        description="自动查询数据库时的数据周期：daily / weekly",
+    )
+    date: str | None = Field(
+        default=None,
+        description="自动查询数据库时的目标日期 YYYY-MM-DD；默认今天",
+    )
+    context_meta: ChatContextMeta | None = Field(
+        default=None,
+        description="前端页面上下文；当显式参数缺失时可用于补充分析范围",
+    )
+    conversation_id: str | None = Field(
+        default=None,
+        description="对话会话ID；澄清多轮时用于关联上一轮的解析结果",
+    )
 
 
 # ── 响应 ────────────────────────────────────────────────────
@@ -93,12 +256,60 @@ class AnalysisResult(BaseModel):
     )
 
 
+class MetricCard(BaseModel):
+    """单值指标卡片（由后端采集数据生成，LLM 不参与）。"""
+
+    label: str = Field(..., description="指标中文名，如「工单解决率」")
+    value: str = Field(..., description="格式化后的指标值，如「85.0」")
+    unit: str | None = Field(default=None, description="单位，如 %；无单位时为空")
+    kind: str = Field(
+        default="metric",
+        description="卡片类型：metric（百分比类指标，大号强调色） / count（计数类）",
+    )
+
+
+class ChartSpec(BaseModel):
+    """图表规格：完整 ECharts option，前端直接消费渲染。"""
+
+    chart_type: str = Field(..., description="图表类型：pie / bar / line")
+    title: str = Field(..., description="图表中文标题")
+    option: dict[str, Any] = Field(..., description="完整 ECharts option")
+
+
 class ChatResponse(BaseModel):
     """对话响应。"""
 
     answer: str
+    mode: str = Field(
+        default="chat",
+        description="响应模式：chat（普通聊天） / analysis（数据分析） / clarify（澄清追问）",
+    )
     model: str | None = None
     usage: dict[str, Any] | None = None
+    analysis: AnalysisResult | None = Field(
+        default=None,
+        description="带数据分析时返回的结构化分析结果",
+    )
+    plan: AnalysisPlan | None = Field(
+        default=None,
+        description="解析出的分析计划（口径回显，analysis/clarify 模式均有值）",
+    )
+    suggestions: list[str] = Field(
+        default_factory=list,
+        description="clarify 模式下的候选选项，前端可渲染为可点按钮",
+    )
+    conversation_id: str | None = Field(
+        default=None,
+        description="会话ID；clarify 时返回，客户端后续轮次需原样带上以关联澄清上下文",
+    )
+    charts: list[ChartSpec] | None = Field(
+        default=None,
+        description="图表列表（analysis 模式，由后端采集数据生成；chat/clarify 模式为 null）",
+    )
+    cards: list[MetricCard] | None = Field(
+        default=None,
+        description="单值指标卡片列表（analysis 模式，由后端采集数据生成；chat/clarify 模式为 null）",
+    )
 
 
 class HealthResponse(BaseModel):

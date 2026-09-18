@@ -1,0 +1,59 @@
+name: Ticket Gate (test branch)
+
+on:
+  push:
+    branches: [test]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  ticket-gate:
+    if: vars.TICKET_GATE_ENABLED == 'true'
+    name: Ticket-specific + regression gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -e automation/
+
+      - name: Capture commit message
+        run: |
+          git log -1 --pretty=%B > commit-message.txt
+          cat commit-message.txt
+
+      - name: Run ticket gate
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AUTOMATION_ENV: ${{ vars.AUTOMATION_ENV || 'local' }}
+          USE_MOCK: ${{ vars.REAL_TEST_ENABLED == 'true' && '0' || '1' }}
+          REAL_DB_ASSERTIONS: ${{ vars.REAL_DB_ASSERTIONS || '1' }}
+          REAL_API_BASE_URL: ${{ vars.REAL_API_BASE_URL }}
+          REAL_U1_USERNAME: ${{ secrets.REAL_U1_USERNAME }}
+          REAL_U1_PASSWORD: ${{ secrets.REAL_U1_PASSWORD }}
+          REAL_U2_USERNAME: ${{ secrets.REAL_U2_USERNAME }}
+          REAL_U2_PASSWORD: ${{ secrets.REAL_U2_PASSWORD }}
+        run: |
+          python automation/scripts/cli-ticket-gate.py \
+            --message-file commit-message.txt \
+            --regression tests/business_chain \
+            --regression tests/tasks \
+            --env "$AUTOMATION_ENV"
+
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticket-gate-report
+          path: |
+            automation/output/junit-ticket-gate.xml
+            automation/output/allure-results

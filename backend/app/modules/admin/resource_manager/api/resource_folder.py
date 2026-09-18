@@ -1,21 +1,33 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Any, Optional
+from typing import List, Any, Optional, Dict
 from app.core.database import get_async_db as get_db
 from app.models.resource import StorageType
 from app.modules.admin.resource_manager.schemas.resource_folder import ResourceFolderCreate, ResourceFolderUpdate, ResourceFolderResponse, Child
 from app.modules.admin.resource_manager.services.resource_folder_service import ResourceFolderService
+from app.modules.admin.api.auth import require_permission
 
 router = APIRouter(prefix="/resource-folders", tags=["resource_folders"])
 
+# 与 resource.py 保持一致的权限码（read/write/delete）
+PERM_READ = "backend:resource:base:read"
+PERM_WRITE = "backend:resource:base:write"
+PERM_DELETE = "backend:resource:base:delete"
+
 
 @router.get("/", response_model=List[ResourceFolderResponse])
-async def get_all_folders(db: AsyncSession = Depends(get_db)):
+async def get_all_folders(
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = require_permission(PERM_READ),
+):
     return await ResourceFolderService.get_all_folders(db)
 
 
 @router.get("/root", response_model=List[ResourceFolderResponse])
-async def get_root_folders(db: AsyncSession = Depends(get_db)):
+async def get_root_folders(
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = require_permission(PERM_READ),
+):
     return await ResourceFolderService.get_root_folders(db)
 
 
@@ -23,12 +35,17 @@ async def get_root_folders(db: AsyncSession = Depends(get_db)):
 async def get_root_children(
     db: AsyncSession = Depends(get_db),
     storage_type: Optional[StorageType] = Query(None, description="按存储类型过滤资源（MINIO/OSS）"),
+    current_user: Dict[str, Any] = require_permission(PERM_READ),
 ):
     return await ResourceFolderService.get_root_children(db, storage_type=storage_type)
 
 
 @router.get("/{folder_id}", response_model=ResourceFolderResponse)
-async def get_folder(folder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_folder(
+    folder_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = require_permission(PERM_READ),
+):
     folder = await ResourceFolderService.get_folder_by_id(db, folder_id)
     if not folder:
         raise HTTPException(status_code=404, detail="文件夹未找到")
@@ -40,6 +57,7 @@ async def get_folder_children(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
     storage_type: Optional[StorageType] = Query(None, description="按存储类型过滤资源（MINIO/OSS）"),
+    current_user: Dict[str, Any] = require_permission(PERM_READ),
 ):
     if not await ResourceFolderService.get_folder_by_id(db, folder_id):
         raise HTTPException(status_code=404, detail="父文件夹未找到")
@@ -47,7 +65,11 @@ async def get_folder_children(
 
 
 @router.post("/", response_model=ResourceFolderResponse, status_code=201)
-async def create_folder(folder_data: ResourceFolderCreate, db: AsyncSession = Depends(get_db)):
+async def create_folder(
+    folder_data: ResourceFolderCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = require_permission(PERM_WRITE),
+):
     try:
         return await ResourceFolderService.create_folder(db, folder_data)
     except ValueError as e:
@@ -55,7 +77,12 @@ async def create_folder(folder_data: ResourceFolderCreate, db: AsyncSession = De
 
 
 @router.put("/{folder_id}", response_model=ResourceFolderResponse)
-async def update_folder(folder_id: int, folder_data: ResourceFolderUpdate, db: AsyncSession = Depends(get_db)):
+async def update_folder(
+    folder_id: int,
+    folder_data: ResourceFolderUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = require_permission(PERM_WRITE),
+):
     folder = await ResourceFolderService.update_folder(db, folder_id, folder_data)
     if not folder:
         raise HTTPException(status_code=404, detail="文件夹未找到")
@@ -63,7 +90,11 @@ async def update_folder(folder_id: int, folder_data: ResourceFolderUpdate, db: A
 
 
 @router.delete("/{folder_id}")
-async def delete_folder(folder_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_folder(
+    folder_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = require_permission(PERM_DELETE),
+):
     try:
         success = await ResourceFolderService.delete_folder(db, folder_id)
         if not success:

@@ -1,5 +1,8 @@
 # 自动化测试方案
 
+> 注意：本文为早期方案，部分章节已落后于代码驱动迁移（task-26/27）。
+> 当前运行入口、目录结构和命令以 `automation/README.md` 与 `automation/pyproject.toml` 为准。
+
 > 本文定义 OpenRobotService 项目的自动化测试策略、分层模型、CI 集成方式和报告体系。
 > 测试开发规范见 `automation/docs/testing/testing_guidelines.md`，报告模板见 `automation/docs/testing/test_report_guideline.md`。
 

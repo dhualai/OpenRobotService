@@ -41,11 +41,11 @@ export const USER_SOURCE_LABELS: Record<number, string> = {
 const request = createRequest(API_CONFIG.WECHAT.BASE_URL, 'Wechat');
 
 /**
- * 获取公众号用户增减数据。
- * 注意：微信数据统计有 T+1 延迟，end_date 最早只能到昨日，传今天后端会返回 400 提示。
+ * 获取公众号用户增减数据（读 user_statistics 表：每日凌晨 1:00 定时任务落库的微信渠道明细）。
+ * 查询跨度不限；但数据 T+1 落库，end_date 不能为当天或未来（后端返回 400 提示）。
  */
 export function fetchUserSummary(beginDate: string, endDate: string): Promise<UserSummaryResp> {
-  return request<UserSummaryResp>('/user-summary', {
+  return request<UserSummaryResp>('/user-summary-db', {
     method: 'POST',
     headers: { 'X-API-Key': SYNC_API_KEY },
     body: JSON.stringify({ begin_date: beginDate, end_date: endDate }),
@@ -58,24 +58,50 @@ export interface WechatUserInfo {
   subscribe: number;
   openid: string;
   tagid_list?: number[];
+  /** 关注渠道来源，如 ADD_SCENE_SEARCH（公众号搜索），完整编码见微信官方文档 */
+  subscribe_scene?: string;
   [key: string]: unknown;
+}
+
+export interface SceneDistributionItem {
+  /** 关注渠道编码，如 ADD_SCENE_SEARCH；中文含义见 SUBSCRIBE_SCENE_LABELS */
+  scene: string;
+  /** 该渠道的已关注用户数 */
+  value: number;
 }
 
 export interface BatchUserInfoResp {
   success: boolean;
-  user_info_list: WechatUserInfo[];
   /** 当前用户总数 */
   total: number;
+  /** 已关注用户数（subscribe===1） */
+  real: number;
+  /** 已取关用户数（虚拟用户） */
+  virtual: number;
+  /** 已关注用户的关注渠道分布（按 value 降序） */
+  scene_distribution: SceneDistributionItem[];
 }
 
 /**
- * 批量获取用户信息（不传请求体时后端自动查询 users 表全量 openid）。
- * 用于统计当前用户总数与真实/虚拟用户构成。
+ * 获取当前用户构成聚合统计（读 user_info 表最新快照：整点快照任务落库，
+ * 最长滞后 1 小时）。后端已在 DB 侧完成 real/virtual 与渠道分布聚合，
+ * 响应体仅含统计值，不再返回全量 user_info_list。
+ *
+ * 客户端缓存：后端每整点刷新，数据最长滞后 1 小时，此处缓存 10 分钟，
+ * 避免每次进入「其他」页都重复请求。
  */
-export function fetchBatchUserInfo(): Promise<BatchUserInfoResp> {
-  return request<BatchUserInfoResp>('/batch-user-info', {
+const BATCH_USER_INFO_CACHE_TTL = 10 * 60 * 1000; // 10 分钟
+let _batchUserInfoCache: { data: BatchUserInfoResp; timestamp: number } | null = null;
+
+export async function fetchBatchUserInfo(force = false): Promise<BatchUserInfoResp> {
+  if (!force && _batchUserInfoCache && Date.now() - _batchUserInfoCache.timestamp < BATCH_USER_INFO_CACHE_TTL) {
+    return _batchUserInfoCache.data;
+  }
+  const data = await request<BatchUserInfoResp>('/batch-user-info-db', {
     method: 'POST',
     headers: { 'X-API-Key': SYNC_API_KEY },
     skipCache: true,
   });
+  _batchUserInfoCache = { data, timestamp: Date.now() };
+  return data;
 }

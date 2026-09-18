@@ -82,3 +82,12 @@ template:
       thing19: ""
       time11: ""
       time14: ""
+# 设备报警提醒提醒, [报警机型, 设备编号, 报警原因, 告警级别, 告警时间]
+  10:
+    id: 9kpx7mFGH54kpwI6WIknV2iVwGfS7PTWxc7OKHe0nUg
+    data:
+      character_string6: ""
+      character_string8: ""
+      thing5: ""
+      character_string10: ""
+      time4: ""

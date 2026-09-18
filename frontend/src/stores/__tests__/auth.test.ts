@@ -11,6 +11,7 @@ describe('Auth Store', () => {
       isLoading: true,
       isAdmin: false,
       roles: null,
+      permissions: [],
     });
     localStorage.clear();
     vi.clearAllMocks();
@@ -180,6 +181,24 @@ describe('Auth Store', () => {
   });
 
   describe('fetchUserDetails', () => {
+    it('should store aggregated permission codes from user detail', async () => {
+      const userData = {
+        permissions: ['user', 'frontend:admin:other:show', 'frontend:admin:dispatch-dev:show'],
+        roles: { global: ['role_dev'] },
+      };
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+        ok: true,
+        json: async () => userData,
+      } as Response);
+
+      setApiTokenBehind('auth-token');
+      await useAuthStore.getState().fetchUserDetails('assigned-user', 'auth-token');
+
+      expect(useAuthStore.getState().permissions).toEqual(userData.permissions);
+      expect(useAuthStore.getState().hasPermission('frontend:admin:dispatch-dev:show')).toBe(true);
+    });
+
     it('should set isAdmin when user has admin role', async () => {
       const userData = {
         roles: {

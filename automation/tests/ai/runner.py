@@ -23,6 +23,8 @@ from automation.src.ai_metrics import (
     JudgeUnavailableError,
     judge_faithfulness,
     judge_rubric,
+    check_veto_rules,
+    get_recorder,
 )
 
 from automation.config.paths import FIXTURES_DIR
@@ -51,6 +53,7 @@ class EvalResult:
     checks: List[dict] = field(default_factory=list)
     skipped: List[dict] = field(default_factory=list)
     responses: List[dict] = field(default_factory=list)
+    veto_pending: bool = False
 
     @property
     def summary(self) -> str:
@@ -58,6 +61,11 @@ class EvalResult:
         if not failed:
             return "all L1 checks passed"
         return "; ".join(f"{c['metric']}: {c['detail']}" for c in failed)
+
+    @property
+    def failed_checks(self) -> List[dict]:
+        """Checks that failed (L1/L2/L3), excluding skipped layers."""
+        return [c for c in self.checks if not c["passed"]]
 
 
 def load_ai_cases(suite: str) -> List[dict]:
@@ -70,6 +78,11 @@ def load_ai_cases(suite: str) -> List[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     _CACHE[suite] = data.get("cases", [])
     return _CACHE[suite]
+
+
+def loaded_suite_counts() -> Dict[str, int]:
+    """Fingerprint of the golden suites loaded this session (suite -> count)."""
+    return {suite: len(cases) for suite, cases in _CACHE.items()}
 
 
 def _add_check(result: EvalResult, metric: str, passed: bool, detail: str) -> None:
@@ -131,7 +144,7 @@ def _eval_l1(result: EvalResult, data: dict, expect: dict, case: dict) -> None:
                    f"violations: {violations or 'none'}")
 
 
-async def run_ai_case(client, case: dict) -> EvalResult:
+async def run_ai_case(client, case: dict, suite: str = "diagnosis") -> EvalResult:
     """Execute a single golden case against the AI service.
 
     Runs all turns sequentially with a shared session_id; evaluates L1
@@ -142,6 +155,7 @@ async def run_ai_case(client, case: dict) -> EvalResult:
     Args:
         client: httpx.AsyncClient pointed at the AI service base URL.
         case: golden case dict (id / mode / turns / expect).
+        suite: golden suite name (for run recording).
     """
     result = EvalResult(case_id=case["id"])
     session_id = case.get("session_id") or f"eval-{case['id']}"
@@ -170,7 +184,34 @@ async def run_ai_case(client, case: dict) -> EvalResult:
         await _eval_l3(result, result.responses[-1], expect.get("l3", {}), judge)
 
     result.passed = all(c["passed"] for c in result.checks)
+    get_recorder().record(
+        case_id=result.case_id, suite=suite, passed=result.passed,
+        veto_pending=result.veto_pending, checks=result.checks,
+    )
+    if not result.passed:
+        _attach_bad_case_suggestion(
+            case_id=result.case_id,
+            checks=result.checks,
+            repro_input=json.dumps(case.get("turns", []), ensure_ascii=False),
+            veto_pending=result.veto_pending,
+        )
     return result
+
+
+def _attach_bad_case_suggestion(case_id: str, checks: List[dict],
+                                repro_input: str, veto_pending: bool) -> None:
+    """Attach a bad-case ledger suggestion when a golden case fails."""
+    failed = [c for c in checks if not c["passed"]]
+    suggestion = {
+        "case_id": case_id,
+        "risk_level": "P0" if veto_pending else "P1",
+        "failure_mode": "veto" if veto_pending else (failed[0]["metric"] if failed else "unknown"),
+        "failed_checks": failed,
+        "repro_input": repro_input[:500],
+        "note": "建议录入 testdata/fixtures/ai/bad_case_log.json（cli-update-bad-cases.py --dry-run 预览）",
+    }
+    allure.attach(json.dumps(suggestion, indent=2, ensure_ascii=False),
+                  name="bad-case-suggestion", attachment_type=allure.attachment_type.JSON)
 
 
 _judge_cache: Optional[LLMJudgeClient] = None
@@ -225,6 +266,29 @@ async def _eval_l3(result: EvalResult, data: dict, expect: dict, judge: Optional
     passed = out["score"] >= min_score
     result.checks.append({"layer": "l3", "metric": "rubric", "passed": passed,
                           "detail": f"score={out['score']:.1f}/5, min {min_score}: {out['reason']}"})
+    await _eval_veto(result, query, message, expect.get("veto_rules"), judge)
+
+
+async def _eval_veto(result: EvalResult, question: str, answer: str,
+                     veto_rules: Optional[list], judge: Optional[LLMJudgeClient]) -> None:
+    """One-vote-veto check: any violated rule fails the case regardless of rubric."""
+    if not veto_rules:
+        return
+    if judge is None:
+        result.skipped.append({"layer": "l3", "metric": "veto",
+                               "detail": f"judge unavailable ({_judge_error or 'unknown'})"})
+        return
+    out = await check_veto_rules(question, answer, veto_rules, judge)
+    passed = not out["vetoed"]
+    if not passed:
+        result.veto_pending = True
+    result.checks.append({
+        "layer": "l3", "metric": "veto", "passed": passed,
+        "detail": (
+            f"violated={out['violated']} (rules: {[veto_rules[i - 1] for i in out['violated']]}), "
+            f"uncertain={out['uncertain']}: {out['reason']}"
+        ),
+    })
 
 
 def _load_retrieval_service():
@@ -252,7 +316,7 @@ def _load_retrieval_service():
     return get_retrieval_service, None
 
 
-async def run_rag_case(case: dict) -> dict:
+async def run_rag_case(case: dict, suite: str = "rag") -> dict:
     """Run a RAG retrieval recall case.
 
     Returns {"passed", "checks", "skipped_all", "detail"}. A collection is
@@ -262,12 +326,16 @@ async def run_rag_case(case: dict) -> dict:
     """
     loader, err = _load_retrieval_service()
     if loader is None:
+        get_recorder().record(case_id=case["id"], suite=suite, passed=False,
+                              skipped_all=True, checks=[])
         return {"passed": False, "skipped_all": True, "checks": [],
                 "detail": err or "ai.core unavailable"}
 
     try:
         service = await loader()
     except Exception as e:  # pragma: no cover - env dependent
+        get_recorder().record(case_id=case["id"], suite=suite, passed=False,
+                              skipped_all=True, checks=[])
         return {"passed": False, "skipped_all": True, "checks": [],
                 "detail": f"RetrievalService init failed: {e}"}
 
@@ -303,19 +371,32 @@ async def run_rag_case(case: dict) -> dict:
     for c in score["missed"]:
         checks.append({"layer": "l2", "metric": f"recall:{c}", "passed": False,
                        "detail": f"expected terms not found: {expect_hits[c]}"})
-    for c in score["skipped"]:
-        checks.append({"layer": "l2", "metric": f"recall:{c}", "passed": True,
-                       "detail": "skipped (unavailable/empty)"})
     if score["hit"]:
         checks.append({"layer": "l2", "metric": "recall", "passed": True,
                        "detail": f"hit {score['hit']}, recall={score['recall']:.0%}"})
 
-    passed = not score["missed"] and any(c["passed"] for c in checks)
+    skipped = score["skipped"]
     detail = "; ".join(details)
+    scored_any = bool(score["hit"] or score["missed"])
+    if not scored_any:
+        get_recorder().record(case_id=case["id"], suite=suite, passed=False,
+                              skipped_all=True, checks=checks)
+        allure.attach(json.dumps({"id": case["id"], "hits": hits, "score": score,
+                                  "skipped": skipped, "details": details},
+                                 indent=2, ensure_ascii=False),
+                      name="retrieval-recall", attachment_type=allure.attachment_type.JSON)
+        return {"passed": False, "skipped_all": True, "checks": checks,
+                "skipped": skipped, "detail": detail}
+
+    passed = not score["missed"] and bool(score["hit"])
+    get_recorder().record(case_id=case["id"], suite=suite, passed=passed,
+                          checks=checks)
     allure.attach(json.dumps({"id": case["id"], "hits": hits, "score": score,
-                              "details": details}, indent=2, ensure_ascii=False),
+                              "skipped": skipped, "details": details},
+                             indent=2, ensure_ascii=False),
                   name="retrieval-recall", attachment_type=allure.attachment_type.JSON)
-    return {"passed": passed, "skipped_all": False, "checks": checks, "detail": detail}
+    return {"passed": passed, "skipped_all": False, "checks": checks,
+            "skipped": skipped, "detail": detail}
 
 
 def _load_assigner():
@@ -341,10 +422,12 @@ def _load_assigner():
     return assign_ticket, None
 
 
-async def run_assigner_case(case: dict) -> dict:
+async def run_assigner_case(case: dict, suite: str = "assigner") -> dict:
     """Run an assigner golden case (L1 checks on AssignmentResult)."""
     assign_ticket, err = _load_assigner()
     if assign_ticket is None:
+        get_recorder().record(case_id=case["id"], suite=suite, passed=False,
+                              skipped_all=True, checks=[])
         return {"passed": False, "skipped_all": True, "checks": [],
                 "detail": err or "ai.core unavailable"}
 
@@ -356,6 +439,8 @@ async def run_assigner_case(case: dict) -> dict:
             session_id=f"eval-session-{case['id']}",
         )
     except Exception as e:  # pragma: no cover - env dependent
+        get_recorder().record(case_id=case["id"], suite=suite, passed=False,
+                              skipped_all=True, checks=[])
         return {"passed": False, "skipped_all": True, "checks": [],
                 "detail": f"assign_ticket failed: {type(e).__name__} ({e})"}
 
@@ -388,6 +473,8 @@ async def run_assigner_case(case: dict) -> dict:
                        "detail": f"confidence={data['confidence_score']}, min {confidence_min}"})
 
     passed = all(c["passed"] for c in checks)
+    get_recorder().record(case_id=case["id"], suite=suite, passed=passed,
+                          checks=checks)
     allure.attach(json.dumps({"id": case["id"], "result": data, "checks": checks},
                              indent=2, ensure_ascii=False),
                   name="assigner-result", attachment_type=allure.attachment_type.JSON)
@@ -395,7 +482,7 @@ async def run_assigner_case(case: dict) -> dict:
             "detail": "; ".join(c["detail"] for c in checks)}
 
 
-async def run_analysis_case(client, case: dict) -> dict:
+async def run_analysis_case(client, case: dict, suite: str = "data_analysis") -> dict:
     """Run a data-analysis golden case via POST /api/ai/analysis/analyze.
 
     Evaluates L1 (schema / analysis_type / keywords) and L3 (rubric,
@@ -434,14 +521,15 @@ async def run_analysis_case(client, case: dict) -> dict:
         checks.append({"layer": "l1", "metric": "schema", "passed": not violations,
                        "detail": f"violations: {violations or 'none'}"})
 
+    skipped = []
     judge = _get_judge()
     l3 = expect.get("l3", {})
     rubric = l3.get("rubric")
     if rubric:
         min_score = l3.get("min_score", 3)
         if judge is None:
-            checks.append({"layer": "l3", "metric": "rubric", "passed": True,
-                           "detail": f"skipped: judge unavailable ({_judge_error or 'unknown'})"})
+            skipped.append({"layer": "l3", "metric": "rubric",
+                            "detail": f"judge unavailable ({_judge_error or 'unknown'})"})
         else:
             question = case.get("question") or "请分析"
             summary = data.get("summary", "")
@@ -452,8 +540,143 @@ async def run_analysis_case(client, case: dict) -> dict:
                            "detail": f"score={out['score']:.1f}/5, min {min_score}: {out['reason']}"})
 
     passed = all(c["passed"] for c in checks)
+    get_recorder().record(case_id=case["id"], suite=suite, passed=passed,
+                          checks=checks)
+    if not passed:
+        _attach_bad_case_suggestion(
+            case_id=case["id"],
+            checks=checks,
+            repro_input=json.dumps(body, ensure_ascii=False),
+            veto_pending=any(c.get("metric") == "veto" and not c["passed"] for c in checks),
+        )
     allure.attach(json.dumps({"id": case["id"], "request": body, "response": data,
                               "checks": checks}, indent=2, ensure_ascii=False),
                   name="analysis-result", attachment_type=allure.attachment_type.JSON)
     return {"passed": passed, "skipped_all": False, "checks": checks,
+            "skipped": skipped,
             "detail": "; ".join(c["detail"] for c in checks)}
+
+
+async def run_analysis_chat_case(client, case: dict) -> dict:
+    """Run an analysis-chat golden case via POST /api/ai/analysis/chat."""
+    body = case["request"]
+    r = await client.post("/api/ai/analysis/chat", json=body)
+    r.raise_for_status()
+    data = r.json()
+
+    expect = case.get("expect", {})
+    checks = []
+
+    l1 = expect.get("l1", {})
+    mode = l1.get("mode")
+    if mode:
+        checks.append({
+            "layer": "l1",
+            "metric": "mode",
+            "passed": data.get("mode") == mode,
+            "detail": f"mode={data.get('mode')!r}, expected {mode!r}",
+        })
+
+    analysis_required = l1.get("analysis_required")
+    if analysis_required is not None:
+        actual_has_analysis = isinstance(data.get("analysis"), dict)
+        checks.append({
+            "layer": "l1",
+            "metric": "analysis_presence",
+            "passed": actual_has_analysis == analysis_required,
+            "detail": (
+                f"analysis present={actual_has_analysis}, "
+                f"expected {analysis_required}"
+            ),
+        })
+
+    analysis_type = l1.get("analysis_type")
+    if analysis_type:
+        actual_type = (data.get("analysis") or {}).get("analysis_type")
+        checks.append({
+            "layer": "l1",
+            "metric": "analysis_type",
+            "passed": actual_type == analysis_type,
+            "detail": (
+                f"analysis_type={actual_type!r}, expected {analysis_type!r}"
+            ),
+        })
+
+    answer_terms = l1.get("answer_terms")
+    if answer_terms:
+        ratio = hit_ratio(data.get("answer", ""), answer_terms)
+        checks.append({
+            "layer": "l1",
+            "metric": "answer_terms",
+            "passed": ratio >= 1.0,
+            "detail": (
+                f"answer keyword hit {ratio:.0%}: "
+                f"{data.get('answer', '')[:80]}"
+            ),
+        })
+
+    summary_terms = l1.get("summary_terms")
+    if summary_terms:
+        summary = (data.get("analysis") or {}).get("summary", "")
+        ratio = hit_ratio(summary, summary_terms)
+        checks.append({
+            "layer": "l1",
+            "metric": "summary_terms",
+            "passed": ratio >= 1.0,
+            "detail": f"summary keyword hit {ratio:.0%}: {summary[:80]}",
+        })
+
+    schema = l1.get("schema")
+    if schema:
+        violations = check_schema(data, schema)
+        checks.append({
+            "layer": "l1",
+            "metric": "schema",
+            "passed": not violations,
+            "detail": f"violations: {violations or 'none'}",
+        })
+
+    judge = _get_judge()
+    l3 = expect.get("l3", {})
+    rubric = l3.get("rubric")
+    if rubric:
+        min_score = l3.get("min_score", 3)
+        if judge is None:
+            checks.append({
+                "layer": "l3",
+                "metric": "rubric",
+                "passed": True,
+                "detail": (
+                    f"skipped: judge unavailable ({_judge_error or 'unknown'})"
+                ),
+            })
+        else:
+            question = body.get("question") or "请分析"
+            answer = data.get("answer", "")
+            out = await judge_rubric(question, answer, rubric, judge)
+            checks.append({
+                "layer": "l3",
+                "metric": "rubric",
+                "passed": out["score"] >= min_score,
+                "detail": (
+                    f"score={out['score']:.1f}/5, min {min_score}: "
+                    f"{out['reason']}"
+                ),
+            })
+
+    passed = all(c["passed"] for c in checks)
+    allure.attach(
+        json.dumps(
+            {"id": case["id"], "request": body, "response": data, "checks": checks},
+            indent=2,
+            ensure_ascii=False,
+        ),
+        name="analysis-chat-result",
+        attachment_type=allure.attachment_type.JSON,
+    )
+    return {
+        "passed": passed,
+        "skipped_all": False,
+        "checks": checks,
+        "detail": "; ".join(c["detail"] for c in checks),
+    }

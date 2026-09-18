@@ -1,10 +1,11 @@
 """L3 LLM-as-judge client and rubric scoring.
 
-The judge client talks to the DeepSeek OpenAI-compatible API directly
+The judge client talks to any OpenAI-compatible chat-completions API
 (openai SDK, already an automation dependency), independent of ai.core.
-Configuration mirrors ai/.env: DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL /
-DEEPSEEK_MODEL. Missing config or SDK raises JudgeUnavailableError so
-callers can skip gracefully.
+Generic configuration: LLM_API_KEY / LLM_BASE_URL / LLM_MODEL.
+DeepSeek-specific variables remain as a backward-compatible fallback.
+Missing config or SDK raises JudgeUnavailableError so callers can skip
+gracefully.
 """
 
 import json
@@ -48,25 +49,42 @@ class LLMJudgeClient:
         model: str = DEFAULT_MODEL,
         timeout: float = 60.0,
         temperature: float = 0.0,
+        default_headers: Optional[Dict[str, str]] = None,
     ):
         try:
             from openai import AsyncOpenAI
         except ImportError as e:  # pragma: no cover - env dependent
             raise JudgeUnavailableError(f"openai SDK not installed: {e}")
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            default_headers=default_headers,
+        )
         self.model = model
         self.temperature = temperature
 
     @classmethod
     def from_env(cls, project_root: Optional[str] = None) -> "LLMJudgeClient":
         _load_env(project_root)
-        api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("LLM_API_KEY")
+        api_key = os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
-            raise JudgeUnavailableError("DEEPSEEK_API_KEY not configured")
+            raise JudgeUnavailableError("LLM_API_KEY or DEEPSEEK_API_KEY not configured")
+        headers: Dict[str, str] = {}
+        raw_headers = os.getenv("LLM_EXTRA_HEADERS_JSON")
+        if raw_headers:
+            headers.update(json.loads(raw_headers))
+        session_id = os.getenv("LLM_SESSION_ID")
+        if session_id:
+            headers["x-opencode-session"] = session_id
+        user_agent = os.getenv("LLM_USER_AGENT")
+        if user_agent:
+            headers["User-Agent"] = user_agent
         return cls(
             api_key=api_key,
-            base_url=os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL),
-            model=os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+            base_url=os.getenv("LLM_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL),
+            model=os.getenv("LLM_MODEL") or os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL),
+            default_headers=headers or None,
         )
 
     async def complete(

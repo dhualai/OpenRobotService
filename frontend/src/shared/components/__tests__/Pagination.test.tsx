@@ -59,7 +59,7 @@ describe('Pagination', () => {
       <Pagination current={3} total={50} pageSize={10} onChange={() => {}} />
     );
     const currentBtn = screen.getByText('3');
-    expect(currentBtn).toHaveStyle({ background: '#0052d9', color: '#fff' });
+    expect(currentBtn).toHaveStyle({ background: 'var(--mac-blue-2)', color: '#fff' });
   });
 
   it('should not highlight non-current pages', () => {
@@ -67,6 +67,6 @@ describe('Pagination', () => {
       <Pagination current={1} total={50} pageSize={10} onChange={() => {}} />
     );
     const otherBtn = screen.getByText('2');
-    expect(otherBtn).toHaveStyle({ color: '#333' });
+    expect(otherBtn).toHaveStyle({ color: 'var(--mac-fg)' });
   });
 });

@@ -21,6 +21,7 @@ from .schemas import (
     AnalysisRequest,
     AnalysisResult,
     ChatResponse,
+    ChatContextMeta,
     HealthResponse,
     QuickChatRequest,
 )
@@ -54,6 +55,41 @@ def reset_agent() -> None:
     """重置 Agent 单例（用于测试或配置变更后重新初始化）。"""
     global _agent
     _agent = None
+
+
+def _merge_chat_context(request: QuickChatRequest) -> dict:
+    """按“显式参数优先，context_meta 补空位”合并聊天上下文。"""
+    meta: ChatContextMeta | None = request.context_meta
+    explicit = getattr(request, "model_fields_set", set())
+
+    def pick(field_name: str):
+        if field_name in explicit:
+            return getattr(request, field_name)
+        if meta is not None:
+            return getattr(meta, field_name)
+        return getattr(request, field_name)
+
+    context_parts: list[str] = []
+    if request.context:
+        context_parts.append(request.context)
+    if meta is not None:
+        if meta.scene:
+            context_parts.append(f"当前页面场景：{meta.scene}")
+        if meta.project_name:
+            context_parts.append(f"当前页面项目：{meta.project_name}")
+
+    return {
+        "question": request.question,
+        "context": "\n".join(context_parts) if context_parts else None,
+        "data": request.data,
+        "data_source": request.data_source,
+        "analysis_type": pick("analysis_type"),
+        "project_code": pick("project_code"),
+        "user_id": pick("user_id"),
+        "period": pick("period"),
+        "date": pick("date"),
+        "conversation_id": request.conversation_id,
+    }
 
 
 # -- 路由端点 -------------------------------------------------------
@@ -119,18 +155,94 @@ async def analyze_data(request: AnalysisRequest):
 
 @router.post("/chat", response_model=ChatResponse, summary="快速对话")
 async def quick_chat(request: QuickChatRequest) -> ChatResponse:
-    """快速对话问答（无数据分析，纯文本交互）。"""
+    """快速对话问答。
+
+    - 仅传 question/context：自动识别是普通聊天还是数据分析。
+    - 传 data：执行带数据上下文的分析问答。
+    - 不传 data：自动解析指标意图（AnalysisPlan），按需查库分析；
+      信息不足时返回 clarify 追问（配合 conversation_id 多轮补充）。
+        - 未显式传范围参数时，可由 context_meta 补充页面上下文。
+    """
     agent = get_agent()
     try:
-        return await agent.chat(
-            question=request.question,
-            context=request.context,
-        )
+        payload = _merge_chat_context(request)
+        return await agent.chat(**payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.exception("对话失败")
         raise HTTPException(status_code=500, detail="对话服务内部错误") from exc
+
+
+@router.post("/chat/stream", summary="快速对话（流式 SSE）")
+async def quick_chat_stream(request: QuickChatRequest):
+    """快速对话问答（流式）。与 /chat 同语义，事件流输出。
+
+    SSE 事件协议（data 字段为 JSON）：
+        {"type":"meta","mode":"analysis|clarify|chat","plan":{...},
+         "charts":[...],"cards":[...],"suggestions":[...],"conversation_id":"..."}
+        {"type":"delta","content":"..."}   逐块回答文本
+        {"type":"done","conversation_id":"...","mode":"..."}
+        {"type":"error","error":"..."}
+    """
+    agent = get_agent()
+    payload = _merge_chat_context(request)
+    # chat_stream 不接收 period/date（指标对话流程由 plan 决定时间范围）
+    payload.pop("period", None)
+    payload.pop("date", None)
+
+    async def stream_generator():
+        try:
+            async for event in agent.chat_stream(**payload):
+                yield "data: " + json.dumps(event, ensure_ascii=False) + _SSE_NEWLINE
+        except ValueError as exc:
+            yield "data: " + json.dumps(
+                {"type": "error", "error": str(exc)}, ensure_ascii=False
+            ) + _SSE_NEWLINE
+        except Exception:
+            logger.exception("流式对话失败")
+            yield "data: " + json.dumps(
+                {"type": "error", "error": "对话服务内部错误"}, ensure_ascii=False
+            ) + _SSE_NEWLINE
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/chat/agentic/stream", summary="Agentic 自由对话（流式 SSE，LLM 主导+工具调用）")
+async def agentic_chat_stream(request: QuickChatRequest):
+    """Agentic 流式对话：LLM 自主决定聊天或调用工具查询平台数据。
+
+    与 /chat/stream 同 SSE 事件协议（meta → delta* → done / error）。
+    不传 data 时进入 agentic 流程（指标问题自动查库，闲聊自由回答）；
+    传 data 或 LLM 客户端无工具能力时自动降级到既有 /chat/stream 流程。
+    """
+    agent = get_agent()
+    payload = _merge_chat_context(request)
+    # agentic_chat_stream 不接收 period/date（时间范围由工具参数决定）
+    payload.pop("period", None)
+    payload.pop("date", None)
+
+    async def stream_generator():
+        try:
+            async for event in agent.agentic_chat_stream(**payload):
+                yield "data: " + json.dumps(event, ensure_ascii=False) + _SSE_NEWLINE
+        except ValueError as exc:
+            yield "data: " + json.dumps(
+                {"type": "error", "error": str(exc)}, ensure_ascii=False
+            ) + _SSE_NEWLINE
+        except Exception:
+            logger.exception("agentic 流式对话失败")
+            yield "data: " + json.dumps(
+                {"type": "error", "error": "对话服务内部错误"}, ensure_ascii=False
+            ) + _SSE_NEWLINE
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/types", summary="分析类型列表")

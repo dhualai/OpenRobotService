@@ -15,7 +15,7 @@ legacy tickets 表，本模块让 AI 改为读写 tasks 表，与 backend 工单
 import hashlib
 
 from app.core.db import SessionLocal
-from app.models.task import Task, TaskStatus, TaskPriority, TaskType, TaskOperationLog, OperationType
+from app.models.task import Task, TaskStatus, TaskPriority, TaskType, TaskOperationLog, OperationType, TaskStep
 from app.core.database import db_manager
 
 
@@ -83,6 +83,8 @@ _TICKET_META_FIELD_MAP = {
     "severity": "severity", "version": "version",
     "scenario": "scenario", "expected_effect": "expected_effect",
     "support_type": "support_type", "preferred_response": "preferred_response",
+    # 派单提示（信息充分性信号，提单 LLM 输出 lacking/severe，信息充分不写键）
+    "dispatch_hint": "dispatch_hint",
 }
 
 
@@ -107,6 +109,40 @@ def _type_to_enum(value):
     return _TYPE_TO_ENUM.get((value or "other").strip(), TaskType.OTHER)
 
 
+def _parse_naive_utc(value) -> "datetime | None":
+    """ISO 字符串 → naive UTC datetime（剥时区）。
+
+    前端 toISOString() 带时区后缀（如 2026-08-13T10:00:00.000Z，UTC）。
+    DB 已强制会话 UTC（db.py 的 _ensure_utc_session），naive DateTime 列统一存 UTC，
+    故 aware datetime 转 UTC 后剥时区即可（不能 +8，否则前端补 Z 会双重 +8）。
+    解析失败返回 None。
+    """
+    if not value:
+        return None
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        _d = _dt.fromisoformat(str(value).replace("Z", "+00:00"))
+        if _d.tzinfo is not None:
+            _d = _d.astimezone(_tz.utc).replace(tzinfo=None)
+        return _d
+    except Exception:
+        return None
+
+
+def _resolve_step_name(step_id) -> "str | None":
+    """按 curr_step_id 反查 task_steps 模板的 step_name（防前端传名被篡改）。"""
+    if step_id is None:
+        return None
+    db = SessionLocal()
+    try:
+        row = db.query(TaskStep).filter(TaskStep.id == step_id).first()
+        return row.step_name if row else None
+    except Exception:
+        return None
+    finally:
+        db.close()
+
+
 def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     """ticket dict → 可 Task(**fields) 的字段字典（不含 id / 时间戳，交给 server_default）。"""
     meta = {
@@ -120,25 +156,14 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     for tk, mk in _TICKET_META_FIELD_MAP.items():
         if ticket.get(tk):
             meta[mk] = ticket[tk]
+    # 远程方式（前端弹窗透传）：写入 metadata_info.remote_type，便于详情页展示/后续筛选。
+    # 路径：ChatPanel 转工单确认弹窗 / 系统任务新建弹窗 → overrides.attachments+remote_type
+    # → ticket_dict_to_task_fields 落库。值约定：todesk / sunflower / other / ''。
+    if ticket.get("remote_type"):
+        meta["remote_type"] = ticket["remote_type"]
     # feature 类型的 source 存为 feature_source，避开 Task.source 列名
     if ticket.get("type") == "feature" and ticket.get("source"):
         meta["feature_source"] = ticket["source"]
-
-    # 截止时间：弹窗编辑值（ISO 字符串）→ Task.deadline_at（DateTime 列）。
-    # 前端 toISOString() 带时区后缀（如 2026-08-13T10:00:00.000Z，UTC 时间）。
-    # DB 已强制会话 UTC（db.py 的 _ensure_utc_session），naive DateTime 列统一存 UTC，
-    # 故 aware datetime 直接转 UTC 后剥时区即可，不再转 +8（否则前端补 Z 会双重 +8）。
-    deadline = None
-    _dl_raw = ticket.get("deadline_at")
-    if _dl_raw:
-        try:
-            from datetime import datetime as _dt, timezone as _tz
-            _dl = _dt.fromisoformat(str(_dl_raw).replace("Z", "+00:00"))
-            if _dl.tzinfo is not None:
-                _dl = _dl.astimezone(_tz.utc).replace(tzinfo=None)
-            deadline = _dl
-        except Exception:
-            deadline = None
 
     ext_id = _external_id_for(ticket.get("session_id", ""))
     # 同一会话多次转单时，ticket_seq 确保 external_id 唯一
@@ -146,6 +171,24 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         ext_id = f"{ext_id}#{ticket['ticket_seq']}"
     from app.core.user_identity import to_user_id
     created_by_id = to_user_id(created_by) or created_by or ""
+
+    # 协商阶段（当前步骤）：提单弹窗必填，前端传 curr_step_id；step_name 由后端
+    # 按 id 反查 task_steps 模板补齐（防前端传名被篡改/与模板不一致）。
+    # curr_step_endtime 为阶段完成时间（SLA），前端 ISO 字符串 → naive UTC DateTime。
+    curr_step_id = None
+    curr_step_name = None
+    _sid_raw = ticket.get("curr_step_id")
+    if _sid_raw:
+        try:
+            curr_step_id = int(_sid_raw)
+        except (TypeError, ValueError):
+            curr_step_id = None
+    if curr_step_id is not None:
+        curr_step_name = _resolve_step_name(curr_step_id)
+    curr_step_endtime = _parse_naive_utc(ticket.get("curr_step_endtime"))
+    # deadline_at 对用户不可见，镜像 curr_step_endtime（阶段截止时间）；显式传了 deadline_at 则优先。
+    deadline = _parse_naive_utc(ticket.get("deadline_at")) or curr_step_endtime
+
     return {
         "title": ticket.get("title", "") or "",
         "description": ticket.get("description", "") or "",
@@ -162,6 +205,9 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         "tags": ["ai_generated"],
         "metadata_info": meta,
         "deadline_at": deadline,
+        "curr_step_id": curr_step_id,
+        "curr_step_name": curr_step_name,
+        "curr_step_endtime": curr_step_endtime,
     }
 
 
@@ -222,8 +268,17 @@ def task_to_dict(task: Task) -> dict:
         "created_by_name": created_by_name,
         "assigned_to": assigned_to,
         "assigned_to_name": assigned_to_name,
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
+        # 创建/更新时间：DateTime → 显式 ISO 字符串（与 deadline_at 同口径），
+        # 避免依赖 FastAPI 隐式序列化 naive datetime（无时区后缀、口径不统一）。
+        "created_at": task.created_at.isoformat() if task.created_at else "",
+        "updated_at": task.updated_at.isoformat() if task.updated_at else "",
+        # 当前步骤：关联 task_steps 模板，名称/结束时间冗余存 tasks 行便于直接展示
+        "curr_step_id": task.curr_step_id if hasattr(task, "curr_step_id") else None,
+        "curr_step_name": task.curr_step_name if hasattr(task, "curr_step_name") else None,
+        "curr_step_endtime": (
+            task.curr_step_endtime.isoformat()
+            if hasattr(task, "curr_step_endtime") and task.curr_step_endtime else None
+        ),
     }
 
 
@@ -250,12 +305,19 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
             # 弹窗编辑的截止时间：None 表示用户没选（保持原值），非 None 才更新
             if fields.get("deadline_at") is not None:
                 existing.deadline_at = fields["deadline_at"]
+            # 协商阶段：curt_step_* 直接覆盖（提单时确定，重复 submit 幂等更新为最新选择）
+            existing.curr_step_id = fields.get("curr_step_id")
+            existing.curr_step_name = fields.get("curr_step_name")
+            if fields.get("curr_step_endtime") is not None:
+                existing.curr_step_endtime = fields["curr_step_endtime"]
             # 如果传入的 created_by 非空且比已有值更准确（非 system/unknown），则更新
             if created_by and existing.created_by in ("system", "unknown", ""):
                 from app.core.user_identity import to_user_id
                 existing.created_by = to_user_id(created_by) or created_by
             db.commit()
             db.refresh(existing)
+            # 问题文档：不存在则创建（已存在不覆盖，保护接单人的补充）
+            _create_spec_doc_if_absent(db, existing.id, ticket.get("spec_doc"), created_by)
             db.expunge(existing)  # 脱离 session，避免返回后 DetachedInstanceError
             return existing
         rec = Task(**fields)
@@ -264,6 +326,8 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
         db.refresh(rec)
         # 写入操作日志：创建工单 + 初始状态变更（source='ai' 的工单也补日志）
         _log_task_creation(db, rec, created_by)
+        # 问题文档落库（提单时上传/在线编写的完整问题文档）
+        _create_spec_doc_if_absent(db, rec.id, ticket.get("spec_doc"), created_by)
         # _log_task_creation 内部的 commit 会过期 rec 的属性，需先 refresh 再 expunge，
         # 否则返回后调用方访问 record.id 会触发 DetachedInstanceError（首次提单报错、二次成功）
         db.refresh(rec)
@@ -271,6 +335,74 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
         return rec
     finally:
         db.close()
+
+
+def rename_chat_record_attachments(task_id: int) -> bool:
+    """入库后把对话记录附件 filename 改为「工单{task_id}对话记录.{ext}」。
+    附件生成于入库前（拿不到工单 id），filename 先用日期占位（对话记录_YYYYMMDD.md）
+    ——同一天多张工单的附件同名，下载时无法区分（0907 派单同事反馈）。入库拿到
+    task_id 后回改显示名；MinIO object_path 不动。失败仅记日志，不影响工单。"""
+    try:
+        from pathlib import Path as _P
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if not task or not task.attachments:
+                return False
+            atts = [dict(a) if isinstance(a, dict) else a for a in task.attachments]
+            hit = False
+            for a in atts:
+                if isinstance(a, dict) and (a.get("filename") or "").startswith("对话记录_"):
+                    ext = _P(a["filename"]).suffix or ".md"
+                    a["filename"] = f"工单{task_id}对话记录{ext}"
+                    hit = True
+            if not hit:
+                return False
+            task.attachments = atts  # JSON 列纪律：整体替换
+            db.commit()
+            return True
+        finally:
+            db.close()
+    except Exception:
+        return False
+
+
+def _create_spec_doc_if_absent(db, task_id, spec_doc, created_by: str = "") -> None:
+    """提单时若带「问题文档」，落 task_spec_doc（仅当不存在）。
+
+    已存在则跳过：重复提单/接单人已编辑时绝不覆盖协作内容（详见设计评审结论）。
+    失败不阻塞主流程（任务已入库），仅记日志。
+    """
+    if not spec_doc or not isinstance(spec_doc, dict):
+        return
+    content = (spec_doc.get("content") or "").strip()
+    if not content:
+        return
+    try:
+        from app.models.task import TaskSpecDoc
+        existing = db.query(TaskSpecDoc).filter(TaskSpecDoc.task_id == task_id).first()
+        if existing:
+            return
+        db.add(TaskSpecDoc(
+            task_id=task_id,
+            content=content,
+            content_type="markdown",
+            source=spec_doc.get("source") or "inline",
+            source_files=spec_doc.get("source_files") or [],
+            revision=1,
+            created_by=created_by or "",
+            updated_by=created_by or "",
+        ))
+        db.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[task_adapter] 写入问题文档失败 task={task_id}: {e}"
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def _log_task_creation(db, task: Task, created_by: str) -> None:
@@ -314,32 +446,6 @@ def _log_task_creation(db, task: Task, created_by: str) -> None:
             pass
 
 
-def update_task_resolution(task_id, solution: dict, resolution: str = "resolved") -> bool:
-    """任务 Agent submit：置状态 + 把方案写进 metadata_info.diagnosis。
-
-    metadata_info 整体替换（JSON 列不感知就地修改）。
-    """
-    db = SessionLocal()
-    try:
-        task = db.query(Task).filter(Task.id == int(task_id)).first()
-        if not task:
-            return False
-        try:
-            task.status = TaskStatus(resolution)
-        except ValueError:
-            task.status = TaskStatus.RESOLVED
-        meta = dict(task.metadata_info or {})
-        diag = dict(meta.get("diagnosis") or {})
-        diag["solution"] = solution
-        diag["resolved_by_agent"] = True
-        meta["diagnosis"] = diag
-        task.metadata_info = meta
-        db.commit()
-        return True
-    finally:
-        db.close()
-
-
 def load_task_context_dict(task_id) -> dict:
     """任务 Agent _load_task_context：读 task + 解构 diagnosis。
 
@@ -358,6 +464,13 @@ def load_task_context_dict(task_id) -> dict:
         base["ruled_out"] = diag.get("ruled_out") or []
         base["collected_info"] = diag.get("collected_info") or {}
         base["diagnosis_rounds"] = diag.get("rounds", 0)
+
+        # 工程师填写的解决方式与 AI 讨论摘要（存于 metadata_info 顶层，非 diagnosis 内）：
+        # resolution_summary 是「结束工单」时工程师填写的真实解决方式（唯一实际写入来源），
+        # ai_summary 是 AI 讨论摘要。@# 引用读取解决方式必须从这里取，而非 diagnosis.solution。
+        meta = task.metadata_info or {}
+        base["resolution_summary"] = meta.get("resolution_summary", "")
+        base["ai_summary"] = meta.get("ai_summary", "")
 
         # 合并最近评论（task_comments）上传的附件，复用 _dedup_attachments 去重
         comment_atts = _collect_comment_attachments(db, int(task_id))

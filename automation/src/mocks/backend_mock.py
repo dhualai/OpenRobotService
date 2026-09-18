@@ -42,6 +42,12 @@ _DEFAULT_USERS = {
     "customer": {"id": "u003", "username": "customer", "password": "cust123",
                  "name": "test customer", "role": "customer",
                  "permissions": ["task:read"]},
+    "u1_auto": {"id": "u101", "username": "u1_auto", "password": "123456",
+                "name": "自动化提单用户", "role": "customer",
+                "permissions": ["task:read"]},
+    "u2_auto": {"id": "u102", "username": "u2_auto", "password": "123456",
+                "name": "自动化处理人", "role": "engineer",
+                "permissions": ["task:read", "task:write"]},
 }
 
 
@@ -180,6 +186,10 @@ class MockBackend:
                 return self._handle_task_assign(tid, body, request)
             if sub == "/ai-assign" and method == "POST":
                 return self._handle_ai_assign(tid)
+            if sub == "/respond" and method == "POST":
+                return self._handle_task_respond(tid, body)
+            if sub == "/complete-step" and method == "POST":
+                return self._handle_task_complete_step(tid, body)
             e = self._get_task_or_404(tid)
             if e:
                 return e
@@ -239,7 +249,8 @@ class MockBackend:
         task["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
         return httpx.Response(200, json=dict(task))
 
-    _ALLOWED = {"pending": ["in_progress", "cancelled"], "in_progress": ["resolved", "cancelled"],
+    _ALLOWED = {"new": ["in_progress", "cancelled"],
+                "pending": ["in_progress", "cancelled"], "in_progress": ["resolved", "cancelled"],
                 "resolved": ["closed"], "closed": [], "cancelled": []}
 
     def _handle_task_status(self, tid, body):
@@ -248,8 +259,15 @@ class MockBackend:
         allowed = self._ALLOWED.get(task["status"], [])
         if new_status not in allowed:
             return httpx.Response(400, json={"detail": f"Invalid transition: {task['status']} -> {new_status}. Allowed: {allowed}"})
+        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
         task["status"] = new_status
-        task["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        task["updated_at"] = now
+        if "resolution_summary" in body:
+            task["resolution_summary"] = body["resolution_summary"]
+        if new_status == "resolved":
+            task["resolved_at"] = now
+        if new_status == "closed":
+            task["closed_at"] = now
         return httpx.Response(200, json=dict(task))
 
     def _handle_task_assign(self, tid, body, request):
@@ -275,12 +293,47 @@ class MockBackend:
         self._comments.pop(tid, None)
         return httpx.Response(204)
 
+    _MOCK_STEP_NAMES = {1: "初步诊断", 2: "临时解决", 3: "最终解决"}
+
+    def _handle_task_respond(self, tid, body):
+        e = self._get_task_or_404(tid)
+        if e:
+            return e
+        task = self._tasks[tid]
+        if task.get("status") == "new":
+            task["status"] = "in_progress"
+        step_id = body.get("curr_step_id", task.get("curr_step_id", 1))
+        task["curr_step_id"] = int(step_id)
+        task["curr_step_name"] = self._MOCK_STEP_NAMES.get(int(step_id), f"阶段{step_id}")
+        task["curr_step_agreed"] = True
+        task["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        return httpx.Response(200, json=dict(task))
+
+    def _handle_task_complete_step(self, tid, body):
+        e = self._get_task_or_404(tid)
+        if e:
+            return e
+        task = self._tasks[tid]
+        if not task.get("curr_step_agreed"):
+            return httpx.Response(400, json={"detail": "当前阶段尚未协商一致"})
+        next_step_id = body.get("next_step_id")
+        if next_step_id is None:
+            return httpx.Response(400, json={"detail": "next_step_id is required"})
+        task["curr_step_id"] = int(next_step_id)
+        task["curr_step_name"] = self._MOCK_STEP_NAMES.get(int(next_step_id), f"阶段{next_step_id}")
+        task["curr_step_agreed"] = False
+        task["curr_step_endtime"] = body.get("curr_step_endtime")
+        task["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        return httpx.Response(200, json=dict(task))
+
     def _handle_task_filter(self, body):
         rs = list(self._tasks.values())
         if body.get("status"):
             rs = [t for t in rs if t["status"] == body["status"]]
         if body.get("priority"):
             rs = [t for t in rs if t["priority"] == body["priority"]]
+        if body.get("assigned_to"):
+            rs = [t for t in rs if t.get("assigned_to") == body["assigned_to"]]
         if body.get("keyword"):
             kw = body["keyword"].lower()
             rs = [t for t in rs if kw in t["title"].lower() or kw in t["description"].lower()]
@@ -751,6 +804,14 @@ class MockBackend:
             return self._handle_qa_submit(body, request)
         if rest == "/qa/ticket/ack" and method == "POST":
             return self._handle_ticket_ack(body)
+        if rest == "/qa/ask/stream" and method == "POST":
+            return self._handle_ai_qa_stream(body)
+        if rest == "/qa/ticket/prepare" and method == "POST":
+            return self._handle_ai_ticket_prepare(body)
+        if rest == "/qa/ticket/steps" and method == "GET":
+            return self._handle_ai_ticket_steps(body)
+        if rest == "/qa/ticket/confirm" and method == "POST":
+            return self._handle_ai_ticket_confirm(body, request)
         if rest == "/task/analyze" and method == "POST":
             return self._handle_ai_analyze(body)
         if rest == "/task/analyze/stream" and method == "POST":
@@ -772,6 +833,98 @@ class MockBackend:
         if rest == "/task/health" and method == "GET":
             return self._handle_ai_health()
         return httpx.Response(404)
+
+    def _mock_ticket_draft(self) -> dict:
+        return {
+            "type": "problem",
+            "ticket_type": "problem",
+            "title": "自动化链路验证-Mock",
+            "description": "[指定处理人：自动化处理人] 机器人无法启动，故障码 E1001，已尝试重启仍无效。",
+            "priority": "中",
+            "project": "摇人吧服务号-测试",
+            "project_id": "Leo_test",
+            "requested_assignee": "自动化处理人",
+            "curr_step_id": 1,
+            "curr_step_name": "初步诊断",
+        }
+
+    def _handle_ai_qa_stream(self, body):
+        draft = self._mock_ticket_draft()
+        payload = (
+            "event: status\n"
+            f"data: {json.dumps({'stage': 'draft_ready', 'draft': draft, 'ticket_ready': True}, ensure_ascii=False)}\n\n"
+            "event: done\n"
+            f"data: {json.dumps({'total_ms': 10}, ensure_ascii=False)}\n\n"
+        )
+        return httpx.Response(200, text=payload, headers={"content-type": "text/event-stream"})
+
+    def _handle_ai_ticket_prepare(self, body):
+        draft = self._mock_ticket_draft()
+        return httpx.Response(200, json={
+            "code": 0,
+            "data": {
+                "stage": "draft_ready",
+                "draft": draft,
+                "missing_fields": [],
+                "prompt": "工单草稿已生成",
+                "ticket_ready": True,
+            },
+        })
+
+    def _handle_ai_ticket_steps(self, body):
+        return httpx.Response(200, json={
+            "code": 0,
+            "data": {
+                "steps": [
+                    {"id": 1, "step_name": "初步诊断", "sequence": 1},
+                    {"id": 2, "step_name": "临时解决", "sequence": 2},
+                    {"id": 3, "step_name": "最终解决", "sequence": 3},
+                ],
+            },
+        })
+
+    def _handle_ai_ticket_confirm(self, body, request):
+        draft = self._mock_ticket_draft()
+        draft.update(body.get("overrides") or {})
+        user = self._get_user_from_token(request)
+        tid = self._task_id_counter
+        self._task_id_counter += 1
+        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        task = {
+            "id": tid,
+            "title": draft.get("title"),
+            "description": draft.get("description"),
+            "ticket_type": "problem",
+            "priority": draft.get("priority", "中"),
+            "status": "new",
+            "created_by": user["username"] if user else "u1_auto",
+            "created_by_name": user["name"] if user else "自动化提单用户",
+            "assigned_to": "u2_auto",
+            "assigned_to_name": "自动化处理人",
+            "project_name": draft.get("project", "摇人吧服务号-测试"),
+            "project_id": draft.get("project_id", "Leo_test"),
+            "source": "ai",
+            "curr_step_id": 1,
+            "curr_step_name": "初步诊断",
+            "curr_step_agreed": False,
+            "curr_step_endtime": draft.get("curr_step_endtime"),
+            "resolution_summary": None,
+            "tags": [],
+            "metadata_info": {},
+            "attachments": [],
+            "created_at": now,
+            "updated_at": now,
+            "resolved_at": None,
+            "closed_at": None,
+            "reply_count": 0,
+            "view_count": 0,
+        }
+        self._tasks[tid] = task
+        self._comments[tid] = []
+        return httpx.Response(200, json={
+            "code": 0,
+            "data": {"ticket": dict(task), "db_id": tid, "notice": "Mock 工单已创建"},
+        })
 
     def _seed_default_resources(self):
         """Seed default resources for data-driven parametrize tests."""

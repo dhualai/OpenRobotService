@@ -5,6 +5,7 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { formatDateTime } from '@/shared/utils/url';
 import { normalizeList } from '@/shared/utils/list';
+import { readStored } from '@/stores/authStorage';
 
 interface ResourceItem { id: string; name: string; type: 'file' | 'folder'; size?: number; updated_at: string; }
 
@@ -32,8 +33,9 @@ export default function ResourceManage() {
       setPath(newPath);
       fetchItems(newPath);
     } else {
-      // 触发文件下载
-      window.open(`${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${item.id}/download`, '_blank');
+      // 触发文件下载（window.open 无法带 Authorization 头，token 走查询参数，与任务附件下载一致）
+      const token = encodeURIComponent(readStored('AUTH_TOKEN') || '');
+      window.open(`${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${item.id}/download?token=${token}`, '_blank');
     }
   };
 

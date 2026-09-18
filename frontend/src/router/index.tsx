@@ -17,6 +17,7 @@ const DownloadRedirect = lazy(() => import('@/pages/DownloadRedirect'));
 // Admin
 const Dashboard = lazy(() => import('@/pages/admin/Dashboard'));
 const AdminEntries = lazy(() => import('@/pages/admin/AdminEntries'));
+const DispatchDev = lazy(() => import('@/pages/admin/DispatchDev'));
 const AdminLayout = lazy(() => import('@/shared/components/AdminLayout'));
 
 // 仪表盘下钻明细
@@ -24,6 +25,8 @@ const TicketStatusDetail = lazy(() => import('@/pages/admin/TicketStatusDetail')
 const ProjectCategoryDetail = lazy(() => import('@/pages/admin/ProjectCategoryDetail'));
 const ProjectDetail = lazy(() => import('@/pages/admin/ProjectDetail'));
 const TransportEfficiency = lazy(() => import('@/pages/admin/TransportEfficiency'));
+// 项目信息管理（项目详细信息）编辑页：项目详情卡右上角「编辑」进入
+const ProjectInfoEdit = lazy(() => import('@/pages/admin/ProjectInfoEdit'));
 
 // 三大核心功能（明细列表页）
 const TicketMonitor = lazy(() => import('@/pages/admin/TicketMonitor'));
@@ -87,6 +90,8 @@ export const router = createBrowserRouter([
           // 项目详情：点击项目管理列表条目后展示（原样复用项目详情设计稿，见 pages/admin/ProjectDetail.tsx）
           { path: 'project-detail/:id', element: <ProjectDetail /> },
           { path: 'project-detail/:id/transport-efficiency', element: <TransportEfficiency /> },
+          // 编辑项目信息（信息树编辑页）：与详情页同为直挂路由（无 AdminLayout 导航壳）
+          { path: 'project-detail/:id/edit', element: <ProjectInfoEdit /> },
           // 次级入口：三大功能传统列表页 + 管理员工具
           { path: 'entries', element: <AdminEntries /> },
           {
@@ -101,6 +106,7 @@ export const router = createBrowserRouter([
               { path: 'dashboard', element: <ProjectMetrics /> },
               { path: 'data-import', element: <DataImport /> },
               { path: 'operation-logs', element: <OperationLogs /> },
+              { path: 'dispatch-dev', element: <DispatchDev /> },
               // { path: 'progress', element: <ProgressBoard /> },       // 已并入 ProjectProgress
               // { path: 'personnel', element: <PersonnelBoard /> },     // 已从导航移除
               { path: 'project-edit/:id?', element: <ProjectEdit /> },

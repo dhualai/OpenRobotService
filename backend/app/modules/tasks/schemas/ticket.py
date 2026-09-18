@@ -47,8 +47,14 @@ class TicketUpdate(BaseModel):
     attachments: Optional[List[AttachmentItem]] = Field(None, description="附件列表")
     resolved_at: Optional[datetime] = Field(None, description="解决时间")
     deadline_at: Optional[datetime] = Field(None, description="截止时间")
+    curr_step_endtime: Optional[datetime] = Field(None, description="当前阶段截止时间（更新时同步 deadline_at，对用户不可见）")
     # 用于操作日志识别，不入库
     operation_type: Optional[str] = Field(None, description="操作类型：escalate/return/reassign/update")
+    reassign_kind: Optional[str] = Field(
+        None,
+        description="转派类型：misassign=派错了 / stage=阶段转派 / other=其它。仅 misassign 进入派单学习",
+    )
+    reassign_reason: Optional[str] = Field(None, description="转派原因（选填；有则落日志，并再写一条评论给人看）")
 
 
 class TicketCommentBase(BaseModel):
@@ -79,6 +85,7 @@ class TicketCommentResponse(TicketCommentBase):
     ticket_id: int
     created_by: str
     created_by_name: Optional[str] = None
+    created_by_avatar_resource_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     quoted: Optional[QuotedComment] = Field(None, description="被引用评论的简要信息")
@@ -87,9 +94,57 @@ class TicketCommentResponse(TicketCommentBase):
         from_attributes = True
 
 
+class RedispatchCandidate(BaseModel):
+    """R2 重派弹窗候选（精排 Top10 快照）"""
+    rank: int = Field(..., description="按权重顺序的排名")
+    engineer_id: str = Field(..., description="工程师 users.id")
+    name: str = Field(..., description="工程师姓名")
+    department: Optional[str] = Field(None, description="部门")
+    job_level: Optional[int] = Field(None, description="职级")
+    modules: Optional[List[str]] = Field(None, description="责任模块")
+    duty: Optional[str] = Field(None, description="职责一句话")
+    # 画像缺失英文字段（department/job_level/responsibility_modules），供前端权威判定"待补充画像"
+    missing: Optional[List[str]] = Field(None, description="缺失画像字段（全空数组=画像完整）")
+    scores: Optional[Dict[str, float]] = Field(None, description="各维度分 {llm,semantic,history,total}")
+    tags: Optional[List[str]] = Field(None, description="标记如 项目对接人/上次倾向")
+
+
+class RedispatchProfile(BaseModel):
+    """被派人画像 + 完整性"""
+    dept: Optional[str] = None
+    job_level: Optional[int] = None
+    modules: Optional[List[str]] = None
+    duty: Optional[str] = None
+    missing: Optional[List[str]] = Field(None, description="缺失画像字段（缺则为空数组）")
+
+
+class RedispatchResult(BaseModel):
+    """R3 派单结果信息（结果卡片/提醒数据源）"""
+    assigned_id: str = Field(..., description="实际接单人 users.id")
+    assigned_name: Optional[str] = Field(None, description="实际接单人姓名")
+    preferred_id: Optional[str] = Field(None, description="意向处理人 users.id（首次派单可为 None）")
+    preferred_name: Optional[str] = Field(None, description="意向处理人姓名")
+    confidence: Optional[float] = Field(None, description="置信度（拼音命中略降 0.85）")
+    decision_type: Optional[str] = Field(None, description="auto/recommend/fallback")
+    reasoning: Optional[str] = Field(None, description="派单理由")
+    profile: Optional[RedispatchProfile] = Field(None, description="被派人画像+缺失字段（R4 补画像用）")
+    matched_pref: Optional[bool] = Field(None, description="是否派到意向人")
+    name_collision: Optional[bool] = Field(None, description="是否同名命中（同名提醒）")
+    pinyin_match: Optional[bool] = Field(None, description="是否拼音近似名命中（近似名提醒）")
+    tip_detail: Optional[str] = Field(None, description="派单说明（列表/气泡/详情同一出口：未派到倾向人为详情模板；Step0 为短句）")
+
+
+class TicketRedispatch(BaseModel):
+    """详情接口 redispatch 子对象（最新一轮派单完整评估）"""
+    dispatch_round: int = Field(..., description="派单轮次")
+    candidates: Optional[List[RedispatchCandidate]] = Field(None, description="R2 本轮精排 Top10 快照")
+    result: Optional[RedispatchResult] = Field(None, description="R3 本轮派单结果信息")
+
+
 class TicketResponse(TicketBase):
     id: int
     status: TicketStatus
+    redispatch: Optional[TicketRedispatch] = Field(None, description="最新一轮派单评估（无记录为 None）")
     created_by: str
     created_by_name: Optional[str] = None
     assigned_to: Optional[str]
@@ -105,12 +160,38 @@ class TicketResponse(TicketBase):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
     deadline_at: Optional[datetime]
+    # --- 协商阶段（工单阶段性处理：当前节点 + 节点结束时间 + 回合）---
+    curr_step_id: Optional[int] = Field(None, description="当前协商节点ID")
+    curr_step_name: Optional[str] = Field(None, description="当前协商节点名称")
+    curr_step_endtime: Optional[datetime] = Field(None, description="当前协商节点结束时间（naive UTC）")
+    step_last_updated_by: Optional[str] = Field(None, description="最近一次改step的操作人侧标识：assigned/creator")
+    step_last_updated_at: Optional[datetime] = Field(None, description="最近一次step更新时间")
+    step_negotiation_round: int = Field(0, description="协商回合数：对手回应一次+1")
+    step_phase_round: int = Field(0, description="阶段回合数：complete-step推进+1，初始0=第一轮；0时协商节点不受sequence下限限制")
+    curr_step_agreed: bool = Field(False, description="当前协商节点是否已协商一致：确认同意后 True；进入新节点或协商后重置为 False")
+    escalate_count: int = Field(0, description="升级上报次数：>0 表示已升级，协商回合重置为1且不再受限")
+    step_neg_max_rounds: int = Field(3, description="该工单适用的协商回合上限（全局默认或工单专属）")
     reply_count: int
     view_count: int
     comments: Optional[List[TicketCommentResponse]] = []
 
     class Config:
         from_attributes = True
+
+
+class TicketParticipantItem(BaseModel):
+    """列表卡片「评论区参与人」头像堆叠元素（见 participant_service）。
+
+    - ``comment_count`` / ``last_comment_at``：供前端排序展示（评论数降序 → 评论时间降序），
+      排序已在后端完成，前端按数组顺序渲染即可。
+    - ``has_unread``：当前登录用户是否**未读**该参与者发的评论 → 头像右上角红点。
+    """
+    username: str
+    name: Optional[str] = None
+    avatar_resource_id: Optional[int] = None
+    comment_count: int = 0
+    last_comment_at: Optional[str] = None
+    has_unread: bool = False
 
 
 class TicketListItemResponse(TicketBase):
@@ -129,8 +210,19 @@ class TicketListItemResponse(TicketBase):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
     deadline_at: Optional[datetime]
+    curr_step_id: Optional[int] = Field(None, description="当前协商节点ID")
+    curr_step_name: Optional[str] = Field(None, description="当前协商节点名称")
+    curr_step_endtime: Optional[datetime] = Field(None, description="当前协商节点结束时间（naive UTC）")
+    step_last_updated_by: Optional[str] = Field(None, description="最近一次改step的操作人侧标识：assigned/creator")
+    curr_step_agreed: bool = Field(False, description="当前协商节点是否已协商一致")
     reply_count: int
     view_count: int
+    redispatch_tip: Optional[str] = Field(None, description="派单结果提醒一句话摘要（无提醒为 None，见 §3.6）")
+    is_followed: bool = Field(False, description="当前登录用户是否已关注该工单（卡片星标）")
+    participants: List[TicketParticipantItem] = Field(
+        default_factory=list,
+        description="评论区参与讨论人员（头像堆叠用，已按评论数→评论时间降序，见 participant_service）",
+    )
 
     class Config:
         from_attributes = True
@@ -199,6 +291,27 @@ class TicketCreateNotificationRequest(BaseModel):
     task_id: int = Field(..., description="工单ID")
 
 
+class RobotAlarmNotificationRequest(BaseModel):
+    """设备报警提醒请求（对外接口，供内部其他后端服务调用）。
+
+    调用方直接传入报警字段，后端按 template.yaml 模板 10 组装后发送微信模板消息。
+    鉴权走 URL ?key=（仿企业微信 webhook），需与后端 ROBOT_ALARM_API_KEY 一致。
+
+    收件人解析：
+      - `project_code` 实际是 `project.id`，后端据此查 user_project_roles 拿到项目成员。
+      - `users` 列表传入的不是 user.username，而是 user.external_credentials.usp.username；
+        后端将 `users` 与项目成员的 usp.username 比对，命中者用其真实 user.username 发通知；
+        未命中项目成员的入参会被丢弃。
+    """
+    project_code: str = Field(..., description="项目 ID（实际是 project.id，非代号；用于查项目成员）")
+    robot_type: str = Field(..., description="报警机型")
+    robot_id: str = Field(..., description="设备编号")
+    content: str = Field(..., description="报警原因")
+    level: str = Field(..., description="告警级别")
+    start_time: datetime = Field(..., description="告警时间")
+    users: List[str] = Field(default=[], description="接收人 user.external_credentials.usp.username 列表；后端会与项目成员比对，未匹配者丢弃")
+
+
 class TicketFilter(BaseModel):
     field: Optional[str] = Field(None, description="字段名")
     op: Optional[str] = Field(None, description="运算符")
@@ -220,6 +333,11 @@ class TicketFilterRequest(BaseModel):
     sorts: Optional[List[TicketSort]] = Field(default_factory=list, description="排序条件列表")
     page: int = Field(default=1, ge=1, description="页码")
     size: int = Field(default=10, ge=1, le=100, description="每页数量")
+
+
+class TicketBatchCountRequest(BaseModel):
+    """批量计数请求：每组 queries 独立统计 total，一次网络往返返回多组角标数。"""
+    queries: List[TicketFilterRequest] = Field(default_factory=list, description="多组过滤查询")
 
 
 class ProjectMemberResponse(BaseModel):

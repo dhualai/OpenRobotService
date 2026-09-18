@@ -31,7 +31,8 @@ def make_state(phase="idle", problem_summary="", **kwargs):
 def simulate_chat_flow(phase, problem_summary, user_query, llm_action,
                        llm_intent="troubleshoot", state_update=None,
                        llm_message="LLM原始回复", last_submitted_ticket=None,
-                       collected_info=None, ticket_collecting=None):
+                       collected_info=None, ticket_collecting=None,
+                       user_spoke_after_submit=False):
     """模拟 _agent_think 决策链（与真实代码顺序一致）。
 
     新逻辑要点：
@@ -44,6 +45,7 @@ def simulate_chat_flow(phase, problem_summary, user_query, llm_action,
         last_submitted_ticket=last_submitted_ticket or {},
         collected_info=dict(collected_info or {}),
         ticket_collecting=list(ticket_collecting or []),
+        user_spoke_after_submit=user_spoke_after_submit,
     )
     parsed = {
         "action": llm_action, "message": llm_message, "intent": llm_intent,
@@ -94,11 +96,13 @@ def simulate_chat_flow(phase, problem_summary, user_query, llm_action,
 
 
 def simulate_button_prepare(phase, problem_summary, collected_info=None,
-                            last_submitted_ticket=None):
+                            last_submitted_ticket=None,
+                            user_spoke_after_submit=False):
     """模拟 prepare_ticket（按钮路径第一步）。"""
     state = make_state(phase, problem_summary,
                        collected_info=collected_info or {},
-                       last_submitted_ticket=last_submitted_ticket or {})
+                       last_submitted_ticket=last_submitted_ticket or {},
+                       user_spoke_after_submit=user_spoke_after_submit)
     can, reason = _can_submit(state)
     if not can:
         return {"blocked": True, "stage": "blocked", "missing": [], "reason": reason}
@@ -152,9 +156,10 @@ class TestCanSubmit:
         assert "新问题" in reason or "新现象" in reason
 
     def test_just_submitted_with_new_problem_allows(self):
-        """刚提完单 + 描述了新 problem → 放行（重新开始提单）"""
+        """刚提完单 + 用户又发了新消息 → 放行（0901 判据：user_spoke_after_submit）"""
         st = make_state("resolved", "另一台车报错",
-                        last_submitted_ticket={"ticket_id": "T-1"})
+                        last_submitted_ticket={"ticket_id": "T-1"},
+                        user_spoke_after_submit=True)
         assert _can_submit(st)[0] is True
 
     def test_new_session_allows(self):
@@ -197,7 +202,8 @@ class TestChatSubmitFlow:
         """刚提完单 + 描述新问题 + submit → 放行"""
         r = simulate_chat_flow("resolved", "另一台车报错", "转工单", "submit",
                                last_submitted_ticket={"ticket_id": "T-1"},
-                               collected_info={"project": "华大基地"})
+                               collected_info={"project": "华大基地"},
+                               user_spoke_after_submit=True)
         assert r["action"] == "submit"
 
     def test_llm_answer_stays_answer(self):
@@ -242,7 +248,8 @@ class TestButtonFlow:
         """刚提完单 + 有新问题 → 放行"""
         r = simulate_button_prepare("resolved", "新故障",
                                     last_submitted_ticket={"ticket_id": "T-1"},
-                                    collected_info={"project": "基地"})
+                                    collected_info={"project": "基地"},
+                                    user_spoke_after_submit=True)
         assert r["blocked"] is False
 
     def test_prepare_with_project_id(self):
@@ -296,7 +303,8 @@ class TestMixedPaths:
         """对话提单后 → 描述新问题 → 放行（重新开始提单）"""
         r = simulate_chat_flow("resolved", "电池冒烟了", "转工单", "submit",
                                last_submitted_ticket={"ticket_id": "T-1"},
-                               collected_info={"project": "基地"})
+                               collected_info={"project": "基地"},
+                               user_spoke_after_submit=True)
         assert r["action"] == "submit"
 
     def test_dual_path_consistency(self):
@@ -350,9 +358,10 @@ class TestAgentStateScenarios:
         # 提单后：last_submitted_ticket 设 + problem 清空 → 拦截
         assert _can_submit(make_state("resolved", "",
                                       last_submitted_ticket={"ticket_id": "T-1"}))[0] is False
-        # 新问题 → 放行
+        # 用户又发消息（user_spoke_after_submit）→ 放行（0901 判据）
         assert _can_submit(make_state("resolved", "新故障",
-                                      last_submitted_ticket={"ticket_id": "T-1"}))[0] is True
+                                      last_submitted_ticket={"ticket_id": "T-1"},
+                                      user_spoke_after_submit=True))[0] is True
 
     def test_ticket_seq_increment(self):
         state = make_state("idle", "故障A", ticket_seq=0)

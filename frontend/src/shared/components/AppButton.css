@@ -44,7 +44,7 @@
   color: var(--foreground);
 }
 
-/* 列表页操作按钮：品牌蓝实心 + 圆角 */
+/* 列表页操作按钮（含「重新派单」）：品牌蓝实心 + 圆角，同一档蓝色，不做加深区分 */
 .app-btn.t-button.app-btn--blue {
   font-weight: 500;
   font-size: 12px;
@@ -57,21 +57,5 @@
   background: var(--blue-1);
 }
 .app-btn.t-button.app-btn--blue.t-button--disabled {
-  opacity: 0.45;
-}
-
-/* 列表页重新派单：深蓝实心，与 blue 区分 */
-.app-btn.t-button.app-btn--blue-deep {
-  font-weight: 500;
-  font-size: 12px;
-  background: var(--blue-1);
-  color: #fff;
-  border: none;
-  border-radius: var(--radius-md);
-}
-.app-btn.t-button.app-btn--blue-deep:not(.t-button--disabled):active {
-  background: var(--blue-2);
-}
-.app-btn.t-button.app-btn--blue-deep.t-button--disabled {
   opacity: 0.45;
 }

@@ -2,7 +2,7 @@
 
 挂 /api/tasks/sources，独立 ``X-API-Key`` 鉴权（与用户 JWT 分离，供 Airflow / 手动触发）。
 按 source 名分发到对应 adapter，不随源增删而改动。"""
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any
 
@@ -22,6 +22,16 @@ def verify_sync_api_key(x_api_key: str = Header(default="", alias="X-API-Key")) 
     if not expected or x_api_key != expected:
         raise HTTPException(status_code=401, detail="invalid or missing api key")
     return x_api_key
+
+
+def verify_robot_alarm_api_key(key: str = Query(default="", description="对外接口鉴权 key，需与 ROBOT_ALARM_API_KEY 一致")) -> str:
+    """校验设备报警提醒对外接口的 URL ?key=。
+    鉴权形式仿照企业微信 webhook（?key=xxx），与用户 JWT 分离，供内部其他后端服务调用。
+    未配置 key 时一律拒绝（安全默认）。"""
+    expected = settings.ROBOT_ALARM_API_KEY
+    if not expected or key != expected:
+        raise HTTPException(status_code=401, detail="invalid or missing api key")
+    return key
 
 
 @router.get("")

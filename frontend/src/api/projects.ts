@@ -33,6 +33,23 @@ export async function getMyProjects(includeAnalysis = false): Promise<ProjectIte
   return Array.isArray(data) ? data : [];
 }
 
+// 用户相关项目编码集（GET /api/admin/projects/me/relevance）：
+// ticketed=提过单的项目（含提单数，后端已按提单数降序），owned=名下项目编码（已剔除提过单的）。
+// 工单弹窗项目选择器的相关性排序信号（0907：提过单 > 名下 > 其他；0908：提单组内按提单数降序）。
+export interface TicketedProject {
+  code: string;
+  count: number;
+}
+export interface ProjectRelevance {
+  ticketed: TicketedProject[];
+  owned: string[];
+}
+export async function getMyProjectRelevance(): Promise<ProjectRelevance> {
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '项目服务');
+  const data = await request<ProjectRelevance>('/projects/me/relevance');
+  return { ticketed: data?.ticketed || [], owned: data?.owned || [] };
+}
+
 // ── 项目成员（用于讨论区 @ 提及）──────────────────────────────
 
 export interface ProjectMember {
@@ -42,9 +59,9 @@ export interface ProjectMember {
   role_name?: string | null;
 }
 
-/** 获取任务关联项目的成员列表 */
-export async function getProjectMembers(taskId: string | number): Promise<ProjectMember[]> {
+/** 获取任务关联项目的成员列表；all=true 时额外追加全部在职用户（供 @ 过滤到项目外） */
+export async function getProjectMembers(taskId: string | number, all = false): Promise<ProjectMember[]> {
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
-  const data = await request<ProjectMember[]>(`/${taskId}/project-members`);
+  const data = await request<ProjectMember[]>(`/${taskId}/project-members${all ? '?all=true' : ''}`);
   return Array.isArray(data) ? data : [];
 }

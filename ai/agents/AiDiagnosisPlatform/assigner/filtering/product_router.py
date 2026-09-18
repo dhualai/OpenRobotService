@@ -21,7 +21,7 @@ class ProductRouter:
         self._cfg = self._config.product_routing or {}
 
     def _infer_product(self, project_name: str) -> Tuple[str, str]:
-        """返回 (product, source)。product 为空表示跳过产品收紧。"""
+        """仅按项目名推断产品。返回 (product, source)。product 为空表示按默认规则(见 route)。"""
         project = (project_name or "").strip()
         if not project:
             return "", "skipped"
@@ -32,11 +32,17 @@ class ProductRouter:
             for marker in rule.get("markers") or []:
                 if marker.replace(" ", "") in norm:
                     return product, "project_marker"
+        return "", "no_project_marker"
 
-        default_product = (self._cfg.get("default_product") or "").strip()
-        if default_product and self._cfg.get("default_when_project_set", True):
-            return default_product, "default"
-        return "", "skipped"
+    def _infer_product_by_dept(self, dept: str) -> Tuple[str, str]:
+        """按部门映射推断产品。返回 (product, source)。无映射返回 ("", "")。"""
+        if not dept:
+            return "", ""
+        mapping = self._cfg.get("dept_to_product") or {}
+        product = (mapping.get(dept) or "").strip()
+        if product:
+            return product, "dept_to_product"
+        return "", ""
 
     def _filter_by_product(
         self, engineers: List[EngineerProfile], product: str,
@@ -52,17 +58,31 @@ class ProductRouter:
         self,
         ticket: TicketContext,
         engineers: List[EngineerProfile],
+        primary_dept: str = "",
     ) -> Tuple[List[EngineerProfile], ProductRoutingResult]:
         ltag = f"[派单:{ticket.id}]"
         result = ProductRoutingResult()
+
+        # 1) 项目标记（最高优先级）：只认项目名
         product, source = self._infer_product(ticket.project_name or "")
+        if source != "project_marker":
+            # 2) 无项目标记：部门映射
+            product, source = self._infer_product_by_dept(primary_dept)
+            if not product:
+                # 3) 兜底默认产品
+                project = (ticket.project_name or "").strip()
+                default_product = (self._cfg.get("default_product") or "").strip()
+                if default_product and (
+                    project  # 有项目且 default_when_project_set 时兜底
+                    and self._cfg.get("default_when_project_set", True)
+                ):
+                    product, source = default_product, "default"
+                else:
+                    result.mode = "no_filter"
+                    result.reasoning = "无项目/未推断产品，跳过产品收紧"
+                    return list(engineers), result
+
         result.source = source
-
-        if not product:
-            result.mode = "no_filter"
-            result.reasoning = "无项目/未推断产品，跳过产品收紧"
-            return list(engineers), result
-
         result.product = product
         filtered = self._filter_by_product(engineers, product)
         if not filtered:

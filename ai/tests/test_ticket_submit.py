@@ -7,7 +7,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from ai.agents.AiDiagnosisPlatform.pipeline import AgentState
+from ai.agents.AiDiagnosisPlatform.pipeline import AgentState, AiDiagnosisPlatform
 
 
 # ================================================================
@@ -899,12 +899,8 @@ class TestOldPathProjectPrefill:
 
         events = [ev async for ev in platform._agent_think_stream(request, state, memory)]
 
-        review = [e for e in events if e["event"] == "status" and e["data"].get("stage") == "review"]
-        assert review, "应发 review 弹窗"
-        draft = review[0]["data"]["draft"]
-        assert draft["project"] == "华大制造基地"
-        assert draft["project_id"] == "7"
-        assert state.pending_prefill_project == {"name": "华大制造基地", "code": "7"}
+        # 预填随 build_ticket 消费后清空（单向管道纪律：防陈旧预填泄漏后续轮）
+        assert state.pending_prefill_project is None
         # 预填播报单一信息源：服务端兜底话术说的是校验后的真实值
         tokens = "".join(e["data"] for e in events if e["event"] == "token")
         assert "项目已预填为「华大制造基地」" in tokens
@@ -930,11 +926,11 @@ class TestOldPathProjectPrefill:
 
         events = [ev async for ev in platform._agent_think_stream(request, state, memory)]
 
-        review = [e for e in events if e["event"] == "status" and e["data"].get("stage") == "review"]
-        assert review
-        draft = review[0]["data"]["draft"]
-        assert draft["project"] == ""
-        assert draft["project_id"] == ""
+        # 0916 行为对齐：幻觉 choice 被溯源门+精确匹配双重拒收后，submit 触发
+        # 项目闸门转出项目引导题（提单先引导项目），不再直达 review 弹窗——
+        # 宁拒勿错，绝不预填错误项目
+        ask_tok = [e for e in events if e["event"] == "token" and "关联项目" in e["data"]]
+        assert ask_tok, "应转项目引导题（而非直达 review）"
         assert state.pending_prefill_project is None
         tokens = "".join(e["data"] for e in events if e["event"] == "token")
         assert "项目已预填" not in tokens
@@ -973,6 +969,8 @@ class TestOldPathProjectPrefill:
         }, ensure_ascii=False))
         events = [ev async for ev in platform._agent_think_stream(req2, state, memory)]
 
+        # 0916 闸门补 submit 触发：轮 2 pending 已存在（条件 pending 非空排除）
+        # → 闸门不触发，submit 直达 review——预填跨轮保留不受影响
         review = [e for e in events if e["event"] == "status" and e["data"].get("stage") == "review"]
         assert review, "轮 2 字段齐应弹 review"
         draft = review[0]["data"]["draft"]
@@ -1045,7 +1043,7 @@ class TestRequiredFieldsGranularity:
         fake_mem = types.SimpleNamespace(turns=[])
         s = platform._build_diagnosis_prompt(state, fake_mem, "")
         assert "一项信息一个 key" in s
-        assert "禁止合并成一个字段" in s
+        assert "禁止打包" in s
 
     def test_main_prompt_has_rule(self):
         from ai.agents.AiDiagnosisPlatform.pipeline import DIAGNOSIS_PROMPT
@@ -1270,6 +1268,100 @@ class TestTicketBoundaryPrefill:
         assert "以上对话已随上一张工单提交归档" in s
         assert "不算本次提到，禁止照抄" in s
         assert "南京本川项目（编号: NJBC01）" in s
+
+
+class TestResolveSeqChoice:
+    """答编号轮服务端定序（0916 task835 三连实锤：越界序号幻觉还原/code 撞号）"""
+
+    CANDS = [
+        {"name": "吃饭项目", "code": "011255555"},
+        {"name": "摇人吧服务号", "code": "Leo_test"},
+        {"name": "辽宁盘锦金龙鱼软包堆垛项目", "code": "53"},
+    ]
+
+    from ai.agents.AiDiagnosisPlatform.pipeline import _resolve_seq_choice
+
+    S = staticmethod(_resolve_seq_choice)
+    P = staticmethod(AiDiagnosisPlatform._parse_seq_reply) if hasattr(AiDiagnosisPlatform, "_parse_seq_reply") else None
+
+    def test_valid_seq_resolves(self):
+        handled, choice = self.S("2", self.CANDS)
+        assert handled and choice == {"name": "摇人吧服务号", "code": "Leo_test"}
+
+    def test_seq_variants(self):
+        for q in ("第2个", "2号", " 二 ", "2"):
+            handled, choice = self.S(q, self.CANDS)
+            assert handled and choice["name"] == "摇人吧服务号", q
+
+    def test_out_of_range_empty_choice(self):
+        """越界序号「7」→ handled + choice=None（不预填列表外项目——task835 情况2/3 回归）"""
+        handled, choice = self.S("7", self.CANDS)
+        assert handled and choice is None
+
+    def test_non_seq_not_handled(self):
+        """非纯序号（自由文字）→ 不接管，交回 LLM 照抄链路"""
+        handled, _ = self.S("就选摇人吧服务号", self.CANDS)
+        assert handled is False
+        handled, _ = self.S("2号库那边", self.CANDS)
+        assert handled is False
+
+
+class TestImageInfoBlock:
+    """收集轮图片资料块（0916）：sanitize 屏蔽对话流图片描述的同时，
+    单独注入「VLM 识别资料块」——用户发图补充信息（车编号/任务编号在
+    截图里）不再被 AI 瞎追问；客观信息可采信、UI 系统文案禁止当字段值"""
+
+    def test_collect_prompt_injects_image_block(self, platform, make_state):
+        import types
+        """收集模式 + 历史有图片描述轮 → prompt 注入资料块和使用规则"""
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            ticket_fast_lane=True,
+            required_fields={"contact": "联系方式"},
+            collected_info={"contact": "张三"},
+            ticket_collecting=["robot_type"],
+        )
+        fake_mem = types.SimpleNamespace(turns=[
+            {"role": "user", "content": "帮我看看这个界面",
+             },
+            {"role": "user", "content": "我上传了 1 个文件：sched.png。"
+             "图片主要内容为：调度界面截图，车辆编号 B103，车型 XQE-169，任务编号 T001"},
+            {"role": "assistant", "content": "已收到截图。"},
+        ])
+        s = platform._build_diagnosis_prompt(state, fake_mem, "")
+        assert "用户已上传的图片" in s
+        assert "【图1】" in s
+        assert "车辆编号 B103" in s        # 客观信息进块
+        assert "可直接采信" in s            # 使用规则在
+        assert "禁止当作字段值或项目名" in s  # UI 文案防线在
+        # 对话流仍被 sanitize（双重通道：资料块进，对话流屏蔽）
+        assert "[图片已附截图，仅展示用，不作为字段提取来源]" in s
+
+    def test_collect_prompt_no_images_no_block(self, platform, make_state):
+        import types
+        """无图片轮 → 不注入空块"""
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            ticket_fast_lane=True,
+            required_fields={"contact": "联系方式"},
+            ticket_collecting=["robot_type"],
+        )
+        fake_mem = types.SimpleNamespace(turns=[
+            {"role": "user", "content": "帮我提单，车不动"},
+        ])
+        s = platform._build_diagnosis_prompt(state, fake_mem, "")
+        assert "用户已上传的图片" not in s
+
+    def test_non_collect_prompt_not_injected(self, platform, make_state):
+        import types
+        """非收集模式（普通诊断）→ 不注入资料块（sanitize 语义不变）"""
+        state = make_state(phase="diagnosing", problem_summary="机器人离线")
+        fake_mem = types.SimpleNamespace(turns=[
+            {"role": "user", "content": "我上传了 1 个文件：a.png。"
+             "图片主要内容为：调度界面，车编号 B103"},
+        ])
+        s = platform._build_diagnosis_prompt(state, fake_mem, "")
+        assert "用户已上传的图片" not in s
 
 
 # ================================================================

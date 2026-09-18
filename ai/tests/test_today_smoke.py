@@ -194,8 +194,9 @@ class TestClosedLoopAfterSubmit:
 
     @pytest.mark.unit
     def test_can_submit_with_new_problem_summary(self, make_state):
-        """已提过单 + 有新 problem_summary → 放行"""
-        st = make_state(last_submitted_ticket={"ticket_id": "T-1", "db_id": 1})
+        """已提过单 + 用户又发过消息（0901 判据 user_spoke_after_submit）→ 放行"""
+        st = make_state(last_submitted_ticket={"ticket_id": "T-1", "db_id": 1},
+                        user_spoke_after_submit=True)
         st.problem_summary = "工单401确认完成页面，解决方式自动总结出错"
         ok, _ = _can_submit(st)
         assert ok is True

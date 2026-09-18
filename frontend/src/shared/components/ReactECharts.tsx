@@ -1,15 +1,17 @@
 // 按需引入 echarts，避免整包（~1.1MB）打入 bundle。
-// 仅注册当前页面实际用到的图表：柱状图（bar）、饼图（pie）。
+// 仅注册当前页面实际用到的图表：柱状图 / 饼图 / 散点图 / 折线图。
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import * as echarts from 'echarts/core';
-import { BarChart, PieChart } from 'echarts/charts';
+import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { EChartsReactProps } from 'echarts-for-react';
 
 echarts.use([
   BarChart,
+  LineChart,
   PieChart,
+  ScatterChart,
   GridComponent,
   LegendComponent,
   TitleComponent,

@@ -3,6 +3,7 @@
 import pytest
 
 from automation.src.ai_metrics import judge_faithfulness, judge_rubric
+from automation.src.ai_metrics.llm_judge import LLMJudgeClient
 
 
 class FakeJudge:
@@ -96,3 +97,23 @@ class TestJudgeRubric:
         judge = FakeJudge('{"score": -2, "reason": "x"}')
         result = await judge_rubric("q", "a", "r", judge)
         assert result["score"] == 0.0
+
+
+def test_from_env_prefers_generic_provider(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://opencode.ai/zen/v1")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-v4-flash")
+    client = LLMJudgeClient.from_env()
+    assert client.model == "deepseek-v4-flash"
+    assert str(client._client.base_url).rstrip("/") == "https://opencode.ai/zen/v1"
+
+
+def test_from_env_sets_opencode_headers(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://opencode.ai/zen/go/v1")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("LLM_SESSION_ID", "session-123")
+    monkeypatch.setenv("LLM_USER_AGENT", "openrobot-test-case-agent/1.0")
+    client = LLMJudgeClient.from_env()
+    assert client._client.default_headers["x-opencode-session"] == "session-123"
+    assert client._client.default_headers["User-Agent"] == "openrobot-test-case-agent/1.0"

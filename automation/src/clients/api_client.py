@@ -1,4 +1,5 @@
 import json
+import os
 import httpx
 import allure
 from typing import Any, Dict, Optional
@@ -25,7 +26,14 @@ class ApiClient(BaseClient):
         raise_auth_errors: bool = False,
     ):
         super().__init__(name="ApiClient")
-        self._cfg = config or load_config().api
+        if config is not None:
+            self._cfg = config
+        else:
+            base_url = os.getenv("OPENROBOT_API_BASE_URL")
+            if base_url:
+                self._cfg = ApiConfig(base_url=base_url)
+            else:
+                self._cfg = load_config().api
         self._retry_cfg = retry_config or RetryConfig()
         self._transport = transport
         self._raise_auth_errors = raise_auth_errors

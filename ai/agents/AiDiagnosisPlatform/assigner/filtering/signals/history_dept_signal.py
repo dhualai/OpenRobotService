@@ -24,12 +24,15 @@ class HistoryDeptSignal:
         return bool(self._hist_cfg.get("enabled", True))
 
     def _build_query_text(self, ticket: TicketContext) -> str:
-        return " ".join(filter(None, [
-            ticket.title or "",
-            ticket.problem_description or "",
-            ticket.robot_type or "",
-            ticket.fault_code or "",
-        ]))
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.dispatch_text import (
+            build_dispatch_ticket_text,
+        )
+        return build_dispatch_ticket_text(
+            ticket.title,
+            ticket.problem_description,
+            ticket.robot_type,
+            ticket.fault_code,
+        )
 
     async def _get_retriever(self):
         if self._retriever is None:

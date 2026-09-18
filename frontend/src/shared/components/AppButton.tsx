@@ -2,7 +2,7 @@ import { Button } from 'tdesign-mobile-react';
 import type { ComponentProps } from 'react';
 import './AppButton.css';
 
-export type AppButtonTone = 'primary' | 'muted' | 'blue' | 'blue-deep';
+export type AppButtonTone = 'primary' | 'muted' | 'blue';
 
 export type AppButtonProps = ComponentProps<typeof Button> & {
   /** 品牌设计变体；不传则透传 TDesign 原生 theme，仅统一禁用 ::after 边框 */
@@ -19,8 +19,7 @@ export type AppButtonProps = ComponentProps<typeof Button> & {
  * 用法：
  *   <AppButton tone="primary">催办</AppButton>          品牌蓝实心胶囊（详情页主操作）
  *   <AppButton tone="muted">撤回</AppButton>            灰底 muted（详情页撤回）
- *   <AppButton tone="blue">催办</AppButton>             列表页蓝实心
- *   <AppButton tone="blue-deep">重新派单</AppButton>    列表页深蓝
+ *   <AppButton tone="blue">催办</AppButton>             列表页蓝实心（含「重新派单」，同一档蓝）
  *   <AppButton theme="primary">确定</AppButton>         不传 tone：透传 TDesign 原生主题，仅禁用 ::after
  */
 export default function AppButton({ tone, className, ...rest }: AppButtonProps) {

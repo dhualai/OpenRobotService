@@ -571,6 +571,7 @@ class LLMClient:
             return {
                 "content": _msg.get("content") or "",
                 "tool_calls": tool_calls,
+                "reasoning": reasoning,
                 "raw": response,
             }
 
@@ -942,8 +943,11 @@ class LLMClient:
                     except Exception:
                         args = {}
                     tool_calls.append({"id": frag["id"], "name": frag["name"], "arguments": args})
+                # reasoning_content 一并带出：DeepSeek 协议要求 tools+思考开启时
+                # 后续轮必须回传中间 assistant 的 reasoning_content（tool_loop 拼消息用）
                 yield {"type": "tool_calls", "tool_calls": tool_calls,
-                       "content": "".join(full_content)}
+                       "content": "".join(full_content),
+                       "reasoning_content": "".join(reasoning_parts)}
                 return
             except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException,
                     ServiceUnavailableError) as e:
@@ -1056,13 +1060,26 @@ class LLMClient:
                         )
 
                     t_first_content = None
+                    # 首块业务数据 deadline（0916 实锤中转 hang 发心跳空转骗过
+                    # httpx read timeout，用户干等 257s）：从 200 返回起算，N 秒内
+                    # 没见到第一个可解析的 SSE data 块即中止（抛 ReadTimeout 进下方
+                    # 重试；未 yield 无重复输出风险，重试 3 次后转 AITimeoutError
+                    # → pipeline 给用户「服务暂时不可用」提示）。
+                    # reasoning_content 也算数——reasoner 长思考不能误杀。
+                    _got_any_data = False
+                    _first_deadline = time.perf_counter() + self.config.llm_stream_first_timeout
                     async for line in response.aiter_lines():
+                        if not _got_any_data and time.perf_counter() > _first_deadline:
+                            raise httpx.ReadTimeout(
+                                f"流式首块业务数据超时({self.config.llm_stream_first_timeout:.0f}s)，"
+                                f"疑似上游 hang/心跳空转")
                         if line.startswith("data: "):
                             data = line[6:]
                             if data == "[DONE]":
                                 break
                             try:
                                 chunk = json.loads(data)
+                                _got_any_data = True  # 任何可解析 data 块=服务端在干活，豁免 deadline
                                 if _use_responses:
                                     # Responses API 事件流:response.output_text.delta 是正文
                                     _ev_type = chunk.get("type")

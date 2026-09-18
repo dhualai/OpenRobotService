@@ -3,6 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
 import UserAvatarMenu from './UserAvatarMenu';
+import { useAuthStore, PERMISSION_RESOURCE_READ } from '@/stores/auth';
 
 interface AdminLayoutProps {
   children?: ReactNode;
@@ -12,6 +13,8 @@ interface MenuItem {
   path: string;
   label: string;
   emoji: string;
+  /** 可选：访问该入口所需的前缀权限码（与 stores/auth.hasPermission 配合） */
+  permission?: string;
 }
 
 const adminMenuItems: MenuItem[] = [
@@ -41,11 +44,13 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/permissions', label: '权限管理', emoji: '🔑' },
   { path: '/admin/wechat', label: '微信管理', emoji: '💬' },
   { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
-  { path: '/admin/resources', label: '资源管理', emoji: '🗂️' },
-  { path: '/admin/file-explorer', label: '文件浏览', emoji: '📂' },
+  // 资源管理/文件浏览入口需 backend:resource:base:read 权限
+  { path: '/admin/resources', label: '资源管理', emoji: '🗂️', permission: PERMISSION_RESOURCE_READ },
+  { path: '/admin/file-explorer', label: '文件浏览', emoji: '📂', permission: PERMISSION_RESOURCE_READ },
 
   // === 系统日志 ===
   { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
+  { path: '/admin/dispatch-dev', label: '开发者模式', emoji: '🧪' },
 ];
 
 function matchMenuPath(items: MenuItem[], currentPath: string): string {
@@ -61,6 +66,12 @@ function matchMenuPath(items: MenuItem[], currentPath: string): string {
 export default function AdminLayout({ children }: AdminLayoutProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  // 按权限过滤菜单项：标记了 permission 的入口需持有对应权限码，
+  // 否则不参与路径匹配（避免无权限用户在 Navbar 看到「文件浏览」等标题）
+  const visibleMenuItems = adminMenuItems.filter(
+    (item) => !item.permission || hasPermission(item.permission),
+  );
   // 内容滚动容器：路由切换时 React 复用同一个 div，scrollTop 会被保留，
   // 导致从长页面跳到短页面（如数据导入）时仍停在底部，需要手动上滑。
   // 这里在 pathname 变化时把滚动位置重置到顶部。
@@ -70,8 +81,8 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [location.pathname]);
 
-  const activePath = matchMenuPath(adminMenuItems, location.pathname);
-  const currentLabel = adminMenuItems.find((item) => item.path === activePath)?.label || '后台管理';
+  const activePath = matchMenuPath(visibleMenuItems, location.pathname);
+  const currentLabel = visibleMenuItems.find((item) => item.path === activePath)?.label || '后台管理';
 
   return (
     <div className="mobile-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -83,7 +94,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         fixed
       />
 
-      <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
+      <div ref={scrollRef} className="admin-scroll" style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
         <Suspense fallback={<Loading text="加载中..." />}>
           {children || <Outlet />}
         </Suspense>

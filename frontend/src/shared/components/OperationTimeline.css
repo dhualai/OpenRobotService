@@ -96,13 +96,13 @@
 
 .op-segment__time {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
 }
 
 .op-segment__operator {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--gray-light);
   margin-top: 2px;
 }
 
@@ -119,20 +119,20 @@
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  background: #f9fafb;
-  border-radius: 8px;
+  background: var(--muted);
+  border-radius: var(--radius-md);
   padding: 8px 10px;
-  border: 1px solid #f3f4f6;
+  border: 1px solid var(--border);
 }
 
-/* 重新指派记录：突出流转类操作，浅青底 + 强调色文字 */
+/* 重新指派记录：突出流转类操作，品牌浅底 + 强调色文字 */
 .op-segment__sub--reassign {
-  background: #ecfeff;
-  border-color: #a5f3fc;
+  background: var(--primary-soft);
+  border-color: var(--border);
 }
 
 .op-segment__sub--reassign .op-segment__action {
-  color: #0e7490;
+  color: var(--sky);
   font-weight: 700;
 }
 
@@ -141,7 +141,7 @@
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--card);
   border: 2px solid;
   display: flex;
   align-items: center;
@@ -161,10 +161,26 @@
 
 .op-segment__action {
   font-size: 13px;
-  color: #374151;
+  color: var(--foreground);
   line-height: 1.5;
   word-break: break-all;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
+
+.op-segment__kind {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  line-height: 1.6;
+  flex-shrink: 0;
+}
+.op-segment__kind--misassign { color: var(--danger); background: var(--rose-soft); }
+.op-segment__kind--stage { color: var(--blue-2); background: var(--blue-soft); }
+.op-segment__kind--other { color: var(--muted-foreground); background: var(--muted); }
 
 .op-segment__sub-meta {
   display: flex;
@@ -176,29 +192,138 @@
 
 .op-segment__sub-operator {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--muted-foreground);
+}
+
+/* 二级节点：阶段段（step） */
+.op-segment__step {
+  position: relative;
+  margin: 4px 0;
+  padding: 8px 10px 8px 12px;
+  background: linear-gradient(90deg, var(--lilac-soft), transparent 60%);
+  border-left: 3px solid var(--lilac);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+/* 已结束阶段：视觉降饱和，与进行中的阶段区分 */
+.op-segment__step--ended {
+  background: linear-gradient(90deg, var(--gray-soft), transparent 60%);
+  border-left-color: var(--gray-light);
+}
+
+.op-segment__step--ended .op-segment__step-name {
+  color: var(--muted-foreground);
+}
+
+.op-segment__step-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.op-segment__step-marker {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.op-segment__step-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--lilac);
+}
+
+.op-segment__step-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  line-height: 1.6;
+}
+
+.op-segment__step-tag--agreed {
+  color: var(--sky);
+  background: var(--sky-soft);
+}
+
+.op-segment__step-tag--negotiating {
+  color: var(--apricot);
+  background: var(--apricot-soft);
+}
+
+.op-segment__step-tag--escalated {
+  color: var(--danger);
+  background: var(--rose-soft);
+}
+
+.op-segment__step-tag--started {
+  color: var(--blue-2);
+  background: var(--blue-soft);
+}
+
+.op-segment__step-round {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.op-segment__step-children {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 阶段底部：进入阶段标记（与状态段底部「进入状态」呼应） */
+.op-segment__step-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.op-segment__step-enter {
+  font-weight: 600;
+}
+
+/* 「确认同意 / 协商一致」记录高亮 */
+.op-segment__sub--agreed {
+  background: var(--sky-soft);
+  border-color: var(--border);
+}
+
+.op-segment__sub--agreed .op-segment__action {
+  color: var(--sky);
+  font-weight: 700;
 }
 
 /* 状态终点提示 */
 .op-segment__end {
   margin-top: 6px;
   padding-top: 6px;
-  border-top: 1px dashed #e5e7eb;
+  border-top: 1px dashed var(--border);
 }
 
 .op-segment__end-current {
   font-size: 13px;
-  color: #10b981;
+  color: var(--sky);
   font-weight: 500;
 }
 
 .op-segment__end-next {
   font-size: 13px;
-  color: #9ca3af;
+  color: var(--gray-light);
 }
 
 .op-segment__end-time {
-  color: #6b7280;
+  color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
 }
 
@@ -232,5 +357,13 @@
 
   .op-segment__sub {
     padding: 6px 8px;
+  }
+
+  .op-segment__step {
+    padding: 6px 8px 6px 10px;
+  }
+
+  .op-segment__step-name {
+    font-size: 13px;
   }
 }

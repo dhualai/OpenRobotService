@@ -1,18 +1,23 @@
 import logging
+import threading
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_, and_, case
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.attributes import set_committed_value
+from starlette.concurrency import run_in_threadpool
 
 from app.modules.tasks.models.ticket import Ticket, TicketComment, TicketStatus, TicketPriority, TicketType
+from app.models.task import TaskFollower, TaskParticipant
+from app.models.identity import UserDB
 from app.modules.tasks.schemas.ticket import TicketCreate, TicketUpdate, TicketCommentCreate, TicketCommentUpdate, TicketQueryParams, TicketFilterRequest, QuotedComment
 from app.core.config import settings
 from app.utils.notification_utils import NotificationUtils
 from app.utils.image_processor import ImageProcessor
 from app.services.user_service import user_service
 from app.core.user_identity import identity_keys, to_user_id
+from app.modules.tasks import participant_service
 
 
 def convert_to_shanghai_time(dt: Optional[datetime]) -> Optional[datetime]:
@@ -36,10 +41,44 @@ def is_valid_id(id_value):
     return isinstance(id_value, int) and id_value > 0
 
 
+def _cleanup_task_log_cache(ticket_id) -> None:
+    """工单已解决/已关闭时，后台线程同步调用 AI 服务清理该工单的日志附件缓存。
+
+    逻辑上只删 AI 侧缓存的日志文件 + 内存索引，不影响工单主流程；失败仅记日志。
+    """
+    try:
+        import httpx
+    except Exception:
+        return
+    try:
+        url = f"{settings.AI_SERVICE_URL.rstrip('/')}/api/ai/task/log-cache/cleanup"
+        with httpx.Client(timeout=10.0) as client:
+            client.post(url, json={"task_id": str(ticket_id)})
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            f"清理工单日志缓存失败 ticket_id={ticket_id}: {e}"
+        )
+
+
+def spawn_log_cache_cleanup(ticket_id) -> None:
+    """为已解决/关闭的工单派发后台日志缓存清理线程（best-effort，不阻塞主流程）。"""
+    try:
+        t = threading.Thread(
+            target=_cleanup_task_log_cache, args=(ticket_id,), daemon=True
+        )
+        t.start()
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            f"派发日志缓存清理线程失败 ticket_id={ticket_id}: {e}"
+        )
+
+
 class TicketService:
     @classmethod
     async def _get_user_map(cls, token: Optional[str] = None) -> Dict[str, str]:
-        return user_service.get_user_map()
+        # 用户映射加载是同步 pymysql；未命中缓存时丢进线程池执行，
+        # 避免冷启动/失效重建期间阻塞事件循环（连带拖慢同进程其他请求）
+        return await run_in_threadpool(user_service.get_user_map)
 
     @classmethod
     async def _get_user_ids_by_name(cls, name: str, token: Optional[str] = None) -> List[str]:
@@ -60,9 +99,49 @@ class TicketService:
         return identity_keys(raw)
 
     @staticmethod
+    def _redispatch_tip(log, user_map: Dict[str, str]) -> Optional[str]:
+        """生成派单结果提醒的一句话摘要（无提醒返回 None）。
+
+        与重派 / Step0 指定人同一出口：见 redispatch_tip_service.build_redispatch_tip。
+        """
+        from app.services.redispatch_tip_service import build_redispatch_tip
+        return build_redispatch_tip(log, user_map)
+
+    @staticmethod
+    async def _redispatch_tips_map(
+        db: AsyncSession, ids: List[int], user_map: Dict[str, str],
+    ) -> Dict[int, Optional[str]]:
+        """批量取各工单最新一条派单日志 → redispatch_tip（避免 N+1 查询）。
+
+        单条 SQL：按 task_id + dispatch_round 排序，每组首行即最新一轮。
+        """
+        from sqlalchemy import select as _sel
+        from app.models.task_dispatch_log import TaskDispatchLog
+        if not ids:
+            return {}
+        rows = (await db.execute(
+            _sel(TaskDispatchLog)
+            .where(TaskDispatchLog.task_id.in_(ids))
+            .order_by(TaskDispatchLog.task_id.asc(), TaskDispatchLog.dispatch_round.desc())
+        )).scalars().all()
+        seen: set = set()
+        tips: Dict[int, Optional[str]] = {}
+        for r in rows:
+            if r.task_id in seen:
+                continue
+            seen.add(r.task_id)
+            tips[r.task_id] = TicketService._redispatch_tip(r, user_map)
+        return tips
+
+    @staticmethod
     async def create_ticket(db: AsyncSession, ticket_data: TicketCreate, created_by: str, comment_attachment_map: dict, token: Optional[str] = None) -> Ticket:
         processed_attachments = []
         for attachment in ticket_data.attachments or []:
+            # dict 附件（{object_path, filename} 结构，如远程截图）已是最终结构，直接落库；
+            # 字符串才可能是 temp_id（需展开）或已就绪的 object_path（直接落库）。
+            if isinstance(attachment, dict):
+                processed_attachments.append(attachment)
+                continue
             if attachment in comment_attachment_map:
                 processed_attachments.extend(comment_attachment_map[attachment])
                 comment_attachment_map[attachment].clear()
@@ -100,6 +179,7 @@ class TicketService:
                 # 否则工单会留在 NEW 被派单 Worker 再次派单。
                 assigned_to=assigned_to_id,
                 customer=ticket_data.customer,
+                attachments=processed_attachments,
                 status=TicketStatus.IN_PROGRESS if assigned_to_raw else TicketStatus.NEW
             )
             db.add(db_ticket)
@@ -326,6 +406,11 @@ class TicketService:
             if ticket.customer:
                 setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
 
+        # 二次派单感知增强（M3）：批量生成派单结果提醒 redispatch_tip（避免 N+1）
+        tip_map = await TicketService._redispatch_tips_map(db, [t.id for t in tickets], user_map)
+        for ticket in tickets:
+            setattr(ticket, "redispatch_tip", tip_map.get(ticket.id))
+
         pages = (total + size - 1) // size
 
         return {
@@ -337,7 +422,7 @@ class TicketService:
         }
 
     @staticmethod
-    async def _build_single_filter(query, f, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token):
+    async def _build_single_filter(query, f, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username=None):
         field = f.field
         op = f.op
         value = f.value
@@ -346,6 +431,28 @@ class TicketService:
             return query
 
         column, field_type = FIELD_MAPPING[field]
+
+        # 「我关注的」：不映射到 Task 列，按当前登录用户走关注表子查询。
+        # 安全：忽略前端 value，统一用服务端解析的 current_username，杜绝越权看他人关注列表。
+        # 必须在 is_null/not_null 之前拦截（此处 column 为 None）。
+        if field_type == 'followed':
+            if not current_username:
+                # 无用户上下文（理论上不会发生）则不命中任何工单
+                return query.where(Ticket.id.is_(None))
+            follower_subq = select(TaskFollower.task_id).where(
+                TaskFollower.username == current_username
+            )
+            return query.where(Ticket.id.in_(follower_subq))
+
+        # 「我参与的」：同上，走 task_participants 表子查询。
+        # 用于「与我相关」过滤纳入参与工单的场景。
+        if field_type == 'participated':
+            if not current_username:
+                return query.where(Ticket.id.is_(None))
+            participant_subq = select(TaskParticipant.task_id).where(
+                TaskParticipant.username == current_username
+            )
+            return query.where(Ticket.id.in_(participant_subq))
 
         if op == 'is_null':
             return query.where(column.is_(None))
@@ -431,18 +538,18 @@ class TicketService:
         return query
 
     @staticmethod
-    async def _apply_nested_filter(query, filter_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token):
+    async def _apply_nested_filter(query, filter_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username=None):
         if filter_item.or_conditions:
             or_conditions = []
             for or_item in filter_item.or_conditions:
                 if or_item.and_conditions:
                     and_query = select(Ticket).where(Ticket.id.isnot(None))
                     for and_item in or_item.and_conditions:
-                        and_query = await TicketService._apply_nested_filter(and_query, and_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token)
+                        and_query = await TicketService._apply_nested_filter(and_query, and_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
                     or_conditions.append(and_query.whereclause)
                 elif or_item.field:
                     simple_query = select(Ticket).where(Ticket.id.isnot(None))
-                    simple_query = await TicketService._build_single_filter(simple_query, or_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token)
+                    simple_query = await TicketService._build_single_filter(simple_query, or_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
                     if simple_query.whereclause is not None:
                         or_conditions.append(simple_query.whereclause)
             if or_conditions:
@@ -451,16 +558,17 @@ class TicketService:
 
         if filter_item.and_conditions:
             for and_item in filter_item.and_conditions:
-                query = await TicketService._apply_nested_filter(query, and_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token)
+                query = await TicketService._apply_nested_filter(query, and_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
             return query
 
         if filter_item.field:
-            return await TicketService._build_single_filter(query, filter_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token)
+            return await TicketService._build_single_filter(query, filter_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
 
         return query
 
     @staticmethod
-    async def filter_tickets(db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None) -> Dict[str, Any]:
+    async def _build_filter_query(filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None):
+        """构建复合过滤查询（含排序），供列表查询与纯计数（角标）共用。"""
         query = select(Ticket).where(Ticket.id.isnot(None))
 
         FIELD_MAPPING = {
@@ -468,7 +576,8 @@ class TicketService:
             'title': (Ticket.title, 'text'),
             'status': (Ticket.status, 'enum'),
             'priority': (Ticket.priority, 'enum'),
-            'ticketType': (Ticket.ticket_type, 'enum'),
+            # 注意：必须用真实列 task_type（ticket_type 是模型上的 property，不能参与 SQL 表达式）
+            'ticketType': (Ticket.task_type, 'enum'),
             'createdBy': (Ticket.created_by, 'text'),
             'createdByName': (Ticket.created_by, 'name'),
             'assignedTo': (Ticket.assigned_to, 'text'),
@@ -484,6 +593,14 @@ class TicketService:
             'resolvedAt': (Ticket.resolved_at, 'datetime'),
             'closedAt': (Ticket.closed_at, 'datetime'),
             'deadlineAt': (Ticket.deadline_at, 'datetime'),
+            # 回合协商：支持按"最近改 step 的操作方侧标识"过滤（assigned/creator）
+            'stepUpdatedBy': (Ticket.step_last_updated_by, 'enum'),
+            # 当前协商节点是否已协商一致：用于"待我处理"按回合精确过滤
+            'currStepAgreed': (Ticket.curr_step_agreed, 'enum'),
+            # 「我关注的」：column 留空，特殊类型 followed 走关注表子查询（见 _build_single_filter）
+            'followedBy': (None, 'followed'),
+            # 「我参与的」：column 留空，特殊类型 participated 走参与人表子查询
+            'participatedBy': (None, 'participated'),
         }
 
         NUMBER_OPS = {'gt', 'lt', 'ge', 'le', 'eq', 'ne', 'is_null', 'not_null'}
@@ -492,31 +609,61 @@ class TicketService:
         DATETIME_OPS = {'gt', 'lt', 'ge', 'le', 'eq', 'ne', 'is_null', 'not_null'}
 
         for f in filter_request.filters:
-            query = await TicketService._apply_nested_filter(query, f, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token)
+            query = await TicketService._apply_nested_filter(query, f, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
 
         if filter_request.sorts:
             for sort in filter_request.sorts:
                 field = sort.field
                 direction = sort.direction.lower()
-                
+
                 if field not in FIELD_MAPPING:
                     continue
-                
+
                 column, _ = FIELD_MAPPING[field]
-                
-                if direction == 'asc':
+                # followedBy 等无真实列的特殊字段仅用于过滤，不可排序
+                if column is None:
+                    continue
+
+                if field == 'priority':
+                    # 优先级枚举列存字符串，直接 order by 是字母序（high<low<medium<urgent），
+                    # 用 CASE 显式加权保证权重序：low(1) < medium(2) < high(3) < urgent(4)
+                    weight = case(
+                        (Ticket.priority == TicketPriority.URGENT, 4),
+                        (Ticket.priority == TicketPriority.HIGH, 3),
+                        (Ticket.priority == TicketPriority.MEDIUM, 2),
+                        else_=1,
+                    )
+                    query = query.order_by(weight.desc() if direction == 'desc' else weight.asc())
+                elif direction == 'asc':
                     query = query.order_by(column.asc())
                 else:
                     query = query.order_by(column.desc())
         else:
             query = query.order_by(Ticket.created_at.desc())
 
+        return query
+
+    @staticmethod
+    async def _count_by_query(db: AsyncSession, query) -> int:
+        """按已有查询的 where 条件统计总数（count + select 共用同一过滤口径）。"""
         count_query = select(func.count(Ticket.id)).select_from(Ticket)
         if query.whereclause is not None:
             count_query = count_query.where(query.whereclause)
 
         total_result = await db.execute(count_query)
-        total = total_result.scalar_one()
+        return total_result.scalar_one()
+
+    @classmethod
+    async def count_tickets(cls, db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None) -> int:
+        """纯计数：只统计复合过滤命中的总数，不取明细、不拼用户名（批量角标接口复用）。"""
+        query = await cls._build_filter_query(filter_request, token, current_username)
+        return await cls._count_by_query(db, query)
+
+    @staticmethod
+    async def filter_tickets(db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None) -> Dict[str, Any]:
+        query = await TicketService._build_filter_query(filter_request, token, current_username)
+
+        total = await TicketService._count_by_query(db, query)
 
         page = filter_request.page
         size = filter_request.size
@@ -528,7 +675,7 @@ class TicketService:
         tickets = result.scalars().all()
 
         user_map = await TicketService._get_user_map(token)
-        
+
         for ticket in tickets:
             setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
             setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
@@ -537,6 +684,31 @@ class TicketService:
                 setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
             if ticket.customer:
                 setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
+
+        # 批量回填「当前用户是否已关注」：一次 IN 查询避免 N+1（列表规模通常 ≤20）
+        if current_username and tickets:
+            followed_rows = await db.execute(
+                select(TaskFollower.task_id).where(
+                    TaskFollower.username == current_username,
+                    TaskFollower.task_id.in_([t.id for t in tickets]),
+                )
+            )
+            followed_ids = set(followed_rows.scalars().all())
+            for ticket in tickets:
+                setattr(ticket, "is_followed", ticket.id in followed_ids)
+
+        # 批量回填「评论区参与人」：一次 IN 聚合（评论数 + 未读红点），避免 N+1。
+        # participant_service 是同步 Session 操作（与 read_receipt 同构），
+        # 这里丢进线程池执行，避免阻塞事件循环。
+        # 见 participant_service.fetch_participants_map（含排序与红点口径）。
+        if tickets:
+            participants_map = await run_in_threadpool(
+                participant_service.fetch_participants_map,
+                [t.id for t in tickets],
+                current_username,
+            )
+            for ticket in tickets:
+                setattr(ticket, "participants", participants_map.get(ticket.id, []))
 
         pages = (total + size - 1) // size
 
@@ -574,11 +746,23 @@ class TicketService:
         
         if ticket:
             user_map = await TicketService._get_user_map(token)
+            # user_map 为进程内缓存（10min TTL）；若某 id（新加入用户）解析不到名字会回退成裸 id，
+            # 导致前端气泡显示 id 而非名字。检测到缺失时强制失效缓存重建一次，再解析真实名字。
+            _need_refresh = (
+                (ticket.assigned_to and not user_map.get(ticket.assigned_to))
+                or (ticket.created_by and not user_map.get(ticket.created_by))
+                or (ticket.customer and not user_map.get(ticket.customer))
+            )
+            if _need_refresh:
+                user_service.invalidate_cache()
+                user_map = await TicketService._get_user_map(token)
             setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
             setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
             if ticket.assigned_to:
-                setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
-                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+                # 只接受解析出的真实姓名，解析不到则返回 None（不回落成裸 id）——
+                # 前端据此继续轮询等待真实名字，而不是把 id 当名字展示。
+                setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to))
+                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to))
             if ticket.customer:
                 setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
         
@@ -618,12 +802,18 @@ class TicketService:
         if not ticket:
             return {"ticket": None, "notification": None}
 
-        # operation_type 仅用于操作日志识别，不入库、不入通知（与 API 层及 schema 注释一致）
-        update_data = ticket_update.dict(exclude_unset=True, exclude={'operation_type'})
+        # operation_type / 转派类型原因仅用于操作日志，不入库
+        update_data = ticket_update.dict(
+            exclude_unset=True,
+            exclude={'operation_type', 'reassign_kind', 'reassign_reason'},
+        )
 
         for field, value in update_data.items():
             if field == "deadline_at":
                 value = convert_to_shanghai_time(value)
+            if field == "curr_step_endtime":
+                value = convert_to_shanghai_time(value)
+                ticket.deadline_at = value  # 阶段截止时间更新 → 同步镜像 deadline_at（对用户不可见）
             if field == "assigned_to" and value:
                 value = to_user_id(value) or value
             setattr(ticket, field, value)
@@ -723,8 +913,20 @@ class TicketService:
 
     @staticmethod
     async def _attach_comment_meta(db: AsyncSession, comment: TicketComment, user_map: Dict[str, str]) -> TicketComment:
-        """为评论附加展示用元数据：创建人姓名、引用评论摘要、响应态内容。"""
+        """为评论附加展示用元数据：创建人姓名、头像、引用评论摘要、响应态内容。"""
         setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
+        # 头像：created_by 可能是 users.id 也可能是 username，两者都查（离线作者也能取到头像，
+        # 修复「气泡头像有时显示、有时文字缺省」——原先前端只依赖在线成员列表拿头像）
+        try:
+            avatar_res = await db.execute(
+                select(UserDB.avatar_resource_id).where(
+                    or_(UserDB.id == comment.created_by, UserDB.username == comment.created_by)
+                ).limit(1)
+            )
+            avatar_rid = avatar_res.scalar_one_or_none()
+            setattr(comment, "created_by_avatar_resource_id", avatar_rid)
+        except Exception:
+            setattr(comment, "created_by_avatar_resource_id", None)
         try:
             comment.content = ImageProcessor.process_content_for_response(comment.content)
         except Exception:
@@ -873,6 +1075,10 @@ class TicketService:
         elif status == TicketStatus.CLOSED:
             ticket.closed_at = func.now()
 
+        # 工单进入最终态（已解决/已关闭）→ 后台清理该工单的日志附件缓存（AI 侧）
+        if status in (TicketStatus.RESOLVED, TicketStatus.CLOSED):
+            spawn_log_cache_cleanup(ticket_id)
+
         # 结束工单（resolved）时，若带解决方式，则写入 metadata_info.resolution_summary
         if status == TicketStatus.RESOLVED and resolution_summary is not None:
             meta = dict(ticket.metadata_info or {})
@@ -930,8 +1136,8 @@ class TicketService:
         if not ticket:
             return None
 
+        # 派单只写 assigned_to，不改状态——工单保持「待处理」，由处理人「首次响应」后才进入「处理中」
         ticket.assigned_to = to_user_id(user_id) or user_id
-        ticket.status = TicketStatus.IN_PROGRESS
 
         await db.commit()
         result = await db.execute(
@@ -1084,8 +1290,8 @@ class TicketService:
                 ai_assigned_id = reverse_user_map.get(ai_assigned_name)
                 
                 if ai_assigned_id:
+                    # 派单只写 assigned_to，不改状态——工单保持「待处理」，由处理人「首次响应」后才进入「处理中」
                     ticket.assigned_to = ai_assigned_id
-                    ticket.status = TicketStatus.IN_PROGRESS
                     await db.commit()
                     operator = user_map.get(ticket.created_by, ticket.created_by)
                     await NotificationUtils.send_ticket_create_notification(

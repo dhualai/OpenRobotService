@@ -2,16 +2,22 @@
 // 该项目数据经 backend/app/integrations/sources/wecom/adapter.py 从企业微信项目表同步而来，
 // 落库为 backend/app/models/delivery.py 的 Project；本页每一项都直接对应 Project 的一个真实列，
 // 不再使用 field_links 承载编造的扩展字段。system_id 即企业微信原始记录 record_id，用于溯源。
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Loading, Toast, Popup, Upload, Checkbox } from 'tdesign-mobile-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Navbar, Loading, Toast, Popup, BackTop } from 'tdesign-mobile-react';
 import { Input, Textarea } from 'tdesign-mobile-react';
 import { createRequest, ApiError, clearCache } from '@/api/client';
 import API_CONFIG from '@/config/api';
-import { useAuthStore } from '@/stores/auth';
-import { aiGet } from '@/api/ai';
-import { STATUS_OPTIONS, LIFECYCLE_STATUSES, PROJECT_ABORTED, calcLifecycleProgress } from '@/shared/utils/projectLifecycle';
-import { MacCheck, MacChevronRight, MacFileText, MacPencil, MacPlus, MacRefreshCw } from '@/shared/components/macaronIcons';
+import { STATUS_OPTIONS, PROJECT_ABORTED, calcLifecycleProgress } from '@/shared/utils/projectLifecycle';
+import {
+  MacCheck, MacChevronRight, MacChevronDown, MacChevronUp, MacPencil, MacRefreshCw,
+  MacSparkles, MacBarChart3,
+} from '@/shared/components/macaronIcons';
+import ProjectInfoCard from './ProjectInfoCard';
+import ProjectTicketsCard from './ProjectTicketsCard';
+import ProjectActivityCard from './ProjectActivityCard';
 
 interface ProjectDocument {
   name: string;
@@ -59,17 +65,7 @@ interface ProjectDetailData {
   system_integration?: string[] | null;
   server_deployment_status?: string | null;
   settlement_period?: string | null;
-}
-
-// 企业微信台账记录（GET /api/ai/wecom/projects 返回，values 的键为企业微信智能表格列名）
-interface WecomProjectRecord {
-  record_id: string;
-  values?: Record<string, unknown>;
-}
-interface WecomProjectsResponse {
-  code: number;
-  data?: { records?: WecomProjectRecord[] };
-  message?: string;
+  ext_info?: { overview?: Record<string, unknown>; activity?: Record<string, unknown> } | null;
 }
 
 // 项目阶段枚举与「项目时间进度」计算见 shared/utils/projectLifecycle.ts（与项目进度列表共用同一口径）
@@ -77,96 +73,12 @@ interface WecomProjectsResponse {
 // 与 backend ProjectCategory 枚举严格一致
 const CATEGORY_OPTIONS = ['重要紧急', '紧急不重要', '重要不紧急', '不紧急不重要'];
 
-// 与 backend ProjectType 枚举严格一致（企业微信项目类型表头原值）
-const PROJECT_TYPE_OPTIONS = [
-  '受关注项目', '大客户项目', '展会/演示项目', '展厅项目', 'PK项目',
-  '试点项目', '试用项目', '内部/测试项目', '普通项目', '增补项目',
-];
-
-// 与 backend RiskCarryingType 枚举严格一致
-const RISK_CARRYING_OPTIONS = [
-  '数据同步错误', '公司评审不通过', '缺前置承接', '高风险承接',
-  '中风险承接', '低风险承接', '方案变动不承接', '调度主动不承接',
-];
-
-// 与 backend ProjectRegion 枚举严格一致
-const PROJECT_REGION_OPTIONS = [
-  '大陆(China Mainland)', '亚洲(Asia)', '欧洲(Europe)', '北美(North America)',
-  '南美(South America)', '大洋洲(Oceania)', '港澳台',
-];
-
-// 与 backend ControllerVendor 枚举严格一致
-const CONTROLLER_VENDOR_OPTIONS = [
-  '自研', '睿芯行', '利科钛', '海康', '华睿', '中兴', '科聪', '有光', '特定',
-];
-
-// 与 backend ServerDeploymentStatus 枚举严格一致
-const SERVER_DEPLOYMENT_OPTIONS = [
-  '已布-中力服务器', '在布-中力服务器', '待布-中力服务器', '已布-客户服务器',
-  '待布-客户服务器', '已布-云服务器', '待布-云服务器', '已布', '待布',
-];
-
-// 与 backend SystemIntegrationType 枚举严格一致（多选）
-const SYSTEM_INTEGRATION_OPTIONS = [
-  'DAS', '客户WMS', '客户MES/ERP', '客户系统', '数字孪生', 'PDA', '平板', '电梯',
-  '输送线/辊筒线', '自动门', '红绿灯', '呼叫器', '机械臂', '其他外设', '其他',
-  '码垛机/叠盘机', '缠膜机',
-];
-
-// 企业微信台账列 → 项目详情字段 映射（页面实时展示用；列不存在或为空时回退本地值）
-const WECOM_VALUE_MAP: Record<string, keyof ProjectDetailData> = {
-  '项目编号': 'project_code',
-  '项目名称': 'name',
-  '承接描述': 'description',
-  '调度对接人': 'contact_person',
-  '项目生命周期': 'status',
-  '预计AGV下线时间': 'deployment_date',
-  '更新时间': 'recent_delivery_date',
-  '车型&车数': 'recent_delivery_content',
-  '项目类型': 'project_type',
-  '业绩核算期': 'settlement_period',
-  '方案项目命名': 'project_summary',
-  '销售': 'sales',
-  '售前方案': 'pre_sales',
-  '项目经理': 'project_manager',
-  '实施工程师': 'field_engineer',
-  '内部编号': 'internal_code',
-  '项目区域/地点': 'project_region',
-  '项目区域': 'project_region',
-  '总车数': 'total_vehicle_count',
-  '控制器选择': 'controller_vendor',
-  '服务器部署': 'server_deployment_status',
-  '部署版本': 'deployment_version',
-  '最终交付时间': 'final_delivery_date',
-  '预计走向': 'expected_trend',
-  '人员计划': 'personnel_plan',
-  '特别关注': 'special_attention',
-  '风险和任务描述': 'risk_task_description',
-  '项目管理策略': 'management_strategy',
-  '风险承接': 'risk_carrying_type',
-  '任务执行情况': 'task_execution_status',
-};
-
-// 企业微信「项目类型」列 → 项目类别（与后端 adapter 的 CATEGORY_MAP 一致）
-const WECOM_CATEGORY_MAP: Record<string, string> = {
-  '受关注项目': '重要紧急',
-  '普通项目': '重要不紧急',
-  '一般项目': '紧急不重要',
-  '其他': '不紧急不重要',
-};
-
-const AUTO_SYNC_INTERVAL = 5 * 60 * 1000; // 5 分钟自动刷新同步
-
-type PickerKey = 'status' | 'category_basis' | 'project_type' | 'risk_carrying_type' | 'project_region' | 'controller_vendor' | 'server_deployment_status';
+// 与 backend ProjectStatus 枚举严格一致（企业微信「项目生命周期」列实时同步）
+type PickerKey = 'status' | 'category_basis';
 
 const PICKERS: { key: PickerKey; label: string; options: string[] }[] = [
   { key: 'status', label: '项目阶段', options: STATUS_OPTIONS },
   { key: 'category_basis', label: '项目类别', options: CATEGORY_OPTIONS },
-  { key: 'project_type', label: '项目类型', options: PROJECT_TYPE_OPTIONS },
-  { key: 'risk_carrying_type', label: '风险承接', options: RISK_CARRYING_OPTIONS },
-  { key: 'project_region', label: '项目区域/地点', options: PROJECT_REGION_OPTIONS },
-  { key: 'controller_vendor', label: '控制器选择', options: CONTROLLER_VENDOR_OPTIONS },
-  { key: 'server_deployment_status', label: '服务器部署', options: SERVER_DEPLOYMENT_OPTIONS },
 ];
 
 // USP项目「新建」入口复用本页作为空白详情页：路由参数 id === 'new' 时不请求已有项目，
@@ -185,22 +97,27 @@ export default function ProjectDetail() {
   const { id = '' } = useParams<{ id: string }>();
   const isNew = id === 'new';
   const navigate = useNavigate();
-  const username = useAuthStore((s) => s.username);
   const [project, setProject] = useState<ProjectDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [activePicker, setActivePicker] = useState<PickerKey | null>(null);
-  const [noteStage, setNoteStage] = useState<string | null>(null);
-  const [noteDraft, setNoteDraft] = useState('');
-  const [systemIntegrationOpen, setSystemIntegrationOpen] = useState(false);
-  const [systemIntegrationDraft, setSystemIntegrationDraft] = useState<string[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [liveValues, setLiveValues] = useState<Record<string, unknown> | null>(null);
+  // 项目概况里后端 Project 表暂无对应列的三项：客户信息 / AGV 数量 / USP 版本。
+  // 按要求先置空、保留就地编辑能力；编辑结果暂存在本页 state，待后端补列后再改为 saveField。
+  const [overviewDraft, setOverviewDraft] = useState({ client: '', agvCount: '', uspVersion: '' });
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  // AI 项目摘要：存 ext_info.overview.ai_summary，由 POST /projects/{id}/ai-summary 生成
+  // （后端读取「项目信息管理」整棵信息树 + 项目基础字段，与文件导入同一大模型），
+  // 刷新页面后随项目详情接口读回，不需要单独的加载逻辑。
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const aiSummary = String((project?.ext_info?.overview?.ai_summary as string | undefined) || '');
+  // 「项目动态」卡刷新令牌：信息卡里星标关注/取消关注后翻动，动态卡据此重新拉取
+  const [activityToken, setActivityToken] = useState(0);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const [syncFailed, setSyncFailed] = useState(false);
-  const liveInFlight = useRef(false);
-  const overriddenRef = useRef<Set<keyof ProjectDetailData>>(new Set());
+  const [syncing, setSyncing] = useState(false);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // tasks 路由独立于 admin 路由，单独建一个 request 实例供 /sources/wecom/projects/sync 调用
+  const tasksRequest = createRequest(API_CONFIG.TASKS.BASE_URL, 'Tasks');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -221,66 +138,31 @@ export default function ProjectDetail() {
     load();
   }, [isNew, load]);
 
-  // 将企业微信台账实时值合并进 project（仅覆盖映射列；用户手动编辑过的字段不再被覆盖）
-  const applyLiveToProject = useCallback((values: Record<string, unknown>) => {
-    setProject((prev) => {
-      if (!prev) return prev;
-      const patch: Partial<ProjectDetailData> = {};
-      const raw = (k: string) => { const v = values[k]; return v == null ? '' : String(v).trim(); };
-      for (const [col, field] of Object.entries(WECOM_VALUE_MAP) as [string, keyof ProjectDetailData][]) {
-        if (overriddenRef.current.has(field)) continue;
-        const v = raw(col);
-        if (!v) continue;
-        if (field === 'total_vehicle_count') { const n = Number(v); if (Number.isFinite(n)) { (patch as Record<string, unknown>)[field] = n; } continue; }
-        (patch as Record<string, unknown>)[field] = v;
-      }
-      if (!overriddenRef.current.has('category_basis')) {
-        const t = raw('项目类型');
-        if (t && WECOM_CATEGORY_MAP[t]) patch.category_basis = WECOM_CATEGORY_MAP[t];
-      }
-      return Object.keys(patch).length ? { ...prev, ...patch } : prev;
-    });
-  }, []);
-
-  // 拉取企业微信台账实时数据（GET /api/ai/wecom/projects），按 项目编号/record_id 匹配；
-  // 用户正在输入时跳过本轮，避免打断编辑
-  const fetchLiveWecom = useCallback(async (code: string, systemId?: string | null) => {
-    const active = document.activeElement;
-    if (liveInFlight.current || (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'))) return;
-    liveInFlight.current = true;
+  // 触发后端企业微信项目同步（POST /api/tasks/sources/wecom/projects/sync），
+  // 后端拉取企微 Smartsheet → 字段映射 → upsert project 表；完成后重载本页详情。
+  // 与 dags/wecom_projects_sync_dag.py 共用同一入口，DB 是单一数据源，前端不再做合并。
+  // 5 分钟自动轮询已迁移到 Airflow DAG，本函数仅由「立即同步」按钮触发。
+  const triggerSync = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
     try {
-      const res = await aiGet<WecomProjectsResponse>('/wecom/projects');
-      const records = res?.data?.records || [];
-      const match = records.find((r) =>
-        String(r.values?.['项目编号'] ?? '') === code || (systemId && r.record_id === systemId),
-      );
-      if (match?.values) {
-        setLiveValues(match.values);
-        applyLiveToProject(match.values);
-        setSyncFailed(false);
-      }
+      await tasksRequest('/sources/wecom/projects/sync', { method: 'POST' });
+      // 请求层有 5 分钟 GET 缓存，sync 后必须清掉，load() 才能拿到 DB 最新值
+      clearCache();
+      await load();
+      setSyncFailed(false);
       setLastSyncTime(new Date().toLocaleTimeString());
-    } catch {
+    } catch (err) {
       setSyncFailed(true);
+      Toast({ message: `同步失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
-      liveInFlight.current = false;
+      setSyncing(false);
     }
-  }, [applyLiveToProject]);
-
-  // 首次进入 + 每 5 分钟自动刷新同步（后台标签页暂停轮询）
-  useEffect(() => {
-    if (isNew || !project?.project_code) return;
-    fetchLiveWecom(project.project_code, project.system_id);
-    const timer = setInterval(() => {
-      if (!document.hidden) fetchLiveWecom(project.project_code, project.system_id);
-    }, AUTO_SYNC_INTERVAL);
-    return () => clearInterval(timer);
-  }, [isNew, project?.project_code, project?.system_id, fetchLiveWecom]);
+  }, [syncing, load]);
 
   // 保存单个 Project 字段（真实列），仅回写发生变化的那一个字段；
   // 新建模式下项目尚未落库，仅更新本地草稿，待「创建」时一并提交
   const saveField = async (key: keyof ProjectDetailData, value: unknown) => {
-    overriddenRef.current.add(key); // 用户手动编辑的字段不再被企业微信实时同步覆盖
     if (isNew) {
       setProject((prev) => (prev ? { ...prev, [key]: value } : prev));
       return;
@@ -296,6 +178,33 @@ export default function ProjectDetail() {
       } else {
         Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
       }
+    }
+  };
+
+  // 项目概况中暂无后端列的三项（客户信息 / AGV 数量 / USP 版本）：控件可本地编辑，
+  // 但明确提示尚未保存到后端（待接入），不伪装成已落库。
+  const saveOverviewDraft = (key: 'client' | 'agvCount' | 'uspVersion', label: string) => (value: string) => {
+    setOverviewDraft((draft) => ({ ...draft, [key]: value }));
+    Toast({ message: `「${label}」暂存在本页，后端字段接入后才会保存`, theme: 'warning' });
+  };
+
+  // 生成 AI 项目摘要：后端汇总项目基础字段与信息树全文调大模型，写回
+  // ext_info.overview.ai_summary 并随响应返回（大模型耗时较长，超时放宽到 180s）
+  const generateAiSummary = async () => {
+    if (aiGenerating || isNew) return;
+    setAiGenerating(true);
+    try {
+      const res = await request<{ summary: string; ext_info?: ProjectDetailData['ext_info'] }>(
+        `/projects/${id}/ai-summary`,
+        { method: 'POST', timeout: 180000 },
+      );
+      setProject((prev) => (prev ? { ...prev, ext_info: res.ext_info ?? prev.ext_info } : prev));
+      setSummaryExpanded(true);
+      Toast({ message: '摘要已生成并保存', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `生成失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setAiGenerating(false);
     }
   };
 
@@ -339,65 +248,9 @@ export default function ProjectDetail() {
     saveField(key, value);
   };
 
-  const openNoteEditor = (stage: string) => {
-    setNoteDraft(project?.stage_notes?.[stage] || '');
-    setNoteStage(stage);
-  };
-
-  const openSystemIntegrationEditor = () => {
-    setSystemIntegrationDraft(project?.system_integration || []);
-    setSystemIntegrationOpen(true);
-  };
-
-  const toggleSystemIntegration = (opt: string) => {
-    setSystemIntegrationDraft((prev) => (prev.includes(opt) ? prev.filter((v) => v !== opt) : [...prev, opt]));
-  };
-
-  const saveSystemIntegration = () => {
-    setSystemIntegrationOpen(false);
-    saveField('system_integration', systemIntegrationDraft);
-  };
-
-  const saveNote = () => {
-    if (!noteStage || !project) return;
-    const merged = { ...(project.stage_notes || {}), [noteStage]: noteDraft };
-    setNoteStage(null);
-    saveField('stage_notes', merged);
-  };
-
-  const handleUploadDocument = async (file: File) => {
-    if (!project) return;
-    setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('owner_id', username || 'admin');
-      formData.append('resource_type', 'document');
-      formData.append('category', '项目文档');
-      formData.append('description', `项目 ${project.project_code} 文档`);
-      const resource = await request<{ id: number; resource_name: string }>('/resource-manager/resources/', {
-        method: 'POST',
-        body: formData,
-      });
-      const docs = [...(project.project_documents || []), { name: resource.resource_name, resource_id: resource.id }];
-      await saveField('project_documents', docs);
-    } catch (err) {
-      Toast({ message: `上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const removeDocument = (resourceId: number) => {
-    if (!project) return;
-    const docs = (project.project_documents || []).filter((d) => d.resource_id !== resourceId);
-    saveField('project_documents', docs);
-  };
-
   if (loading) return <Loading text="加载项目详情..." />;
   if (!project) return <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>{isNew ? '初始化失败' : '项目不存在'}</div>;
 
-  const lifecycleIndex = LIFECYCLE_STATUSES.indexOf(project.status);
   const progressPct = calcLifecycleProgress(project.status);
   const isAborted = project.status === PROJECT_ABORTED;
   const activePickerConfig = PICKERS.find((p) => p.key === activePicker);
@@ -417,25 +270,28 @@ export default function ProjectDetail() {
         fixed
       />
       <div style={{ padding: 16, paddingTop: 64 }}>
-        {/* 企业微信实时同步状态条（对照原型：浅灰圆角条 + 刷新图标 + 立即同步） */}
+        {/* 企业微信同步状态条：5min 自动轮询已迁移至 Airflow DAG，本页仅保留手动「立即同步」 */}
         {!isNew && (
           <div className="mac-sync-banner">
             <span className="mac-sync-banner__icon"><MacRefreshCw size={14} /></span>
-            <span className="mac-sync-banner__title">企业微信实时数据</span>
+            <span className="mac-sync-banner__title">企业微信数据</span>
             <span className={syncFailed ? 'mac-sync-banner__time is-error' : 'mac-sync-banner__time'}>
-              {syncFailed ? '同步失败，将自动重试' : lastSyncTime ? `上次同步 ${lastSyncTime} · 每5分钟自动刷新` : '同步中…'}
+              {syncFailed ? '同步失败，点击重试' : lastSyncTime ? `上次同步 ${lastSyncTime}` : '点击右侧按钮立即同步'}
             </span>
             <button
               type="button"
               className="mac-sync-banner__sync"
-              onClick={() => project?.project_code && fetchLiveWecom(project.project_code, project.system_id)}
+              onClick={triggerSync}
+              disabled={syncing}
             >
-              立即同步
+              {syncing ? '同步中...' : '立即同步'}
             </button>
           </div>
         )}
-        {/* 概要卡片（对照原型 overview SectionCard：名称/编号 + 右上标签 + MetaRow + 进度 + 三列日期） */}
+        {/* 项目概况（对照原型 ProjectOverviewCard：标题 / 名称·编号·企微记录ID / 客户信息 / 项目经理·对接人
+            / 时间进度 / 三个交付日期 / AGV·USP + 搬运效率分析 / AI 项目摘要） */}
         <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
+          <h3 className="mac-card-title">项目概况</h3>
           <div className="mac-summary-head">
             <div className="mac-summary-head__main">
               <EditableField label="项目名称" value={project.name || '未命名项目'} placeholder="未命名项目" onSave={(v) => saveField('name', v)} title required={isNew} />
@@ -445,9 +301,6 @@ export default function ProjectDetail() {
               </div>
             </div>
             <div className="mac-summary-head__side">
-              <span className="mac-chip mac-chip--tag" style={{ background: 'var(--mac-blue-2)', color: '#fff' }} onClick={() => navigate(`/admin/project-detail/${id}/transport-efficiency`)}>
-                搬运效率分析 ›
-              </span>
               <span
                 className="mac-chip mac-chip--tag"
                 style={{ background: 'var(--mac-black)', color: '#fff' }}
@@ -458,26 +311,43 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {/* 项目经理 / 对接人 —— MetaRow 可编辑；绑定 project_manager / contact_person（企业微信「项目经理」「调度对接人」列实时同步） */}
-          <div style={{ marginTop: 10 }}>
-            <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} meta />
-          </div>
-          <EditableField label="对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} meta strong />
-
-          {/* 项目时间进度（与项目进度列表同一口径：按生命周期阶段线性计算；仅「项目中止」隐藏） */}
-          {!isAborted && (
-            <div className="mac-progress mac-progress--detail" style={{ marginTop: 14 }}>
-              <div className="mac-progress__head">
-                <span>项目时间进度</span>
-                <span className="mac-progress__pct">{progressPct}%</span>
-              </div>
-              <div className="mac-progress__track">
-                <div className="mac-progress__fill" style={{ width: `${progressPct}%` }} />
-              </div>
+          {/* 客户信息（Project 表暂无对应列：先置空，可就地编辑）+ 项目经理 / 对接人（企业微信「项目经理」「调度对接人」列实时同步） */}
+          <div className="mac-ov-block">
+            <EditableField
+              variant="row"
+              pending
+              label="客户信息"
+              value={overviewDraft.client}
+              placeholder="未填写"
+              onSave={saveOverviewDraft('client', '客户信息')}
+            />
+            <div className="mac-ov-grid">
+              <EditableField variant="cell" label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} />
+              <EditableField variant="cell" label="对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} />
             </div>
-          )}
+          </div>
 
-          {/* 部署 / 近期交付 / 最终交付 */}
+          {/* 项目阶段 + 项目时间进度：同属进度管控，整体与上方客户信息块用浅灰线隔开。
+              阶段编辑入口随「项目生命周期」卡移除后挪进概况（进度由它决定），
+              绑定 status（企业微信「项目生命周期」列实时同步）；
+              进度与项目进度列表同一口径（按生命周期阶段线性计算；仅「项目中止」隐藏） */}
+          <div className="mac-ov-divider">
+            <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
+            {!isAborted && (
+              <div className="mac-progress mac-progress--detail" style={{ marginTop: 14 }}>
+                <div className="mac-progress__head">
+                  <span>项目时间进度</span>
+                  <span className="mac-progress__pct">{progressPct}%</span>
+                </div>
+                <div className="mac-progress__track">
+                  <div className="mac-progress__fill" style={{ width: `${progressPct}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 部署 / 近期交付 / 最终交付：与上方项目阶段、时间进度同属时间信息一个功能块，
+              不再单独加分隔线（mac-dates 自带 margin-top 与进度条留白） */}
           <div className="mac-dates">
             <div>
               <div className="mac-dates__label">部署时间</div>
@@ -493,152 +363,84 @@ export default function ProjectDetail() {
             </div>
           </div>
 
+          {/* AGV 数量 / USP 版本（Project 表暂无对应列：先置空，可就地编辑）+ 搬运效率分析入口（对照原型：从右上标签移到底部按钮） */}
+          <div className="mac-ov-actions">
+            <EditableField
+              variant="cell"
+              pending
+              label="AGV 数量"
+              value={overviewDraft.agvCount}
+              placeholder="未填写"
+              onSave={saveOverviewDraft('agvCount', 'AGV 数量')}
+            />
+            <EditableField
+              variant="cell"
+              pending
+              label="USP 版本"
+              value={overviewDraft.uspVersion}
+              placeholder="未填写"
+              onSave={saveOverviewDraft('uspVersion', 'USP 版本')}
+            />
+            <button
+              type="button"
+              className="mac-btn mac-btn--primary mac-ov-cta"
+              onClick={() => navigate(`/admin/project-detail/${id}/transport-efficiency`)}
+            >
+              <MacBarChart3 size={14} />搬运效率分析
+            </button>
+          </div>
+
           {project.task_execution_status && (
             <div className="mac-task-exec">近7天任务执行：{project.task_execution_status}</div>
           )}
-        </section>
 
-        {/* 项目基础画像（对照原型 SectionCard + FieldRow） */}
-        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
-          <h3 className="mac-card-title">项目基础画像</h3>
-          <EditableField label="项目名称" value={project.name} onSave={(v) => saveField('name', v)} required={isNew} />
-          <EditableField label="项目编号" value={project.project_code} onSave={(v) => saveField('project_code', v)} required={isNew} />
-          <EditableField label="内部编号" value={project.internal_code || ''} placeholder="未填写" onSave={(v) => saveField('internal_code', v)} />
-          <EditableField label="项目描述" value={project.description || ''} placeholder="未填写" multiline onSave={(v) => saveField('description', v)} />
-          <PickerField label="项目类型" value={project.project_type || '未设置'} onClick={() => setActivePicker('project_type')} />
-          <PickerField label="项目区域/地点" value={project.project_region || '未设置'} onClick={() => setActivePicker('project_region')} />
-          <EditableField
-            label="总车数"
-            type="number"
-            value={project.total_vehicle_count != null ? String(project.total_vehicle_count) : ''}
-            placeholder="未填写"
-            onSave={(v) => saveField('total_vehicle_count', v ? Number(v) : null)}
-          />
-          <EditableField label="车型&车数" value={project.recent_delivery_content || ''} placeholder="未填写" onSave={(v) => saveField('recent_delivery_content', v)} />
-          <PickerField label="控制器选择" value={project.controller_vendor || '未设置'} onClick={() => setActivePicker('controller_vendor')} />
-          <div className="mac-field-stack">
-            <div className="mac-field-stack__label">系统/外设对接</div>
-            <button type="button" className="mac-field-stack__row" onClick={openSystemIntegrationEditor}>
-              <span className={`mac-field-stack__value${project.system_integration?.length ? '' : ' is-empty'}`}>
-                {project.system_integration?.length ? project.system_integration.join('、') : '未设置'}
-              </span>
-              <span className="mac-field-stack__icon"><MacChevronRight size={16} /></span>
-            </button>
-          </div>
-          <PickerField label="服务器部署" value={project.server_deployment_status || '未设置'} onClick={() => setActivePicker('server_deployment_status')} />
-          <EditableField label="部署版本" value={project.deployment_version || ''} placeholder="未填写" onSave={(v) => saveField('deployment_version', v)} />
-        </section>
-
-        {/* 项目生命周期（对照原型 SectionCard + 纵向时间线） */}
-        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
-          <h3 className="mac-card-title">项目生命周期</h3>
-          {/* 项目阶段 —— 位于生命周期标题下方，便于直接查看/修改当前阶段；绑定 status（企业微信「项目生命周期」列实时同步） */}
-          <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
-          {isAborted ? (
-            <div className="mac-timeline__aborted">
-              <span>⛔</span>
-              <span>项目已中止</span>
-            </div>
-          ) : (
-            <div className="mac-timeline">
-              {LIFECYCLE_STATUSES.map((stage, idx) => {
-                const done = lifecycleIndex >= 0 && idx < lifecycleIndex;
-                const current = idx === lifecycleIndex;
-                const note = project.stage_notes?.[stage];
-                const state = done ? 'is-done' : current ? 'is-active' : 'is-pending';
-                return (
-                  <div key={stage} className="mac-timeline__item">
-                    {idx < LIFECYCLE_STATUSES.length - 1 && <div className="mac-timeline__line" />}
-                    <span className={`mac-timeline__dot ${state}`}>
-                      {done ? <MacCheck size={14} /> : current ? <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--mac-blue-2)' }} /> : null}
-                    </span>
-                    <div className="mac-timeline__stage">
-                      <div className="mac-timeline__head">
-                        <span className={`mac-timeline__name ${state}`}>{stage}</span>
-                        <span className="mac-timeline__status">{done ? '已完成' : current ? '进行中' : '待开始'}</span>
-                        <button type="button" className="mac-timeline__note-btn" onClick={() => openNoteEditor(stage)}>
-                          {note ? '编辑说明' : '+ 补充说明'}
-                        </button>
-                      </div>
-                      {note && <div className="mac-timeline__note">{note}</div>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        {/* 风险管理（对照原型 SectionCard + FieldRow + 项目文档） */}
-        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
-          <h3 className="mac-card-title">风险管理</h3>
-          <PickerField label="风险承接" value={project.risk_carrying_type || '未设置'} onClick={() => setActivePicker('risk_carrying_type')} />
-          <EditableField label="特别关注" value={project.special_attention || ''} placeholder="无" multiline onSave={(v) => saveField('special_attention', v)} />
-          <EditableField label="风险和任务描述" value={project.risk_task_description || ''} placeholder="无" multiline onSave={(v) => saveField('risk_task_description', v)} />
-          <EditableField label="项目管理策略" value={project.management_strategy || ''} placeholder="无" multiline onSave={(v) => saveField('management_strategy', v)} />
-          <EditableField label="预期走向" value={project.expected_trend || ''} placeholder="未设置" onSave={(v) => saveField('expected_trend', v)} />
-
-          {/* 项目文档 */}
-          <div className="mac-field-stack">
-            <div className="mac-field-stack__label">项目文档</div>
-            {(project.project_documents || []).map((doc) => (
-              <div key={doc.resource_id} className="mac-doc-row">
-                <a
-                  className="mac-doc-row__link"
-                  href={`${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${doc.resource_id}/download`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <MacFileText size={14} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</span>
-                </a>
-                <button type="button" className="mac-doc-row__del" onClick={() => removeDocument(doc.resource_id)}>删除</button>
+          {/* AI 项目摘要：POST /projects/{id}/ai-summary 生成（后端读取项目信息管理整棵树 +
+              项目基础字段，与文件导入同一大模型），结果存 ext_info.overview.ai_summary */}
+          <div className="mac-ai">
+            <div className="mac-ai__head">
+              <span className="mac-ai__icon"><MacSparkles size={14} /></span>
+              <span className="mac-ai__title">项目摘要</span>
+              <div className="mac-ai__head-right">
+                {!isNew && (
+                  <button type="button" className="mac-ai__gen" disabled={aiGenerating} onClick={generateAiSummary}>
+                    {aiGenerating ? '生成中...' : aiSummary ? '重新生成' : '点击生成'}
+                  </button>
+                )}
+                <button type="button" className="mac-ai__toggle" onClick={() => setSummaryExpanded((value) => !value)}>
+                  {summaryExpanded ? '收起' : '展开'}
+                  {summaryExpanded ? <MacChevronUp size={13} /> : <MacChevronDown size={13} />}
+                </button>
               </div>
-            ))}
-            <div className="mac-upload-wrap">
-              <Upload
-                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg"
-                max={1}
-                disabled={uploading}
-                onSuccess={({ fileList }) => {
-                  const raw = fileList?.[0]?.raw;
-                  if (raw) handleUploadDocument(raw);
-                }}
-              />
-              {uploading && <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', marginTop: 6 }}>上传中...</div>}
+            </div>
+            {/* 摘要为大模型输出的结构化 Markdown（## 小节 + - 要点），用 react-markdown 渲染为 React 元素（天然防 XSS） */}
+            <div className={`mac-ai__body${aiSummary ? (summaryExpanded ? '' : ' is-collapsed') : ' is-empty'}`}>
+              {aiSummary ? (
+                <div className="mac-ai__md">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiSummary}</ReactMarkdown>
+                </div>
+              ) : '暂无数据'}
             </div>
           </div>
         </section>
 
-        {/* 责任体系（对照原型 SectionCard + FieldRow） */}
-        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
-          <h3 className="mac-card-title">责任体系</h3>
-          <EditableField label="销售" value={project.sales || ''} placeholder="未指定" onSave={(v) => saveField('sales', v)} />
-          <EditableField label="售前" value={project.pre_sales || ''} placeholder="未指定" onSave={(v) => saveField('pre_sales', v)} />
-          <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} />
-          <EditableField label="实施工程师" value={project.field_engineer || ''} placeholder="未指定" onSave={(v) => saveField('field_engineer', v)} />
-          <EditableField label="人员计划" value={project.personnel_plan || ''} placeholder="无" multiline onSave={(v) => saveField('personnel_plan', v)} />
-        </section>
+        {/* 项目信息管理（项目详细信息）：对照原型 ProjectDetailCard，位于项目概况之后（与原型顺序一致）。
+            子节点右侧星标 = 关注该节点；关注变化后翻动 activityToken 让下方「项目动态」重新拉取 */}
+        <ProjectInfoCard
+          projectId={id}
+          canEdit={!isNew}
+          onMarkChange={() => setActivityToken((value) => value + 1)}
+        />
 
-        {/* 企业微信台账原文（实时）—— 展示智能表格全部列，未映射到结构化字段的列也在此可见 */}
-        {!isNew && liveValues && Object.keys(liveValues).length > 0 && (
-          <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
-            <h3 className="mac-card-title">企业微信台账 · 实时</h3>
-            {Object.entries(liveValues).map(([k, v]) => {
-              const text = v == null ? '' : String(v).trim();
-              if (!text) return null;
-              return (
-                <div key={k} className="mac-ledger-row">
-                  <span className="mac-ledger-row__key">{k}</span>
-                  <span className="mac-ledger-row__value">{text}</span>
-                </div>
-              );
-            })}
-          </section>
-        )}
+        {/* 项目工单（对照原型 ProjectTicketsCard）：总数/各状态数量 + 核心阻滞工单 +
+            近 8 周变化趋势；新建模式下项目未落库（也没有工单），不渲染 */}
+        {!isNew && <ProjectTicketsCard projectId={id} />}
+
+        {/* 项目动态（对照原型 ProjectActivityCard 的「关注节点变动」分组）：
+            被关注节点的最新一条变动，只展示变动内容（不带时间与人员）；新建模式下项目未落库，不渲染 */}
+        {!isNew && <ProjectActivityCard projectId={id} reloadToken={activityToken} />}
       </div>
 
-      {/* 项目阶段 / 项目类别 / 项目类型 / 风险承接 —— 单选弹窗（真实枚举，与 backend 对应 Enum 一致） */}
+      {/* 项目阶段 / 项目类别 —— 单选弹窗（真实枚举，与 backend 对应 Enum 一致） */}
       <Popup visible={!!activePicker} onClose={() => setActivePicker(null)} placement="bottom" showOverlay>
         <div className="mac-sheet" style={{ maxHeight: '70vh', overflow: 'auto' }}>
           <h4 className="mac-sheet__title">{activePickerConfig?.label}</h4>
@@ -656,39 +458,14 @@ export default function ProjectDetail() {
         </div>
       </Popup>
 
-      {/* 生命周期阶段补充说明 —— 存入 stage_notes（JSON，键为阶段名） */}
-      <Popup visible={!!noteStage} onClose={() => setNoteStage(null)} placement="bottom" showOverlay>
-        <div className="mac-sheet">
-          <h4 className="mac-sheet__title">{noteStage} · 补充说明</h4>
-          <Textarea
-            value={noteDraft}
-            onChange={(v: string | number) => setNoteDraft(String(v))}
-            placeholder="填写该阶段的详细内容..."
-            autosize={{ minRows: 4, maxRows: 10 }}
-          />
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-            <button type="button" className="mac-btn mac-btn--primary" onClick={saveNote}>保存</button>
-          </div>
-        </div>
-      </Popup>
-
-      {/* 系统/外设对接 —— 多选，存入 system_integration（JSON数组） */}
-      <Popup visible={systemIntegrationOpen} onClose={() => setSystemIntegrationOpen(false)} placement="bottom" showOverlay>
-        <div className="mac-sheet" style={{ maxHeight: '70vh', overflow: 'auto' }}>
-          <h4 className="mac-sheet__title">系统/外设对接</h4>
-          <div style={{ marginBottom: 16 }}>
-            {SYSTEM_INTEGRATION_OPTIONS.map((opt) => (
-              <div key={opt} className="mac-choice" onClick={() => toggleSystemIntegration(opt)}>
-                <Checkbox checked={systemIntegrationDraft.includes(opt)} />
-                <span className="mac-choice__label">{opt}</span>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button type="button" className="mac-btn mac-btn--primary" onClick={saveSystemIntegration}>确定</button>
-          </div>
-        </div>
-      </Popup>
+      {/* 一键回到顶部：滚动超过 200px 时出现在右下角（页面滚动容器是 MainLayout 的 .tabbar-shell__content）。
+          底部 TabBar 高约 56px + 安全区，按钮上移到 TabBar 之上。 */}
+      <BackTop
+        container={() => document.querySelector('.tabbar-shell__content') as HTMLElement}
+        visibilityHeight={200}
+        theme="round"
+        style={{ bottom: 'calc(56px + env(safe-area-inset-bottom) + 12px)' }}
+      />
     </div>
   );
 }
@@ -708,7 +485,7 @@ function PickerField({ label, value, onClick, required }: { label: string; value
 const FIELD_EMPTY_VALUES = ['未设置', '未填写', '未指定', '无', ''];
 function isFieldEmpty(v: string): boolean { return FIELD_EMPTY_VALUES.includes(v); }
 
-function EditableField({ label, value, placeholder, multiline, type, title, meta, plain, strong, inlineLabel, required, onSave }: {
+function EditableField({ label, value, placeholder, multiline, type, title, meta, plain, strong, inlineLabel, required, variant, pending, onSave }: {
   label: string;
   value: string;
   placeholder?: string;
@@ -720,6 +497,10 @@ function EditableField({ label, value, placeholder, multiline, type, title, meta
   strong?: boolean;
   inlineLabel?: string;
   required?: boolean;
+  // 项目概况卡专用排布：row = 左标签右值（客户信息）；cell = 标签在上、值在下（项目经理/对接人/AGV/USP）
+  variant?: 'row' | 'cell';
+  // 后端暂无对应列/接口的字段：标签旁标注「待接入」，编辑仅本地暂存
+  pending?: boolean;
   onSave: (v: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -735,6 +516,45 @@ function EditableField({ label, value, placeholder, multiline, type, title, meta
   const requiredMark = <span style={{ color: '#ad4545', marginLeft: 2 }}>*</span>;
   const InputField = multiline ? Textarea : Input;
   const fieldProps = { ...(!multiline && type ? { type } : {}) };
+
+  // 项目概况·客户信息行（对照原型：左标签 / 右值 + 铅笔，行下细分隔线）
+  if (variant === 'row') {
+    return (
+      <div className="mac-ov-row">
+        <span className="mac-ov-row__label">{label}{required && requiredMark}{pending && <span className="mac-ov-pending">待接入</span>}</span>
+        {editing ? (
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <InputField value={draft} onChange={(v: string | number) => setDraft(String(v))} onBlur={commit} autofocus placeholder={placeholder} {...fieldProps} />
+          </div>
+        ) : (
+          <button type="button" className={`mac-ov-row__value${value ? '' : ' is-empty'}`} onClick={() => setEditing(true)}>
+            <span>{value || placeholder || '未填写'}</span>
+            <span className="mac-ov-pencil"><MacPencil size={13} /></span>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // 项目概况·字段格（对照原型：标签在上 / 值 + 铅笔，无灰底）
+  if (variant === 'cell') {
+    return (
+      <div className="mac-ov-cell">
+        <div className="mac-ov-cell__label">
+          <span>{label}{required && requiredMark}</span>
+          {pending && <span className="mac-ov-pending">待接入</span>}
+        </div>
+        {editing ? (
+          <InputField value={draft} onChange={(v: string | number) => setDraft(String(v))} onBlur={commit} autofocus placeholder={placeholder} {...fieldProps} />
+        ) : (
+          <button type="button" className={`mac-ov-cell__value${value ? '' : ' is-empty'}`} onClick={() => setEditing(true)}>
+            <span>{value || placeholder || '未填写'}</span>
+            <span className="mac-ov-pencil"><MacPencil size={13} /></span>
+          </button>
+        )}
+      </div>
+    );
+  }
 
   // 概要卡 MetaRow（项目经理 / 对接人 / 内嵌项目编号）
   if (meta) {

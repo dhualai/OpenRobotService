@@ -4,13 +4,17 @@ MIGRATION.md 阶段 3：从 `app/modules/das/api/export.py` 搬迁而来，
 路由前缀从 `/api/DAS/export` 迁移到 `/api/admin/export`。
 """
 from fastapi import APIRouter, Depends, Query, HTTPException, Request, Body
-from typing import Optional, Dict, List
+from typing import Any, Optional, Dict, List
 from pydantic import BaseModel
 from app.modules.admin.utils_das.config import security, DEBUG_MODE, AUTH_SERVICE_BASE_URL
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.mqtt import publish_to_mqtt
-from app.core.security import decode_token
+from app.modules.admin.api.auth import (
+    require_permission,
+    get_current_active_user_from_token,
+    has_permission_code,
+)
 from fastapi.responses import StreamingResponse
 import gzip
 import io
@@ -20,17 +24,34 @@ import requests
 
 export_router = APIRouter(prefix="/export", tags=["admin-export"])
 
+# 权限码：基于导出类型分别管控 license / 用户 / 完整授权导出与申请授权
+PERM_LICENSE_EXPORT = "backend:project:license:export"
+PERM_USER_EXPORT = "backend:project:user:export"
+PERM_LICENSE_APPLY = "backend:project:license:apply"
+
 
 @export_router.post("/project/{project_code}", summary="导出项目数据")
 async def export_project(
     project_code: str,
     type: str = Query(..., description="导出类型: license, users, all"),
     credentials: Optional = Depends(security),
-    request: Request = None
+    request: Request = None,
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
     if type not in ["license", "users", "all"]:
         raise HTTPException(status_code=400, detail="type参数必须是 'license', 'users' 或 'all'")
-    
+
+    # 基于权限代码管控：license 导出需 PERM_LICENSE_EXPORT，
+    # users 导出需 PERM_USER_EXPORT，all 需两者皆有
+    required_perms: List[str] = []
+    if type in ("license", "all"):
+        required_perms.append(PERM_LICENSE_EXPORT)
+    if type in ("users", "all"):
+        required_perms.append(PERM_USER_EXPORT)
+    for perm in required_perms:
+        if not has_permission_code(current_user, perm):
+            raise HTTPException(status_code=403, detail=f"权限不足: 缺少 {perm}")
+
     export_data = {"project_code": project_code}
     
     if type == "license" or type == "all":
@@ -74,16 +95,15 @@ async def apply_project_license(
     end_date: str = Body(..., description="结束日期"),
     max_vehicles: Optional[int] = Body(None, description="允许最大车数，为空表示不限制"),
     credentials: Optional = Depends(security),
-    request: Request = None
+    request: Request = None,
+    current_user: Dict[str, Any] = require_permission(PERM_LICENSE_APPLY),
 ):
-    user = ""
-    user_name = ""
-    token = None
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    payload = decode_token(token)
-    if payload:
-        user = payload.get("sub", "")
+    # require_permission 已完成认证与权限校验，current_user 含 username/name 等字段
+    user = current_user.get("username", "")
+    user_name = current_user.get("name") or user
 
+    # 仍调用 AUTH 服务获取最新 name（与原逻辑保持一致，失败则回退到 current_user.name）
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
     if user and token:
         try:
             url = f"{AUTH_SERVICE_BASE_URL}/users/{user}/detail"
@@ -91,13 +111,9 @@ async def apply_project_license(
             response = requests.get(url, headers=headers, timeout=5)
             if response.status_code == 200:
                 user_data = response.json()
-                user_name = user_data.get("name", user)
-            else:
-                user_name = user
+                user_name = user_data.get("name", user_name)
         except Exception:
-            user_name = user
-    else:
-        user_name = user
+            pass
 
     data = {
         "project_code": project_code,

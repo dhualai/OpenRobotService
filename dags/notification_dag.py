@@ -45,7 +45,7 @@ URGENT_MIN_MINUTES = 60
 URGENT_MAX_MINUTES = 120
 
 # 需要扫描的工单状态
-ACTIVE_STATUSES = "new,in_progress,pending"
+ACTIVE_STATUSES = "new,in_progress"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,7 +59,9 @@ def _parse_deadline(deadline_raw) -> datetime | None:
     try:
         dt = datetime.fromisoformat(str(deadline_raw).replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=TZ_SHANGHAI)
+            # DB 存的是 naive UTC（见 backend convert_to_shanghai_time），
+            # API 返回不带时区，这里按 UTC 解释后再转东八区
+            dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(TZ_SHANGHAI)
     except Exception as e:
         logger.warning(f"解析截止时间失败: {deadline_raw}, {e}")

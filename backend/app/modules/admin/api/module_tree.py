@@ -2,7 +2,7 @@
 
 前端责任模块树维护页面的后端，负责：
 - GET   获取全部产品树 / 产品列表 / 可选工程师候选 / 当前用户编辑权限
-- PUT   整体保存树（写 DB + 导出 config.yaml + 通知 AI 热更新，含他人负责模块校验）
+- PUT/DELETE /node  单功能行新增/更新/删除（并发安全）
 - POST  /submit-edit 提交对某个功能的修改（直改或创建审批单）
 - GET/POST /edits* 审批单查询与审批
 """
@@ -14,6 +14,7 @@ from app.models.identity import UserDB
 from app.modules.admin.api.auth import get_current_active_user_from_token
 from app.modules.admin.services import module_tree_service
 from app.modules.admin.services import module_tree_edit_service
+from app.modules.admin.api.module_tree_ws import ws_broadcast_module_tree_updated
 
 router = APIRouter(prefix="/module-tree", tags=["admin-module-tree"])
 
@@ -35,6 +36,22 @@ async def get_products(
     return sorted(trees.keys())
 
 
+@router.get("/hashes", summary="获取各产品树的版本哈希（乐观锁基准）")
+async def get_product_hashes(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+) -> Dict[str, str]:
+    """返回 {产品: 产品树哈希}（乐观锁基准）。"""
+    return module_tree_service.get_product_hashes()
+
+
+@router.get("/func-hashes", summary="获取各功能节点哈希（功能级冲突基准）")
+async def get_func_hashes(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+) -> Dict[str, Any]:
+    """返回 {产品: {'界面名||功能名': 功能哈希}}（功能级冲突基准）。"""
+    return module_tree_service.get_func_hashes()
+
+
 @router.get("/candidates", summary="获取可选工程师候选")
 async def get_candidates(
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
@@ -45,7 +62,6 @@ async def get_candidates(
         users = db.query(UserDB).filter(UserDB.status == "active").all()
         result = []
         for u in users:
-            # 主动/在职且有关键信息
             if not u.id or not (u.name or u.username):
                 continue
             dept = u.department or ""
@@ -57,47 +73,57 @@ async def get_candidates(
                 "job_level": u.job_level,
                 "duty_text": u.duty_text or "",
             })
-        # 按部门、姓名排序
         result.sort(key=lambda x: (x["department"], x["name"]))
         return result
     finally:
         db.close()
 
 
-@router.put("/", summary="整体保存 产品→界面→功能 树")
-async def save_module_tree(
-    trees: Dict[str, Any] = Body(..., description="完整树 {产品: {interfaces:[...]}}"),
+@router.put("/node", summary="按行 id 新增/更新单个功能（并发安全）")
+async def upsert_node(
+    payload: Dict[str, Any] = Body(..., description="{id?, product, iface_name, iface_order, func_name, func_order, keywords, anchor, engineers}"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ) -> Dict[str, Any]:
-    """整体覆盖所有产品树，并导出到 config.yaml + 通知 AI 热更新。"""
-    # 校验结构基本合法
-    for product, tree in trees.items():
-        if not isinstance(tree, dict):
-            raise HTTPException(status_code=400, detail=f"产品 {product} 的树结构必须是对象")
-        if "interfaces" not in tree:
-            tree["interfaces"] = []
+    """单功能行新增/更新：id 有则 update，否则 insert。返回该行 id 供前端绑定。"""
+    node_id = payload.get("id")
+    product = payload.get("product") or ""
+    if not product:
+        raise HTTPException(status_code=400, detail="缺少 product")
+    if node_id:
+        node_id = int(node_id)
+    res = module_tree_service.upsert_node(
+        product=product,
+        iface_name=payload.get("iface_name") or "",
+        iface_order=int(payload.get("iface_order") or 0),
+        func_name=payload.get("func_name") or "",
+        func_order=int(payload.get("func_order") or 0),
+        keywords=payload.get("keywords") or [],
+        anchor=payload.get("anchor") or "",
+        engineers=payload.get("engineers") or [],
+        node_id=node_id,
+    )
+    if res.get("id") is None:
+        raise HTTPException(status_code=400, detail="保存失败：行不存在或写入失败")
+    await ws_broadcast_module_tree_updated(product, str(current_user.get("username") or ""))
+    return {"code": 0, "id": res["id"], "message": "已保存", "synced_users": res.get("synced", 0)}
 
-    # 统一保存：写 DB + 覆盖同步用户画像 + 导出 config
-    result = module_tree_service.save_trees(trees)
-    if not result["db"]:
-        raise HTTPException(status_code=500, detail="保存到数据库失败")
-    if not result["export"]:
-        raise HTTPException(status_code=500, detail="保存成功但导出 config.yaml 失败")
 
-    # 通知 AI 热更新（尽力而为，失败不阻断）
-    reload_msg = None
-    try:
-        import httpx
-        from app.core.config import settings
-        ai_url = settings.AI_SERVICE_URL.rstrip("/")
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(f"{ai_url}/api/ai/assigner/reload")
-            if resp.status_code == 200:
-                reload_msg = "ok"
-    except Exception as e:
-        reload_msg = f"AI 热更新失败: {e}"
-
-    return {"code": 0, "message": "保存成功", "synced_users": result["synced"], "ai_reload": reload_msg}
+@router.delete("/node", summary="按行 id 批量删除功能")
+async def delete_node(
+    payload: Dict[str, Any] = Body(..., description="{ids: [行id]}"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+) -> Dict[str, Any]:
+    """按行 id 批量删除功能行。"""
+    ids = payload.get("ids") or []
+    if isinstance(ids, (int, str)):
+        ids = [ids]
+    ids = [int(x) for x in ids if str(x).isdigit()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="缺少待删除的 id 列表")
+    res = module_tree_service.delete_nodes(ids)
+    for p in res.get("products", []) or []:
+        await ws_broadcast_module_tree_updated(p, str(current_user.get("username") or ""))
+    return {"code": 0, "deleted": res.get("deleted", 0), "message": "已删除", "synced_users": res.get("synced", 0)}
 
 
 @router.get("/permission", summary="获取当前用户对模块树的编辑权限信息")
@@ -123,8 +149,8 @@ async def submit_edit(
 ) -> Dict[str, Any]:
     """对一个功能节点的修改提交。
 
-    - 可直改（admin/特殊权限/本人负责/待分配）→ 直接应用写 DB + 导出 config。
-    - 他人负责 → 创建审批单，返回 {created_edit: true}，等待原负责人同意。
+    - 可直改（admin/特殊权限/本人负责/待分配）→ 直接应用写 DB。
+    - 他人负责 → 创建审批单，返回 {edit_id}，等待原负责人同意。
     """
     product = payload.get("product") or ""
     iface_key = payload.get("iface_key") or ""
@@ -144,6 +170,7 @@ async def submit_edit(
         ok = module_tree_service.apply_function_change(product, iface_key, func_key, new_json)
         if not ok:
             raise HTTPException(status_code=500, detail="应用修改失败")
+        await ws_broadcast_module_tree_updated(product, str(current_user.get("username") or ""))
         return {"code": 0, "direct": True, "message": "修改已生效"}
 
     # 需要审批
@@ -163,7 +190,7 @@ async def list_edits(
     status: str = "pending",
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ) -> List[Dict[str, Any]]:
-    """返回与当前用户相关的审批单：待处理时返回（作为负责人）待我审批的 + 我发起的，其余状态返回我发起的。"""
+    """返回与当前用户相关的审批单：待处理时含待我审批的 + 我发起的，其余状态只含我发起的。"""
     user_id = str(current_user.get("id") or current_user.get("user_id") or "")
     return module_tree_edit_service.list_edits(status=status, user_id=user_id)
 
@@ -177,6 +204,8 @@ async def approve_edit(
     result = module_tree_edit_service.decide_edit(edit_id, "approve", current_user, (payload or {}).get("note"))
     if result is None:
         raise HTTPException(status_code=403, detail="不可审批（不存在/已处理/无权限）")
+    if result.get("applied") and result.get("product"):
+        await ws_broadcast_module_tree_updated(str(result["product"]), str(current_user.get("username") or ""))
     return {"code": 0, "message": "已批准并应用", "edit": result}
 
 

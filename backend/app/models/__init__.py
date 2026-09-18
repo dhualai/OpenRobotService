@@ -29,6 +29,11 @@ from app.models.delivery import (
     ProjectLicense,
     ProjectTransportEfficiency,
     ProjectTransportEfficiencyRobot,
+    ProjectInfoNode,
+    ProjectInfoNodeMark,
+    ProjectInfoValue,
+    ProjectInfoValueHistory,
+    ProjectBlockingConfig,
 )
 
 # 任务（承工单语义升格）
@@ -39,7 +44,11 @@ from app.models.task import (
     TaskPriority,
     TaskType,
     TaskUserMapping,
+    TaskStep,
 )
+
+# 任务派单日志（二次派单感知增强）
+from app.models.task_dispatch_log import TaskDispatchLog
 
 # 会话 / 消息
 from app.models.conversation import (
@@ -49,6 +58,9 @@ from app.models.conversation import (
     MessageRole,
     MessageType,
 )
+
+# 数据助手会话 / 消息（独立于摇人 conversations/messages）
+from app.models.dataqa import DataqaConversation, DataqaMessage
 
 # 工单（AI 诊断生成，独立于 Task）
 from app.models.ticket import Ticket
@@ -71,6 +83,13 @@ from app.models.organization import (
 # 「产品→界面→功能」责任模块树（DB 主数据，导出到 config 供 AI Assigner）
 from app.models.module_tree import ModuleTree
 from app.models.module_tree_edit import ModuleTreeEdit
+from app.models.module_tree_node import ModuleTreeNode
+
+# 用户信息（JSON 快照）
+from app.models.user_info import UserInfo
+
+# 用户统计（按日期 + 来源）
+from app.models.user_statistics import UserStatistics
 
 __all__ = [
     "Base",
@@ -82,10 +101,19 @@ __all__ = [
     "RealtimeData", "HistoryData", "CollectionData",
     "Risk", "ProjectDailyReport", "ProjectLicense",
     "ProjectTransportEfficiency", "ProjectTransportEfficiencyRobot",
+    "ProjectInfoNode",
+    "ProjectInfoNodeMark",
+    "ProjectInfoValue",
+    "ProjectInfoValueHistory",
+    "ProjectBlockingConfig",
     # task
-    "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping",
+    "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping", "TaskStep",
+    # task dispatch log
+    "TaskDispatchLog",
     # conversation
     "Conversation", "Message", "SceneType", "MessageRole", "MessageType",
+    # dataqa
+    "DataqaConversation", "DataqaMessage",
     # ticket (AI)
     "Ticket",
     # resource
@@ -93,5 +121,9 @@ __all__ = [
     # organization
     "Company", "Department",
     # module tree
-    "ModuleTree", "ModuleTreeEdit",
+    "ModuleTree", "ModuleTreeEdit", "ModuleTreeNode",
+    # user info
+    "UserInfo",
+    # user statistics
+    "UserStatistics",
 ]

@@ -1,19 +1,25 @@
 from fastapi import APIRouter, HTTPException, Query
+from typing import Dict, Any
 from app.utils.minio_client import minio_client
 from app.core.config import settings
+from app.modules.admin.api.auth import require_permission
 
 router = APIRouter(prefix="/minio", tags=["minio"])
+
+# 与 resource.py 保持一致：预签名 URL 等同于下载链接
+PERM_DOWNLOAD = "backend:resource:base:download"
 
 
 @router.get("/presigned-url")
 async def get_presigned_url(
     bucket_name: str = Query(..., description="MinIO bucket名称"),
     object_name: str = Query(..., description="对象名称"),
-    expires_minutes: int = Query(5, ge=1, le=10080, description="URL有效期（分钟），默认5分钟，最大10080分钟（7天）")
+    expires_minutes: int = Query(5, ge=1, le=10080, description="URL有效期（分钟），默认5分钟，最大10080分钟（7天）"),
+    current_user: Dict[str, Any] = require_permission(PERM_DOWNLOAD),
 ):
     try:
         object_path = f"{bucket_name}/{object_name}"
-        
+
         presigned_url = minio_client.get_presigned_url(
             object_path=object_path,
             expires_minutes=expires_minutes

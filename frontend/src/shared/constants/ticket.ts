@@ -1,6 +1,6 @@
 // 状态映射
 export const STATUS_DISPLAY_MAP: Record<string, string> = {
-  new: '新建',
+  new: '待处理',
   in_progress: '进行中',
   pending: '已挂起',
   resolved: '已解决',
@@ -9,7 +9,7 @@ export const STATUS_DISPLAY_MAP: Record<string, string> = {
 };
 
 export const STATUS_VALUE_MAP: Record<string, string> = {
-  '新建': 'new',
+  '待处理': 'new',
   '进行中': 'in_progress',
   '已挂起': 'pending',
   '已解决': 'resolved',
@@ -72,19 +72,19 @@ export const TICKET_TYPE_VALUE_MAP: Record<string, string> = {
 };
 
 export function normalizeStatus(backendStatus: string): string {
-  if (!backendStatus) return '新建';
+  if (!backendStatus) return '待处理';
   const lower = backendStatus.toLowerCase();
   return STATUS_DISPLAY_MAP[lower] || backendStatus;
 }
 
 // ===== 工单操作（催办/上报/撤回）状态约束 =====
 // 规则：
-//   催办：新建(new) / 待处理(pending) 可用
+//   催办：待处理(new) / 已挂起(pending) 可用
 //   上报：处理中(in_progress) 可用
-//   撤回：新建(new) / 待处理(pending) / 处理中(in_progress) 可用——提单人可在派单后/处理中撤回，防止派错单
+//   撤回：待处理(new) / 已挂起(pending) / 处理中(in_progress) 可用——提单人可在派单后/处理中撤回，防止派错单
 //   已解决(resolved) / 已取消(canceled) / 已关闭(closed)：三个按钮均不显示
-// 兼容历史状态值：pending_dispatch(待派单)、dispatched(已派单) 属「新建/待处理」组；
-// 未收录的非终态值从宽按「新建/待处理」处理（可催办/撤回、不可上报）。
+// 兼容历史状态值：pending_dispatch(待派单)、dispatched(已派单) 属「待处理」组；
+// 未收录的非终态值从宽按「待处理」处理（可催办/撤回、不可上报）。
 // 撤回操作权限：仅提单人(created_by === 当前用户) 或 管理员(isAdmin) 可执行，处理人不可撤回。
 
 export type TicketStatusLike = string | null | undefined;
@@ -93,7 +93,7 @@ export type TicketStatusLike = string | null | undefined;
 const REPORTABLE_STATUSES = new Set(['in_progress']);
 /** 终态（操作按钮整体不显示） */
 const TERMINAL_STATUSES = new Set(['resolved', 'canceled', 'cancelled', 'closed']);
-/** 撤回可用状态：新建 / 待派单 / 已派单 / 待处理 / 处理中 */
+/** 撤回可用状态：待处理 / 待派单 / 已派单 / 已挂起 / 处理中 */
 const CANCELABLE_STATUSES = new Set(['new', 'pending_dispatch', 'dispatched', 'pending', 'in_progress']);
 
 const normalizeKey = (status: TicketStatusLike): string => (status || '').trim().toLowerCase();
@@ -103,7 +103,7 @@ export function isTerminalTicketStatus(status: TicketStatusLike): boolean {
   return TERMINAL_STATUSES.has(normalizeKey(status));
 }
 
-/** 催办可用：新建 / 待处理 */
+/** 催办可用：待处理 / 已挂起 */
 export function canUrgeTicket(status: TicketStatusLike): boolean {
   if (isTerminalTicketStatus(status)) return false;
   return !REPORTABLE_STATUSES.has(normalizeKey(status));
@@ -114,7 +114,7 @@ export function canReportTicket(status: TicketStatusLike): boolean {
   return REPORTABLE_STATUSES.has(normalizeKey(status));
 }
 
-/** 撤回状态可用：新建 / 待派单 / 已派单 / 待处理 / 处理中——不区分操作人，仅判断状态。
+/** 撤回状态可用：待处理 / 待派单 / 已派单 / 已挂起 / 处理中——不区分操作人，仅判断状态。
  *  处理中可撤回用于「派错单」场景：提单人发现派错人后可及时撤回，避免错误流转。 */
 export function canCancelTicket(status: TicketStatusLike): boolean {
   if (isTerminalTicketStatus(status)) return false;
@@ -136,14 +136,14 @@ export function canCancelTicketByUser(
   return false;
 }
 
-/** 撤回按钮「显示」规则：非终态且状态属于可撤回组（新建/待派单/已派单/待处理/处理中）即展示。
+/** 撤回按钮「显示」规则：非终态且状态属于可撤回组（待处理/待派单/已派单/已挂起/处理中）即展示。
  *  与 canCancelTicket（操作权限）对齐——状态可撤回时按钮显示，再由 canCancelTicketByUser 判定操作人权限，
  *  无权限时按钮不显示（而非置灰），保持微信端简洁。 */
 export function canShowCancelButton(status?: string | null): boolean {
   return canCancelTicket(status);
 }
 
-/** 是否允许修改优先级：仅「尚未派单」状态可修改（新建 new / 待派单 pending_dispatch）。
+/** 是否允许修改优先级：仅「尚未派单」状态可修改（待处理 new / 待派单 pending_dispatch）。
  * 工单一经派单（dispatched/in_progress/pending 等）即进入处理流程，优先级不再允许变更。 */
 export function canEditPriority(status: TicketStatusLike): boolean {
   const key = normalizeKey(status);

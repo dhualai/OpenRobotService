@@ -1,10 +1,12 @@
 // 项目选择器：下拉展开项目列表 + 模糊搜索（按名称/编码过滤）
 // 数据源：全量项目（GET /api/admin/projects/），用于兜底双工单场景——需对比用户项目是否在全量列表。
 // 支持按 AI 项目名预填匹配。复用 UserSelect 的浮层结构与样式（user-select__*）。
+// 相关性排序（0907 需求）：提过单的项目 > 名下项目 > 其他，前两类带小字标注，
+// 搜索过滤后排序仍生效。
 import { useEffect, useMemo, useState } from 'react';
 import { Toast } from 'tdesign-mobile-react';
-import { getProjects } from '@/api/projects';
-import type { ProjectItem } from '@/api/projects';
+import { getProjects, getMyProjectRelevance } from '@/api/projects';
+import type { ProjectItem, ProjectRelevance } from '@/api/projects';
 
 interface Props {
   value?: string | null; // project_code
@@ -15,9 +17,15 @@ interface Props {
   nameHint?: string | null;
 }
 
+// 库里遗留的英文状态（列默认值）映射为中文；中文生命周期状态原样透传
+const STATUS_LABELS: Record<string, string> = { active: '活跃项目', inactive: '停用项目' };
+
 // 模块级缓存，5 分钟内复用，减少重复请求
 let projectCache: ProjectItem[] | null = null;
 let projectCacheTs = 0;
+const EMPTY_RELEVANCE: ProjectRelevance = { ticketed: [], owned: [] };
+let relevanceCache: ProjectRelevance | null = null; // 排序信号（提过单/名下编码集）
+let relevanceCacheTs = 0;
 
 export default function ProjectSelect({
   value,
@@ -28,6 +36,7 @@ export default function ProjectSelect({
 }: Props) {
   const [visible, setVisible] = useState(false);
   const [projects, setProjects] = useState<ProjectItem[]>(projectCache || []);
+  const [relevance, setRelevance] = useState<ProjectRelevance>(relevanceCache || EMPTY_RELEVANCE);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [error, setError] = useState('');
@@ -39,8 +48,24 @@ export default function ProjectSelect({
 
   const loadProjects = async () => {
     const now = Date.now();
+    // 相关性信号（提过单/名下）：失败静默——排序退化为原序，不阻塞选项目
+    const loadRelevance = (async () => {
+      if (relevanceCache && now - relevanceCacheTs < 5 * 60 * 1000) {
+        setRelevance(relevanceCache);
+        return;
+      }
+      try {
+        const rel = await getMyProjectRelevance();
+        relevanceCache = rel;
+        relevanceCacheTs = now;
+        setRelevance(rel);
+      } catch {
+        /* 保持上次信号/空集 */
+      }
+    })();
     if (projectCache && now - projectCacheTs < 5 * 60 * 1000) {
       setProjects(projectCache);
+      await loadRelevance;
       return;
     }
     setLoading(true);
@@ -76,16 +101,37 @@ export default function ProjectSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects, value, nameHint]);
 
+  // 相关性排序：搜索过滤后按 提过单 > 名下 > 其他 排列，
+  // 同一项目两属性兼有时归入「提过单」组；提单组内按提单数降序（同数保持原序）
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
-    return kw
+    const base = kw
       ? projects.filter(
           (p) =>
             (p.name || '').toLowerCase().includes(kw) ||
             (p.project_code || '').toLowerCase().includes(kw),
         )
       : projects;
-  }, [projects, keyword]);
+    if (relevance.ticketed.length === 0 && relevance.owned.length === 0) return base;
+    const ticketed = new Set(relevance.ticketed.map((t) => t.code));
+    const ticketedCount = new Map(relevance.ticketed.map((t) => [t.code, t.count]));
+    const owned = new Set(relevance.owned);
+    const g1 = base
+      .filter((p) => ticketed.has(p.project_code))
+      .sort(
+        (a, b) =>
+          (ticketedCount.get(b.project_code) || 0) - (ticketedCount.get(a.project_code) || 0),
+      );
+    const g2 = base.filter((p) => !ticketed.has(p.project_code) && owned.has(p.project_code));
+    const rest = base.filter((p) => !ticketed.has(p.project_code) && !owned.has(p.project_code));
+    return g1.length || g2.length ? [...g1, ...g2, ...rest] : base;
+  }, [projects, keyword, relevance]);
+
+  const relLabel = (code: string): { text: string; cls: string } | null => {
+    if (relevance.ticketed.some((t) => t.code === code)) return { text: '你提过单的项目', cls: 'user-select__status--ticketed' };
+    if (relevance.owned.includes(code)) return { text: '你名下的项目', cls: 'user-select__status--owned' };
+    return null;
+  };
 
   const handlePick = (p: ProjectItem) => {
     onChange?.(p);
@@ -129,23 +175,27 @@ export default function ProjectSelect({
               ) : filtered.length === 0 ? (
                 <div className="user-select__empty">未找到匹配项目</div>
               ) : (
-                filtered.map((p) => (
-                  <div
-                    key={p.project_code}
-                    className={`user-select__item ${p.project_code === value ? 'is-selected' : ''}`}
-                    onClick={() => handlePick(p)}
-                  >
-                    <div className="user-select__item-name">{p.name}</div>
-                    <div className="user-select__item-meta">
-                      <span>{p.project_code}</span>
-                      {p.status && (
-                        <span className={`user-select__status user-select__status--${p.status}`}>
-                          {p.status}
-                        </span>
-                      )}
+                filtered.map((p) => {
+                  const rel = relLabel(p.project_code);
+                  return (
+                    <div
+                      key={p.project_code}
+                      className={`user-select__item ${p.project_code === value ? 'is-selected' : ''}`}
+                      onClick={() => handlePick(p)}
+                    >
+                      <div className="user-select__item-name">{p.name}</div>
+                      <div className="user-select__item-meta">
+                        <span>{p.project_code}</span>
+                        {rel && <span className={`user-select__status ${rel.cls}`}>{rel.text}</span>}
+                        {p.status && (
+                          <span className="user-select__status user-select__status--info">
+                            {STATUS_LABELS[p.status] || p.status}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>

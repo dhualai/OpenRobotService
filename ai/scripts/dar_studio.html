@@ -1,0 +1,2260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 质量工作台</title>
+<script src="/vendor/echarts.min.js"></script>
+<style>
+:root{
+  --bg:#f1f5f9; --card:#ffffff; --ink:#0f172a; --ink2:#475569; --ink3:#94a3b8;
+  --line:#e2e8f0; --brand:#4f46e5; --brand2:#6366f1; --brand-soft:#eef2ff;
+  --ok:#16a34a; --ok-soft:#f0fdf4; --warn:#d97706; --warn-soft:#fffbeb;
+  --danger:#dc2626; --danger-soft:#fef2f2;
+  --side:#0f172a; --side-ink:#cbd5e1; --side-dim:#64748b;
+  --term:#0b1020; --term-ink:#a8b8d0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  background:var(--bg);color:var(--ink);font-size:14px;height:100vh;overflow:hidden}
+.mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
+
+/* ── 布局 ── */
+.shell{display:flex;height:100vh}
+.side{width:216px;background:var(--side);color:var(--side-ink);display:flex;flex-direction:column;flex-shrink:0}
+.brand{padding:20px 18px 16px;border-bottom:1px solid #1e293b}
+.brand .t{font-size:16px;font-weight:700;color:#fff;letter-spacing:.5px}
+.brand .s{font-size:11px;color:var(--side-dim);margin-top:4px}
+.nav{padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+.nav button{all:unset;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
+  cursor:pointer;color:var(--side-ink);font-size:14px;position:relative}
+.nav button:hover{background:#1e293b}
+.nav button.on{background:#1e293b;color:#fff}
+.nav button.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:2px;background:var(--brand2)}
+.nav .dot{width:8px;height:8px;border-radius:50%;background:#334155;flex-shrink:0}
+.nav button.on .dot{background:var(--brand2)}
+.side .fill{flex:1}
+.side .conn{padding:14px 16px;border-top:1px solid #1e293b;font-size:12px;color:var(--side-dim);
+  display:flex;flex-direction:column;gap:7px}
+.side .conn b{color:var(--side-ink);font-weight:600}
+.side .cline{display:flex;align-items:center;gap:7px;white-space:nowrap;overflow:hidden}
+.side .cdot{width:7px;height:7px;border-radius:50%;background:#475569;flex-shrink:0}
+.side .cdot.ok{background:var(--ok)}
+.side .cdot.bad{background:var(--danger)}
+.side .foot{padding:10px 16px 16px;font-size:11px;color:#334155}
+
+.main{flex:1;overflow:auto;padding:22px 26px}
+.view{display:none;max-width:1080px;margin:0 auto}
+.view.on{display:block}
+h2.pg{font-size:19px;font-weight:700;margin-bottom:4px}
+p.sub{color:var(--ink2);font-size:13px;margin-bottom:18px}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.card h3{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h3 .hint{font-weight:400;color:var(--ink3);font-size:12px}
+
+/* ── 通用控件 ── */
+button.btn{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;
+  padding:7px 14px;font-size:13px;cursor:pointer;transition:.15s;display:inline-flex;align-items:center;gap:6px}
+button.btn:hover:not(:disabled){border-color:var(--brand2);color:var(--brand)}
+button.btn:disabled{opacity:.45;cursor:not-allowed}
+button.btn.pri{background:var(--brand);border-color:var(--brand);color:#fff}
+button.btn.pri:hover:not(:disabled){background:var(--brand2);color:#fff}
+button.btn.dng{color:var(--danger);border-color:#fecaca}
+button.btn.dng:hover:not(:disabled){background:var(--danger-soft);border-color:var(--danger)}
+button.btn.sm{padding:4px 10px;font-size:12px;border-radius:6px}
+input[type=text],input[type=password],select{border:1px solid var(--line);border-radius:8px;
+  padding:7px 10px;font-size:13px;background:#fff;color:var(--ink);outline:none;min-width:0;transition:.15s}
+input:hover,select:hover{border-color:#cbd5e1}
+input:focus,select:focus{border-color:var(--brand2);box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--ink2)}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;border-radius:99px;padding:3px 10px}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}
+.badge.warn{background:var(--warn-soft);color:var(--warn)}
+.badge.err{background:var(--danger-soft);color:var(--danger)}
+.badge.dim{background:#f1f5f9;color:var(--ink3)}
+.spin{width:13px;height:13px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
+  animation:sp .7s linear infinite}
+.spin.d{border-color:#c7d2fe;border-top-color:var(--brand)}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* 侧边栏连接指示脉冲 */
+.cdot.ok{position:relative}
+.cdot.ok::after{content:"";position:absolute;inset:-2px;border-radius:50%;
+  box-shadow:0 0 0 0 #16a34a80;animation:dot-pulse 1.8s ease-out infinite}
+@keyframes dot-pulse{0%{box-shadow:0 0 0 0 #16a34a80}70%{box-shadow:0 0 0 6px #16a34a00}100%{box-shadow:0 0 0 0 #16a34a00}}
+.side .conn-refresh{all:unset;cursor:pointer;color:var(--side-dim);font-size:15px;padding:0 6px;
+  margin-left:auto;line-height:1;transition:.15s}
+.side .conn-refresh:hover{color:var(--side-ink);transform:rotate(-90deg)}
+
+/* ── 指标卡片 ── */
+.mhero{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px}
+.mcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04);transition:.18s;position:relative;overflow:hidden}
+.mcard:hover{box-shadow:0 6px 18px rgba(15,23,42,.07);transform:translateY(-1px)}
+.mcard .lb{font-size:12.5px;color:var(--ink2);display:flex;align-items:center;gap:6px;margin-bottom:12px;
+  letter-spacing:.2px}
+.mcard .v{font-size:38px;font-weight:750;letter-spacing:-.6px;line-height:1.05}
+.mcard .sb{font-size:12px;color:var(--ink3);margin-top:12px;line-height:1.5;word-break:break-all}
+.mcard .sb > div{padding:3px 0;display:flex;gap:6px;align-items:baseline}
+.mcard .sb > div:not(:last-child){border-bottom:1px dashed #eef2f6}
+.mcard .sb > div b{color:var(--ink2);font-weight:600;flex-shrink:0}
+.mcard .sb > div span{flex:1;text-align:right;color:var(--ink3)}
+.mhero .mcard{border-top:3px solid var(--brand2)}
+.mhero .mcard:nth-child(2){border-top-color:var(--ok)}
+.mhero .mcard:nth-child(3){border-top-color:var(--warn)}
+.mcard .wow{font-size:11.5px;font-weight:650;margin-top:10px;display:inline-flex;align-items:center;gap:4px;
+  padding:3px 10px;border-radius:99px;letter-spacing:.3px}
+.mcard .wow.up{color:var(--ok);background:var(--ok-soft)}
+.mcard .wow.down{color:var(--danger);background:var(--danger-soft)}
+/* 周直答率卡：与漏斗同源实时刷新（人工标注后即刷），区别于上方"数据快照" */
+.weekcard{display:flex;align-items:center;gap:22px;flex-wrap:wrap;
+  margin-top:14px;padding:16px 20px;border-radius:12px;
+  background:linear-gradient(135deg,#eef2ff 0%,#f5f3ff 100%);
+  border:1px solid #c7d2fe}
+.weekcard .wk-left{min-width:180px}
+.weekcard .wk-t{font-size:12.5px;color:var(--ink2);font-weight:650;margin-bottom:8px}
+.weekcard .wk-t .hint{font-weight:400;color:var(--ink3)}
+.weekcard .wk-rate{font-size:40px;font-weight:750;color:var(--brand);letter-spacing:-.5px;
+  line-height:1;font-variant-numeric:tabular-nums}
+.weekcard .wk-rate small{font-size:17px;font-weight:650;margin-left:2px}
+.weekcard .wk-div{width:1px;align-self:stretch;background:#c7d2fe;min-height:64px}
+.weekcard .wk-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 26px;flex:1;min-width:280px}
+.weekcard .wk-item .n{font-size:19px;font-weight:750;color:var(--ink);line-height:1.2;
+  font-variant-numeric:tabular-nums}
+.weekcard .wk-item .l{font-size:11.5px;color:var(--ink3);margin-top:2px}
+
+/* 数据快照标签：放在 mhero 第一行上方独立显示，不被 repbar 挤掉 */
+.mhero{position:relative;margin-top:18px}
+.mhero::before{content:"📦 上周数据快照（与漏斗实时口径可能不同，详见右侧漏斗）";
+  position:absolute;top:-13px;left:0;font-size:11px;
+  color:var(--warn);background:var(--warn-soft);padding:3px 10px;border-radius:6px;font-weight:600;
+  border:1px solid #fde68a;letter-spacing:.2px;white-space:nowrap;z-index:1}
+.urow{padding:8px 4px;border-bottom:1px solid var(--line);font-size:12.5px}
+.urow:last-child{border-bottom:none}
+.urow .uq{font-weight:600;color:var(--ink);margin-bottom:3px}
+.urow .um{display:flex;gap:8px;align-items:center;color:var(--ink3);font-size:11.5px;flex-wrap:wrap}
+.urow .ur{color:var(--ink3);font-size:11.5px;margin-top:3px}
+.mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
+.mgrid .mcard.is-wide{grid-column:span 2}
+.mgrid .mcard{padding:14px 16px}
+.mgrid .mcard .v{font-size:26px;letter-spacing:-.4px}
+.mgrid .mcard .lb{margin-bottom:8px}
+.mgrid .mcard .sb{font-size:11.5px;margin-top:10px;line-height:1.6}
+.mgrid .mcard .sb > div{padding:2px 0}
+.repbar{display:block;padding:0;font-size:13.5px;
+  background:var(--card);border:1px solid var(--line);border-left:5px solid var(--brand);
+  border-radius:14px;margin-bottom:16px;overflow:hidden;
+  box-shadow:0 2px 10px rgba(79,70,229,.08)}
+.repbar .rep-hd{display:flex;align-items:baseline;gap:14px;padding:15px 18px 0}
+.repbar .rep-t{font-size:19px;font-weight:750;color:var(--ink)}
+.repbar .rep-t b{color:var(--brand);margin-left:6px;font-size:19px;font-weight:750;
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.repbar .rep-note{font-size:12.5px;color:var(--ink3);margin-left:10px;font-weight:400}
+.repbar .rep-open{margin-left:auto;font-size:13.5px;color:#fff;text-decoration:none;
+  background:var(--brand);border-radius:8px;padding:7px 16px;transition:.15s;
+  box-shadow:0 1px 4px rgba(79,70,229,.3)}
+.repbar .rep-open:hover{background:var(--brand2)}
+.repbar .rep-body{padding:6px 18px 14px;line-height:1.7;color:var(--ink2)}
+.repbar .rep-row{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline;padding:3px 0;
+  font-size:13px}
+.repbar .rep-row:not(:last-child){border-bottom:1px dashed #eef2f6}
+.repbar .rep-body b{color:var(--ink);font-weight:650;font-size:13.5px;
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.repbar .rep-sep{color:#cbd5e1;margin:0 2px}
+/* ── 漏斗走查（ORS-#821，手绘图形态）── */
+.funnel-wrap{width:100%;max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:16px;
+  padding:18px 20px;background:linear-gradient(180deg,#fbfcfe,#f6f8fc);
+  border:1px solid var(--line);border-radius:14px}
+.fn-row{display:grid;grid-template-columns:150px minmax(0,1fr) 265px;gap:0 14px;align-items:center}
+.fn-lb{font-size:12.5px;color:var(--ink2);text-align:right;white-space:nowrap;justify-self:end;line-height:1.3}
+.frow{display:flex;justify-content:center;align-items:center}
+.fill{height:36px;display:flex;align-items:center;justify-content:center;gap:8px;
+  font-size:13px;color:#fff;cursor:pointer;border-radius:8px;min-width:56px;
+  transition:transform .15s, box-shadow .15s;white-space:nowrap;
+  box-shadow:0 1px 3px rgba(15,23,42,.18)}
+.fill b{font-size:15px;text-shadow:0 1px 2px rgba(0,0,0,.15)}
+.fill:hover{transform:scale(1.02);box-shadow:0 3px 10px rgba(15,23,42,.25)}
+.fill.is-sel{outline:3px solid var(--brand);outline-offset:2px;z-index:1}
+.fill.is-rest{height:28px;opacity:.55;cursor:default;box-shadow:none;background-image:
+  linear-gradient(180deg,rgba(255,255,255,.18),rgba(0,0,0,.08))}
+.fill.is-rest:hover{transform:none}
+/* 直答终点：加出口光晕 + 缓慢脉动 */
+.fill.is-final{box-shadow:0 0 0 3px #2e9e5b33, 0 2px 8px rgba(46,158,91,.35);
+  animation:fn-pulse 2.4s ease-in-out infinite}
+@keyframes fn-pulse{
+  0%,100%{box-shadow:0 0 0 3px #2e9e5b33, 0 2px 8px rgba(46,158,91,.35)}
+  50%{box-shadow:0 0 0 7px #2e9e5b14, 0 4px 16px rgba(46,158,91,.55)}
+}
+/* 被过滤削掉段：斜纹+虚线框（视觉=从主流削掉的一块） */
+.fcut{height:28px;border:1.5px dashed #d97706;border-left:none;border-radius:0 8px 8px 0;
+  background:repeating-linear-gradient(45deg,#fdeed6 0 5px,#f9e0bd 5px 10px);
+  display:flex;align-items:center;justify-content:flex-end;padding-right:6px;min-width:34px}
+.fcut .dot{width:7px;height:7px;border-radius:50%;background:#d97706;
+  box-shadow:0 0 0 3px #d9770626}
+/* 旁路：连接线（虚线）+ 箭头 + 橙色块 */
+.fn-side{display:flex;align-items:center;cursor:pointer;min-width:0}
+.fn-side .lnk{flex:1;min-width:14px;border-top:2.5px dashed #d97706;height:0}
+.fn-side .ah{color:#d97706;font-size:17px;font-weight:700;flex-shrink:0;line-height:1}
+.fs-chip{background:linear-gradient(180deg,#e08613,#d97706);color:#fff;border-radius:9px;
+  padding:6px 11px;font-size:12.5px;white-space:nowrap;display:flex;gap:6px;align-items:center;
+  flex-shrink:0;box-shadow:0 1px 4px rgba(217,119,6,.35);transition:.15s}
+.fs-chip b{font-size:14px;text-shadow:0 1px 2px rgba(0,0,0,.15)}
+.fn-side:hover .fs-chip{filter:brightness(1.07);transform:translateX(2px)}
+.fn-side.is-sel .fs-chip{outline:3px solid var(--brand);outline-offset:2px}
+/* 直答行的三旁支（竖排小 chip 组）+ 从分母削掉段连过去的一根总线 */
+.fn-side3{grid-column:3;display:flex;flex-direction:column;gap:6px;align-items:flex-start;
+  border-left:2.5px dashed #d9534f;padding-left:8px;justify-self:start}
+.fn-side3-hd{font-size:11.5px;font-weight:650;color:#b91c1c;letter-spacing:.3px;
+  padding:1px 8px;background:#fee2e2;border-radius:5px;align-self:flex-start}
+.fn-side3 .fn-side{cursor:pointer}
+.fn-side3 .fs-chip{background:#d9534f}
+.fn-rate{margin-top:20px;text-align:center;font-size:14px;color:var(--ink2);
+  padding:14px 10px 4px;border-top:1px dashed var(--line);position:relative}
+.fn-rate::before{content:"▼";position:absolute;top:-8px;left:50%;transform:translateX(-50%);
+  color:#2e9e5b;font-size:12px;background:#f6f8fc;padding:0 8px}
+.fn-rate b{font-size:28px;color:var(--brand);margin:0 4px}
+.fn-rate span{font-size:12px;color:var(--ink3)}
+.fseg{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:8px;
+  transition:border-color .15s, box-shadow .15s}
+.fseg:hover{border-color:#b9c4d6;box-shadow:0 1px 5px rgba(15,23,42,.06)}
+.fseg.is-cur{border-color:var(--brand);box-shadow:inset 3px 0 0 var(--brand), 0 1px 6px rgba(79,70,229,.12)}
+.fseg .q{font-size:13px;line-height:1.5;cursor:pointer}
+.fseg .aprev{font-size:12px;color:var(--ink3);margin-top:4px;cursor:pointer;
+  background:var(--bg);border-radius:6px;padding:4px 8px;line-height:1.5}
+.fseg .meta{display:flex;gap:8px;align-items:center;margin-top:6px;font-size:12px;color:var(--ink3);flex-wrap:wrap}
+.fseg .ops{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.lbtn{font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--line);background:#fff;cursor:pointer;color:var(--ink2)}
+.lbtn:hover{border-color:var(--brand)}
+.lbtn.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+.fdet{margin-top:8px;border-top:1px dashed var(--line);padding-top:8px;font-size:12.5px;line-height:1.6}
+.fdet .fq{color:var(--ink);margin:4px 0}
+.fdet .fa{color:var(--ink2);white-space:pre-wrap;background:var(--bg);border-radius:8px;padding:6px 10px;margin:4px 0 8px 12px}
+.fdet .fact{display:inline-block;background:#fef3c7;color:#92400e;border-radius:6px;padding:1px 8px;font-size:11.5px;margin:2px 0}
+.fdet img{max-width:180px;border-radius:8px;border:1px solid var(--line);margin:4px 6px 4px 0;vertical-align:top;cursor:zoom-in}
+.imgfail{display:inline-block;font-size:11.5px;color:var(--ink3);background:#f1f5f9;
+  border:1px dashed var(--line);border-radius:6px;padding:3px 9px;margin:4px 6px 4px 0;cursor:pointer;user-select:none}
+.imgfail:hover{color:var(--brand);border-color:var(--brand2)}
+
+/* 关联工单卡（走查明细展开后） */
+.ftix-hd{font-size:11.5px;font-weight:650;color:var(--ink2);margin:10px 0 6px;
+  padding-left:8px;border-left:3px solid var(--brand)}
+.ftix{border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:6px;
+  background:#fafbff;transition:.12s}
+.ftix:hover{border-color:var(--brand2);box-shadow:0 2px 8px rgba(79,70,229,.08)}
+.ftix-row{display:flex;align-items:center;gap:10px;margin-bottom:5px;flex-wrap:wrap}
+.ftix-id{font-size:13.5px;color:var(--brand);font-weight:700;font-variant-numeric:tabular-nums}
+.ftix-title{flex:1;min-width:0;font-size:13px;color:var(--ink);font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ftix-link{font-size:12px;color:var(--brand2);text-decoration:none;flex-shrink:0}
+.ftix-link:hover{text-decoration:underline}
+.ftix-meta{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:11.5px;color:var(--ink3)}
+.ftix-meta b{color:var(--ink2);font-weight:600}
+.ftix-dim{color:var(--ink3);font-size:12px;flex:1}
+.ftix-id-only{padding:6px 12px}
+.badge-eff{display:inline-block;border-radius:6px;padding:1px 8px;font-size:11.5px}
+.badge-src-man{background:#dcfce7;color:#166534}
+.badge-src-pre{background:#f1f5f9;color:#64748b;border:1px dashed var(--line)}
+.be-直答正确.badge-src-man{background:#dcfce7;color:#15803d}
+.be-未直答.badge-src-man{background:#fee2e2;color:#b91c1c}
+.be-未覆盖.badge-src-man{background:#fee2e2;color:#b91c1c}
+.be-直接提单.badge-src-man,.be-建议转单.badge-src-man{background:#ffedd5;color:#c2410c}
+.be-寒暄.badge-src-man{background:#f1f5f9;color:#64748b}
+.repbar .rep-body b{color:#ffd43b}
+/* ── 流程向导 ── */
+.wiz{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.wstep{border:1px solid var(--line);border-radius:12px;padding:14px 14px 12px;background:#fff;
+  display:flex;flex-direction:column;gap:8px;position:relative;transition:.15s}
+.wstep:hover{border-color:var(--brand2);box-shadow:0 4px 14px rgba(79,70,229,.08);transform:translateY(-1px)}
+.wstep .no{width:24px;height:24px;border-radius:50%;background:#f1f5f9;color:var(--ink2);
+  font-size:12.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.wstep.run .no{background:var(--brand);color:#fff}
+.wstep.done .no{background:var(--ok);color:#fff}
+.wstep .t{font-size:14px;font-weight:650;display:flex;align-items:center;gap:8px}
+.wstep .ic{font-size:16px;line-height:1;filter:saturate(1.1)}
+.wstep.run .ic,.wstep.done .ic{filter:saturate(1.3)}
+.wstep .d{font-size:12px;color:var(--ink3);line-height:1.55;flex:1}
+.wstep .ops{display:flex;gap:6px;margin-top:4px}
+.wstep kbd{display:none}
+
+/* ── 页签1 周流程 ── */
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;padding:7px 16px;font-size:13px;cursor:pointer;color:var(--ink2)}
+.seg button.on{background:var(--brand);color:#fff}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:99px;padding:5px 13px;font-size:12.5px;
+  cursor:pointer;color:var(--ink2);user-select:none;transition:.12s}
+.chip:hover{border-color:var(--brand2);color:var(--ink)}
+.chip.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600;
+  box-shadow:0 2px 8px rgba(79,70,229,.3), inset 0 0 0 1px rgba(255,255,255,.15)}
+.term{background:var(--term);border-radius:10px;padding:14px 16px;min-height:150px;max-height:480px;overflow:auto;
+  font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.75;color:var(--term-ink)}
+.term .hd{color:#64748b}
+.term .err{color:#f87171}
+.term .okl{color:#4ade80}
+.term .bar{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.term .bar .t{font-size:12px;color:var(--ink3)}
+.art{display:flex;flex-direction:column;gap:6px}
+.art .row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:8px;cursor:pointer;transition:.12s}
+.art .row:hover{border-color:var(--brand2);background:var(--brand-soft)}
+#reglist details.row{border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin-bottom:6px}
+#reglist details.row>summary{list-style:none}
+#reglist details.row>summary::-webkit-details-marker{display:none}
+#reglist details.row[open]{border-color:var(--brand2);background:var(--brand-soft)}
+.art .nm{flex:1;font-size:13px}
+.art .mt{color:var(--ink3);font-size:12px;white-space:nowrap}
+.art .sz{color:var(--ink3);font-size:11px;min-width:64px;text-align:right}
+.empty{color:var(--ink3);font-size:13px;padding:14px;text-align:center}
+
+/* ── 页签2 在线测试 ── */
+.connbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  background:linear-gradient(180deg,#fafbff,#f6f8fc);border:1px solid var(--line);border-radius:10px;
+  padding:12px 14px}
+.connbar label.f{position:relative}
+.connbar label.f::before{content:"";position:absolute;left:10px;top:50%;transform:translateY(-50%);
+  width:14px;height:14px;background-repeat:no-repeat;background-position:center;background-size:contain;
+  opacity:.4}
+.connbar label.f[data-ic="user"]::before{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2'><circle cx='12' cy='8' r='4'/><path d='M4 21v-1a6 6 0 016-6h4a6 6 0 016 6v1'/></svg>")}
+.connbar label.f[data-ic="pass"]::before{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2'><rect x='3' y='11' width='18' height='11' rx='2'/><path d='M7 11V7a5 5 0 0110 0v4'/></svg>")}
+.connbar label.f input{padding-left:30px;width:130px;background:#fff}
+.connbar .conn-divider{width:1px;height:24px;background:var(--line);margin:0 4px}
+.connbar #loginstate{font-weight:600}
+.connbar #loginstate.ok{background:var(--ok-soft);color:var(--ok);box-shadow:inset 0 0 0 1px #16a34a40}
+.modebar{display:flex;gap:8px;margin-bottom:14px}
+.chatwrap{display:flex;flex-direction:column;height:calc(100vh - 320px);min-height:420px}
+.chat{flex:1;overflow:auto;display:flex;flex-direction:column;gap:14px;padding:4px 2px}
+.msg{display:flex;flex-direction:column;max-width:86%}
+.msg.u{align-self:flex-end;align-items:flex-end}
+.msg .who{font-size:11px;color:var(--ink3);margin-bottom:4px}
+.bubble{border-radius:12px;padding:10px 14px;line-height:1.7;white-space:pre-wrap;word-break:break-word;font-size:13.5px}
+.msg.u .bubble{background:var(--brand);color:#fff;border-bottom-right-radius:4px}
+.msg.a .bubble{background:#fff;border:1px solid var(--line);border-bottom-left-radius:4px}
+.stages{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px}
+.stage{font-size:11px;border-radius:5px;padding:2px 8px;background:#f1f5f9;color:var(--ink3)}
+.stage.run{background:var(--brand-soft);color:var(--brand)}
+.stage.done{background:var(--ok-soft);color:var(--ok)}
+.dets{margin-top:6px;font-size:12px}
+.dets summary{cursor:pointer;color:var(--ink3);user-select:none}
+.dets pre{background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:6px;
+  overflow:auto;max-height:260px;font-size:11.5px;line-height:1.6}
+.tk{margin-top:8px;border:1px solid #fde68a;background:var(--warn-soft);border-radius:10px;padding:10px 12px}
+.tk .tt{font-weight:600;font-size:13px;margin-bottom:4px;display:flex;gap:8px;align-items:center}
+.tk .fld{font-size:12px;color:var(--ink2);line-height:1.8}
+.tk .ops{margin-top:8px;display:flex;gap:8px}
+.askbar{display:flex;gap:10px;margin-top:12px}
+.askbar input{flex:1}
+.empty-chat{margin:auto;color:var(--ink3);font-size:13px;text-align:center;line-height:2}
+
+/* 探针 */
+.prow{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.prow .rt{display:flex;gap:8px;align-items:center;margin-bottom:5px;flex-wrap:wrap}
+.prow .route{font-size:11.5px;background:var(--brand-soft);color:var(--brand);border-radius:5px;padding:2px 8px}
+.prow .route.k0{background:#fff4e5;color:#c2410c}
+.prow .route.k1{background:#f3e8ff;color:#7c3aed}
+.prow .route.k2{background:#fee2e2;color:#b91c1c}
+.prow .route.k3{background:#e0f2fe;color:#0369a1}
+.prow .route.k4{background:#dcfce7;color:#15803d}
+.prow .route.k5{background:#fef9c3;color:#a16207}
+.prow .route.k6{background:#f1f5f9;color:#64748b}
+.prow .ttl{font-size:12.5px;font-weight:600}
+.prow .txt{font-size:12.5px;color:var(--ink2);line-height:1.7;word-break:break-word}
+.prow img{max-width:200px;border-radius:6px;margin-top:6px}
+.meta-line{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);margin:10px 0 14px}
+.meta-line b{color:var(--ink)}
+
+/* toast */
+#toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:99}
+.toast{background:#0f172a;color:#fff;font-size:13px;border-radius:10px;padding:10px 16px;
+  box-shadow:0 6px 20px rgba(15,23,42,.25);animation:up .2s ease-out}
+.toast.err{background:var(--danger)}
+.toast.ok{background:var(--ok)}
+@keyframes up{from{transform:translateY(8px);opacity:0}}
+kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
+  padding:0 5px;font-size:11px;font-family:inherit}
+
+/* ── 用例分组（在线测试）── */
+.casegrp{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:10px;
+  background:#fff;position:relative;overflow:hidden;transition:.15s}
+.casegrp::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+.casegrp.cat-ret::before{background:#6366f1}
+.casegrp.cat-ans::before{background:#16a34a}
+.casegrp.cat-tk::before{background:#d97706}
+.casegrp.cat-fl::before{background:#0891b2}
+.casegrp:hover{box-shadow:0 4px 14px rgba(15,23,42,.05)}
+.casegrp-hd{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.casegrp-tog{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+.casegrp-ico{font-size:16px;line-height:1}
+.casegrp-t{font-size:14px;font-weight:650;color:var(--ink)}
+.casegrp-cnt{font-size:12px;color:var(--ink3);background:#f1f5f9;padding:2px 9px;border-radius:99px;
+  font-weight:600}
+.casegrp-desc{font-size:12px;color:var(--ink3);flex:1;min-width:0}
+.caselist{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px}
+.caserow{display:flex;gap:7px;align-items:center;font-size:13px;color:var(--ink2);cursor:pointer;
+  padding:5px 8px;border-radius:6px;transition:.12s}
+.caserow:hover{background:#f8fafc;color:var(--ink)}
+.caserow input{flex-shrink:0}
+.casename{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+
+/* ── 页签4 知识库 ── */
+.kbstats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.kbdom{flex:1;min-width:168px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+.kbdom .dn{font-size:13px;font-weight:650;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.kbdom .dn .mono{font-size:11px;color:var(--ink3);font-weight:400}
+.kbdom .dn2{font-size:11.5px;color:var(--ink3);margin-top:4px;line-height:1.7}
+.kbdom .dn2 b{color:var(--ink2);font-variant-numeric:tabular-nums}
+.kbdom.empty{opacity:.55}
+.kbbar{display:flex;gap:10px;align-items:center;margin-bottom:8px}
+.kbbar input{flex:1;max-width:340px}
+.kbtree{background:#fff;border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:13px}
+.kbtree details{margin:1px 0}
+.kbtree summary{display:flex;align-items:center;gap:7px;cursor:pointer;list-style:none;
+  padding:3.5px 6px;border-radius:7px;user-select:none}
+.kbtree summary::-webkit-details-marker{display:none}
+.kbtree summary:hover{background:var(--bg)}
+.kbtree .tw{width:13px;color:var(--ink3);font-size:10px;flex-shrink:0;transition:transform .12s}
+.kbtree details[open]>summary .tw{transform:rotate(90deg)}
+.kbtree .fo{flex-shrink:0;font-size:12px}
+.kbtree .lb{font-size:11px;background:var(--brand-soft);color:var(--brand);border-radius:20px;padding:0 8px}
+.kbtree .kn{font-weight:600}
+.kbtree .kc{margin-left:auto;color:var(--ink3);font-size:11.5px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.kbtree .kids{margin-left:14px;padding-left:9px;border-left:1px solid var(--line)}
+.kbtree .file{display:flex;align-items:center;gap:7px;padding:2.5px 6px;border-radius:6px;color:var(--ink2)}
+.kbtree .file:hover{background:var(--bg)}
+.kbtree .file .fn{font-family:ui-monospace,Consolas,monospace;font-size:12px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kbtree .file .kc{margin-left:auto;color:var(--ink3);font-size:11px;font-variant-numeric:tabular-nums}
+.kbtree .hit{background:#fef3c7;border-radius:6px}
+
+/* ── 知识库树图 ── */
+.kbgraph{height:720px;background:#fff;
+  border:1px solid var(--line);border-radius:12px;margin-bottom:8px}
+.kbgraph:active{cursor:grabbing}
+.kbfiles-tog{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--ink2);cursor:pointer;user-select:none}
+.kbfiles-tog input{margin:0}
+#kbprev{display:none;position:fixed;right:0;top:0;bottom:0;width:min(720px,62vw);
+  background:#fff;box-shadow:-6px 0 24px rgba(15,23,42,.18);z-index:60;
+  flex-direction:column}
+#kbprev.on{display:flex}
+.kbprev-hd{display:flex;align-items:center;gap:10px;padding:12px 16px;
+  border-bottom:1px solid var(--line);flex-shrink:0}
+.kbprev-hd b{font-size:14px}
+.kbprev-hd .mono{color:var(--ink3);font-size:11.5px}
+.kbprev-body{flex:1;overflow:auto;padding:18px 22px;font-size:13.5px;line-height:1.85;color:var(--ink)}
+.kbprev-body h1{font-size:20px;margin:14px 0 10px}
+.kbprev-body h2{font-size:16.5px;margin:18px 0 8px;padding-top:10px;border-top:1px dashed var(--line)}
+.kbprev-body h3,.kbprev-body h4{font-size:14px;margin:14px 0 6px}
+.kbprev-body table{border-collapse:collapse;margin:8px 0;width:100%}
+.kbprev-body th,.kbprev-body td{border:1px solid var(--line);padding:5px 9px;font-size:12.5px;text-align:left;vertical-align:top}
+.kbprev-body th{background:var(--bg);font-weight:600}
+.kbprev-body code{background:var(--bg);border-radius:4px;padding:1px 5px;font-size:12px;font-family:ui-monospace,Consolas,monospace}
+.kbprev-body pre{background:#0b1020;color:#a8b8d0;border-radius:8px;padding:12px 14px;overflow:auto;font-size:12px;line-height:1.6}
+.kbprev-body pre code{background:none;padding:0;color:inherit}
+.kbprev-body blockquote{border-left:3px solid var(--brand2);background:var(--brand-soft);
+  padding:6px 12px;margin:8px 0;border-radius:0 8px 8px 0;color:var(--ink2)}
+.kbprev-body img{max-width:100%;border:1px solid var(--line);border-radius:8px;margin:6px 0}
+.kbprev-body .kbmd-imgfail{color:var(--ink3);font-size:11.5px;border:1px dashed var(--line);border-radius:6px;padding:2px 8px}
+.fn.en{color:var(--ink3);font-size:10.5px;margin-left:6px;font-weight:400}
+.kbchint{font-size:12px;color:var(--ink3);margin-bottom:10px}
+.lb.brand-自研{background:#fff4e5;color:#c2410c}
+.lb.brand-华睿{background:#e0f2fe;color:#0369a1}
+.lb.brand-科钛{background:#f3e8ff;color:#7c3aed}
+.lb.brand-睿芯行{background:#dcfce7;color:#15803d}
+.kbc{border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:8px;background:#fff}
+.kbc-hd{display:flex;align-items:baseline;gap:8px;font-size:13px}
+.kbc-hd b{color:var(--brand);flex-shrink:0}
+.kbc-hd .kc{margin-left:auto;flex-shrink:0}
+.kbc-pv{font-size:12px;color:var(--ink3);margin-top:5px;line-height:1.7;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><div class="t">AI 质量工作台</div><div class="s">AI Quality Studio</div></div>
+    <nav class="nav">
+      <button id="nav-week" class="on"><span class="dot"></span>质量看板</button>
+      <button id="nav-test"><span class="dot"></span>在线测试</button>
+      <button id="nav-sink"><span class="dot"></span>工单沉淀</button>
+      <button id="nav-kb"><span class="dot"></span>知识库</button>
+    </nav>
+    <div class="fill"></div>
+    <div class="conn">
+      <div class="cline"><span class="cdot ok"></span>生产库 <b id="conn-prod">就绪</b>
+        <button class="conn-refresh" onclick="loadMetrics()" title="刷新指标">↻</button></div>
+      <div class="cline"><span class="cdot" id="conn-dot"></span>测试环境 <b id="conn-test">未连接</b></div>
+    </div>
+    <div class="foot">dar_studio · 本地工具</div>
+  </aside>
+
+  <main class="main">
+    <!-- ══ 页签1 周流程 ══ -->
+    <section class="view on" id="view-week">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <h2 class="pg" style="margin:0">质量看板</h2>
+        <span class="badge dim" style="margin-top:2px">数据源：生产库</span>
+        <span style="flex:1"></span>
+        <button class="btn sm" id="mrefresh">刷新指标</button>
+        <button class="btn sm pri" id="openreport">完整周报</button>
+      </div>
+
+      <div class="repbar" id="repbar" style="display:none"></div>
+      <div class="mhero" id="mhero"></div>
+      <div class="mgrid" id="msmall"></div>
+
+      <details class="card" id="funnelcard" open>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          漏斗走查 <span class="hint" id="fsum" style="font-weight:400">加载中…</span></summary>
+        <div id="weekcard" style="display:none"></div>
+        <div style="margin-top:10px;font-size:12px;color:var(--ink3);margin-bottom:8px">
+          点漏斗层看该层段清单，行内点标签即改判（写人工标注+后台吸收）。
+          快捷键：<b>j/k</b> 上下、<b>1-5</b> 打标签、<b>空格</b> 展开对话。
+          图片域名 <input type="text" id="fimgbase" placeholder="https://…/p" style="width:200px;font-size:11px;padding:2px 6px">
+        </div>
+        <div id="funnelbar" class="funnel-wrap"></div>
+        <div id="fsegs" style="display:none;margin-top:14px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <b id="fseglayer" style="font-size:13px"></b>
+            <span class="hint" id="fsegcount"></span>
+            <a href="javascript:void(0)" id="fsegpage" target="_blank"
+               style="font-size:12.5px;font-weight:600;color:var(--brand)">整层新开网页审 ↗</a>
+            <span style="flex:1"></span>
+            <input type="text" id="fsegfilter" placeholder="过滤：用户/关键词" style="width:180px;font-size:12px;padding:4px 8px">
+          </div>
+          <div id="fseglist" style="max-height:520px;overflow:auto"></div>
+        </div>
+      </details>
+
+      <details class="card" id="uacard">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          未直答问题清单 <span class="hint" id="uasum" style="font-weight:400">加载中…</span></summary>
+        <div style="margin-top:10px;font-size:12px;color:var(--ink3);margin-bottom:8px">
+          L3 预标「未直答/未覆盖」段全量底账（知识缺口）；按周分组看增量，type 过滤定位缺口类型。
+        </div>
+        <div class="chips" id="uaweeks" style="margin-bottom:8px"></div>
+        <div class="chips" id="uatypes" style="margin-bottom:10px"></div>
+        <div id="ualist" style="max-height:420px;overflow:auto"></div>
+      </details>
+
+      <div id="unppanel" style="display:none;margin-top:8px"></div>
+
+      <div class="card">
+        <h3>流程</h3>
+        <div class="wiz" id="wiz"></div>
+      </div>
+
+      <details class="card" id="logcard">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          运行日志 <span class="hint" id="runstate" style="font-weight:400"></span></summary>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <input type="text" id="note" placeholder="附注（--note，随周报落盘）" style="flex:1">
+          <button class="btn sm dng" id="resetretr" title="删当日检索判定（jsonl+json），重跑 retrieval 步即全量重判——换判定模型后用">重判全部</button>
+          <button class="btn sm dng" id="resetl3" title="删当日 L3 judge 两套（校准+预标 jsonl+json），重跑 L3 步即全段重判——换判定模型后用">重判 L3</button>
+          <button class="btn sm dng" id="stopbtn" disabled>停止</button>
+        </div>
+        <div class="term"><div class="hd">$ 等待运行…（步骤可增量复用，重复跑只补新数据）</div></div>
+      </details>
+
+      <details class="card">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">高级：自选步骤</summary>
+        <div style="margin-top:10px;font-size:12px;color:var(--ink3);margin-bottom:8px">
+          点选步骤（可多选，顺序固定）；export 需连服务器，retrieval 生产源走 ssh 隧道。
+        </div>
+        <div class="chips" id="steps"></div>
+        <button class="btn sm" id="advrun" style="margin-top:10px">运行所选</button>
+      </details>
+
+      <details class="card">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">产物文件</summary>
+        <div class="art" id="artlist" style="margin-top:10px"><div class="empty">暂无产物</div></div>
+      </details>
+    </section>
+
+    <!-- ══ 页签2 在线测试 ══ -->
+    <section class="view" id="view-test">
+      <h2 class="pg">在线测试</h2>
+      <p class="sub">固定打<b>测试环境</b>真实服务（代码/知识库先上测试验证）：全链路=意图→检索→回答→提单（提单落测试库）；检索探针=本地重放，可选测试/生产知识库（只读）。</p>
+
+      <div class="card">
+        <div class="connbar">
+          <label class="f" data-ic="user">用户名<input type="text" id="f_user"></label>
+          <label class="f" data-ic="pass">密码<input type="password" id="f_pass"></label>
+          <span class="conn-divider"></span>
+          <label style="display:flex;gap:5px;align-items:center;font-size:12.5px;color:var(--ink2);cursor:pointer">
+            <input type="checkbox" id="remember" checked style="width:auto">记住</label>
+          <button class="btn pri" id="loginbtn">登录测试环境</button>
+          <span id="loginstate" class="badge dim">未连接</span>
+          <span style="flex:1"></span>
+          <span style="font-size:11.5px;color:var(--ink3)" class="mono" id="envtip">ssh 隧道 → 125.122.97.107:9400/:9401（登录时自动建立）</span>
+        </div>
+      </div>
+
+      <div class="modebar">
+        <button class="btn pri" id="m-reg">回归测试</button>
+        <button class="btn" id="m-chat">全链路对话</button>
+        <button class="btn" id="m-probe">检索探针</button>
+      </div>
+
+      <!-- 一键回归 -->
+      <div id="pane-reg">
+        <p class="sub" style="margin-bottom:10px">用例集来自 <span class="mono">ai/tests/golden/cases</span>（四维度基准，同一份真源可直接改 yaml 加用例）。
+        retrieval=本地重放连测试知识库断言命中排名；answer/ticket/flow=逐用例打测试环境真实链路断言回答/弹窗/话术。</p>
+        <div class="card" id="regcases"><div class="empty">用例清单加载中…</div></div>
+        <div class="card" style="display:flex;gap:10px;align-items:center">
+          <label class="f">检索源
+            <select id="f_rsrc"><option value="test">测试环境（默认）</option><option value="prod">生产（只读）</option><option value="local">本地</option></select></label>
+          <button class="btn pri" id="regrun">一键运行</button>
+          <button class="btn dng" id="regstop" disabled>停止</button>
+          <span style="flex:1"></span>
+          <span class="hint" id="regsum"></span>
+        </div>
+        <div class="card" id="reglive" style="display:none"></div>
+        <div class="card" id="reglist" style="display:none"></div>
+      </div>
+
+      <!-- 全链路对话 -->
+      <div id="pane-chat" style="display:none">
+        <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+          <label class="f" style="flex:1">会话 ID（多轮上下文共享）<input type="text" id="f_sess"></label>
+          <button class="btn" id="newsess" style="margin-top:14px">新会话</button>
+          <label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--ink2);margin-top:14px">
+            <input type="checkbox" id="f_skip"> 跳过检索</label>
+        </div>
+        <div class="card chatwrap">
+          <div class="chat" id="chat"><div class="empty-chat">登录后发送问题，走线上真实链路。<br>回答流式展示；状态行显示检索/生成阶段；结果详情可展开；转工单会出草稿卡片。</div></div>
+          <div class="askbar">
+            <input type="text" id="f_q" placeholder="输入测试问题，Enter 发送">
+            <button class="btn pri" id="sendbtn">发送</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 检索探针 -->
+      <div id="pane-probe" style="display:none">
+        <div class="card" style="display:flex;gap:10px;align-items:flex-end">
+          <label class="f" style="flex:1">问题<input type="text" id="f_pq" placeholder="输入问题，或点下面的示例直接试"></label>
+          <label class="f">知识库
+            <select id="f_psrc"><option value="test">测试环境（默认）</option><option value="prod">生产（只读）</option><option value="local">本地</option></select></label>
+          <button class="btn pri" id="probebtn">检索</button>
+        </div>
+        <div class="chips" id="probesamples" style="margin:-2px 0 10px"></div>
+        <div id="probeout"><div class="card"><div class="empty">输入问题查看知识库命中</div></div></div>
+        <details class="card" id="batchcard" style="margin-top:14px">
+          <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+            批量探针 · 检索覆盖度看板
+            <span class="hint" id="batchhint" style="font-weight:400">每行一题，提交后输出每条命中的模块分布</span>
+          </summary>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:flex-end">
+            <label class="f" style="flex:1">问题列表（每行一条）
+              <textarea id="f_pbatch" rows="6" placeholder="例如：&#10;车规划绕远路&#10;不规划路径&#10;华睿对接VDA5050 报文格式" style="width:100%;font-family:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px"></textarea>
+            </label>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button class="btn pri" id="batchbtn">跑批量探针</button>
+            <span style="flex:1"></span>
+            <span class="badge dim" id="batchstat">未运行</span>
+          </div>
+          <div id="batchout" style="margin-top:10px"></div>
+        </details>
+      </div>
+    </section>
+
+    <!-- 页签3 工单沉淀 -->
+    <section class="view" id="view-sink">
+      <h2 class="pg">工单沉淀审核</h2>
+      <p class="sub">closed 工单 → LLM 提炼卡（pending 不可检索）→ 人工判定 → 应用。每周三步：拉取 → 审核 → 应用（应用是<b>生产写</b>：放行卡即刻可检索，驳回/测试单删点+终态标记）。</p>
+
+      <div class="card">
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <button class="btn pri" id="sinkexport">① 拉取待审</button>
+          <button class="btn pri" id="sinkopen">② 打开审核页</button>
+          <label class="f">审核人<input type="text" id="sinkrev" style="width:110px"></label>
+          <button class="btn pri" id="sinkapply">③ 应用判定</button>
+          <span style="flex:1"></span>
+          <span class="badge dim" id="sinkstat">未拉取</span>
+        </div>
+        <div style="margin-top:10px;font-size:12.5px;color:var(--ink3);line-height:1.8">
+          ① ssh 生产跑导出并拉回本地（只读库，几十秒）；② 新标签页逐卡判定（通过 / 驳回 / 测试单，驳回必选理由），
+          点「保存标注结果」回写本页；③ 确认后回写生产。<br>
+          误杀复检：AI 判「无知识可提」跳过的单在审核页底部折叠区，抽检后按卡内命令单张重跑。
+        </div>
+      </div>
+
+      <details class="card" id="sinklogcard" open>
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          运行日志 <span class="hint" id="sinkrunstate" style="font-weight:400"></span></summary>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <button class="btn sm dng" id="sinkstop" disabled>停止</button>
+        </div>
+        <div class="term"><div class="hd">$ 工单沉淀的拉取/应用输出在这里（指标生成页另有自己的日志卡，互不串台）</div></div>
+      </details>
+    </section>
+
+    <!-- ══ 页签4 知识库 ══ -->
+    <section class="view" id="view-kb">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <h2 class="pg" style="margin:0">知识库结构</h2>
+        <span class="badge dim" id="kbstat">加载中…</span>
+        <span style="flex:1"></span>
+        <button class="btn sm" id="kbrefresh" title="忽略缓存强制重算 chunk 统计">强制重算</button>
+      </div>
+
+      <div class="kbstats" id="kbdoms"></div>
+
+      <div class="kbbar">
+        <div class="seg" id="kbmode">
+          <button data-m="graph" class="on">树图</button>
+          <button data-m="tree">列表</button>
+        </div>
+        <input type="text" id="kbfilter" placeholder="过滤文件/目录名（仅列表模式，如 calibration、KB-MAP）">
+        <label class="kbfiles-tog" id="kbfiles-tog" style="display:none">
+          <input type="checkbox" id="kbgraphfiles">展开到文件
+        </label>
+        <span id="kbfilterhint" style="font-size:12px;color:var(--ink3)"></span>
+      </div>
+      <div class="kbgraph" id="kbgraph"></div>
+      <div class="kbtree" id="kbtree" style="display:none"><div class="empty">加载中…</div></div>
+    </section>
+  </main>
+</div>
+<div id="kbprev">
+  <div class="kbprev-hd">
+    <b id="kbprev-title"></b>
+    <span class="mono" id="kbprev-en"></span>
+    <span style="flex:1"></span>
+    <div class="seg" id="kbprev-tabs">
+      <button data-t="doc" class="on">文档</button>
+      <button data-t="chunks">Chunk 划分</button>
+    </div>
+    <button class="btn sm" id="kbprev-close">关闭 ✕</button>
+  </div>
+  <div class="kbprev-body" id="kbprev-body"></div>
+</div>
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function toast(msg, kind){
+  const d = document.createElement("div");
+  d.className = "toast " + (kind||"");
+  d.textContent = msg;
+  $("#toasts").appendChild(d);
+  setTimeout(()=>d.remove(), 3200);
+}
+
+/* SSE over fetch：onEvent({event,data}) */
+async function sse(url, body, onEvent, onDone){
+  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  if(!r.ok){
+    let t = ""; try{ t = (await r.json()).detail || ""; }catch(e){ t = await r.text(); }
+    onEvent({event:"error", data:{error:`HTTP ${r.status} ${t}`.slice(0,180), fatal:true}});
+    onDone && onDone(); return;
+  }
+  const rd = r.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for(;;){
+    const {done, value} = await rd.read();
+    if(done) break;
+    buf += dec.decode(value, {stream:true});
+    let i;
+    while((i = buf.indexOf("\n\n")) >= 0){
+      const blk = buf.slice(0, i); buf = buf.slice(i+2);
+      let ev = null, data = "";
+      for(const line of blk.split("\n")){
+        if(line.startsWith("event:")) ev = line.slice(6).trim();
+        else if(line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if(data === "[DONE]"){ onDone && onDone(); return; }
+      if(ev || data){
+        let d = data;
+        try{ d = JSON.parse(data); }catch(e){}
+        let name = ev, payload = d;
+        if(d && typeof d === "object" && "event" in d){ name = d.event; payload = d.data; }
+        onEvent({event: name || "message", data: payload});
+      }
+    }
+  }
+  onDone && onDone();
+}
+
+/* ── 导航 ── */
+function nav(v){
+  ["week","test","sink","kb"].forEach(k=>{
+    $("#nav-"+k).classList.toggle("on", v===k);
+    $("#view-"+k).classList.toggle("on", v===k);
+  });
+  // 知识库页签懒加载：首次切入才请求统计（parser 全量 parse 约几秒）
+  if(v==="kb" && !window._kbLoaded){ window._kbLoaded = true; loadKB(); }
+  try { localStorage.setItem("dar_studio_tab", v); } catch (e) {}
+}
+$("#nav-week").onclick = ()=>nav("week");
+$("#nav-test").onclick = ()=>nav("test");
+$("#nav-sink").onclick = ()=>nav("sink");
+$("#nav-kb").onclick = ()=>nav("kb");
+// 启动恢复上次页签：F5 刷新停留在原页签，不回第一个
+nav(localStorage.getItem("dar_studio_tab") || "week");
+// SKIP_USER_IDS 静默归到「测试人员」层，不在 UI 单独展示（用户硬要求）
+// 这里不需要做任何事——_seg_rows 会把 is_tester 也覆盖到 SKIP 用户
+
+/* ══ 页签1 周流程 ══ */
+const env = "prod";  // 指标固定连生产（用户定调：对话记录只从生产拿）
+
+/* 指标卡片 */
+let activeEnv = env;  // 展示用环境：生产无周报时回退 test（跑流程仍固定 env）
+async function loadMetrics(){
+  const j = await (await fetch(`/api/metrics?env=${env}`)).json();
+  const hero = $("#mhero"), small = $("#msmall"), bar = $("#repbar");
+  hero.innerHTML = ""; small.innerHTML = "";
+  activeEnv = j.found ? (j.source_env || env) : env;
+  document.querySelector('#view-week .badge.dim').textContent =
+    j.found && activeEnv !== env ? "数据源：生产库（当前展示 test 周报）" : "数据源：生产库";
+  if(!j.found){
+    hero.innerHTML = `<div class="mcard" style="grid-column:1/-1"><div class="lb">暂无周报</div>
+      <div class="v" style="font-size:18px;color:var(--ink3)">跑一遍流程后，三口径指标会显示在这里</div></div>`;
+    bar.style.display = "none";
+    return;
+  }
+  // 环比：hero 卡下挂 vs 上期变化（trend 取最近两期，多周后自然成走势）
+  const KEYMAP = {"L1 机器信号":"L1_段级", "L2 人工标注":"L2_人工", "L3 AI 预标":"L3_AI同段"};
+  const tr = j.trend || [];
+  const prevT = tr.length >= 2 ? tr[tr.length-2] : null;
+  const wowOf = (label)=>{
+    const k = KEYMAP[label];
+    if(!k || !prevT || prevT[k] == null || (tr[tr.length-1][k] == null)) return null;
+    return Math.round((tr[tr.length-1][k] - prevT[k]) * 10) / 10;
+  };
+  (j.hero || []).forEach(c=>{
+    const d = wowOf(c.label);
+    const wowHtml = d === null ? "" :
+      `<div class="wow ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "↗ +" : d < 0 ? "↘ " : "± "}${d}pp vs 上期</div>`;
+    const subParts = (c.sub||"").split(' · ').filter(Boolean);
+    const subHtml = subParts.length > 1
+      ? subParts.map(p => `<div><b>·</b><span>${esc(p)}</span></div>`).join('')
+      : `<div><span>${esc(c.sub||"")}</span></div>`;
+    hero.insertAdjacentHTML("beforeend",
+      `<div class="mcard"><div class="lb">${esc(c.label)}</div><div class="v">${esc(c.value)}</div>
+       <div class="sb">${subHtml}</div>${wowHtml}</div>`);
+  });
+  (j.small || []).forEach(c=>{
+    const subParts = (c.sub||"").split(' · ').filter(Boolean);
+    const subHtml = subParts.length > 1
+      ? subParts.map(p => `<div><b>·</b><span>${esc(p)}</span></div>`).join('')
+      : `<div><span>${esc(c.sub||"")}</span></div>`;
+    // 长 sub（≥3 行）占 2 卡宽，视觉平衡
+    const wideCls = subParts.length >= 3 ? " is-wide" : "";
+    small.insertAdjacentHTML("beforeend",
+      `<div class="mcard${wideCls}"><div class="lb">${esc(c.label)}</div><div class="v">${esc(c.value)}</div>
+       <div class="sb">${subHtml}</div></div>`);
+  });
+  // 拆 3 行：标题行 / 本周新增 / 轮次 + 走势
+  const row1 = [j.file ? `周报 <b>${esc(j.date || "")}</b>`
+    : `<span class="badge warn" style="font-weight:400">周报未出——以下为过程指标（第五步吸收后落周报/出同分母口径）</span>`];
+  if(j.export_at) row1.push(`数据版本 <b>v${esc(String(j.export_at).replace(/[-: ]/g, "").slice(0, 12))}</b>（${esc(j.export_at)} 导出）`);
+  if(j.source_env && j.source_env !== env) row1.push(`<span class="badge warn" style="font-weight:400">生产尚未出周报，展示 test 环境数据</span>`);
+  const row2 = [];
+  if(j.this_week && j.this_week.n_segs)
+    row2.push(`本周新增（${esc(j.this_week.from)}~${esc(j.this_week.to)}）：<b>${j.this_week.n_convs}</b> 会话 <b>${j.this_week.n_segs}</b> 段 · L1 <b>${esc(j.this_week.L1_rate)}</b>`);
+  if(j.note) row2.push(`附注：${esc(j.note)}`);
+  const row3 = [];
+  if(j.avg_rounds && Object.keys(j.avg_rounds).length)
+    row3.push(`轮次：${Object.entries(j.avg_rounds).map(([k,v])=>`${esc(k)} ${esc(v)}`).join(" · ")}`);
+  if(tr.length >= 2)
+    row3.push(`L1 走势：${tr.map(t=>`${esc(String(t.date).slice(5))} ${t["L1_段级"]??"—"}`).join(" → ")}`);
+  bar.innerHTML = `
+    <div class="rep-hd">
+      <div class="rep-t">本周周报 <b>${esc(j.date || "")}</b>
+        ${j.note ? `<span class="rep-note">附注：${esc(j.note)}</span>` : ""}</div>
+      ${j.file ? `<a class="rep-open" href="javascript:void(0)" onclick="document.getElementById('openreport').click()">完整周报 ↗</a>` : ""}
+    </div>
+    <div class="rep-body">
+      <div class="rep-row">${row1.join('<span class="rep-sep">｜</span>')}</div>
+      ${row2.length ? `<div class="rep-row">${row2.join('<span class="rep-sep">｜</span>')}</div>` : ""}
+      ${row3.length ? `<div class="rep-row">${row3.join('<span class="rep-sep">｜</span>')}</div>` : ""}
+    </div>`;
+  bar.style.display = "";
+}
+$("#mrefresh").onclick = loadMetrics;
+$("#openreport").onclick = async ()=>{
+  const j = await (await fetch(`/api/artifacts?env=${activeEnv}`)).json();
+  const md = (j.items || []).find(x => x.name.endsWith(".md"));
+  if(!md){ toast("还没有 Markdown 周报（先跑 report 步）", "err"); return; }
+  preview(md.name);
+};
+
+/* 流程向导 */
+const WIZ = [
+  {t:"导数据", ic:"📊", steps:["export","prepare"], pk:"export", d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
+  {t:"L1 指标", ic:"🤖", steps:["l1"], pk:"l1", d:"LLM 逐会话切话题——跑完 L1 指标卡即时出（不等标注/周报）"},
+  {t:"人工切题", ic:"✂️", steps:["tool0"], pk:"tool0", openAfter:true,
+   d:"生成切题工具（蓝色界面），只核对/修正话题边界不打标签；「保存到工作台」自动重算 L1"},
+  {t:"L3 预标", ic:"🏷️", steps:["l1r","retrieval","l3","tool"], pk:"l3",
+   d:"按人工边界重算 L1 + 检索判定 + judge 预标，重生成标注工具（预标全程有效）"},
+  {t:"人工标注", ic:"📝", label:true,
+   d:"新标签页打开标注工具（绿色界面）打标签，回车采纳预标，「保存到工作台」收标签"},
+  {t:"吸收 → 周报", ic:"📋", steps:["l1r","retrieval","l3","report"], pk:"report",
+   d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
+];
+function renderWiz(){
+  const w = $("#wiz");
+  w.innerHTML = "";
+  WIZ.forEach((st, i)=>{
+    const d = document.createElement("div");
+    d.className = "wstep";
+    d.innerHTML = `<div class="no">${i+1}</div><div class="t"><span class="ic">${st.ic||""}</span>${esc(st.t)} <span class="badge ok wok" style="display:none;font-weight:400"></span></div><div class="d">${esc(st.d)}</div>
+      <div class="ops"></div>`;
+    const b = d.querySelector(".ops").appendChild(document.createElement("button"));
+    if(st.label){
+      b.className = "btn sm pri"; b.textContent = "打开标注工具";
+      b.onclick = ()=>{ if(!window.open(`/label_tool?env=${activeEnv}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err"); };
+    }else if(st.openAfter){
+      b.className = "btn sm pri"; b.textContent = "生成并打开";
+      b.onclick = ()=>{
+        const w = window.open("", "_blank");  // 先占位：异步完成回调里 open 会被拦截
+        runSteps(st.steps, d, rc=>{
+          if(rc === 0){
+            if(w && !w.closed) w.location = `/label_tool?env=${activeEnv}`;
+            else if(!window.open(`/label_tool?env=${activeEnv}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err");
+          }else if(w && !w.closed){ w.close(); }
+        });
+      };
+    }else{
+      b.className = "btn sm"; b.textContent = "运行";
+      b.onclick = ()=>runSteps(st.steps, d);
+    }
+    w.appendChild(d);
+  });
+}
+async function loadProg(){
+  try{
+    const j = await (await fetch(`/api/progress?env=${env}`)).json();
+    document.querySelectorAll("#wiz .wstep").forEach((el, i)=>{
+      const st = WIZ[i];
+      const key = st.label ? "label" : (st.pk || st.steps[0]);
+      const t = (j.steps || {})[key] || "";
+      const b = el.querySelector(".wok");
+      if(t){ b.style.display = ""; b.textContent = "✓ " + t; el.classList.add("done"); }
+      else { b.style.display = "none"; el.classList.remove("done"); }
+    });
+  }catch(_){}
+}
+loadProg();
+/* 运行状态恢复：刷新/重开页面后重连正在跑的流程（服务端独立线程读日志留档，不受前端断连影响） */
+let folN = null, folTimer = null;
+function stopFollow(){ folN = null; if(folTimer){ clearTimeout(folTimer); folTimer = null; } }
+async function followRun(first){
+  try{
+    const q = folN != null ? `?after=${folN}` : "";
+    const j = await (await fetch("/api/run_status" + q)).json();
+    if(first && (j.running || j.n > 0)){
+      logScope = String(j.env || "").startsWith("sink") ? "sink" : "dar";
+      const card = logScope === "sink" ? $("#sinklogcard") : document.querySelector("#logcard");
+      if(card) card.open = true;
+      if(j.cmd) termLine("hd", `▶ ${j.cmd}${j.running ? "（恢复跟随）" : ""}`);
+    }
+    (j.logs || []).forEach(l=>termLine("", l));
+    folN = j.n;
+    if(j.running){
+      runUI(true);
+      folTimer = setTimeout(()=>followRun(false), 2500);
+    }else if(folN > 0){
+      termLine(j.rc === 0 ? "okl" : "err", j.rc === 0 ? "✔ 完成" : `✘ 退出码 ${j.rc}`);
+      runUI(false);
+      folN = null;
+      loadMetrics().then(()=>{ loadArts(); loadUA(); });
+      loadProg();
+    }else{ folN = null; }
+  }catch(_){ folTimer = setTimeout(()=>followRun(false), 5000); }
+}
+followRun(true);
+/* 重判：删当日判定产物（增量只认这些文件），重跑对应步即全量重判。
+   kind=retrieval 删检索判定；kind=l3 删 L3 judge 两套（换模型建议两个都清） */
+async function resetJudge(kind, label){
+  if(!confirm(`删除当日${label}判定产物？删后重跑对应步=全部段重新判定（换判定模型后用这个）。`)) return;
+  try{
+    const j = await (await fetch("/api/reset_retrieval", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env, kind})})).json();
+  logScope = "dar";  // 重判按钮在指标生成页，反馈写回本页日志卡
+  document.querySelector("#logcard").open = true;
+  if(j.removed && j.removed.length){
+    termLine("err", `已删当日${label}判定：${j.removed.join("、")}（重跑即全量重判）`);
+    toast(`已删 ${j.removed.length} 个文件，重跑即全量重判`);
+  }else{
+    termLine("", "当日无判定产物（重跑本来就是全量）");
+    toast("当日无判定产物，重跑本来就是全量");
+  }
+  }catch(e){ toast("删除失败：" + e.message, "err"); }
+}
+$("#resetretr").onclick = ()=>resetJudge("retrieval", "检索");
+$("#resetl3").onclick = ()=>resetJudge("l3", "L3");
+let running = false;
+async function runSteps(steps, wstepEl, after, opts){
+  if(running){ toast("已有流程在跑", "err"); return; }
+  running = true; stopFollow();
+  runUI(true);
+  wstepEl?.classList.add("run");
+  const isSink = opts && opts.kind;
+  logScope = isSink ? "sink" : "dar";
+  (isSink ? $("#sinklogcard") : document.querySelector("#logcard")).open = true;
+  const termSel = isSink ? "#sinklogcard .term" : "#logcard .term";
+  const t = document.querySelector(termSel);
+  if(t) t.innerHTML = "";
+  termLine("hd", `$ ${(opts && opts.hdr) || `dar_weekly --env ${env} ${steps.join(" ")}`}`);
+  let lastRc = null;
+  // sink 命令只发 kind/dir/reviewer——steps/note 是周流程专属，带上会被 /api/run
+  // 当 dar 跑（0910 实锤：拉取待审跑成了 export prepare l1）
+  const body = isSink ? {kind: opts.kind, dir: opts.dir || "", reviewer: opts.reviewer || ""}
+                      : {env, steps, note: $("#note").value.trim()};
+  await sse("/api/run", body, ev=>{
+    if(ev.event === "log") termLine("", ev.data.line);
+    else if(ev.event === "begin") termLine("hd", `▶ ${ev.data.cmd}`);
+    else if(ev.event === "done"){
+      lastRc = ev.data.rc;
+      termLine(ev.data.rc === 0 ? "okl" : "err", ev.data.rc === 0 ? "✔ 完成" : `✘ 退出码 ${ev.data.rc}`);
+    }
+  }, ()=>{
+    running = false;
+    runUI(false);
+    wstepEl?.classList.remove("run");
+    wstepEl?.classList.add("done");
+    loadMetrics().then(()=>{ loadArts(); loadUA(); });
+    loadProg();
+    loadSink();
+    if(after) after(lastRc);
+  });
+}
+renderWiz();
+
+/* 高级：自选步骤 */
+const STEPS = [
+  ["export","导出数据"],["prepare","切分准备"],["l1","L1 话题"],
+  ["tool0","切题工具(无预标)"],["l1r","L1 重算(吸收人工)"],
+  ["retrieval","检索判定"],["l3","L3 预标"],["tool","生成标注工具"],["report","周报"]
+];
+const chosen = new Set();
+STEPS.forEach(([k, name])=>{
+  const c = document.createElement("div");
+  c.className = "chip"; c.textContent = name; c.dataset.k = k;
+  c.onclick = ()=>{ c.classList.toggle("on"); c.classList.contains("on") ? chosen.add(k) : chosen.delete(k); };
+  $("#steps").appendChild(c);
+});
+$("#advrun").onclick = ()=>{
+  if(!chosen.size){ toast("先点选步骤", "err"); return; }
+  runSteps([...chosen], null);
+};
+
+/* 日志按来源分流（0910 用户定调 A）：dar 命令只进指标生成页日志卡，
+   sink 命令只进工单沉淀页日志卡——共用运行通道但互不串台 */
+let logScope = "dar";
+function termLine(cls, txt){
+  const t = document.querySelector(logScope === "sink" ? "#sinklogcard .term" : "#logcard .term");
+  if(!t) return;
+  const atBottom = t.scrollTop + t.clientHeight >= t.scrollHeight - 30;
+  const d = document.createElement("div");
+  d.className = cls||""; d.textContent = txt;
+  if(t.firstChild?.classList?.contains("hd")) t.innerHTML = "";
+  t.appendChild(d);
+  if(atBottom) t.scrollTop = t.scrollHeight;
+}
+/* 运行态 UI：两页签各自的停止按钮/状态徽标同步 */
+function runUI(on){
+  document.querySelectorAll("#stopbtn, #sinkstop").forEach(b => b.disabled = !on);
+  const badge = `<span class="badge ${on ? "warn" : "ok"}">${on ? "运行中" : "空闲"}</span>`;
+  $("#runstate").innerHTML = badge;
+  if($("#sinkrunstate")) $("#sinkrunstate").innerHTML = badge;
+  document.querySelectorAll(".wstep .ops button, #advrun").forEach(x => x.disabled = on);
+}
+$("#stopbtn").onclick = async ()=>{
+  await fetch("/api/stop_run", {method:"POST"});
+  toast("已发送终止信号", "ok");
+};
+if($("#sinkstop")) $("#sinkstop").onclick = $("#stopbtn").onclick;
+
+async function loadArts(){
+  const r = await fetch(`/api/artifacts?env=${activeEnv}`);
+  const j = await r.json();
+  const el = $("#artlist");
+  el.innerHTML = "";
+  if(!j.items.length){ el.innerHTML = '<div class="empty">暂无产物</div>'; return; }
+  j.items.forEach(it=>{
+    const row = document.createElement("div");
+    row.className = "row";
+    const isLabel = it.name === "segmentation_tool.html";
+    row.innerHTML = `<span class="nm mono">${esc(it.name)}</span><span class="mt">${it.mtime}</span><span class="sz">${(it.size/1024).toFixed(0)} KB</span>`
+      + (isLabel ? `<button class="btn sm pri">打开标注</button>` : "");
+    row.onclick = isLabel ? ()=>window.open(`/label_tool?env=${activeEnv}`, "_blank") : ()=>preview(it.name);
+    el.appendChild(row);
+  });
+}
+async function preview(name){
+  const r = await fetch(`/api/artifact?env=${activeEnv}&name=${encodeURIComponent(name)}`);
+  if(!r.ok){ toast("读取失败", "err"); return; }
+  const j = await r.json();
+  const w = window.open("", "_blank");
+  if(!w){ toast("浏览器拦截了弹窗", "err"); return; }
+  w.document.title = name;
+  w.document.body.style = "margin:0;font:12.5px/1.7 ui-monospace,Consolas,monospace;background:#f8fafc";
+  if(name.endsWith(".md")){
+    w.document.body.style.whiteSpace = "pre-wrap";
+    w.document.body.textContent = j.content;
+  }else{
+    const pre = w.document.createElement("pre");
+    pre.style = "padding:16px;white-space:pre-wrap;word-break:break-word";
+    try{ pre.textContent = JSON.stringify(JSON.parse(j.content), null, 2); }
+    catch(e){ pre.textContent = j.content; }
+    w.document.body.appendChild(pre);
+  }
+}
+loadMetrics().then(()=>{ loadArts(); loadUA(); });
+
+/* 未直答问题清单（全量底账，按周看增量） */
+let uaItems = [], uaWeek = "all", uaType = "all";
+function chipRow(el, pairs, cur, onpick){
+  el.innerHTML = "";
+  pairs.forEach(([val, txt])=>{
+    const c = document.createElement("div");
+    c.className = "chip" + (val === cur ? " on" : "");
+    c.textContent = txt;
+    c.onclick = ()=>onpick(val);
+    el.appendChild(c);
+  });
+}
+function renderUA(){
+  const inWeek = uaItems.filter(it=> uaWeek === "all" || it.week === uaWeek);
+  const tc = {};
+  inWeek.forEach(it=>{ tc[it.type] = (tc[it.type] || 0) + 1; });
+  chipRow($("#uaweeks"), uaWeekPairs, uaWeek, v=>{ uaWeek = v; renderUA(); });
+  chipRow($("#uatypes"), [["all", `全部类型 ${inWeek.length}`],
+    ...Object.entries(tc).sort((a,b)=>b[1]-a[1]).map(([t,n])=>[t, `${t} ${n}`])],
+    uaType, v=>{ uaType = v; renderUA(); });
+  const rows = inWeek.filter(it=> uaType === "all" || it.type === uaType);
+  const CAP = 300;
+  $("#ualist").innerHTML = rows.slice(0, CAP).map(it=>`<div class="urow">
+      <div class="uq">${esc(it.q)}</div>
+      <div class="um"><span class="badge ${it.pre === "未覆盖" ? "warn" : "err"}">${esc(it.pre)}</span>
+        <span class="badge dim">${esc(it.type)}</span>
+        <span>${esc(it.user || "")}</span><span class="mono">${esc(it.at || "")}</span></div>
+      ${it.reason ? `<div class="ur">${esc(it.reason)}</div>` : ""}</div>`).join("")
+    + (rows.length > CAP ? `<div class="empty" style="padding:8px">仅显示前 ${CAP} 条（共 ${rows.length}）</div>`
+       : (rows.length ? "" : '<div class="empty">该过滤条件下没有段</div>'));
+}
+let uaWeekPairs = [];
+async function loadUA(){
+  const j = await (await fetch(`/api/unanswered?env=${activeEnv}`)).json();
+  if(!j.found){
+    $("#uasum").textContent = "暂无（先跑 L3 预标 + 周报）";
+    $("#uaweeks").innerHTML = ""; $("#uatypes").innerHTML = ""; $("#ualist").innerHTML = "";
+    return;
+  }
+  uaItems = j.items || [];
+  uaWeek = "all"; uaType = "all";
+  const weeks = Object.entries(j.weeks || {}).sort((a,b)=>a[0] < b[0] ? -1 : 1);
+  const latest = weeks.length ? weeks[weeks.length - 1] : null;
+  $("#uasum").textContent = `共 ${j.total} 条`
+    + (latest ? ` · 最新周（${latest[0].slice(5)} 起）+${latest[1]}` : "");
+  uaWeekPairs = [["all", `全部 ${j.total}`],
+    ...weeks.map(([w, n])=>[w, `${w.slice(5).replace("-", "/")} 周 +${n}`])];
+  renderUA();
+}
+
+/* ══ 页签3 工单沉淀 ══ */
+let sinkDir = "";
+async function loadSink(){
+  try{
+    const j = await (await fetch("/api/sink_status")).json();
+    const el = $("#sinkstat");
+    if(!j.found){ el.textContent = "未拉取"; el.className = "badge dim"; sinkDir = ""; return; }
+    sinkDir = j.dir;
+    el.className = "badge " + (j.total && j.judged >= j.total ? "ok" : "warn");
+    el.textContent = j.total
+      ? `${j.dir.slice(7,16)}｜已判 ${j.judged}/${j.total}（过${j.approved} 驳${j.rejected} 测${j.test}）`
+      : `${j.dir.slice(7,16)}｜待审（未保存标注）`;
+  }catch(_){}
+}
+$("#sinkexport").onclick = ()=>runSteps([], null, null, {kind:"sink_export", hdr:"sink_flow --export"});
+$("#sinkopen").onclick = ()=>{
+  if(!sinkDir){ toast("先「① 拉取待审」", "err"); return; }
+  if(!window.open(`/sink_review?dir=${encodeURIComponent(sinkDir)}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err");
+};
+$("#sinkrev").value = localStorage.getItem("sink_reviewer") || "";
+$("#sinkapply").onclick = async ()=>{
+  const reviewer = $("#sinkrev").value.trim();
+  if(!sinkDir){ toast("先「① 拉取待审」", "err"); return; }
+  if(!reviewer){ toast("先填审核人", "err"); return; }
+  const j = await (await fetch("/api/sink_status")).json();
+  if(!j.found || !j.total){ toast("先在审核页「保存标注结果」", "err"); return; }
+  if(!j.judged){ toast("还没有任何判定", "err"); return; }
+  if(!confirm(`应用判定到生产？\n\n放行 ${j.approved} 张（即刻可检索）\n删除 ${j.rejected + j.test} 张（驳回+测试单：删点+终态标记）\n未判 ${j.total - j.judged} 张跳过\n\n审核人：${reviewer}`)) return;
+  localStorage.setItem("sink_reviewer", reviewer);
+  runSteps([], null, null, {kind:"sink_apply", dir:sinkDir, reviewer,
+                            hdr:`sink_flow --apply ${sinkDir} --reviewer ${reviewer}`});
+};
+loadSink();
+
+/* ══ 页签4 知识库 ══ */
+let kbData = null;
+const KB_DOMAIN_NAMES = {industry:"📐 行业知识", company:"🏢 公司/车端", team:"🧭 团队知识",
+                project:"📦 项目", personal:"👤 个人", sink_cards:"📥 工单沉淀卡"};
+
+async function loadKB(refresh){
+  try{
+    const r = await fetch(`/api/kb_structure${refresh ? "?refresh=1" : ""}`);
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+    kbData = j;
+    $("#kbstat").textContent =
+      `${j.total_files} 文件 · ${j.total_chunks} chunks · 生成于 ${j.generated_at}`;
+    $("#kbdoms").innerHTML = j.domains.filter(d=>d.domain !== "sink_cards").map(d=>`
+      <div class="kbdom ${d.files ? "" : "empty"}" data-dom="${d.domain}" style="cursor:pointer" title="点击查看该库全部文档">
+        <div class="dn">${KB_DOMAIN_NAMES[d.domain] || d.domain}</div>
+        <div class="dn2"><span class="mono">${d.domain}</span> · <b>${d.files}</b> 文件 · <b>${d.chunks}</b> chunks
+          ${d.collection ? `<br>集合 <span class="mono">${esc(d.collection)}</span>${d.ingest_at ? ` · 入库 ${d.ingest_at}` : ""}` : "<br>暂无内容/集合"}
+        </div>
+      </div>`).join("");
+    $("#kbdoms").onclick = e=>{
+      const c = e.target.closest("[data-dom]");
+      if(c && kbData) kbOpenDomainIndex(c.dataset.dom);
+    };
+    // 工单沉淀卡：本地留存篇数，点击抽屉直接看全部内容
+    const sk = j.sink || {};
+    const sd = (j.domains || []).find(x=>x.domain === "sink_cards");
+    $("#kbdoms").insertAdjacentHTML("beforeend", `
+      <div class="kbdom" id="kbsink" data-dom="sink_cards" style="cursor:pointer" title="点击查看全部沉淀卡内容">
+        <div class="dn">📥 工单沉淀卡</div>
+        <div class="dn2"><span class="mono">ticket_resolutions</span> · 本地留存 <b>${sd ? sd.files : 0}</b> 篇 · 点击查看全部
+          ${sk.found ? `<br>最新审核 ${esc(sk.dir || "")} · 已判 ${sk.judged}/${sk.total}（通过 ${sk.approved}）` : "<br>本地无审核导出"}
+        </div>
+      </div>`);
+    kbSetMode(kbMode);  // 按当前模式渲染（默认树图；数据就绪后再渲染）
+  }catch(e){
+    $("#kbtree").innerHTML = `<div class="empty">加载失败：${esc(String(e.message || e))}</div>`;
+  }
+}
+
+function kbRender(n, q, depth, prefix){
+  prefix = prefix || "";
+  const disp = n.cn || n.name;
+  if(n.dir){
+    const kids = [...(n.children || [])].sort((a,b)=>(b.dir?1:0)-(a.dir?1:0)||a.name.localeCompare(b.name));
+    // 目录名或中文名命中 → 整棵子树不过滤直接展示
+    const selfMatch = q && (n.name.toLowerCase().includes(q) || disp.toLowerCase().includes(q));
+    const inner = kids.map(c=>kbRender(c, selfMatch ? "" : q, depth+1, prefix + n.name + "/")).filter(h=>h!==null).join("");
+    if(q && !inner) return null;
+    const open = q || depth < 2 || (n.files || 0) <= 30 ? " open" : "";
+    const lbl = n.label ? ` <span class="lb">${n.label}</span>` : "";
+    const btag = n.brand && n.brand !== "混合" && n.brand !== "通用"
+      ? ` <span class="lb brand-${n.brand}">${n.brand}</span>` : "";
+    return `<details${open}><summary><span class="tw">▶</span><span class="fo">📁</span>
+      <span class="kn">${esc(disp)}</span>${btag}${lbl}
+      <span class="kc">${n.chunks} chunks · ${n.files} 文件</span></summary>
+      <div class="kids">${inner}</div></details>`;
+  }
+  if(q && !(n.name.toLowerCase().includes(q) || disp.toLowerCase().includes(q))) return null;
+  const fb = n.brand && n.brand !== "通用" ? ` <span class="lb brand-${n.brand}">${n.brand}</span>` : "";
+  return `<div class="file" onclick="openKBPreview('${esc(n.path || (prefix + n.name))}','${esc(disp).replace(/'/g,"&#39;")}')"
+    style="cursor:pointer" title="点击预览"><span class="fo">📄</span>
+    <span class="fn">${esc(disp)}</span>${fb}${n.cn ? `<span class="fn en">${esc(n.name)}</span>` : ""}
+    <span class="kc">${n.chunks}</span></div>`;
+}
+
+function renderKBTree(){
+  const q = $("#kbfilter").value.trim().toLowerCase();
+  const html = kbData.domains.map(d=>{
+    const inner = kbRender(d.tree, q, 1);
+    if(q && inner===null) return "";
+    return `<details open><summary><span class="tw">▶</span><span class="fo">🗄️</span>
+      <span class="kn">${d.domain}</span><span class="kc">${d.chunks} chunks · ${d.files} 文件</span></summary>
+      <div class="kids">${inner || "<div class='empty'>（空）</div>"}</div></details>`;
+  }).join("");
+  $("#kbtree").innerHTML = html || "<div class='empty'>无匹配文件</div>";
+  $("#kbfilterhint").textContent = q ? `按「${$("#kbfilter").value.trim()}」过滤中` : "";
+}
+
+$("#kbrefresh").onclick = ()=>loadKB(true);
+$("#kbfilter").oninput = ()=>{ if(kbData) renderKBTree(); };
+
+/* ── 知识库树图（ECharts）── */
+let kbChart = null, kbMode = "graph", kbFilesMode = false;
+const KB_COLORS = {industry:"#7c5cbf", company:"#1f7a5c", team:"#1d6fb8",
+                   project:"#98680b", personal:"#98680b", sink_cards:"#0d9488"};
+
+function kbToEcharts(n, depth, domain, prefix){
+  prefix = prefix || "";
+  const isDom = depth === 0;
+  const disp = (n.cn || n.name) + (n.dir && depth > 0 ? " · " + n.chunks : "");
+  const node = {
+    name: disp,
+    en: n.name,
+    cn: n.cn || "",
+    rel: n.path || (prefix + n.name),
+    dir: !!n.dir,
+    value: n.chunks,
+    collapsed: n.dir && !(kbFilesMode && depth === 1 && (n.files||0) <= 30),
+    itemStyle: n.dir
+      ? {color: isDom ? (KB_COLORS[domain] || "#64748b") : "#64748b", borderWidth: isDom ? 2 : 1}
+      : {color: KB_COLORS[domain] || "#64748b", opacity: .45},
+    label: {fontWeight: n.dir ? 600 : 400},
+    symbolSize: isDom ? 22 : (n.dir ? 11 : 6),
+  };
+  if(n.dir){
+    node.files = n.files;
+    node.children = [...(n.children||[])]
+      .sort((a,b)=>(b.dir?1:0)-(a.dir?1:0)||a.name.localeCompare(b.name))
+      .map(c=>kbToEcharts(c, depth+1, domain, prefix + n.name + "/"));
+  }
+  return node;
+}
+
+function renderKBGraph(){
+  if(!kbData) return;
+  if(!window.echarts){
+    $("#kbgraph").innerHTML = '<div class="empty">echarts 加载失败（/vendor/echarts.min.js）</div>';
+    return;
+  }
+  const root = {
+    name: `知识库全景（${kbData.total_files} 文件 · ${kbData.total_chunks} chunks）`,
+    children: kbData.domains.filter(d=>d.files>0).map(d=>{
+      const node = kbToEcharts({...d.tree}, 0, d.domain, "");
+      node.label = {...node.label, color: KB_COLORS[d.domain]};
+      return node;
+    })
+  };
+  // 叶子数决定画布高度：标签间距足够，不放大也不叠字
+  const leafCount = n => (!n.dir || n.collapsed || !(n.children||[]).length) ? 1
+    : n.children.reduce((s,c)=>s+leafCount(c), 0);
+  $("#kbgraph").style.height =
+    Math.max(560, Math.min(2600, (leafCount(root) + 2) * 34)) + "px";
+  if(kbChart){ kbChart.dispose(); kbChart = null; }
+  kbChart = echarts.init($("#kbgraph"));
+  kbChart.setOption({
+    tooltip: {trigger:"item", formatter: p=>{
+      const d = p.data;
+      return d.files !== undefined
+        ? `<b>${p.name}</b><br/>${d.value} chunks · ${d.files} 文件`
+        : `<b>${p.name}</b><br/>${d.value} chunks`;
+    }},
+    series: [{
+      type: "tree", data: [root], roam: true, orient: "TB",
+      symbol: "circle", edgeShape: "curve", initialTreeDepth: -1,
+      lineStyle: {color:"#dbe1ea", width:1.2},
+      label: {position:"top", distance:6, fontSize:11.5, color:"#0f172a",
+              overflow:"truncate", width:130},
+      leaves: {label:{position:"bottom", distance:5, fontSize:11, color:"#475569",
+              overflow:"truncate", width:130}},
+      expandAndCollapse: true,
+      animationDuration: 280, animationDurationUpdate: 280,
+      top:"2%", left:"3%", right:"3%", bottom:"16%",
+    }],
+    toolbox: {feature:{saveAsImage:{name:"kb-结构图", pixelRatio:2, title:"导出图片"}},
+              iconStyle:{borderColor:"#94a3b8"}},
+  });
+  kbChart.off("click");
+  kbChart.on("click", p=>{
+    const d = p.data || {};
+    if(d.dir === false) openKBPreview(d.rel, d.cn || d.name);
+  });
+  requestAnimationFrame(()=>{ kbChart && kbChart.resize(); });
+  setTimeout(()=>{ kbChart && kbChart.resize(); }, 120);
+}
+
+function kbSetMode(m){
+  kbMode = m;
+  document.querySelectorAll("#kbmode button").forEach(b=>b.classList.toggle("on", b.dataset.m===m));
+  $("#kbtree").style.display = m==="tree" ? "" : "none";
+  $("#kbgraph").style.display = m==="graph" ? "" : "none";
+  $("#kbfilter").disabled = m!=="tree";
+  $("#kbfiles-tog").style.display = m==="graph" ? "" : "none";
+  if(m==="graph") renderKBGraph();
+  else renderKBTree();
+}
+$("#kbmode").onclick = e=>{
+  const b = e.target.closest("button[data-m]");
+  if(b) kbSetMode(b.dataset.m);
+};
+$("#kbgraphfiles").onchange = ()=>{ kbFilesMode = $("#kbgraphfiles").checked; renderKBGraph(); };
+
+/* ── 知识库预览抽屉（文档 + Chunk 划分）── */
+let kbPrevData = null;
+async function openKBPreview(rel, title){
+  $("#kbprev").classList.add("on");
+  $("#kbprev-tabs").style.visibility = "";
+  $("#kbprev-title").textContent = title || rel;
+  $("#kbprev-en").textContent = rel;
+  $("#kbprev-body").innerHTML = '<div class="empty">加载中…</div>';
+  kbSetPrevTab("doc");
+  try{
+    const r = await fetch("/api/kb_file?rel=" + encodeURIComponent(rel));
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    kbPrevData = j;
+    $("#kbprev-body").innerHTML = j.html;
+    $("#kbprev-body").scrollTop = 0;
+  }catch(e){
+    $("#kbprev-body").innerHTML = '<div class="empty">加载失败：' + esc(String(e.message || e)) + '</div>';
+  }
+}
+function kbSetPrevTab(t){
+  document.querySelectorAll("#kbprev-tabs button").forEach(b=>b.classList.toggle("on", b.dataset.t === t));
+  if(t !== "chunks" || !kbPrevData) return;
+  const cs = kbPrevData.chunks || [];
+  $("#kbprev-body").innerHTML = cs.length
+    ? '<div class="kbchint">' + cs.length + ' chunks（与检索库一致，由 KBDomainIngester 切分）</div>' +
+      cs.map((c,i)=>'<div class="kbc"><div class="kbc-hd"><b>#' + i + '</b> ' + esc(c.title) +
+        '<span class="kc">' + c.chars + ' 字</span></div>' +
+        '<div class="kbc-pv">' + esc(c.preview) + '…</div></div>').join("")
+    : '<div class="empty">无 chunk 信息</div>';
+  $("#kbprev-body").scrollTop = 0;
+}
+$("#kbprev-tabs").onclick = e=>{
+  const b = e.target.closest("button[data-t]");
+  if(b && b.dataset.t === "chunks") kbSetPrevTab("chunks");
+  else if(b) { kbPrevData && ($("#kbprev-body").innerHTML = kbPrevData.html); }
+};
+$("#kbprev-close").onclick = ()=>$("#kbprev").classList.remove("on");
+
+function kbOpenDomainIndex(domain){
+  const d = (kbData.domains || []).find(x=>x.domain === domain);
+  const files = [];
+  (function walk(n, prefix){
+    for(const c of (n.children || [])){
+      if(c.dir) walk(c, prefix + c.name + "/");
+      else files.push({name: c.name, cn: c.cn || "", rel: c.path || (prefix + c.name),
+                       chunks: c.chunks || 1});
+    }
+  })(d && d.tree || {}, domain + "/");
+  $("#kbprev").classList.add("on");
+  $("#kbprev-tabs").style.visibility = "hidden";
+  $("#kbprev-title").textContent = (KB_DOMAIN_NAMES[domain] || domain) + " · 文档清单";
+  $("#kbprev-en").textContent = files.length + " 篇 · 点击条目查看内容";
+  kbPrevData = null;
+  $("#kbprev-body").innerHTML = files.length
+    ? files.map(f=>{
+        const rel = esc(f.rel).replace(/'/g, "&#39;");
+        const tt = esc(f.cn || f.name).replace(/'/g, "&#39;");
+        return `<div class="kbc" style="cursor:pointer" onclick="openKBPreview('${rel}','${tt}')">
+          <div class="kbc-hd"><b>📄</b><span>${esc(f.cn || f.name)}</span><span class="kc">${f.chunks} chunk</span></div>
+        </div>`;
+      }).join("")
+    : '<div class="empty">该知识库暂无内容</div>';
+}
+
+/* ══ 页签2 在线测试 ══ */
+function setConn(user){
+  const dot = $("#conn-dot"), txt = $("#conn-test");
+  if(user){ dot.className = "cdot ok"; txt.textContent = "已连接 · " + user; }
+  else{ dot.className = "cdot"; txt.textContent = "未连接"; }
+}
+(async ()=>{
+  const j = await (await fetch("/api/status")).json();
+  if(j.prod_export){
+    $("#conn-prod").textContent = "已导入 " + j.prod_export.replace(/^\d{4}-/, "");
+    $("#conn-prod").title = j.prod_export;  // 悬停看完整时间
+  }
+  else{
+    $("#conn-prod").textContent = "未导数据";
+    document.querySelector("#conn-prod").closest(".cline").querySelector(".cdot").className = "cdot";
+  }
+  if(j.logged_in){
+    $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.logged_in;
+    setConn(j.logged_in);
+  }else{
+    const sv = localStorage.getItem("dar_test_login");  // 记住的凭据 → 静默自动登录
+    if(sv){ try{ const c = JSON.parse(sv); doLogin(c.u, c.p, true); }catch(_){} }
+  }
+})();
+async function doLogin(u, p, quiet){
+  const b = $("#loginbtn");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span>登录中';
+  try{
+    const r = await fetch("/api/login", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username: u, password: p})});
+    const txt = await r.text(); let j = null; try{ j = JSON.parse(txt); }catch(_){}
+    if(!r.ok) throw new Error((j && j.detail) || txt.slice(0, 80) || "登录失败");
+    $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.username;
+    setConn(j.username);
+    $("#f_user").value = u; $("#f_pass").value = p;
+    if($("#remember").checked)
+      localStorage.setItem("dar_test_login", JSON.stringify({u, p}));
+    else
+      localStorage.removeItem("dar_test_login");
+    if(!quiet) toast("登录成功", "ok");
+    return true;
+  }catch(e){ toast(e.message, "err"); return false; }
+  finally{ b.disabled = false; b.textContent = "登录测试环境"; }
+}
+$("#loginbtn").onclick = ()=>doLogin($("#f_user").value.trim(), $("#f_pass").value);
+
+/* 会话 */
+function newSid(){ return "dar_test_" + Date.now().toString(36); }
+$("#f_sess").value = newSid();
+$("#newsess").onclick = ()=>{ $("#f_sess").value = newSid(); $("#chat").innerHTML = '<div class="empty-chat">新会话已开启</div>'; };
+
+/* 模式切换 */
+const MODES = [["m-reg","pane-reg"],["m-chat","pane-chat"],["m-probe","pane-probe"]];
+function switchMode(mid){
+  MODES.forEach(([m, p])=>{
+    document.getElementById(m).classList.toggle("pri", m === mid);
+    document.getElementById(p).style.display = (m === mid) ? "" : "none";
+  });
+}
+MODES.forEach(([m])=> document.getElementById(m).onclick = ()=>switchMode(m));
+
+/* 一键回归 */
+const SUITE_ZH = {retrieval:"检索", answer:"回答", ticket:"提单", flow:"流程"};
+const V_ICON = {PASS:"✓", WARN:"⚠", FAIL:"✗", ERROR:"✗"};
+const V_CLS = {PASS:"ok", WARN:"warn", FAIL:"err", ERROR:"err"};
+
+async function loadCases(){
+  const el = $("#regcases");
+  let j;
+  try{ j = await (await fetch("/api/cases")).json(); }
+  catch(e){ el.innerHTML = '<div class="empty">用例集加载失败</div>'; return; }
+  el.innerHTML = "";
+  const SUITE_CLS = {retrieval:"cat-ret", answer:"cat-ans", ticket:"cat-tk", flow:"cat-fl"};
+  const SUITE_ICON = {retrieval:"🔍", answer:"💬", ticket:"🎫", flow:"🔄"};
+  for(const [suite, info] of Object.entries(j)){
+    const grp = document.createElement("div");
+    grp.className = "casegrp " + (SUITE_CLS[suite]||"");
+    grp.innerHTML = `<div class="casegrp-hd">
+      <label class="casegrp-tog">
+        <input type="checkbox" class="gsel" data-suite="${esc(suite)}" checked>
+        <span class="casegrp-ico">${SUITE_ICON[suite]||"•"}</span>
+        <b class="casegrp-t">${esc(SUITE_ZH[suite]||suite)}</b>
+        <span class="casegrp-cnt">${info.cases.length} 例</span>
+      </label>
+      <span class="hint casegrp-desc">${esc(info.desc)}</span></div>`;
+    const list = document.createElement("div");
+    list.className = "caselist";
+    info.cases.forEach(c=>{
+      const lab = document.createElement("label");
+      lab.className = "caserow";
+      lab.innerHTML = `<input type="checkbox" class="csel" data-suite="${esc(suite)}"
+        data-name="${esc(c.name)}" checked>
+        <span class="casename" title="${esc(c.query||c.turns?.[0]||"")}">${esc(c.name)}</span>`;
+      list.appendChild(lab);
+    });
+    grp.appendChild(list);
+    el.appendChild(grp);
+  }
+  el.querySelectorAll(".gsel").forEach(g=> g.onclick = ()=>{
+    el.querySelectorAll(`.csel[data-suite="${g.dataset.suite}"]`)
+      .forEach(c=> c.checked = g.checked);
+  });
+}
+loadCases();
+
+let regRunning = false;
+$("#regrun").onclick = async ()=>{
+  if(regRunning) return;
+  const picked = [...document.querySelectorAll(".csel:checked")];
+  if(!picked.length){ toast("先勾选至少一个用例", "err"); return; }
+  const suites = [...new Set(picked.map(c=> c.dataset.suite))];
+  regRunning = true;
+  $("#regrun").disabled = true; $("#regstop").disabled = false;
+  $("#regsum").textContent = "运行中…";
+  const live = $("#reglive"), listEl = $("#reglist");
+  live.style.display = ""; listEl.style.display = "";
+  live.innerHTML = '<div class="hd" style="font-size:12.5px;color:var(--ink3)">启动中…（retrieval 首跑含模型加载约 1-2 分钟）</div>';
+  listEl.innerHTML = "";
+  const rows = {};
+  let counts = {PASS:0, WARN:0, FAIL:0, ERROR:0};
+  await sse("/api/regression",
+    {suites, only: picked.map(c=> c.dataset.name), qdrant: $("#f_rsrc").value},
+    ev=>{
+      const d = ev.data || {};
+      if(ev.event === "case_begin"){
+        live.innerHTML = `<div style="font-size:12.5px">▶ 运行中：<b>${esc(d.name)}</b>
+          <span class="badge dim">${esc(SUITE_ZH[d.suite]||d.suite)}</span> ${d.index+1}/${d.total}</div>`;
+      }else if(ev.event === "case"){
+        counts[d.verdict] = (counts[d.verdict]||0) + 1;
+        live.innerHTML = `<div style="font-size:12.5px;color:var(--ink3)">完成：${esc(d.name)} → ${V_ICON[d.verdict]} ${d.verdict}</div>`;
+        const det = d.detail || {};
+        const detl = (det.fails||[]).map(f=>`<div style="color:var(--danger)">· ${esc(f)}</div>`).join("");
+        const facts = [];
+        if(det.hit) facts.push(`命中「${esc(det.hit)}」 rank#${det.rank}${det.limit?` (≤${det.limit})`:""}`);
+        if(det.stages){const SZ={idle:"空闲",retrieving:"检索",analyzing:"分析",diagnosing:"诊断",generating_ticket:"生成工单",review:"弹窗",collect_cancel:"已取消"};
+          facts.push(`阶段：${det.stages.map((arr,i)=>`${i+1}）${arr.map(s=>SZ[s]||s).join("→")}`).join("　")}`.slice(0,160));}
+        if(det.ms) facts.push(`${det.ms}ms`);
+        const row = document.createElement("details");
+        row.className = "row";
+        row.innerHTML = `<summary style="cursor:pointer;display:flex;gap:8px;align-items:center">
+          <span class="badge ${V_CLS[d.verdict]}">${V_ICON[d.verdict]} ${d.verdict}</span>
+          <b>${esc(d.name)}</b>
+          <span class="badge dim">${esc(SUITE_ZH[d.suite]||d.suite)}</span>
+          <span style="flex:1"></span><span class="hint">${esc(facts.join(" · "))}</span></summary>
+          <div style="padding:8px 4px 2px;font-size:12.5px;color:var(--ink2)">
+            <div>问句：${esc(det.query||"")}</div>${detl}
+            ${(det.turns_qa||[]).length?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">每轮问答（${det.turns_qa.length} 轮，各前 400 字）</summary>${det.turns_qa.map((t,i)=>`<div style="padding:6px 0;border-top:1px dashed var(--line)"><div>第 ${i+1} 轮问：${esc(t.q)}</div><div style="white-space:pre-wrap;padding:4px 0">答：${esc(t.a)}</div></div>`).join("")}</details>`:(det.answer_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">回答（前 400 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.answer_head)}</div></details>`:"")}
+            ${det.docs_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">送 prompt 资料（前 300 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.docs_head)}</div></details>`:""}
+            ${det.error?`<div style="color:var(--danger)">${esc(det.error)}</div>`:""}
+          </div>`;
+        listEl.prepend(row);
+        rows[d.suite + d.name] = row;
+        $("#regsum").innerHTML = `<b>${counts.PASS}</b> 通过 · <b style="color:#b8860b">${counts.WARN}</b> 警告 · <b style="color:#c0392b">${counts.FAIL+counts.ERROR}</b> 失败`;
+      }else if(ev.event === "fatal"){
+        live.innerHTML = `<div style="color:#c0392b">执行器崩溃：${esc((d.error||"").slice(0,160))}</div>`;
+      }
+    }, ()=>{
+      regRunning = false;
+      $("#regrun").disabled = false; $("#regstop").disabled = true;
+      if($("#regsum").textContent === "运行中…") $("#regsum").textContent = "未完成（中断或出错，看下方明细）";
+    });
+};
+$("#regstop").onclick = async ()=>{
+  await fetch("/api/stop_regression", {method:"POST"});
+  toast("已发送终止信号", "ok");
+};
+
+/* 全链路对话 */
+const STAGE_ZH = {retrieving:"检索", generating:"生成回答", diagnosing:"诊断", tool:"工具",
+  ticket:"提单", thinking:"思考", rewriting:"改写", waiting:"等待"};
+let busy = false;
+async function send(){
+  if(busy) return;
+  const q = $("#f_q").value.trim(); if(!q) return;
+  busy = true; $("#sendbtn").disabled = true; $("#f_q").value = "";
+  const chat = $("#chat");
+  if(chat.querySelector(".empty-chat")) chat.innerHTML = "";
+
+  const u = document.createElement("div");
+  u.className = "msg u"; u.innerHTML = `<div class="who">我</div><div class="bubble"></div>`;
+  u.querySelector(".bubble").textContent = q;
+  chat.appendChild(u);
+
+  const a = document.createElement("div");
+  a.className = "msg a";
+  a.innerHTML = `<div class="who">AI · 线上链路</div><div class="stages"></div><div class="bubble"></div>
+    <div class="dets" style="display:none"><details><summary>结果详情</summary><pre></pre></details></div>`;
+  chat.appendChild(a);
+  const bubble = a.querySelector(".bubble"), stages = a.querySelector(".stages");
+  const dets = a.querySelector(".dets"), pre = a.querySelector("pre");
+  chat.scrollTop = chat.scrollHeight;
+
+  let answer = "", curStage = null;
+  const mark = (key, cls, txt)=>{
+    stages.querySelectorAll(".stage").forEach(x=>{ if(!x.classList.contains("run")) x.className = "stage done"; });
+    if(curStage) curStage.remove();
+    curStage = document.createElement("span");
+    curStage.className = "stage " + cls;
+    curStage.textContent = txt;
+    stages.appendChild(curStage);
+  };
+
+  await sse("/api/ask", {session_id: $("#f_sess").value.trim(), query: q,
+      skip_retrieval: $("#f_skip").checked}, ev=>{
+    const d = ev.data || {};
+    if(ev.event === "message" || ev.event === "token"){
+      if(d.token){ answer += d.token; bubble.textContent = answer; chat.scrollTop = chat.scrollHeight; }
+    }else if(ev.event === "status"){
+      const s = STAGE_ZH[d.stage] || d.stage || "处理中";
+      mark("s", "run", s + (d.round ? ` ·${d.round}` : ""));
+    }else if(ev.event === "first_token"){
+      mark("t", "done", "首字 " + d.ms + "ms");
+    }else if(ev.event === "result"){
+      if(d.answer && !answer){ answer = d.answer; bubble.textContent = answer; }
+      pre.textContent = JSON.stringify(d, null, 2);
+      dets.style.display = "";
+      mark("r", "done", "完成");
+      if(d.ticket || d.draft || d.task_id) ticketCard(a, d);
+    }else if(ev.event === "title"){
+      /* 忽略 */
+    }else if(ev.event === "error"){
+      mark("e", "run", "错误");
+      bubble.textContent = (answer ? answer + "\n\n" : "") + "⚠ " + (d.error || "未知错误");
+      if(d.fatal && /401|过期/.test(d.error||"")){ $("#loginstate").className="badge err"; $("#loginstate").textContent="登录过期";
+        $("#conn-dot").className = "cdot bad"; $("#conn-test").textContent = "登录过期"; }
+    }else if(ev.event === "done"){
+      mark("d", "done", d.total_ms + "ms");
+    }
+    chat.scrollTop = chat.scrollHeight;
+  }, ()=>{ busy = false; $("#sendbtn").disabled = false; });
+}
+$("#sendbtn").onclick = send;
+$("#f_q").addEventListener("keydown", e=>{ if(e.key === "Enter" && !e.isComposing) send(); });
+
+/* 工单草稿/确认（按钮转工单路径） */
+function ticketCard(msgEl, result){
+  const box = document.createElement("div");
+  box.className = "tk";
+  box.innerHTML = `<div class="tt"><span>工单草稿</span></div><div class="fld"></div><div class="ops">
+    <button class="btn sm pri">生成草稿（prepare）</button><button class="btn sm dng" style="display:none">确认提单（落测试库）</button></div>`;
+  msgEl.appendChild(box);
+  const fld = box.querySelector(".fld"), bPre = box.querySelector(".pri"), bCfm = box.querySelector(".dng");
+  bPre.onclick = async ()=>{
+    bPre.disabled = true; bPre.innerHTML = '<span class="spin"></span>生成中';
+    try{
+      const r = await fetch("/api/ticket_prepare", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session_id: $("#f_sess").value.trim()})});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.detail || "prepare 失败");
+      const d = j.body?.data || j.body || {};
+      box._draft = d;
+      fld.innerHTML = ["title","type","description","project"].filter(k=>d[k])
+        .map(k=>`<b>${esc(k)}</b>：${esc(String(d[k]).slice(0,160))}`).join("<br>") || `<pre style="margin:6px 0">${esc(JSON.stringify(d, null, 2).slice(0,800))}</pre>`;
+      bPre.style.display = "none"; bCfm.style.display = "";
+      toast("草稿已生成", "ok");
+    }catch(e){ toast(e.message, "err"); bPre.disabled = false; bPre.textContent = "生成草稿（prepare）"; }
+  };
+  bCfm.onclick = async ()=>{
+    if(!confirm("确认向测试环境提交工单？")) return;
+    bCfm.disabled = true;
+    try{
+      const r = await fetch("/api/ticket_confirm", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session_id: $("#f_sess").value.trim(), overrides: box._draft || {}})});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.detail || "confirm 失败");
+      fld.innerHTML += `<br><span style="color:var(--ok);font-weight:600">✔ 已提交（测试库）</span>`;
+      bCfm.style.display = "none";
+      toast("工单已提交（测试库）", "ok");
+    }catch(e){ toast(e.message, "err"); bCfm.disabled = false; }
+  };
+}
+
+/* 检索探针 */
+$("#batchbtn").onclick = async ()=>{
+  const txt = $("#f_pbatch").value.trim();
+  if(!txt) return;
+  const queries = txt.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  if(!queries.length) return;
+  const b = $("#batchbtn"); b.disabled = true; b.textContent = "跑批量探针中…";
+  $("#batchstat").textContent = "运行中（每条≤180s，2 条=约 1 分钟）";
+  $("#batchout").innerHTML = "";
+  try{
+    const r = await fetch("/api/probe_batch", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({queries, qdrant: $("#f_psrc").value})});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "HTTP " + r.status);
+    renderBatchDashboard(j);
+  }catch(e){
+    $("#batchout").innerHTML = '<div class="empty" style="color:var(--danger)">'+esc(String(e.message || e))+'</div>';
+  }
+  b.disabled = false; b.textContent = "跑批量探针";
+  $("#batchstat").textContent = "完成";
+};
+function renderBatchDashboard(j){
+  const out = $("#batchout");
+  const rows = j.rows || [];
+  // 覆盖度看板：每个 route 命中多少 query
+  const rh = j.route_hits || {};
+  const rhKeys = Object.keys(rh).sort((a,b)=>rh[b]-rh[a]);
+  const cover = rhKeys.length === 0 ? "" :
+    rhKeys.map(rt=>`<div class="chip" style="background:var(--brand-soft);color:var(--brand)">${esc(rt)} <b>${rh[rt]}</b></div>`).join("");
+  const tbody = rows.map(r=>{
+    if(!r.ok){
+      return `<tr><td colspan="4" style="color:var(--danger)">✗ ${esc(r.q)}<br><span class="hint">${esc(r.diag||"")}</span></td></tr>`;
+    }
+    const sds = r.sub_domains || [];
+    const chips = sds.length
+      ? sds.map(sd=>`<span class="chip">${esc(KB_DOMAIN_NAMES[sd] || sd)}</span>`).join(" ")
+      : '<span class="hint">无命中</span>';
+    return `<tr><td style="width:34%">${esc(r.q)}</td>
+      <td style="width:18%">${chips}</td>
+      <td style="width:34%">${esc(r.top_title)}</td>
+      <td style="width:14%;text-align:right">${r.n_chunks}</td></tr>`;
+  }).join("");
+  out.innerHTML = `
+    <div style="margin-bottom:8px"><b>覆盖度</b>（${rows.length} 题命中分布）：${cover || '<span class="hint">无</span>'}</div>
+    <table style="width:100%;font-size:12.5px;border-collapse:collapse">
+      <tr style="background:var(--bg)"><th style="text-align:left;padding:6px">问题</th><th style="text-align:left;padding:6px">命中模块</th><th style="text-align:left;padding:6px">首块标题</th><th style="text-align:right;padding:6px">块数</th></tr>
+      ${tbody}
+    </table>`;
+}
+
+$("#probebtn").onclick = async ()=>{
+  const q = $("#f_pq").value.trim(); if(!q) return;
+  const b = $("#probebtn");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span>检索中';
+  $("#probeout").innerHTML = '<div class="card"><div class="empty">检索中…（远程源走 ssh 隧道，首次约 1-2 分钟含模型加载）</div></div>';
+  try{
+    const r = await fetch("/api/probe", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({q, qdrant: $("#f_psrc").value})});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "探针失败");
+    renderProbe(j);
+  }catch(e){
+    $("#probeout").innerHTML = `<div class="card"><div class="empty" style="color:var(--danger)">${esc(e.message)}</div></div>`;
+  }
+  b.disabled = false; b.textContent = "检索";
+};
+function renderProbe(j){
+  const out = $("#probeout");
+  const src = {test:"测试知识库", prod:"生产知识库", local:"本地知识库"}[j.qdrant] || j.qdrant;
+  const heads = `<div class="meta-line">
+    <span>源：<b>${src}</b></span>
+    <span>命中：<b>${j.chunks?.length || 0} 块</b></span><span>上下文：<b>${j.ctx_len || 0} 字</b></span>
+    ${j.pointers?.company ? `<span class="mono" style="font-size:11px;color:var(--ink3)">${esc(j.pointers.company)} · ${esc(j.pointers.team||"")}</span>` : ""}</div>`;
+  const rows = (j.chunks || []).map(c=>`
+    <div class="prow"><div class="rt"><span class="route ${probeRouteCls(c.route)}">${esc(c.route)}</span>
+    ${c.title ? `<span class="ttl">${esc(c.title)}</span>` : ""}</div>
+    <div class="txt">${esc(c.text)}</div></div>`).join("");
+  out.innerHTML = heads + (rows || '<div class="card"><div class="empty">无命中</div></div>');
+}
+
+/* ── 检索示例（覆盖当前知识库各知识类型）── */
+function probeRouteCls(route){
+  const e = [...(route || "").trim()][0] || "";
+  const map = {"🚗":0,"🚙":0,"🚚":0, "🔍":1,"🏭":1, "🚨":2,
+               "📋":3,"📖":3,"🧭":3, "📘":4, "🌐":5,"🔤":5};
+  return "k" + (map[e] !== undefined ? map[e] : 0);
+}
+const PROBE_SAMPLES = [
+  "XNA 双侧取放货换向高度怎么设置",
+  "离线建图录包有什么要求",
+  "倒车时定位横向跳变怎么排查",
+  "错误码 30001 是什么意思",
+  "应用地图失败怎么排查",
+  "怎么配置库位类型",
+];
+$("#probesamples").innerHTML =
+  PROBE_SAMPLES.map(s=>`<span class="chip">${esc(s)}</span>`).join("");
+$("#probesamples").onclick = e=>{
+  const c = e.target.closest(".chip");
+  if(!c) return;
+  $("#f_pq").value = c.textContent;
+  $("#probebtn").click();
+};
+
+// ═══ 漏斗走查（ORS-#821）：层点击 → 段明细 → 行内改判 → 键盘流 ═══
+const FL = [
+  {id:"total", name:"全部对话", kind:"main", sub:0},
+  {id:"tester", name:"测试人员对话", kind:"cut", sub:0},
+  {id:"chitchat", name:"寒暄", kind:"cut", sub:0},
+  {id:"ticket", name:"直接连/转工单", kind:"cut", sub:0},
+  {id:"qa", name:"真实咨询问题（分母）", kind:"main", sub:0},
+  {id:"answered", name:"直答 ✓", kind:"ok", sub:1},
+  {id:"unanswered", name:"未解答 · 覆盖答不好", kind:"bad", sub:1},
+  {id:"uncovered", name:"未解答 · 库未覆盖", kind:"bad", sub:1},
+  {id:"undetermined", name:"未判定", kind:"gray", sub:1},
+];
+const FLC = {main:"#3d76c4", cut:"#d97706", ok:"#2e9e5b", bad:"#d9534f", gray:"#98a2b3"};
+const LABELS = ["直答正确","未直答","未覆盖","直接提单","寒暄"];
+let fData = null, fCur = {layer:"", rows:[], idx:-1};
+
+function fImgBase(){
+  let v = $("#fimgbase").value.trim().replace(/\/+$/,"");
+  if(!v) v = localStorage.getItem("fimgbase") || "https://usp.ep-zl.com/p";
+  else localStorage.setItem("fimgbase", v);
+  return v + "/api/call/files/";
+}
+
+// 大图/gif 不自动加载（实测 36MB 录屏 gif 下载 11s，批量滚动时带宽瓜分必超时）——占位点击加载
+function imgTag(f, base){
+  const big = (f.size||0) > 3*1024*1024 || /\.gif$/i.test(f.object_path||"");
+  if(big){
+    const mb = (f.size/1048576).toFixed(1);
+    return `<span class="imgfail imgbig" data-path="${esc(base + f.object_path)}" data-title="${esc(f.filename||"")}" title="${esc(f.filename||"")}" onclick="loadBig(this)">🖼️ 大图 ${mb}MB · 点击加载</span>`;
+  }
+  return `<img src="${esc(base + f.object_path)}" title="${esc(f.filename||"")}" loading="lazy" onerror="imgFail(this)">`;
+}
+function loadBig(el){
+  const i = document.createElement("img");
+  i.title = el.dataset.title;
+  i.loading = "lazy";
+  i.onerror = ()=>imgFail(i);
+  i.src = el.dataset.path;
+  el.replaceWith(i);
+}
+// 图片加载失败：自动重试 2 次（间隔递增 1.5s/4s，避开并发带宽高峰），再失败给可点击重试占位
+function imgFail(img){
+  const n = +(img.dataset.retried || 0);
+  if(n < 2){
+    img.dataset.retried = n + 1;
+    setTimeout(()=>{ if(img.isConnected) img.src = img.src.split("?")[0] + "?r=" + Date.now(); }, n === 0 ? 1500 : 4000);
+    return;
+  }
+  const ph = document.createElement("span");
+  ph.className = "imgfail";
+  ph.textContent = "🖼️ 图失效·点重试";
+  ph.title = img.title;
+  ph.onclick = ()=>{
+    const i = document.createElement("img");
+    i.title = ph.title;
+    i.loading = "lazy";
+    i.onerror = ()=>imgFail(i);
+    i.src = img.src.split("?")[0] + "?r=" + Date.now();
+    ph.replaceWith(i);
+  };
+  img.replaceWith(ph);
+}
+
+async function loadFunnel(){
+  $("#fsum").textContent = "加载中…";
+  try{
+    const j = await (await fetch("/api/funnel?env=prod")).json();
+    if(!j.found){ $("#fsum").textContent = "缺产物：" + (j.reason||""); $("#funnelbar").innerHTML = ""; return; }
+    fData = j;
+    renderFunnel();
+  }catch(e){ $("#fsum").textContent = "加载失败：" + e.message; }
+}
+
+function renderWeekCard(){
+  const w = fData.week;
+  const el = $("#weekcard");
+  if(!w){ el.style.display = "none"; return; }
+  const prog = w.new_total ? Math.round(w.judged / w.new_total * 100) : 0;
+  el.className = "weekcard";
+  el.style.display = "";
+  el.innerHTML = `
+    <div class="wk-left">
+      <div class="wk-t">本周直答率 <span class="hint">· ${esc(w.monday.slice(5))} 起 · 标注即刷</span></div>
+      <div class="wk-rate">${w.rate ?? "—"}${w.rate == null ? "" : '<small>%</small>'}</div>
+    </div>
+    <div class="wk-div"></div>
+    <div class="wk-grid">
+      <div class="wk-item"><div class="n">${w.new_total}</div><div class="l">本周新增段</div></div>
+      <div class="wk-item"><div class="n">${w.judged}</div><div class="l">已判定</div></div>
+      <div class="wk-item"><div class="n" style="color:var(--ok)">${w.answered}</div><div class="l">直答正确</div></div>
+      <div class="wk-item"><div class="n" style="color:#d9534f">${w.unanswered}</div><div class="l">未直答</div></div>
+      <div class="wk-item"><div class="n" style="color:#d9534f">${w.uncovered}</div><div class="l">未覆盖</div></div>
+      <div class="wk-item"><div class="n">${prog}%</div><div class="l">走查进度（判定占比）</div></div>
+    </div>`;
+}
+
+function renderFunnel(){
+  const L = fData.layers, T = L.total || 1;
+  renderWeekCard();
+  $("#fsum").innerHTML = `直答率（已判定口径）<b style="font-size:15px;color:var(--brand)">${L.direct_rate ?? "—"}%</b>
+    ｜走查复核 <b>${L.reviewed}</b>/${L.qa} 段（真实咨询层）
+    ${L.consistent ? "" : '｜<span style="color:var(--danger)">分层不守恒，数据异常！</span>'}`;
+  // 手绘形态：主漏斗=过滤后剩余逐层收窄，**终点是直答 ✓**（最终留下的）；
+  // 测试/寒暄/转工单/未直答/未覆盖/未判定全部是被甩出的旁支；出口=直答率大字
+  const W = n => Math.max(n / T * 100, 6);
+  const row = (label, id, n, kind, side, cutN) =>
+    `<div class="fn-row">
+       <div class="fn-lb">${esc(label)}</div>
+       <div class="frow">
+         <div class="fill${side?" is-rest":""}${id&&fCur.layer===id?" is-sel":""}"
+           ${id?`data-l="${id}" title="点击查看该层段清单"`:`title="过滤后剩余"`}
+           style="width:${W(n)}%;background:${FLC[kind]}"><b>${n}</b></div>
+         ${cutN != null ? `<div class="fcut" style="width:${W(cutN)}%"><span class="dot"></span></div>` : ""}
+       </div>
+       ${side || ""}
+     </div>`;
+  const side = (id, name, n, kind) =>
+    `<div class="fn-side${fCur.layer===id?" is-sel":""}" data-l="${id}" title="点击查看该层段清单">
+       <span class="lnk"></span><span class="ah">▸</span>
+       <div class="fs-chip${kind?" "+kind:""}"><b>${n}</b>${esc(name)}</div></div>`;
+  const unprocessedSide = (n) =>
+    fData.unprocessed && fData.unprocessed.length
+      ? `<div class="fn-side is-unp" id="unpchip" title="点击查看未标注的 52 段">
+         <span class="lnk"></span><span class="ah">▸</span>
+         <div class="fs-chip warn"><b>${n}</b>未标注会话</div></div>` : "";
+  const side3 = (parts) =>
+    `<div class="fn-side3"><div class="fn-side3-hd">未直答 · ${parts.reduce((a,p)=>a+p[2],0)} 段</div>${parts.map(p =>
+      `<div class="fn-side${fCur.layer===p[0]?" is-sel":""}" data-l="${p[0]}" title="点击查看该层段清单">
+         <div class="fs-chip"><b>${p[2]}</b>${esc(p[1])}</div></div>`).join("")}</div>`;
+  const r1 = T - L.tester, r2 = r1 - L.suggested, r3 = r2 - L.chitchat;
+  const badTotal = L.unanswered + L.uncovered + L.undetermined;
+  $("#funnelbar").innerHTML = [
+    row("全部对话", "total", T, "main", unprocessedSide(fData.unprocessed_count || 0), fData.unprocessed_count || 0),
+    row("过滤测试后", "", r1, "main", side("tester", "测试人员对话", L.tester), L.tester),
+    row("过滤猜你想问后", "", r2, "main", side("suggested", "猜你想问（平台推荐）", L.suggested), L.suggested),
+    row("过滤寒暄后", "", r3, "main", side("chitchat", "寒暄", L.chitchat), L.chitchat),
+    row("真实咨询问题（分母）", "qa", L.qa, "main", side("ticket", "转工单 →提单库", L.ticket), L.ticket),
+    row("直答 ✓（最终留下）", "answered", L.answered, "ok", null, badTotal).replace('class="fill', 'class="fill is-final'),
+    `<div class="fn-row">
+       <div class="fn-lb"></div><div></div>
+       ${side3([["unanswered","未直答·覆盖答不好",L.unanswered],
+                ["uncovered","未直答·库未覆盖",L.uncovered],
+                ["undetermined","未判定",L.undetermined]])}
+     </div>`,
+    `<div class="fn-rate">直答率 <b>${L.direct_rate ?? "—"}%</b>
+      <span>= ${L.answered} ÷ ${L.qa}（全量·AI预标兜底）</span>
+      &nbsp;｜&nbsp;人工已标口径 <b style="font-size:19px;color:var(--ink2)">${L.manual_rate ?? "—"}%</b>
+      <span>（${L.manual_judged} 段，= 周报 L2 口径，走查补标后两数趋同）</span></div>`,
+  ].join("");
+  $("#funnelbar").querySelectorAll("[data-l]").forEach(el=>{
+    el.onclick = ()=> loadSegs(el.dataset.l);
+  });
+  // 未标注会话 chip：点了展开/收起段列表（不依赖 loadSegs 走查流）
+  const unp = $("#unpchip");
+  if(unp){
+    unp.onclick = ()=> toggleUnprocessedPanel();
+  }
+}
+
+function toggleUnprocessedPanel(){
+  const panel = $("#unppanel");
+  if(!panel || !fData || !fData.unprocessed) return;
+  if(panel.style.display !== "none"){ panel.style.display = "none"; return; }
+  panel.style.display = "";
+  renderUnprocessedPanel();
+}
+
+function renderUnprocessedPanel(){
+  const panel = $("#unppanel");
+  if(!panel || !fData || !fData.unprocessed) return;
+  panel.innerHTML = `<div style="margin:6px 0 10px;font-size:12px;color:var(--ink3)">
+    这些段已导入但还没经过任何判定——不进漏斗、不计入直答率分母。点标签直接判（标完自动从列表移除）；点问题展开完整对话。
+  </div>` + (fData.unprocessed.length === 0
+    ? `<div class="empty">已全部处理完 ✓</div>`
+    : fData.unprocessed.map(it => `<div class="fseg" data-cid="${esc(it.cid)}" data-a0="${it.astart}">
+      <div class="q" onclick="toggleUnpDetail(this)">${esc(it.question || "（无文本）")}${it.n_files?` <span style="color:var(--brand);font-size:12px">📷 ${it.n_files}</span>`:""}</div>
+      ${it.answer ? `<div class="aprev" onclick="toggleUnpDetail(this)">AI：${esc(it.answer)}…</div>` : ""}
+      <div class="meta">
+        <span>${esc(it.user || "—")}</span>
+        <span>${esc((it.at || "").slice(0,16))}</span>
+        <span class="ops" style="margin-top:0">
+          ${LABELS.map(lb => `<button class="lbtn" onclick="labelUnp('${esc(it.cid)}', ${it.astart}, '${lb}', this)">${lb}</button>`).join("")}
+        </span>
+      </div>
+      <div class="fdet unp-det" style="display:none"></div>
+    </div>`).join(""));
+}
+
+async function toggleUnpDetail(el){
+  const seg = el.closest(".fseg");
+  const det = seg.querySelector(".unp-det");
+  if(det.style.display === ""){ det.style.display = "none"; return; }
+  if(det.dataset.loaded){ det.style.display = ""; return; }
+  det.style.display = ""; det.innerHTML = "加载中…";
+  try{
+    // aend 不在 DOM 上，从 fData.unprocessed 找到行再取完整范围
+    const row = (fData.unprocessed||[]).find(x=>String(x.cid)===String(seg.dataset.cid) && +x.astart===+seg.dataset.a0);
+    if(!row){ det.innerHTML = "行数据缺失"; return; }
+    const j = await (await fetch(`/api/seg_detail?env=prod&cid=${row.cid}&a0=${row.astart}&a1=${row.aend}`)).json();
+    const base = fImgBase();
+    det.innerHTML = (j.rounds||[]).map(r=>{
+      const files = (r.files||[]).filter(f=>f.isImage!==false).map(f=>imgTag(f, base)).join("");
+      const acts = (r.a_seg||[]).filter(s=>s.action==="ticket_draft").map(s=>
+        `<span class="fact">🎫 生成工单草稿 #${s.db_id||"?"}</span>`).join(" ");
+      const ans = (r.a_seg||[]).filter(s=>s.action!=="ticket_draft" && (s.text||"").trim())
+        .map(s=>`<div class="fa">${esc((s.text||"").slice(0,600))}</div>`).join("");
+      return `<div class="fq"><b>用户：</b>${esc((r.q||"").slice(0,300))}${files?`<div>${files}</div>`:""}</div>${acts}${ans}`;
+    }).join("") || "（空段）";
+    det.dataset.loaded = "1";
+  }catch(e){ det.innerHTML = "加载失败：" + esc(e.message); }
+}
+
+async function labelUnp(cid, astart, lb, btn){
+  btn.disabled = true;
+  try{
+    const r = await (await fetch("/api/label_seg", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env:"prod", cid, astart, label: lb})})).json();
+    if(!r.ok) throw new Error(r.detail||"失败");
+    // 1) 从 fData.unprocessed 移除（cid 可能是字符串/数字混合，统一 String 比较）
+    fData.unprocessed = fData.unprocessed.filter(x => !(String(x.cid)===String(cid) && +x.astart===+astart));
+    fData.unprocessed_count = fData.unprocessed.length;
+    // 2) 视觉上移除该行（淡出）
+    const row = btn.closest(".fseg");
+    row.style.transition = "opacity .25s, transform .25s, max-height .25s, margin .25s, padding .25s";
+    row.style.opacity = "0";
+    row.style.transform = "translateX(-12px)";
+    row.style.maxHeight = row.offsetHeight + "px";
+    requestAnimationFrame(()=>{ row.style.maxHeight = "0"; row.style.margin = "0"; row.style.padding = "0"; });
+    setTimeout(()=>{
+      row.remove();
+      // 3) 更新顶部 chip 计数
+      $("#unpchip .fs-chip b").textContent = fData.unprocessed_count;
+      // 4) 重渲染面板（如果空了就显示完成态）
+      if(fData.unprocessed.length === 0) renderUnprocessedPanel();
+    }, 280);
+    // 5) 异步刷新漏斗（不需要等）
+    loadFunnel();
+  }catch(e){ alert("标注失败：" + e.message); btn.disabled = false; }
+}
+
+async function loadSegs(layer){
+  if(!layer) return;
+  // 再点同一块 → 收起明细（toggle）
+  if(fCur.layer === layer && $("#fsegs").style.display !== "none"){
+    $("#fsegs").style.display = "none";
+    $("#funnelbar").querySelectorAll(".fill[data-l]").forEach(e=>e.classList.toggle("is-sel", false));
+    fCur.layer = "";
+    return;
+  }
+  fCur.layer = layer; fCur.idx = -1;
+  $("#funnelbar").querySelectorAll(".fill[data-l]").forEach(e=>e.classList.toggle("is-sel", e.dataset.l===layer));
+  $("#fsegs").style.display = "";
+  $("#fseglayer").textContent = (FL.find(x=>x.id===layer)||{}).name || layer;
+  $("#fsegpage").href = `/layer_page?env=prod&layer=${layer}`;
+  $("#fseglist").innerHTML = '<div class="empty">加载中…</div>';
+  try{
+    const j = await (await fetch(`/api/funnel_segs?env=prod&layer=${layer}`)).json();
+    if(!j.found){ $("#fseglist").innerHTML = '<div class="empty">'+esc(j.reason||"")+'</div>'; $("#fsegcount").textContent=""; return; }
+    fCur.rows = j.items || [];
+    renderSegs();
+  }catch(e){ $("#fseglist").innerHTML = '<div class="empty">失败：'+esc(e.message)+'</div>'; }
+}
+
+function renderSegs(){
+  const kw = $("#fsegfilter").value.trim();
+  // 元筛选层（tester/suggested）不开放改判；其他所有层（含直答/未直答/未覆盖/未判定）都允许
+  const canLabel = fCur.layer !== "tester" && fCur.layer !== "suggested" && fCur.layer !== "";
+  // 标签：真实咨询层判类 + 寒暄层捞误判 + 转工单层捞误判（如非真要提单的捞出）
+  const isMeta = fCur.layer === "suggested" || fCur.layer === "tester";  // 元筛选层：段本身不该有「直答/未覆盖」类标签
+  const rows = kw ? fCur.rows.filter(r => (r.user||"").includes(kw) || (r.question||"").includes(kw)) : fCur.rows;
+  $("#fsegcount").textContent = `${rows.length} 段`;
+  $("#fseglist").innerHTML = rows.map((r,i)=>{
+    const tks = [...(r.ticket_ids||[]), ...(r.task_ids||[])].filter((v,ix,a)=>a.indexOf(v)===ix);
+    return `<div class="fseg" data-i="${i}" data-cid="${r.cid}" data-a0="${r.astart}">
+      <div class="q" onclick="toggleDetail(this)">${esc(r.question||"（无文本）")}</div>
+      ${r.answer ? `<div class="aprev" onclick="toggleDetail(this)">AI：${esc(r.answer)}…</div>` : ""}
+      <div class="meta">
+        <span>${esc(r.type||"")}</span>
+        ${isMeta ? "" : `<span class="badge-eff be-${esc(r.eff||"未判定")} ${r.src==="manual"?"badge-src-man":"badge-src-pre"}">${esc(r.eff||"未判定")}·${r.src==="manual"?"人工":"AI预标"}</span>`}
+        <span>${esc(r.user||"")}</span><span>${esc((r.at||"").slice(5,16))}</span>
+        ${tks.length?`<span title="本段 ${r.ticket_ids.length} 个工单 + 同会话其他段 ${tks.filter(t=>!r.ticket_ids.includes(t)).length} 个">🎫 段${r.ticket_ids.length}/会${tks.length}</span>`:""}
+        ${r.n_files?`<span title="段内附件图 ${r.n_files} 张" style="color:var(--brand)">📷 ${r.n_files}</span>`:""}
+      </div>
+      ${canLabel ? `<div class="ops">${LABELS.map(lb=>`<button class="lbtn${r.eff===lb&&r.src==="manual"?" on":""}" data-lb="${lb}" onclick="labelSeg(${r.cid},${r.astart},'${lb}',this)">${lb}</button>`).join("")}</div>` : ""}
+      <div class="fdet" style="display:none"></div>
+    </div>`;
+  }).join("") || '<div class="empty">该层无段</div>';
+  const save = JSON.parse(localStorage.getItem("fwalk") || "null");
+  if(save && save.layer === fCur.layer){
+    const i = rows.findIndex(r=>r.cid===save.cid && r.astart===save.astart);
+    if(i >= 0){ fCur.idx = i; markCur(); const el = $(`#fseglist .fseg[data-i="${i}"]`); el?.scrollIntoView({block:"center"}); }
+  }
+}
+
+function markCur(){
+  $("#fseglist").querySelectorAll(".fseg").forEach(e=>e.classList.toggle("is-cur", +e.dataset.i === fCur.idx));
+}
+
+async function labelSeg(cid, astart, lb, btn){
+  btn.disabled = true;
+  try{
+    const r = await (await fetch("/api/label_seg", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env:"prod", cid, astart, label: lb})})).json();
+    if(!r.ok) throw new Error(r.detail||"失败");
+    const seg = btn.closest(".fseg");
+    seg.querySelectorAll(".lbtn").forEach(b=>b.classList.toggle("on", b===btn));
+    const be = seg.querySelector(".badge-eff");
+    if(be){ be.className = "badge-eff badge-src-man"; be.textContent = lb + "·人工"; }
+    const row = fCur.rows.find(x=>x.cid===cid && x.astart===astart);
+    if(row){ row.eff = lb; row.src = "manual"; }
+    loadFunnel();  // 漏斗计数即时反映（MANUAL 直读）
+    // 不再全量 loadSegs：保展开状态——仅当改判后段已不属于当前层时淡出移除
+    if(!inLayer(fCur.layer, lb)){
+      seg.style.transition = "opacity .2s, transform .2s, max-height .25s, margin .25s, padding .25s";
+      seg.style.opacity = "0";
+      seg.style.transform = "translateX(-12px)";
+      seg.style.maxHeight = seg.offsetHeight + "px";
+      requestAnimationFrame(()=>{
+        seg.style.maxHeight = "0";
+        seg.style.margin = "0";
+        seg.style.paddingTop = "0";
+        seg.style.paddingBottom = "0";
+      });
+      setTimeout(()=>{
+        seg.remove();
+        fCur.rows = fCur.rows.filter(x => !(x.cid===cid && x.astart===astart));
+        $("#fsegcount").textContent = `${$("#fseglist").querySelectorAll(".fseg").length} 段`;
+      }, 260);
+    }
+  }catch(e){ alert("改判失败：" + e.message); btn.disabled = false; }
+}
+function inLayer(layer, eff){
+  if(layer === "chitchat") return eff === "寒暄";
+  if(layer === "ticket") return eff === "直接提单";
+  if(layer === "qa") return eff !== "寒暄" && eff !== "直接提单";
+  return true;
+}
+
+async function toggleDetail(qEl){
+  const seg = qEl.closest(".fseg");
+  const det = seg.querySelector(".fdet");
+  if(det.style.display === ""){ det.style.display = "none"; return; }
+  if(det.dataset.loaded){ det.style.display = ""; return; }
+  det.style.display = ""; det.innerHTML = "加载中…";
+  const row = fCur.rows[+seg.dataset.i];
+  if(!row){ det.innerHTML = "行数据缺失"; return; }
+  try{
+    const [jr, jt] = await Promise.all([
+      (await fetch(`/api/seg_detail?env=prod&cid=${row.cid}&a0=${row.astart}&a1=${row.aend}`)).json(),
+      (await fetch(`/api/seg_to_ticket?env=prod&cid=${row.cid}&a0=${row.astart}&a1=${row.aend}`)).json().catch(()=>({tickets:[],ticket_ids:[]})),
+    ]);
+    const base = fImgBase();
+    const roundsHtml = (jr.rounds||[]).map(r=>{
+      const files = (r.files||[]).filter(f=>f.isImage!==false).map(f=>imgTag(f, base)).join("");
+      const acts = (r.a_seg||[]).filter(s=>s.action==="ticket_draft").map(s=>
+        `<span class="fact">🎫 生成工单草稿 #${s.db_id||"?"}</span>`).join(" ");
+      const ans = (r.a_seg||[]).filter(s=>s.action!=="ticket_draft" && (s.text||"").trim())
+        .map(s=>`<div class="fa">${esc((s.text||"").slice(0,600))}</div>`).join("");
+      return `<div class="fq"><b>用户：</b>${esc((r.q||"").slice(0,300))}${files?`<div>${files}</div>`:""}</div>${acts}${ans}`;
+    }).join("");
+    // 工单数据：完整 dict（DB 通）或纯 id 列表（DB 不通，dar_studio 本地无 prod 隧道）
+    const ticketHtml = renderTickets((jt&&jt.tickets)||[], (jt&&jt.ticket_ids)||[]);
+    det.innerHTML = roundsHtml + ticketHtml || "（空段）";
+    det.dataset.loaded = "1";
+  }catch(e){ det.innerHTML = "加载失败：" + esc(e.message); }
+}
+
+function renderTickets(tickets, ticketIds){
+  // tickets=[完整 dict] 优先；空时退回 ticketIds=[纯 id]（DB 不通场景）
+  const ids = tickets.length ? tickets.map(t=>t.ticket_id||t.id) : ticketIds;
+  if(!ids.length) return "";
+  if(!tickets.length){
+    // DB 不通：只展示 id + 跳转链接，不读 status/assignee
+    return `<div class="ftix-hd">🎫 关联工单（${ids.length}，DB 未连只展示 id）</div>${ids.map(id=>`
+      <div class="ftix ftix-id-only">
+        <b class="ftix-id">#${esc(id)}</b>
+        <span class="ftix-dim">— 点击链接到工单页查看状态</span>
+        <a class="ftix-link" href="https://usp.ep-zl.com/t/tickets/${id}" target="_blank" rel="noopener">跳工单页 ↗</a>
+      </div>`).join("")}`;
+  }
+  // 状态配色：pending/new=橙, in_progress=蓝, resolved=绿, closed=灰
+  const ST_CLS = {pending:"warn", new:"warn", in_progress:"pri", resolved:"ok", closed:"dim"};
+  const PR_CLS = {紧急:"err", 高:"warn", 中:"pri", 低:"dim"};
+  return `<div class="ftix-hd">🎫 关联工单（${tickets.length}）</div>${tickets.map(t=>{
+    const stCls = ST_CLS[String(t.status||"")] || "dim";
+    const prCls = PR_CLS[String(t.priority||"")] || "dim";
+    const tid = t.ticket_id || t.id;
+    return `<div class="ftix">
+      <div class="ftix-row">
+        <b class="ftix-id">#${esc(String(tid))}</b>
+        <span class="ftix-title">${esc(t.title || "（无标题）")}</span>
+        <a class="ftix-link" href="https://usp.ep-zl.com/t/tickets/${tid}" target="_blank" rel="noopener">跳工单页 ↗</a>
+      </div>
+      <div class="ftix-meta">
+        <span class="badge ${stCls}">${esc(String(t.status||"未知"))}</span>
+        <span class="badge ${prCls}">优先级：${esc(String(t.priority||"—"))}</span>
+        <span>指派：<b>${esc(t.assigned_to_name || t.assigned_to || "未指派")}</b></span>
+        <span>发起：<b>${esc(t.created_by_name || t.created_by || "—")}</b></span>
+        <span>类型：${esc(String(t.type||"—"))}</span>
+        <span>${esc(String(t.created_at||"").slice(0,16))}</span>
+      </div>
+    </div>`;
+  }).join("")}`;
+}
+
+// 键盘流：j/k 移动、1-5 打标签、空格展开
+document.addEventListener("keydown", e=>{
+  if(!fCur.layer || $("#fsegs").style.display === "none") return;
+  if(["INPUT","TEXTAREA","SELECT"].includes(document.activeElement?.tagName)) return;
+  const rows = $("#fseglist").querySelectorAll(".fseg");
+  if(!rows.length) return;
+  const move = d=>{
+    fCur.idx = Math.min(Math.max(fCur.idx + d, 0), rows.length-1);
+    markCur(); rows[fCur.idx].scrollIntoView({block:"center"});
+    const row = fCur.rows[+rows[fCur.idx].dataset.i];
+    if(row) localStorage.setItem("fwalk", JSON.stringify({layer:fCur.layer, cid:row.cid, astart:row.astart}));
+  };
+  if(e.key === "j" || e.key === "ArrowDown"){ e.preventDefault(); move(1); }
+  else if(e.key === "k" || e.key === "ArrowUp"){ e.preventDefault(); move(-1); }
+  else if(e.key >= "1" && e.key <= "5"){
+    if((fCur.layer === "tester" || fCur.layer === "suggested" || fCur.layer === "") || fCur.idx < 0) return;
+    const seg = rows[fCur.idx], row = fCur.rows[+seg.dataset.i];
+    if(!row) return;
+    const lb = LABELS[+e.key - 1];
+    labelSeg(row.cid, row.astart, lb, seg.querySelector(`.lbtn[data-lb="${lb}"]`));
+  }
+  else if(e.key === " "){
+    e.preventDefault();
+    if(fCur.idx < 0) return;
+    toggleDetail(rows[fCur.idx].querySelector(".q"));
+  }
+});
+$("#fsegfilter").addEventListener("input", ()=>{ fCur.idx = -1; renderSegs(); });
+$("#fimgbase").value = localStorage.getItem("fimgbase") || "";
+$("#fimgbase").addEventListener("change", ()=>{ localStorage.setItem("fimgbase", $("#fimgbase").value.trim()); });
+loadFunnel();
+</script>
+</body>
+</html>

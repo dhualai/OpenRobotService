@@ -44,6 +44,9 @@ _KB_POINTERS = {
 class AIConfig(BaseModel):
     """AI 模块配置（值全部来自环境变量，即 .env）"""
 
+    # ========== 服务端口（run.py 启动时读取，优先来自 ai/.env）==========
+    port: int = Field(default=8401, description="AI 服务监听端口")
+
     # ========== DeepSeek LLM ==========
     deepseek_api_key: str = Field(default="", description="DeepSeek API Key")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", description="API 地址")
@@ -51,6 +54,7 @@ class AIConfig(BaseModel):
     llm_reasoning_effort: str = Field(default="low", description="思考强度: low/high/max/off")
     llm_connect_timeout: float = Field(default=3.0)
     llm_read_timeout: float = Field(default=30.0)  # Agent 回复可能较长
+    llm_stream_first_timeout: float = Field(default=30.0, description="流式首块业务数据超时(秒)")
 
     # ========== 备用模型（中转站，OpenAI 兼容接口）==========
     # 全局切换开关：llm_backend=deepseek（默认）/ relay。切到 relay 后，
@@ -59,7 +63,7 @@ class AIConfig(BaseModel):
     llm_backend: str = Field(default="deepseek", description="激活的 LLM 后端: deepseek/relay")
     relay_api_key: str = Field(default="", description="中转站 API Key")
     relay_base_url: str = Field(default="https://yitongapi.com/v1", description="中转站 API 地址")
-    relay_model: str = Field(default="claude-opus-4-8", description="中转站模型名")
+    relay_model: str = Field(default="gpt-5.6-sol", description="中转站模型名")
     relay_fallback_models: str = Field(
         default="claude-opus-4-8,claude-sonnet-5",
         description="relay 主模型 HTTP 非200失败后依次降级尝试的模型，逗号分隔，空=禁用降级")
@@ -86,6 +90,10 @@ class AIConfig(BaseModel):
 
     # ========== Embedding ==========
     embedding_model_name: str = Field(default="BAAI/bge-base-zh-v1.5")
+    embedding_model_local: str = Field(
+        default="",
+        description="本机 embedding 目录；服务器路径不存在时用",
+    )
     embedding_device: str = Field(default="cpu")
     embedding_batch_size: int = Field(default=32)
     embedding_cache_size: int = Field(default=10000)
@@ -108,6 +116,9 @@ class AIConfig(BaseModel):
 
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
+
+    # ========== 知识沉淀 Worker ==========
+    enable_knowledge_sink: bool = Field(default=False, description="知识沉淀 Worker 总开关：默认关，测试环境验证 LLM 提炼质量后再开")
 
     # ========== 解决方式总结 Worker（结束工单 AI 确认弹窗）==========
     resolution_worker_concurrency: int = Field(default=10, description="解决方式总结 Worker 最大并行数（同时处理多少个工单的总结）")
@@ -252,6 +263,8 @@ def get_ai_config() -> AIConfig:
     注意：qdrant_collection_name 可能被指针文件覆盖（见 get_active_collection）
     """
     return AIConfig(
+        # 服务端口
+        port=int(os.getenv("PORT", "8401")),
         # DeepSeek
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
@@ -259,12 +272,16 @@ def get_ai_config() -> AIConfig:
         llm_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "low"),
         llm_connect_timeout=float(os.getenv("LLM_CONNECT_TIMEOUT", "3.0")),
         llm_read_timeout=float(os.getenv("LLM_READ_TIMEOUT", "30.0")),
+        # 流式首块业务数据超时（秒）：中转 hang 时会发心跳/空行骗过 httpx
+        # read timeout（0916 实锤用户干等 257s），N 秒内没见到第一个 SSE data
+        # 块即中止重试
+        llm_stream_first_timeout=float(os.getenv("LLM_STREAM_FIRST_TIMEOUT", "30.0")),
 
         # 备用模型（中转站）
         llm_backend=os.getenv("LLM_BACKEND", "deepseek"),
         relay_api_key=os.getenv("RELAY_API_KEY", ""),
         relay_base_url=os.getenv("RELAY_BASE_URL", "https://yitongapi.com/v1"),
-        relay_model=os.getenv("RELAY_MODEL", "claude-opus-4-8"),
+        relay_model=os.getenv("RELAY_MODEL", "gpt-5.6-sol"),
         relay_fallback_models=os.getenv("RELAY_FALLBACK_MODELS", "claude-opus-4-8,claude-sonnet-5"),
         relay_thinking=os.getenv("RELAY_THINKING", "off").strip().lower() in ("1", "true", "yes", "on"),
 
@@ -290,6 +307,7 @@ def get_ai_config() -> AIConfig:
         redis_ttl=int(os.getenv("REDIS_TTL", "0")),
         # Embedding
         embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-base-zh-v1.5"),
+        embedding_model_local=os.getenv("EMBEDDING_MODEL_LOCAL", ""),
         embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
         embedding_batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "32")),
         embedding_cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10000")),
@@ -303,6 +321,7 @@ def get_ai_config() -> AIConfig:
         # 派单
         # 诊断服务
         diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
+        enable_knowledge_sink=os.getenv("ENABLE_KNOWLEDGE_SINK", "0").strip().lower() in ("1", "true", "yes", "on"),
         # 派单后台
         assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "120")),
         # Debug

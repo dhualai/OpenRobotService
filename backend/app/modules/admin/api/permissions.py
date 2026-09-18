@@ -22,6 +22,8 @@ async def get_all_permissions(
     current_user: Dict[str, Any] = require_permission("backend:permission:base:read")
 ):
     try:
+        from app.modules.admin.api.dispatch_dev import ensure_dispatch_dev_permission
+        ensure_dispatch_dev_permission()
         permissions = db_manager.get_all_permissions()
         return DataResponse(
             code=0,

@@ -1,4 +1,9 @@
-"""精排评分层：三路加权 + 职级折扣 + 部门 soft_prior"""
+"""精排评分层：三路并集，命中路取最高绝对分 + 职级折扣 + 部门 soft_prior
+
+三路都用 0～1 绝对分，不按本批第一名拉满。
+只命中一路：保留该路分数，不因其他路空而打折。
+多路命中：取最高，来源标签仍标出命中了哪几路。
+"""
 
 from typing import Dict, List, Optional, TYPE_CHECKING
 
@@ -13,28 +18,47 @@ if TYPE_CHECKING:
 class Ranker:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
-        w = self._config.ranker_weights
-        self._w_llm = w.get("llm_match", 0.30)
-        self._w_semantic = w.get("semantic_match", 0.35)
-        self._w_history = w.get("history_match", 0.10)
         self._penalty: Dict[int, float] = self._config.job_level_penalty
-        # 项目对接人加权系数（≥1；=1 不加权）。默认 2.0，可由 config.contact_bonus 覆盖。
         try:
-            self._contact_bonus = float(getattr(self._config, "contact_bonus", 2.0))
+            self._preferred_floor = float(getattr(self._config, "preferred_floor", 0.9))
         except (TypeError, ValueError):
-            self._contact_bonus = 2.0
+            self._preferred_floor = 0.9
+        # 错派压分：两处各 ×0.7（相似人分 + 精排总分）；仅精排一处时改用 ×0.5。
+        hc = getattr(self._config, "history_recall", None) or {}
+        if not isinstance(hc, dict):
+            hc = {}
+        try:
+            self._misassign_reject_factor = float(hc.get("misassign_reject_factor", 0.70))
+        except (TypeError, ValueError):
+            self._misassign_reject_factor = 0.70
+        try:
+            self._misassign_reject_once = float(hc.get("misassign_reject_once", 0.50))
+        except (TypeError, ValueError):
+            self._misassign_reject_once = 0.50
+        self._misassign_reject_factor = min(max(self._misassign_reject_factor, 0.0), 1.0)
+        self._misassign_reject_once = min(max(self._misassign_reject_once, 0.0), 1.0)
 
     def rank(
         self, recall_result: RecallResult,
         engineers: Optional[List[EngineerProfile]] = None,
         contact_assignee_id: Optional[str] = None,
         preferred_assignee_id: Optional[str] = None,
+        creator_id: Optional[str] = None,
+        prev_assignee_id: Optional[str] = None,
         dept_routing: Optional["DeptRoutingResult"] = None,
     ) -> Dict[str, Dict[str, float]]:
+        llm_scores = recall_result.llm_recall or {}
+        similar = recall_result.similar_recall or {}
+        cluster = recall_result.cluster_recall or {}
+
         ids = set()
-        ids.update(recall_result.llm_recall.keys())
-        ids.update(recall_result.semantic_recall.keys())
-        ids.update(recall_result.history_recall.keys())
+        ids.update(llm_scores.keys())
+        ids.update(similar.keys())
+        ids.update(cluster.keys())
+        cand_ids = {e.id for e in engineers} if engineers else set()
+        for _cid in (contact_assignee_id, preferred_assignee_id, creator_id, prev_assignee_id):
+            if _cid and _cid in cand_ids:
+                ids.add(_cid)
 
         level_map: Dict[str, int] = {}
         eng_map: Dict[str, EngineerProfile] = {}
@@ -54,41 +78,85 @@ class Ranker:
             dept_boost = float(thresholds.get("dept_boost", 1.5))
             primary_dept = dept_routing.primary_dept
 
+        def _abs01(v: float) -> float:
+            return round(min(1.0, max(0.0, float(v or 0.0))), 4)
+
         scores = {}
         for eid in ids:
-            llm = recall_result.llm_recall.get(eid, 0.0)
-            sem = recall_result.semantic_recall.get(eid, 0.0)
-            his = recall_result.history_recall.get(eid, 0.0)
-
-            raw = self._w_llm * llm + self._w_semantic * sem + self._w_history * his
+            hit_llm = bool(eid in llm_scores and llm_scores.get(eid, 0) > 0)
+            hit_similar = bool(eid in similar and similar.get(eid, 0) > 0)
+            hit_cluster = bool(eid in cluster and cluster.get(eid, 0) > 0)
+            llm = _abs01(llm_scores.get(eid, 0.0)) if hit_llm else 0.0
+            sim = _abs01(similar.get(eid, 0.0)) if hit_similar else 0.0
+            clu = _abs01(cluster.get(eid, 0.0)) if hit_cluster else 0.0
+            hit_vals = []
+            if hit_llm:
+                hit_vals.append(llm)
+            if hit_similar:
+                hit_vals.append(sim)
+            if hit_cluster:
+                hit_vals.append(clu)
+            raw = max(hit_vals) if hit_vals else 0.0
+            hit_count = len(hit_vals)
 
             lv = level_map.get(eid, 1)
             dept = (eng_map.get(eid) or EngineerProfile(id=eid, name="")).department or ""
-            # 部门内只有一人时，不打折（如机器人事业部只有文永翔 L2）
             only_one_in_dept = dept_people.get(dept, 0) <= 1
             if only_one_in_dept and lv > 1:
-                mul = 0.90  # 轻微折扣，但不被其他部门的 L1 淹没
+                mul = 0.90
             else:
                 mul = self._penalty.get(lv, self._penalty.get(99, 0.6))
 
-            # 加权：项目对接人 或 用户倾向处理人 命中 → total × contact_bonus（默认2.0）。
-            # 同一人同时是对接人又是倾向处理人时不重复乘（只 × 一次），避免加权过度。
             is_contact = bool(contact_assignee_id and eid == contact_assignee_id)
             is_preferred = bool(preferred_assignee_id and eid == preferred_assignee_id)
-            contact_mul = self._contact_bonus if (is_contact or is_preferred) else 1.0
 
             dept_mul = dept_boost if (
                 primary_dept and (eng_map.get(eid) or EngineerProfile(id=eid, name="")).department == primary_dept
             ) else 1.0
 
+            total = raw * mul * dept_mul
+            if is_preferred and self._preferred_floor > 0:
+                total = max(total, self._preferred_floor)
+
+            is_creator = bool(creator_id and eid == creator_id)
+            is_prev = bool(prev_assignee_id and eid == prev_assignee_id)
+            was_rejected = eid in (getattr(recall_result, "misassign_rejected", None) or {})
+            was_confirmed = eid in (getattr(recall_result, "misassign_confirmed", None) or {})
+            if was_rejected:
+                # 相似路已对人分 ×0.7 时，此处再 ×0.7；否则只压这一处 → ×0.5
+                total *= (
+                    self._misassign_reject_factor if hit_similar else self._misassign_reject_once
+                )
+
             scores[eid] = {
-                "llm_score": llm, "semantic_score": sem,
-                "history_score": his,
+                "llm_score": llm,
+                "similar_score": sim,
+                "cluster_score": clu,
+                "history_score": sim,
+                "hit_llm": hit_llm,
+                "hit_similar": hit_similar,
+                "hit_cluster": hit_cluster,
+                "hit_count": hit_count,
+                "outside_tighten": bool(engineers) and eid not in cand_ids,
                 "raw_total": round(raw, 4), "job_level": lv,
                 "level_multiplier": mul, "contact_assignee": is_contact,
                 "preferred_assignee": is_preferred,
-                "contact_multiplier": round(contact_mul, 3),
+                "is_creator": is_creator,
+                "prev_unsatisfied": is_prev,
+                "misassign_rejected": was_rejected,
+                "misassign_confirmed": was_confirmed,
+                "preferred_floor": round(self._preferred_floor, 3) if is_preferred else None,
                 "dept_multiplier": round(dept_mul, 3),
-                "total_score": round(raw * mul * contact_mul * dept_mul, 4),
+                "total_score": round(total, 4),
             }
-        return dict(sorted(scores.items(), key=lambda x: x[1]["total_score"], reverse=True))
+        return dict(sorted(
+            scores.items(),
+            key=lambda x: (
+                x[1]["total_score"],
+                x[1].get("hit_count", 0),
+                x[1].get("llm_score", 0),
+                x[1].get("similar_score", 0),
+                x[1].get("cluster_score", 0),
+            ),
+            reverse=True,
+        ))

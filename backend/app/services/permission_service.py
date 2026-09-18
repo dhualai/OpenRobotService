@@ -1,9 +1,26 @@
 from typing import Dict, List, Optional, Any
+import time
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.db import SessionLocal
 from app.models import UserDB, Role, Permission, Project, role_permissions, user_project_roles
 from app.models.organization import Company, Department
+
+# get_user_with_roles 结果的 TTL 缓存（秒）。权限/角色变更不频繁，60s 内复用可显著
+# 减少每请求的多次 DB 查询；变更后最多 60s 生效（用户重新登录可立即生效）。
+_USER_ROLES_CACHE_TTL = 60
+_user_roles_cache: Dict[str, Dict[str, Any]] = {}
+_user_roles_cache_ts: Dict[str, float] = {}
+
+
+def invalidate_user_roles_cache(username: Optional[str] = None) -> None:
+    """清除用户角色缓存。不传 username 时清空全部（权限/角色变更后调用）。"""
+    if username is None:
+        _user_roles_cache.clear()
+        _user_roles_cache_ts.clear()
+    else:
+        _user_roles_cache.pop(username, None)
+        _user_roles_cache_ts.pop(username, None)
 
 
 class PermissionService:
@@ -211,6 +228,13 @@ class PermissionService:
 
     @staticmethod
     def get_user_with_roles(username: str) -> Optional[Dict[str, Any]]:
+        # TTL 缓存命中检查
+        cached = _user_roles_cache.get(username)
+        if cached is not None:
+            ts = _user_roles_cache_ts.get(username, 0)
+            if time.time() - ts < _USER_ROLES_CACHE_TTL:
+                return cached
+
         db = PermissionService._get_db()
         try:
             db_user = db.query(UserDB).filter(UserDB.username == username).first()
@@ -309,7 +333,7 @@ class PermissionService:
                 dept = db.query(Department).filter(Department.id == did).first()
                 if dept:
                     department_name = dept.name
-            return {
+            result = {
                 'id': db_user.id,
                 'username': db_user.username,
                 'password_hash': db_user.password_hash,
@@ -329,6 +353,10 @@ class PermissionService:
                 'duty_text': getattr(db_user, 'duty_text', None),
                 'supervisor_id': getattr(db_user, 'supervisor_id', None),
             }
+            # 写入 TTL 缓存（仅缓存查到用户的结果；None 不缓存以便用户创建后立即可查）
+            _user_roles_cache[username] = result
+            _user_roles_cache_ts[username] = time.time()
+            return result
         finally:
             db.close()
 

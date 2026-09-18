@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class RerankerClient:
     """Cross-encoder 重排序客户端。惰性加载，线程池推理。"""
 
-    def __init__(self, model_path: str, device: str = "cpu", max_length: int = 512):
+    def __init__(self, model_path: str, device: str = "cpu", max_length: int = 256):
         self.model_path = model_path
         self.device = device
         self.max_length = max_length

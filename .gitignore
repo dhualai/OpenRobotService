@@ -62,13 +62,20 @@ codebuddy.md
 # ===== CodeBuddy 本地记忆（跨会话记忆文件，仅本地，不入库）=====
 .codebuddy/memory/
 
+# ===== CodeBuddy 本地规则（个人纪律/项目约定，仅本地，不入库；用户规则在用户目录本就不跟踪）=====
+.codebuddy/rules/
+
+# ===== WorkBuddy 本地记忆/配置（跨会话记忆与自动化配置，仅本地，不入库）=====
+.workbuddy/
+
 # ===== topo-pack 临时工件 / 授权包（含敏感 token，禁止入库）=====
 .tmp_*/
 .tmp_import_pack.py
 **/auth.json
 **/outbox_patch.zip
 
-# ===== 临时 / 草稿（如 logo 草稿、导出中间文件）=====
+.ai/agents/AiDiagnosisPlatform/assigner/config/runtime_overrides.yaml
+ai/agents/AiDiagnosisPlatform/assigner/config/runtime_overrides.yaml
 old/
 # git commit 临时信息文件（write_to_file 写入，提交后删除，绝不入库）
 .commit-msg-tmp.txt
@@ -115,6 +122,11 @@ automation/references/generated-cases/
 
 # ===== 本地脚本（不入库）=====
 scripts/start-minio.ps1
+# 部署脚本含本机私钥路径/明文 sudo 密码等个性化配置，每台机器各留本地一份，不入库
+/deploy.ps1
+deploy/deploy.ps1
+# CodeBuddy 用量统计脚本（读取本机登录态，仅本地自用）
+scripts/codebuddy_usage.py
 
 # ===== 本地部署/打包产物（不入库）=====
 /ai_deploy.zip
@@ -142,17 +154,18 @@ ai/tests/_probe_real_errors.py
 ai/tools/bench_vision_models.py
 frontend/package-lock.json.bak
 frontend/macaron-minimal-ui/
+frontend/src/pages/macaron-minimal-ui-main/
 /ai/scripts
-/ai/tests
 /ai/tests
 .claude/launch.json
 /ai/tools
-/ai/tests
-/ai/tests
 ai/.env.example
 .token_tmp
 ai/.env.example
 ai/.env.example
 ai/.env.example
-/ai/tests
-/ai/tests
+start_all.ps1
+docs/PRODUCT/摇人吧服务号平台手册（操作指引）.md
+docs/直答率统计口径.md
+/docs
+ai/kb/kb_structure_cache.json

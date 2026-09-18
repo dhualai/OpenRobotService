@@ -1,186 +1,240 @@
-"""L1 纯LLM召回：工单 + 全员画像 → LLM 直接推荐 Top-K
+"""Step3·画像召回：工单 + 全员职责卡片 → 逐人打分。
 
-这是三路召回中语义理解最强的一路。LLM 能同时看到所有人的 duty_text
-和 responsibility_modules，理解模糊边界（"这个人主要负责地图但也参与后端"）。
+三路里看人的那一路。能读 duty_text 和责任模块，理解模糊边界
+（「这个人主要负责地图但也参与后端」）。不看历史工单。
 """
 
 import json, re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.tags import llm_person_label, match_engineer_from_llm
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
 
 
 class LlmRecall:
-    """分层 L1 召回：LLM 两层评估，避免一次看 20+ 人画像。
+    """画像召回：按人数单轮或分批，产出 {id: score} + 原因给精排。
 
-    候选人常 20+ 人，若一次把全部画像塞给 LLM，token 巨大、响应慢、且 LLM
-    对海量候选逐一打分精度下降。改为 LLM 两轮逐步聚焦：
-      第一层（分批初选）：把候选人按 BATCH_SIZE 分批，每批让 LLM 选出该批最符合
-        的 ROUND1_TOP_K 人（每批只出 top-K，prompt 小、判断准）；
-      第二层（合并决选）：收集所有批的胜者，若人数仍 > ROUND2_MAX，再让 LLM 从
-        这组胜者中选出最终 ROUND2_MAX 人并回置信度；否则直接用第一层结果。
-    产出 {engineer_id: score} 供精排。任一轮 LLM 失败仅跳过该批/该组，不阻断。
+    - 人少（≤ single_round_max）：单轮请模型在 single_top_min～single_top_max 内选人
+    - 人多：按 batch_size 分批，每批 batch_top_min～batch_top_max，并集全部进 Step4，
+      不再合并决选。
+    解析侧只按区间上限封顶，不强制凑到下限。任一轮 LLM 失败仅跳过该批，不阻断。
     """
-
-    BATCH_SIZE = 8        # 分批时的每批人数
-    SINGLE_ROUND_MAX = 12  # 候选人数 ≤ 此值时：单轮一次性全量评估（不分批）
-    ROUND1_TOP_K = 3       # 分批时每批初选保留 top-K
-    ROUND2_MAX = 6         # 第二层决选人数上限（超过才触发第二轮）
 
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
+        self.last_reasons: Dict[str, str] = {}
+        lr = getattr(self._config, "llm_recall", None) or {}
+        if not isinstance(lr, dict):
+            lr = {}
+
+        def _i(key: str, default: int) -> int:
+            try:
+                return max(1, int(lr.get(key, default)))
+            except (TypeError, ValueError):
+                return default
+
+        # 上限：新键优先；兼容旧 single_top_k / final_top_k / batch_top_k
+        if "single_top_max" in lr:
+            self._single_top_max = _i("single_top_max", 6)
+        elif "single_top_k" in lr:
+            self._single_top_max = _i("single_top_k", 6)
+        else:
+            self._single_top_max = _i("final_top_k", 6)
+        self._single_top_min = _i("single_top_min", 3)
+        if self._single_top_min > self._single_top_max:
+            self._single_top_min = self._single_top_max
+
+        if "batch_top_max" in lr:
+            self._batch_top_max = _i("batch_top_max", 4)
+        else:
+            self._batch_top_max = _i("batch_top_k", 4)
+        self._batch_top_min = _i("batch_top_min", 2)
+        if self._batch_top_min > self._batch_top_max:
+            self._batch_top_min = self._batch_top_max
+
+        # 兼容旧测试读 _single_top_k / _batch_top_k（表示上限）
+        self._single_top_k = self._single_top_max
+        self._batch_top_k = self._batch_top_max
+
+        self._single_round_max = _i("single_round_max", 12)
+        self._batch_size = _i("batch_size", 8)
+
+    @staticmethod
+    def _clip_top(
+        scores: Dict[str, float], reasons: Dict[str, str], k: int,
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """按分数留前 k 名；k 大于人数则全留。不强制凑满。"""
+        if not scores or k <= 0:
+            return {}, {}
+        top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]
+        keep = [eid for eid, _ in top]
+        return dict(top), {eid: (reasons or {}).get(eid, "") for eid in keep}
 
     async def _llm_score_batch(
-        self, ticket: TicketContext, engineers: List[EngineerProfile], top_k: int,
-    ) -> Dict[str, float]:
-        """对一组工程师调 LLM，返回该组 top_k 的 {id: score}。失败返回 {}。"""
+        self,
+        ticket: TicketContext,
+        engineers: List[EngineerProfile],
+        top_min: int,
+        top_max: int,
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """对一组工程师调 LLM；按 top_max 封顶，不强制凑到 top_min。失败返回空。"""
         if not engineers:
-            return {}
-        prompt = self._build_prompt(ticket, engineers, top_k=top_k)
+            return {}, {}
+        hi = min(max(1, top_max), len(engineers))
+        lo = min(max(1, top_min), hi)
+        prompt = self._build_prompt(ticket, engineers, top_min=lo, top_max=hi)
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
-            response = await llm.complete(prompt, max_tokens=1200, temperature=0.3)
-            return self._parse(response, engineers)
+            response = await llm.complete(prompt, max_tokens=1200, temperature=0.0)
+            logger.info(
+                f"[派单:{ticket.id}] Step3 画像 LLM原始输出"
+                f"(候选{len(engineers)}人,要{lo}～{hi}): {response[:800]}"
+            )
+            scores, reasons = self._parse(response, engineers)
+            return self._clip_top(scores, reasons, hi)
         except Exception as e:
-            logger.warning(f"[派单:{ticket.id}] Step3-L1 LLM召回失败: {e}")
-            return {}
+            logger.warning(f"[派单:{ticket.id}] Step3 画像召回失败: {e}")
+            return {}, {}
+
+    @staticmethod
+    def unpack_arecall(result) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """把 arecall 返回值拆成（分数, 理由）。异常或空 → 两个空 dict。
+
+        理由必须跟这次返回的分数走，不能事后读 self.last_reasons：
+        Worker 里两张单可能同时跑，会把别人的理由盖进来。
+        """
+        if result is None or isinstance(result, Exception):
+            return {}, {}
+        if isinstance(result, tuple):
+            scores = result[0] if result else {}
+            reasons = result[1] if len(result) > 1 else {}
+            return dict(scores or {}), dict(reasons or {})
+        if isinstance(result, dict):
+            return dict(result), {}
+        return {}, {}
 
     async def arecall(
         self, ticket: TicketContext, engineers: List[EngineerProfile],
-    ) -> Dict[str, float]:
-        """按候选人数量自适应：人少单轮全量评估；人多分批初选 + 合并决选。
-
-        返回 {engineer_id: score} 给精排。任一轮 LLM 失败仅跳过该批/该组，不阻断。
-        """
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """人少单轮按 3～6 选；人多分批每批 2～4，合并后全部进精排，不再决选。"""
+        self.last_reasons = {}
         if not engineers:
-            return {}
+            return {}, {}
 
         n = len(engineers)
+        reasons: Dict[str, str] = {}
 
-        # ── 候选人数少：单轮一次性全量评估，不分批 ──
-        if n <= self.SINGLE_ROUND_MAX:
-            scores = await self._llm_score_batch(
-                ticket, engineers, top_k=n,  # 要求评估全部 n 位
+        if n <= self._single_round_max:
+            scores, reasons = await self._llm_score_batch(
+                ticket, engineers,
+                top_min=self._single_top_min,
+                top_max=self._single_top_max,
             )
-            logger.debug(f"[派单:{ticket.id}] Step3-L1 单轮全量评估 人数={n} 输出={len(scores)}人")
-            return scores
+            self.last_reasons = reasons
+            logger.info(
+                f"[派单:{ticket.id}] Step3 画像 单轮 {self._single_top_min}～"
+                f"{self._single_top_max} 人数={n} 输出={len(scores)}人"
+            )
+            return scores, reasons
 
-        # ── 候选人数多：分批初选 + 合并决选 ──
         stage1: Dict[str, float] = {}
         batches = [
-            engineers[i:i + self.BATCH_SIZE]
-            for i in range(0, n, self.BATCH_SIZE)
+            engineers[i:i + self._batch_size]
+            for i in range(0, n, self._batch_size)
         ]
         logger.info(
-            f"[派单:{ticket.id}] Step3-L1 分批初选 总人数={n} 分{len(batches)}批 每批取Top{self.ROUND1_TOP_K}"
+            f"[派单:{ticket.id}] Step3 画像 分批召回 总人数={n} 分{len(batches)}批 "
+            f"每批{self._batch_top_min}～{self._batch_top_max}"
+            f"（合并后全部进精排，不再决选）"
         )
         for bi, batch in enumerate(batches, 1):
-            scores = await self._llm_score_batch(ticket, batch, top_k=self.ROUND1_TOP_K)
-            top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[: self.ROUND1_TOP_K]
+            scores, batch_reasons = await self._llm_score_batch(
+                ticket, batch,
+                top_min=self._batch_top_min,
+                top_max=self._batch_top_max,
+            )
+            hi = min(self._batch_top_max, len(batch))
+            top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:hi]
             stage1.update(dict(top))
-            top_names = [
-                f"{next((e.name for e in batch if e.id == eid), eid[:8])}:{sc:.2f}"
-                for eid, sc in top
-            ]
+            for eid, _ in top:
+                if eid in batch_reasons:
+                    reasons[eid] = batch_reasons[eid]
+            top_names = []
+            for eid, sc in top:
+                hit = next((e for e in batch if e.id == eid), None)
+                top_names.append(
+                    f"{llm_person_label(eng=hit) if hit else llm_person_label(eid)}:{sc:.2f}"
+                )
             logger.debug(
-                f"[派单:{ticket.id}] Step3-L1   批次{bi}/{len(batches)} 人数={len(batch)} "
+                f"[派单:{ticket.id}] Step3 画像   批次{bi}/{len(batches)} 人数={len(batch)} "
                 f"命中={len(top)}人 [{', '.join(top_names)}]"
             )
-        logger.debug(f"[派单:{ticket.id}] Step3-L1 分批初选汇总: {n}→{len(stage1)} 人")
 
-        winners = [e for e in engineers if e.id in stage1]
-        if not winners:
-            logger.warning(f"[派单:{ticket.id}] Step3-L1 分批初选无胜者，返回空")
-            return {}
-
-        # 第二层决选（胜者数仍偏多才触发）
-        if len(winners) <= self.ROUND2_MAX:
-            logger.debug(
-                f"[派单:{ticket.id}] Step3-L1 胜者{len(winners)}≤ROUND2_MAX，不再决选返回"
-            )
-            # 用工程师 id（字符串）作 key；注意 winners 是 EngineerProfile 对象列表，
-            # 绝不能把对象本身当 dict key（unhashable → TypeError）。
-            return {w.id: stage1[w.id] for w in winners if w.id in stage1}
-        final = await self._llm_score_batch(ticket, winners, top_k=self.ROUND2_MAX)
+        scores, reasons = self._keep_batch_union(stage1, reasons)
+        self.last_reasons = reasons
+        if not scores:
+            logger.warning(f"[派单:{ticket.id}] Step3 画像 分批召回无胜者，返回空")
+            return {}, {}
         logger.info(
-            f"[派单:{ticket.id}] Step3-L1 合并决选 胜者={len(winners)}人 → 决选出={len(final)}人"
+            f"[派单:{ticket.id}] Step3 画像 分批合并 {n}→{len(scores)}人"
+            f"（各批最多 Top{self._batch_top_max} 全保留）"
         )
-        return final
+        return scores, reasons
 
-    def _build_prompt(self, ticket, engineers, top_k: int = 5):
-        all_flag = top_k >= len(engineers)
-        intro = (
-            "你是派单专家。请评估每一位候选工程师与工单的匹配度（0~1），"
-            f"并为全部 {len(engineers)} 位给出分数。"
-            if all_flag
-            else (
-                "你是派单专家。请从下面的候选工程师中，选出最符合的 "
-                f"Top {top_k}（排名不分先后），并为每人给出匹配度（0~1）。"
-            )
-        )
-        lines = [
-            intro,
-            "综合考虑：责任模块是否对口、职责描述是否匹配、过往经验是否相关。",
-            "",
-            "【工单】",
-            f"标题: {ticket.title or '无'}",
-            f"描述: {ticket.problem_description}",
-        ]
-        if ticket.robot_type:
-            lines.append(f"车型: {ticket.robot_type}")
-        if ticket.fault_code:
-            lines.append(f"故障码: {ticket.fault_code}")
+    @staticmethod
+    def _keep_batch_union(
+        stage1: Dict[str, float], reasons: Dict[str, str],
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
+        """各批胜者并集全部保留，不再截断。"""
+        if not stage1:
+            return {}, {}
+        return dict(stage1), {eid: (reasons or {}).get(eid, "") for eid in stage1}
 
-        lines.extend(["", "【候选工程师】"])
-        for e in engineers:
-            dep = f"({e.department})" if e.department else ""
-            lines.append(f"候选ID: {e.id} | L{e.job_level} | {dep}")
-            lines.append(f"   产品:{e.modules_display()}")
-            duty = (e.duty_text or "")[:120]
-            if duty:
-                lines.append(f"   职责:{duty}")
+    def _build_prompt(
+        self, ticket, engineers, top_min: int = 3, top_max: int = 6, top_k: int | None = None,
+    ):
+        """top_k 仅兼容旧调用：当作 top_max，且 top_min=top_max（钉死人数的旧测例）。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.prompts.step3 import build_l1
+        if top_k is not None:
+            top_min = top_max = max(1, int(top_k))
+        return build_l1(ticket, engineers, top_min=top_min, top_max=top_max)
 
-        lines.extend([
-            "",
-            ("必须且只能从上面的候选工程师中评估全部候选人并给出分数。"
-             if all_flag
-             else f"必须且只能从上面的候选工程师中选出 {top_k} 位。"),
-            "输出 JSON。engineer_id 必须是候选人列表中该人选对应的 ID（「候选ID」字段，即 users.id），必须精确复制，不要填姓名或自造标识。confidence 填 0~1 的浮点数。",
-            '{"rankings":[{"engineer_id":"<精确复制候选ID>","confidence":0.85},...]}',
-        ])
-        return "\n".join(lines)
-
-    def _parse(self, response: str, engineers: List[EngineerProfile]) -> Dict[str, float]:
+    def _parse(
+        self, response: str, engineers: List[EngineerProfile],
+    ) -> Tuple[Dict[str, float], Dict[str, str]]:
         m = re.search(r"\{.*\}", response, re.DOTALL)
         if not m:
-            logger.debug(f"Step3-L1 LLM 返回无 JSON，raw: {response[:200]}")
-            return {}
+            logger.debug(f"Step3 画像 LLM 返回无 JSON，raw: {response[:200]}")
+            return {}, {}
         try:
             data = json.loads(m.group())
         except json.JSONDecodeError:
-            logger.debug(f"Step3-L1 JSON 解析失败，raw: {response[:300]}")
-            return {}
+            logger.debug(f"Step3 画像 JSON 解析失败，raw: {response[:300]}")
+            return {}, {}
 
         rankings = data.get("rankings", [])
         if not isinstance(rankings, list) or not rankings:
-            logger.debug(f"Step3-L1 rankings 为空或非列表: {rankings}")
-            return {}
+            logger.debug(f"Step3 画像 rankings 为空或非列表: {rankings}")
+            return {}, {}
 
-        id_map = {e.id: e for e in engineers}
-        scores = {}
+        scores: Dict[str, float] = {}
+        reasons: Dict[str, str] = {}
         not_found = []
         for r in rankings:
-            eid = r.get("engineer_id", "").strip()
+            eid = (r.get("engineer_id") or "").strip()
+            raw_name = (r.get("engineer_name") or "").strip()
             conf = float(r.get("confidence", 0.0))
-            if eid in id_map and conf > 0:
-                scores[eid] = min(conf, 1.0)
+            eng = match_engineer_from_llm(eid, engineers, raw_name)
+            if eng is not None and conf > 0:
+                scores[eng.id] = min(conf, 1.0)
+                reasons[eng.id] = str(r.get("reason") or "").strip()
             else:
                 not_found.append(f"{eid}(conf={conf})")
         if not_found:
-            logger.debug(f"Step3-L1 ID 未匹配 {len(not_found)}: {not_found[:5]}")
-        return scores
+            logger.debug(f"Step3 画像 ID 未匹配 {len(not_found)}: {not_found[:5]}")
+        return scores, reasons

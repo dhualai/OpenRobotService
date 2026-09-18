@@ -204,6 +204,152 @@ SSE 事件：`first_token`、`token`（裸 data）、`done`、`error`。
 
 ### 7.3 `POST /api/ai/analysis/chat` — 快速对话
 
+支持四种模式：
+
+- 自动判别：仅传 `question` / `context`，后端按问题语义自动判断是聊天还是分析
+- 数据分析聊天：额外传 `data`，并可指定 `data_source`、`analysis_type`
+- 自动查库分析：不传 `data`，改传 `project_code` 或 `user_id`，并可指定 `period`、`date`、`analysis_type`
+- 页面上下文补全：不显式传分析范围时，可传 `context_meta` 让后端补齐项目/周期/日期
+
+请求示例 1：纯聊天
+
+```bash
+curl -X POST "http://localhost:8000/api/ai/analysis/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "请概括一下这个平台的用途",
+    "context": "面向自动化测试和项目数据分析"
+  }'
+```
+
+说明：
+
+- 若只传 `question` / `context`，后端会先做意图识别
+- 识别为普通问答：返回 `mode = "chat"`
+- 识别为数据分析时，后端会优先使用显式参数；缺失项再尝试从 `context_meta` 补全
+- 若仍未传 `data`、`project_code`、`user_id`：返回 `400`，提示补充分析数据或查询范围
+
+请求示例 2：带数据分析
+
+```bash
+curl -X POST "http://localhost:8000/api/ai/analysis/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "请帮我分析异常任务的主要问题，并给出处理建议",
+    "context": "这是今天的任务执行数据",
+    "data": "[{\"robot_id\":\"R001\",\"status\":\"failed\",\"duration\":125,\"reason\":\"导航超时\"},{\"robot_id\":\"R002\",\"status\":\"success\",\"duration\":45,\"reason\":\"\"},{\"robot_id\":\"R003\",\"status\":\"failed\",\"duration\":98,\"reason\":\"接口返回500\"}]",
+    "data_source": "json",
+    "analysis_type": "task_stats"
+  }'
+```
+
+请求示例 3：自动查库分析
+
+```bash
+curl -X POST "http://localhost:8000/api/ai/analysis/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "请分析这个项目最近一周的风险和工单情况，并给出优先处理建议",
+    "project_code": "PJT-001",
+    "period": "weekly",
+    "date": "2026-09-03",
+    "analysis_type": "risk"
+  }'
+```
+
+请求示例 4：仅传问题 + 页面上下文补全
+
+```bash
+curl -X POST "http://localhost:8000/api/ai/analysis/chat" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "请分析这个项目最近一周的风险和工单情况，并给出优先处理建议",
+    "context_meta": {
+      "scene": "project_detail",
+      "project_code": "Leo_test",
+      "project_name": "摇人吧服务号",
+      "period": "weekly",
+      "date": "2026-09-03",
+      "analysis_type": "risk"
+    }
+  }'
+```
+
+响应示例：纯聊天
+
+```json
+{
+  "answer": "这个平台主要用于自动化测试管理、AI 问答和数据分析。",
+  "mode": "chat",
+  "model": "deepseek-chat",
+  "usage": null,
+  "analysis": null
+}
+```
+
+响应示例：带数据分析
+
+```json
+{
+  "answer": "## 摘要\n失败任务主要集中在导航超时和接口异常两类问题，说明当前链路同时存在执行环境稳定性和后端服务可用性问题。\n\n### 异常任务概览\n失败任务占比偏高，且平均耗时高于成功任务。\n\n## 行动建议\n1. 优先排查导航超时场景的地图与网络环境。\n2. 对接口 500 错误补充监控与重试策略。",
+  "mode": "analysis",
+  "model": "deepseek-chat",
+  "usage": null,
+  "analysis": {
+    "analysis_type": "task_stats",
+    "summary": "失败任务主要集中在导航超时和接口异常两类问题。",
+    "insights": [
+      {
+        "category": "异常任务概览",
+        "content": "失败任务占比偏高，且平均耗时高于成功任务。",
+        "severity": "warning"
+      }
+    ],
+    "recommendations": [
+      "优先排查导航超时场景的地图与网络环境。",
+      "对接口 500 错误补充监控与重试策略。"
+    ],
+    "raw_response": "## 摘要 ...",
+    "model": "deepseek-chat",
+    "usage": null
+  }
+}
+```
+
+响应示例：自动查库分析
+
+```json
+{
+  "answer": "## 摘要\n本周项目风险主要集中在高等级未关闭风险，且存在逾期工单，需要优先处理高风险项与阻塞性问题。\n\n### 风险概览\n高等级风险占比较高，部分风险责任人负载集中。\n\n### 工单表现\n逾期工单主要分布在处理中状态，说明推进节奏存在堵点。\n\n## 行动建议\n1. 先清理高等级且未关闭的风险项。\n2. 对逾期工单按责任人和项目阶段重新排序处理优先级。",
+  "mode": "analysis",
+  "model": "deepseek-chat",
+  "usage": null,
+  "analysis": {
+    "analysis_type": "risk",
+    "summary": "本周项目风险主要集中在高等级未关闭风险，且存在逾期工单。",
+    "insights": [
+      {
+        "category": "风险概览",
+        "content": "高等级风险占比较高，部分风险责任人负载集中。",
+        "severity": "warning"
+      },
+      {
+        "category": "工单表现",
+        "content": "逾期工单主要分布在处理中状态，说明推进节奏存在堵点。",
+        "severity": "warning"
+      }
+    ],
+    "recommendations": [
+      "先清理高等级且未关闭的风险项。",
+      "对逾期工单按责任人和项目阶段重新排序处理优先级。"
+    ],
+    "raw_response": "## 摘要 ...",
+    "model": "deepseek-chat",
+    "usage": null
+  }
+}
+```
+
 ### 7.4 `GET /api/ai/analysis/types` — 分析类型列表
 
 ### 7.5 `POST /api/ai/analysis/report/generate` — 生成日报/周报

@@ -17,7 +17,7 @@ import {
 
 describe('STATUS_DISPLAY_MAP', () => {
   it('should map all statuses to Chinese display', () => {
-    expect(STATUS_DISPLAY_MAP['new']).toBe('新建');
+    expect(STATUS_DISPLAY_MAP['new']).toBe('待处理');
     expect(STATUS_DISPLAY_MAP['in_progress']).toBe('进行中');
     expect(STATUS_DISPLAY_MAP['pending']).toBe('已挂起');
     expect(STATUS_DISPLAY_MAP['resolved']).toBe('已解决');
@@ -27,7 +27,7 @@ describe('STATUS_DISPLAY_MAP', () => {
 
 describe('STATUS_VALUE_MAP', () => {
   it('should map Chinese display back to values', () => {
-    expect(STATUS_VALUE_MAP['新建']).toBe('new');
+    expect(STATUS_VALUE_MAP['待处理']).toBe('new');
     expect(STATUS_VALUE_MAP['进行中']).toBe('in_progress');
     expect(STATUS_VALUE_MAP['已挂起']).toBe('pending');
     expect(STATUS_VALUE_MAP['已解决']).toBe('resolved');
@@ -71,23 +71,23 @@ describe('TICKET_TYPE maps', () => {
 
 describe('normalizeStatus', () => {
   it('should normalize known statuses', () => {
-    expect(normalizeStatus('new')).toBe('新建');
+    expect(normalizeStatus('new')).toBe('待处理');
     expect(normalizeStatus('in_progress')).toBe('进行中');
     expect(normalizeStatus('closed')).toBe('已关闭');
   });
 
   it('should normalize case-insensitively', () => {
-    expect(normalizeStatus('NEW')).toBe('新建');
+    expect(normalizeStatus('NEW')).toBe('待处理');
     expect(normalizeStatus('In_Progress')).toBe('进行中');
     expect(normalizeStatus('Closed')).toBe('已关闭');
   });
 
   it('should return default for empty/null input', () => {
-    expect(normalizeStatus('')).toBe('新建');
+    expect(normalizeStatus('')).toBe('待处理');
     // @ts-expect-error testing edge case
-    expect(normalizeStatus(null)).toBe('新建');
+    expect(normalizeStatus(null)).toBe('待处理');
     // @ts-expect-error testing edge case
-    expect(normalizeStatus(undefined)).toBe('新建');
+    expect(normalizeStatus(undefined)).toBe('待处理');
   });
 
   it('should return original value for unknown status', () => {
@@ -111,10 +111,10 @@ describe('工单操作状态约束（催办/上报/撤回）', () => {
     expect(isTerminalTicketStatus(undefined)).toBe(false);
   });
 
-  it('催办：新建/待处理可用，处理中禁用，终态禁用', () => {
+  it('催办：待处理/已挂起可用，处理中禁用，终态禁用', () => {
     expect(canUrgeTicket('new')).toBe(true);
     expect(canUrgeTicket('pending')).toBe(true);
-    // 历史值：待派单/已派单按「新建/待处理」处理
+    // 历史值：待派单/已派单按「待处理」处理
     expect(canUrgeTicket('pending_dispatch')).toBe(true);
     expect(canUrgeTicket('dispatched')).toBe(true);
     expect(canUrgeTicket('')).toBe(true);
@@ -133,7 +133,7 @@ describe('工单操作状态约束（催办/上报/撤回）', () => {
     expect(canReportTicket('closed')).toBe(false);
   });
 
-  it('撤回：新建/待派单/已派单/待处理/处理中可用，其余禁用', () => {
+  it('撤回：待处理/待派单/已派单/已挂起/处理中可用，其余禁用', () => {
     expect(canCancelTicket('new')).toBe(true);
     expect(canCancelTicket('pending')).toBe(true);
     expect(canCancelTicket('dispatched')).toBe(true);
@@ -165,7 +165,7 @@ describe('canCancelTicketByUser（撤回操作人权限：仅提单人/管理员
 });
 
 describe('canShowCancelButton（撤回按钮显示规则：可撤回状态展示，终态/非可撤回状态隐藏）', () => {
-  it('新建/待派单/已派单/待处理/处理中展示', () => {
+  it('待处理/待派单/已派单/已挂起/处理中展示', () => {
     expect(canShowCancelButton('new')).toBe(true);
     expect(canShowCancelButton('pending_dispatch')).toBe(true);
     expect(canShowCancelButton('dispatched')).toBe(true);

@@ -7,6 +7,7 @@
 """
 import asyncio
 import hashlib
+from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 
 import numpy as np
@@ -31,6 +32,73 @@ def _text_hash(text: str) -> str:
     return hashlib.md5(text.encode()).hexdigest()
 
 
+def _is_sentence_transformer_dir(path: Path) -> bool:
+    if not path.is_dir() or not (path / "config.json").exists():
+        return False
+    return (path / "pytorch_model.bin").exists() or (path / "model.safetensors").exists()
+
+
+def _hf_cache_snapshot(repo_id: str) -> Optional[Path]:
+    """本机 HuggingFace 缓存里已下好的 snapshot。HF_HUB_OFFLINE=1 时也能用。"""
+    repo = (repo_id or "").strip().strip("/")
+    if not repo:
+        return None
+    cache = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{repo.replace('/', '--')}"
+    ref = cache / "refs" / "main"
+    if ref.is_file():
+        snap = cache / "snapshots" / ref.read_text(encoding="utf-8").strip()
+        if _is_sentence_transformer_dir(snap):
+            return snap
+    snaps = cache / "snapshots"
+    if snaps.is_dir():
+        for child in sorted(snaps.iterdir(), reverse=True):
+            if _is_sentence_transformer_dir(child):
+                return child
+    return None
+
+
+def resolve_embed_model_path(model_name: str, local_path: str = "") -> str:
+    """服务器路径优先；不存在则 LOCAL / 仓库旁数据目录 / HF 缓存。"""
+    name = (model_name or "").strip()
+    local = (local_path or "").strip()
+    ai_root = Path(__file__).resolve().parent.parent
+    data_root = ai_root.parent / "OpenRobotService_Data" / "embed_models"
+    stem = Path(name or local).name
+
+    candidates: List[Path] = []
+    if name:
+        p = Path(name)
+        candidates.append(p)
+        if not p.is_absolute():
+            candidates.append(ai_root / name)
+    if local:
+        candidates.append(Path(local))
+    if stem:
+        candidates.append(ai_root / "embed_models" / stem)
+        candidates.append(data_root / stem)
+
+    seen = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _is_sentence_transformer_dir(cand):
+            return str(cand.resolve())
+
+    repo = ""
+    if name and not Path(name).is_absolute() and name.count("/") == 1 and "\\" not in name:
+        repo = name
+    elif stem.startswith("bge-"):
+        repo = f"BAAI/{stem}"
+    cached = _hf_cache_snapshot(repo) if repo else None
+    if cached is not None:
+        return str(cached.resolve())
+
+    tried = " / ".join(str(c) for c in candidates if str(c).strip()) or "(空)"
+    raise EmbeddingError(f"模型加载失败: 找不到 embedding 目录（已试 {tried}）")
+
+
 # ============================================================
 # Embedding 客户端
 # ============================================================
@@ -50,8 +118,10 @@ class EmbedClient:
         model_name: str = "BAAI/bge-small-zh-v1.5",
         device: str = "cpu",
         cache_size: int = 10000,
+        local_path: str = "",
     ):
         self.model_name = model_name
+        self.local_path = local_path
         self.device = device
         self.cache_size = cache_size
         self._model = None  # type: ignore
@@ -63,23 +133,8 @@ class EmbedClient:
             async with self._model_lock:
                 if self._model is None:
                     from sentence_transformers import SentenceTransformer
-                    from pathlib import Path as _Path
 
-                    model_path = self.model_name
-                    local = _Path(model_path)
-                    if not local.is_absolute():
-                        local = _Path(__file__).resolve().parent.parent / model_path
-                    if not local.exists():
-                        # HuggingFace 模型名（如 BAAI/bge-small-zh-v1.5）
-                        # → 在 ai/embed_models/ 下找同名目录
-                        _embed_dir = _Path(__file__).resolve().parent.parent / "embed_models"
-                        _model_name = _Path(model_path).name  # bge-small-zh-v1.5
-                        _candidate = _embed_dir / _model_name
-                        if _candidate.is_dir() and (_candidate / "config.json").exists():
-                            local = _candidate
-                    if local.exists():
-                        model_path = str(local.resolve())
-
+                    model_path = resolve_embed_model_path(self.model_name, self.local_path)
                     try:
                         # 模型加载很慢（数秒），必须放到线程池，否则持锁期间阻塞事件循环：
                         # 三路并发 retrieve_domain 的 embed() 会排队等这把锁，整个循环卡死，
@@ -89,6 +144,8 @@ class EmbedClient:
                             None,
                             lambda: SentenceTransformer(model_path, device=self.device),
                         )
+                    except EmbeddingError:
+                        raise
                     except Exception as e:
                         raise EmbeddingError(f"模型加载失败: {str(e)}")
         return self._model
@@ -225,6 +282,7 @@ async def get_embed_client() -> EmbedClient:
                 config = get_ai_config()
                 _embed_client = EmbedClient(
                     model_name=config.embedding_model_name,
+                    local_path=config.embedding_model_local,
                     device=config.embedding_device,
                     cache_size=config.embedding_cache_size,
                 )
