@@ -2842,6 +2842,17 @@ html, body, #root {
 .task-card2__person--assignee {
   margin-left: auto;
 }
+/* 含堆叠的人员行：取消处理人 auto margin，剩余空间交给两段留白平摊（堆叠居中）。
+   不用 :has()，由调用方加 --stacked 修饰类显式声明（微信 WKWebView 兼容性考虑）。 */
+.task-card2__people--stacked .task-card2__person--assignee {
+  margin-left: 0;
+}
+.task-card2__flow-spacer {
+  flex: 1 1 0;
+  min-width: 8px;
+  align-self: center;
+  pointer-events: none;
+}
 .task-card2__avatar {
   flex-shrink: 0;
   width: 32px;
@@ -2863,22 +2874,69 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.task-card2__person-arrow {
+/* 参与人堆叠下方的「短下划线 + 箭头」：
+   触发点（arrow）绝对定位，锚点 = 堆叠本身（position:relative），因此
+   下划线宽度天然跟随堆叠实际宽度（含 +N 徽标）自适应，不需要 JS 测量。
+   left/right 各 -6px → 左右各比堆叠总宽多出 6px（即每侧外扩 6px），已含末尾箭头占位。
+   top: calc(100% + 3px) → 贴在堆叠正下方 3px 处，如同一道下划线。
+   堆叠本身仍保持文档流正常位置，不受影响。 */
+.task-card2__participants .task-card2__person-arrow {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  color: var(--muted-foreground);
+  left: -6px;
+  right: -6px;
+  top: calc(100% + 3px);
+  /* 堆叠宽度为 0 之外的下限，避免极端窄宽度下箭头挤压 */
+  min-width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0;
+  color: var(--gray-light);
+  z-index: 1;
+  pointer-events: none;
+}
+/* 下划线本体：flex:1 自动占满「左端 → 箭头图标」的全部宽度（含两侧各 6px 外扩）。
+   与箭头零间距（容器 gap:0），因此线与三角头严丝合缝相接。 */
+.task-card2__participants .task-card2__person-arrow::before {
+  content: '';
+  flex: 1 1 auto;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+}
+/* 箭头三角：自绘 SVG（viewBox 顶满、无内留白），纯 fill 填充。
+   不加任何 margin/padding —— 与横线共用 flex 行、gap:0，故视觉上连成一根箭头。
+   flex-shrink:0 保证窄宽度下三角不被压小；宽高随 token 固定，不随容器拉伸变形。 */
+.task-card2__participants .task-card2__person-arrow-head {
+  display: block;
+  flex-shrink: 0;
+  fill: currentColor;
+  /* 像素级锁定尺寸，避免被 flex 压缩或拉伸 */
+  width: 6px;
+  height: 10px;
+}
+/* 独立使用（非堆叠下划线场景）时的兜底样式 */
+.task-card2__person-arrow {
+  color: var(--gray-light);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
-/* 中间参与人头像堆叠（设计稿：size-6 24px gray-soft + ring-2 card + -space-x-1.5 叠加） */
+.task-card2__person-arrow-head {
+  display: block;
+}
+/* 中间参与人头像堆叠（设计稿：size-6 24px gray-soft + ring-2 card + -space-x-1.5 叠加）
+   position:relative 作为其下方「短下划线 + 箭头」的定位锚点，
+   让下划线宽度随堆叠实际宽度自适应（含 +N 徽标），无需 JS 测量。 */
+/* 注意：此处**不可**再加 margin-left/right —— 堆叠的居中完全由两侧
+   .task-card2__flow-spacer 等宽平摊决定，任何单侧 margin 都会破坏对称
+   （曾因遗留的 margin-left:2px 导致中心偏右 1px、左右留白差 2px）。 */
 .task-card2__participants {
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  margin-left: 2px;
+  position: relative;
 }
 .task-card2__participant {
   width: 24px;
@@ -2913,15 +2971,11 @@ html, body, #root {
 
 /* ── 评论区参与人头像堆叠（系统任务 / 历史工单列表共用） ──
    红点口径：该参与人发布了「当前登录用户未读」的评论（后端 has_unread）。
-   浮层：点头像开「参与讨论」名单，点名单行跳详情页讨论区。 */
-.participant-stack-wrap {
-  position: relative;
+   点击：整个堆叠即入口，直接跳详情页讨论区并按作者定位（不展开名单浮层）。 */
+.participant-stack {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-}
-/* 堆叠整体是按钮：去掉按钮默认样式，保持与旧 span 完全一致的视觉 */
-.participant-stack {
   padding: 0;
   border: 0;
   background: none;
@@ -2944,6 +2998,19 @@ html, body, #root {
   height: 24px;
   font-size: 10px;
 }
+/* 堆叠头像（图片变体）统一 24px：比发起人/处理人的 32px 小一号，
+   与 +N 徽标、首字母兜底（24px）保持同尺寸。
+   注意：这里必须显式覆盖 .task-card2__avatar 的 32px，否则图片头像会大一圈。
+   ring 用卡片底色，既维持堆叠层次，也遮住骑压时穿过的箭头细线。 */
+.participant-stack__img,
+.participant-stack .task-card2__avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--card);
+  background: var(--gray-soft);
+}
 /* 红点：头像右上角，2px 描边随卡片底色，避免与头像混色 */
 .participant-stack__dot {
   position: absolute;
@@ -2956,58 +3023,15 @@ html, body, #root {
   box-shadow: 0 0 0 2px var(--card, #fff);
   pointer-events: none;
 }
-/* 展开浮层：卡片内绝对定位，避免与横向滚动容器冲突 */
-.participant-stack__pop {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 8px);
-  z-index: 20;
-  min-width: 180px;
-  max-width: 260px;
-  padding: 8px 0;
-  border-radius: 12px;
-  background: var(--card, #fff);
-  border: 1px solid var(--border);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-}
-.participant-stack__pop-head {
-  padding: 0 12px 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted-foreground);
-}
-.participant-stack__pop-list {
-  margin: 0;
+/* +N 徽标：圆形与堆叠头像同尺寸（24px）——
+   由基类 .task-card2__participant 提供 border-radius: 50% + 宽高 + ring 描边，
+   视觉对齐讨论区气泡下已读头像堆叠的 +N（.detail-chat-read__more）。
+   此处仅确保两位数的 +N（如 +12）不被横向压扁成椭圆。 */
+.participant-stack .task-card2__participant--overflow {
+  font-size: 10px;
+  line-height: 1;
   padding: 0;
-  list-style: none;
-  max-height: 220px;
-  overflow-y: auto;
-}
-.participant-stack__pop-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  cursor: pointer;
-}
-.participant-stack__pop-row:active {
-  background: var(--secondary);
-}
-/* 浮层内头像不再负边距叠加 */
-.participant-stack__pop-avatar,
-.participant-stack__pop-avatar:first-child {
-  margin-left: 0;
-}
-.participant-stack__pop-name {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  color: var(--foreground);
-}
-.participant-stack__pop-count {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: var(--muted-foreground);
+  box-sizing: border-box;
 }
 /* 元信息行：工单编号 · 项目 · 创建日期 */
 .task-card2__meta {
@@ -7846,14 +7870,31 @@ html, body, #root {
   gap: 8px;
   min-width: 0;
 }
+/* 两端人员：原 30px 留白是为「居中绝对定位箭头」预留，箭头改到堆叠下方后不再需要。 */
 .task-card2__person--creator {
   flex: 0 1 auto;
-  padding-right: 30px;
 }
+/* 处理人默认靠 margin-left:auto 右对齐 —— 供「无参与人堆叠」的场景兜底
+   （TicketDetailPage：发起人 | 箭头 | 处理人，此时箭头居中由绝对定位完成）。 */
 .task-card2__person--assignee {
   margin-left: auto;
   flex: 0 1 auto;
-  padding-left: 30px;
+}
+/* 含参与人堆叠的人员行（列表/历史卡片）：取消处理人的 auto margin，
+   把「发起人区 ↔ 处理人区」之间的剩余空间交给两段等宽留白平摊，
+   从而「堆叠 + 其下箭头」在这两者之间水平居中。
+   不用 :has()（微信 WKWebView 低版本支持不齐），改由调用方加 --stacked 修饰类显式声明。 */
+.task-card2__people--stacked .task-card2__person--assignee {
+  margin-left: 0;
+}
+/* 堆叠两侧的等宽弹性留白：flex:1 且 basis:0 → 两段恒等宽，
+   于是「堆叠 + 其下方箭头」在两端人物之间水平居中。
+   min-width 保证两端不会与堆叠贴死。 */
+.task-card2__flow-spacer {
+  flex: 1 1 0;
+  min-width: 8px;
+  align-self: center;
+  pointer-events: none;
 }
 .task-card2__avatar {
   flex-shrink: 0;
@@ -7890,15 +7931,45 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.task-card2__person-arrow {
+/* 参与人堆叠下方的「短下划线 + 实心箭头」（HistoryTickets / TicketDetailPage 使用）。
+   锚点 = 堆叠自身（.task-card2__participants 已 position:relative），
+   故宽度随堆叠实际总宽自适应；左右各外扩 6px，紧贴堆叠下缘，形同「参与人的下划线」。 */
+.task-card2__participants .task-card2__person-arrow {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  color: var(--muted-foreground);
+  left: -6px;
+  right: -6px;
+  top: calc(100% + 3px);
+  min-width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--gray-light);
+  z-index: 1;
+  pointer-events: none;
+}
+.task-card2__participants .task-card2__person-arrow::before {
+  content: '';
+  flex: 1 1 auto;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+}
+.task-card2__participants .task-card2__person-arrow-head {
+  display: block;
+  flex-shrink: 0;
+  fill: currentColor;
+  width: 6px;
+  height: 10px;
+}
+.task-card2__person-arrow {
+  color: var(--gray-light);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+}
+.task-card2__person-arrow-head {
+  display: block;
 }
 
 /* 讨论区 AI 执行过程（DiscussionPanel 使用） */

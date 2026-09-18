@@ -22,7 +22,7 @@ import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_
 import { formatDateTime } from '@/shared/utils/url';
 // 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
-import { Search, ArrowRight, Calendar, SlidersHorizontal, ChevronDown, Star } from 'lucide-react';
+import { Search, Calendar, SlidersHorizontal, ChevronDown, Star } from 'lucide-react';
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { avatarUrl } from '@/api/profile';
 import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
@@ -338,8 +338,10 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
         <TitleEllipsis text={t.title} lines={2} titleClassName="task-card2__title-inner" as="span" fontSize={18} lineHeight={1.35} />
       </div>
 
-      {/* 人员流转：发起人 |（无箭头）参与人头像堆叠 |（有箭头）处理人 */}
-      <div className="task-card2__people">
+      {/* 人员流转：发起人 | 参与人堆叠 | → 处理人
+          堆叠下方一条短下划线（宽度以堆叠总宽为准，左右各外扩 6px），末端实心箭头，
+          整体以堆叠中心对齐 —— 视觉上是「参与人的下划线」，不再横穿整行。 */}
+      <div className="task-card2__people task-card2__people--stacked">
         <div className="task-card2__person" title={`发起人：${creator}`} aria-label={`发起人：${creator}`}>
           <AvatarImg
             className="task-card2__avatar task-card2__avatar--img"
@@ -349,14 +351,14 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
           />
           <span className="task-card2__person-name">{creator}</span>
         </div>
+        {/* 两侧等宽弹性留白：使堆叠+箭头在发起人与处理人之间水平居中 */}
+        <i className="task-card2__flow-spacer" aria-hidden="true" />
         <ParticipantStack
           participants={participants}
           avatarMap={avatarMap}
           onLocate={onLocateParticipant ? (p) => onLocateParticipant(t.id, p) : undefined}
         />
-        <span className="task-card2__person-arrow">
-          <ArrowRight size={14} strokeWidth={2} />
-        </span>
+        <i className="task-card2__flow-spacer" aria-hidden="true" />
         <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`} aria-label={`处理人：${assignee}`}>
           <span className="task-card2__person-name">{assignee}</span>
           <AvatarImg

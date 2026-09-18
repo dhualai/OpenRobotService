@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button, Popup, DialogPlugin } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { Search, ArrowRight } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket, fetchRedispatch } from '@/api/ticket';
 import type { RedispatchCandidate } from '@/api/ticket';
@@ -407,18 +407,26 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                   <span className="history-row__tip-text">{t.redispatch_tip}</span>
                 </div>
               )}
-              {/* 人员流转（设计稿：发起人头像+姓名 | 参与人头像堆叠（无箭头） | ArrowRight | 处理人）。
+              {/* 人员流转：发起人 | 参与人堆叠 | → 处理人。
+                  短下划线骑在堆叠下方（左右各超出 6px），末端实心箭头，对齐堆叠中心。
                   派单中（status=new 且处理人未写入，AI 派单 Worker 60s 轮询中）：显示「派单中」呼吸动效 */}
-              <div className="task-card2__people">
+              <div className={`task-card2__people${hasParticipants ? ' task-card2__people--stacked' : ''}`}>
                 <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`} aria-label={`发起人：${t.created_by_name || t.created_by || '-'}`}>
                   <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                 </div>
-                <ParticipantStack
-                  participants={(t.participants || []) as ParticipantItem[]}
-                  onLocate={(p) => { if (p?.username) openParticipantDiscussion(t.id, p.username); }}
-                />
-                <span className="task-card2__person-arrow"><ArrowRight size={16} strokeWidth={2} /></span>
+                {/* 有参与人时：两侧等宽弹性留白夹住堆叠 → 堆叠+箭头在发起人与处理人之间居中。
+                    无参与人时整块不渲染，处理人退回 margin-left:auto 右对齐。 */}
+                {((t.participants || []) as ParticipantItem[]).length > 0 && (
+                  <>
+                    <i className="task-card2__flow-spacer" aria-hidden="true" />
+                    <ParticipantStack
+                      participants={(t.participants || []) as ParticipantItem[]}
+                      onLocate={(p) => { if (p?.username) openParticipantDiscussion(t.id, p.username); }}
+                    />
+                    <i className="task-card2__flow-spacer" aria-hidden="true" />
+                  </>
+                )}
                 {(t.status === 'new' && !t.assigned_to && !t.assigned_to_name) ? (
                   <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单" aria-label="U老师 正在派单">
                     <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
