@@ -464,6 +464,7 @@ const MessageBubble = memo(function MessageBubble({
           ) : msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
             // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态，点击进入工单详情页
             <div
+              data-testid={`chat-ticket-overview-${msg.ticket_overview.db_id}`}
               className="chat-ticket-overview"
               role="button"
               tabIndex={0}
@@ -3007,6 +3008,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         >
           <button
             ref={fabRef}
+            data-testid="chat-transfer-ticket"
             className={`chat-ticket-btn${messages.length > 0 ? ' has-content' : ''}${submittingTicket ? ' is-submitting' : ''}${ticketMissing && ticketMissing.info.length ? ' has-missing' : ''}`}
             onPointerDown={onFabPointerDown}
             onPointerMove={onFabPointerMove}
@@ -3113,6 +3115,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             </button>
             <div ref={textareaContainerRef} className="chat-input-bar__textarea" onPaste={handlePaste}>
               <Textarea
+                data-testid="chat-input"
                 value={input}
                 onChange={(v) => setInput(String(v))}
                 placeholder={rotatingPlaceholder}
@@ -3134,14 +3137,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 </button>
               )}
             </div>
-            <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && pendingItems.length === 0) || loading} aria-label="发送">
+            <button data-testid="chat-send" type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && pendingItems.length === 0) || loading} aria-label="发送">
               {loading ? (
                 <span className="chat-send-btn__spinner" />
               ) : (
                 <ArrowUp size={16} strokeWidth={2.4} />
               )}
             </button>
-            <button className="chat-input-btn chat-input-btn--blue" onClick={requestNewConversation} title="新建会话" aria-label="新建会话">
+            <button data-testid="chat-new-conversation" className="chat-input-btn chat-input-btn--blue" onClick={requestNewConversation} title="新建会话" aria-label="新建会话">
               <MessageSquarePlus size={16} strokeWidth={2} />
             </button>
           </div>
@@ -3180,7 +3183,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 autoFocus
               />
               <div className="chat-input-bar__fullscreen-footer">
-                <button type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={(!input.trim() && pendingItems.length === 0) || loading} aria-label="发送">
+                <button data-testid="chat-send" type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={(!input.trim() && pendingItems.length === 0) || loading} aria-label="发送">
                   {loading ? (
                     <span className="chat-send-btn__spinner" />
                   ) : (
@@ -3202,7 +3205,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
         {/* 转工单二次确认弹窗：核对草稿字段，problem 类型必填 project */}
         <Popup visible={ticketConfirm.visible} onClose={handleCancelTicketConfirm} placement="bottom" showOverlay closeOnOverlayClick={false}>
-          <div className="ticket-confirm">
+          <div data-testid="chat-ticket-draft-modal" className="ticket-confirm">
             <h4 className="ticket-confirm__title">确认工单信息</h4>
             {ticketConfirm.draft && (
               <div className="ticket-confirm__body">
@@ -3233,6 +3236,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 </select>
                 <label className="ticket-confirm__label">标题</label>
                 <input
+                  data-testid="chat-ticket-title"
                   className="ticket-confirm__input"
                   value={draftField('title')}
                   onChange={(e) => setDraftField('title', e.target.value)}
@@ -3240,6 +3244,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 />
                 <label className="ticket-confirm__label">描述</label>
                 <textarea
+                  data-testid="chat-ticket-description"
                   className="ticket-confirm__textarea"
                   value={draftField('description')}
                   onChange={(e) => setDraftField('description', e.target.value)}
@@ -3402,6 +3407,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 onClick={handleCancelTicketConfirm}
               >取消</button>
               <button
+                data-testid="chat-ticket-confirm"
                 type="button"
                 className="ticket-confirm__btn ticket-confirm__btn--confirm"
                 onClick={handleConfirmTicket}

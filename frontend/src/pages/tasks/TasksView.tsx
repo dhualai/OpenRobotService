@@ -289,7 +289,7 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
     && myTurn;
 
   return (
-    <div className="task-card2" onClick={() => onOpen(t.id)}>
+    <div data-testid={`task-card-${t.id}`} className="task-card2" onClick={() => onOpen(t.id)}>
       <div className="task-card2__head">
         <div className="task-card2__head-tags">
           <span className="task-card2__status-tag" data-status={(t.status || '').toLowerCase()}>
@@ -1451,6 +1451,7 @@ export default function TasksView() {
             <div className="tasks-view__search-card">
               <Search size={16} strokeWidth={2} />
               <input
+                data-testid="tasks-search"
                 className="tasks-search"
                 placeholder="搜索工单（支持编号/标题）…"
                 value={searchInput}

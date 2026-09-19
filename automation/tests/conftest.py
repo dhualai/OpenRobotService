@@ -48,7 +48,13 @@ def mock_auth_header(mock_auth_token):
 def allure_test_category(request):
     """按测试文件路径给 Allure 增加顶层分类，便于区分链路和单接口用例。"""
     normalized = str(request.node.fspath).replace("\\", "/")
-    if "/tests/business_chain/" in normalized or normalized.endswith("/tests/real/test_ticket_lifecycle_real.py"):
+    if normalized.endswith("/tests/ui/test_call_qa_to_ticket_close_regression.py"):
+        allure.dynamic.parent_suite("场景用例")
+        allure.dynamic.suite("UI完整业务链路")
+    elif normalized.endswith("/tests/ui/test_real_safe_api_smoke.py"):
+        allure.dynamic.parent_suite("单接口用例")
+        allure.dynamic.suite("真实测试环境 Smoke")
+    elif "/tests/business_chain/" in normalized or normalized.endswith("/tests/real/test_ticket_lifecycle_real.py"):
         allure.dynamic.parent_suite("场景用例")
         allure.dynamic.suite("真实后端工单生命周期" if normalized.endswith("/tests/real/test_ticket_lifecycle_real.py") else "完整业务链路")
     elif "/tests/" in normalized:

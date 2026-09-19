@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,24 @@ class TestAllureHandler:
             h.emit(record)
         except Exception:
             pytest.fail('AllureLogHandler.emit raised unexpectedly')
+
+    def test_allure_handler_accepts_background_thread_records(self):
+        from automation.src.logger.handlers import AllureLogHandler
+        h = AllureLogHandler()
+        record = logging.LogRecord('test', logging.ERROR, '', 0, 'thread msg', None, None)
+        errors = []
+
+        def emit():
+            try:
+                h.emit(record)
+            except Exception as exc:  # pragma: no cover - failure details
+                errors.append(exc)
+
+        thread = threading.Thread(target=emit)
+        thread.start()
+        thread.join()
+
+        assert errors == []
 
 
 class TestResetLogging:

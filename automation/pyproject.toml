@@ -7,9 +7,12 @@ dependencies = [
     "pytest>=8.0",
     "pytest-asyncio",
     "httpx",
+    "fastapi",
+    "uvicorn",
     "playwright",
     "allure-pytest",
     "factory-boy",
+    "openpyxl",
     "pyyaml",
     "pydantic", "pydantic-settings",
     "openai",
@@ -59,4 +62,3 @@ select = ["E", "F", "I", "W"]
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
-

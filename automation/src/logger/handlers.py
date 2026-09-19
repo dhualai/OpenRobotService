@@ -92,8 +92,8 @@ class AllureLogHandler(logging.Handler):
 
     def __init__(self, level: int = logging.WARNING):
         super().__init__(level=level)
-        self._local = threading.local()
-        self._local.records = []
+        self._records: list[str] = []
+        self._lock = threading.Lock()
         self._allure_available = self._check_allure()
 
     @staticmethod
@@ -107,20 +107,22 @@ class AllureLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         if not self._allure_available:
             return
-        self._local.records.append(self.format(record))
+        with self._lock:
+            self._records.append(self.format(record))
 
     def flush(self) -> None:
-        if not self._allure_available or not self._local.records:
+        if not self._allure_available:
+            return
+        with self._lock:
+            records = self._records
+            self._records = []
+        if not records:
             return
         try:
             import allure
-            records = self._local.records
-            if records:
-                log_text = '\n'.join(records)
-                allure.attach(log_text, name='framework_log',
-                              attachment_type=allure.attachment_type.TEXT)
+            log_text = '\n'.join(records)
+            allure.attach(log_text, name='framework_log',
+                          attachment_type=allure.attachment_type.TEXT)
         except Exception:
             pass
-        finally:
-            self._local.records = []
 

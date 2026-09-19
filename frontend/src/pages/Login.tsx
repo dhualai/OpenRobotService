@@ -123,6 +123,7 @@ export default function Login() {
           <div className="login-field">
             <span className="login-field__icon"><UserIcon /></span>
             <input
+              data-testid="login-username"
               className="login-field__input"
               type="text"
               placeholder="请输入账号"
@@ -135,6 +136,7 @@ export default function Login() {
           <div className="login-field">
             <span className="login-field__icon"><LockIcon /></span>
             <input
+              data-testid="login-password"
               className="login-field__input"
               type={showPwd ? 'text' : 'password'}
               placeholder="请输入密码"
@@ -152,7 +154,7 @@ export default function Login() {
             </button>
           </div>
 
-        <button className="login-btn" type="submit" disabled={loading}>
+        <button data-testid="login-submit" className="login-btn" type="submit" disabled={loading}>
           {loading ? <span className="login-btn__spinner" /> : '登录'}
         </button>
 

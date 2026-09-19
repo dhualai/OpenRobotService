@@ -1,0 +1,206 @@
+name: UI Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - test
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: ui-regression-test
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  UI_REGRESSION_E2E: "1"
+  UI_REGRESSION_HEADLESS: "1"
+  UI_REGRESSION_SSH_HOST: ${{ vars.UI_REGRESSION_SSH_HOST }}
+  UI_REGRESSION_SSH_USER: ${{ vars.UI_REGRESSION_SSH_USER || 'usp-a' }}
+  UI_REGRESSION_SSH_PORT: ${{ vars.UI_REGRESSION_SSH_PORT || '8802' }}
+  UI_REGRESSION_BACKEND_REMOTE_PORT: "9400"
+  UI_REGRESSION_BACKEND_LOCAL_PORT: "19400"
+  UI_REGRESSION_AI_REMOTE_PORT: "9411"
+  UI_REGRESSION_AI_LOCAL_PORT: "19411"
+  UI_REGRESSION_TUNNEL_TIMEOUT: "60"
+  UI_REGRESSION_U1_USERNAME: ${{ vars.UI_REGRESSION_U1_USERNAME || 'u1_auto' }}
+  UI_REGRESSION_U2_USERNAME: ${{ vars.UI_REGRESSION_U2_USERNAME || 'u2_auto' }}
+  UI_REGRESSION_CLEANUP_USERNAME: ${{ vars.UI_REGRESSION_CLEANUP_USERNAME || 'admin' }}
+  UI_REGRESSION_DB_CLEANUP_ENABLED: "1"
+  UI_REGRESSION_DB_HOST: "127.0.0.1"
+  UI_REGRESSION_DB_PORT: "19402"
+  UI_REGRESSION_DB_REMOTE_PORT: "3306"
+  UI_REGRESSION_DB_LOCAL_PORT: "19402"
+  UI_REGRESSION_DB_USER: ${{ vars.UI_REGRESSION_DB_USER || 'automation_cleanup' }}
+  UI_REGRESSION_DB_NAME: ${{ vars.UI_REGRESSION_DB_NAME || 'helpdesk_test' }}
+  UI_REGRESSION_CLEANUP_PROJECT_ID: ${{ vars.UI_REGRESSION_CLEANUP_PROJECT_ID || 'Leo_test' }}
+  UI_REGRESSION_CLEANUP_TITLE_PREFIX: ${{ vars.UI_REGRESSION_CLEANUP_TITLE_PREFIX || '自动化链路验证-%' }}
+  PYTHONPATH: ${{ github.workspace }}
+  AUTOMATION_ENV: local
+  ALLURE_AUTO_OPEN: "0"
+  JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8"
+
+jobs:
+  ui-regression:
+    name: UI chain and real environment smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required configuration
+        env:
+          TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
+          UI_REGRESSION_U1_PASSWORD: ${{ secrets.REAL_U1_PASSWORD }}
+          UI_REGRESSION_U2_PASSWORD: ${{ secrets.REAL_U2_PASSWORD }}
+          UI_REGRESSION_CLEANUP_PASSWORD: ${{ secrets.UI_REGRESSION_CLEANUP_PASSWORD }}
+          UI_REGRESSION_DB_PASSWORD: ${{ secrets.UI_REGRESSION_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in \
+            TEST_SSH_PRIVATE_KEY \
+            UI_REGRESSION_SSH_HOST \
+            UI_REGRESSION_U1_PASSWORD \
+            UI_REGRESSION_U2_PASSWORD \
+            UI_REGRESSION_CLEANUP_PASSWORD \
+            UI_REGRESSION_DB_PASSWORD
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install automation dependencies
+        run: |
+          pip install -e automation/
+          python -m playwright install --with-deps chromium
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Prepare SSH key
+        env:
+          TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$TEST_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/ci_key"
+          chmod 600 "$HOME/.ssh/ci_key"
+          echo "UI_REGRESSION_SSH_KEY=$HOME/.ssh/ci_key" >> "$GITHUB_ENV"
+
+      - name: Build frontend
+        run: npm run build --prefix frontend
+
+      - name: Run UI regression
+        env:
+          UI_REGRESSION_U1_PASSWORD: ${{ secrets.REAL_U1_PASSWORD }}
+          UI_REGRESSION_U2_PASSWORD: ${{ secrets.REAL_U2_PASSWORD }}
+          UI_REGRESSION_CLEANUP_PASSWORD: ${{ secrets.UI_REGRESSION_CLEANUP_PASSWORD }}
+          UI_REGRESSION_DB_PASSWORD: ${{ secrets.UI_REGRESSION_DB_PASSWORD }}
+        run: |
+          set -o pipefail
+          mkdir -p automation/output
+          pytest \
+            automation/tests/ui/test_call_qa_to_ticket_close_regression.py \
+            automation/tests/ui/test_real_safe_api_smoke.py \
+            -m "e2e or smoke" \
+            -q \
+            --alluredir=automation/output/allure-results-ui-regression-combined \
+            --junitxml=automation/output/junit-ui-regression.xml
+
+      - name: Ensure Allure results directory
+        if: always()
+        run: mkdir -p automation/output/allure-results-ui-regression-combined
+
+      - name: Generate Allure report
+        if: always()
+        uses: simple-elf/allure-report-action@v1.7
+        with:
+          allure_results: automation/output/allure-results-ui-regression-combined
+          allure_history: automation/output/allure-history
+          keep_reports: 20
+
+      - name: Upload Allure report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report-ui-regression-${{ github.run_number }}
+          path: automation/output/allure-history
+          if-no-files-found: error
+
+      - name: Build result summary
+        if: always()
+        id: summary
+        run: |
+          set -euo pipefail
+          junit="automation/output/junit-ui-regression.xml"
+          tests="unknown"
+          failures="unknown"
+          errors="unknown"
+          if [ -f "$junit" ]; then
+            tests="$(grep -o 'tests="[0-9]*"' "$junit" | head -1 | cut -d'"' -f2)"
+            failures="$(grep -o 'failures="[0-9]*"' "$junit" | head -1 | cut -d'"' -f2)"
+            errors="$(grep -o 'errors="[0-9]*"' "$junit" | head -1 | cut -d'"' -f2)"
+          fi
+          cleanup="无匹配"
+          results="automation/output/allure-results-ui-regression-combined"
+          if grep -Rqs '工单(数据库补偿)' "$results" 2>/dev/null; then
+            cleanup="数据库补偿成功"
+          elif grep -Rqs '"warnings": \[' "$results" 2>/dev/null; then
+            cleanup="有告警"
+          fi
+          {
+            echo "tests=$tests"
+            echo "failures=$failures"
+            echo "errors=$errors"
+            echo "cleanup=$cleanup"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment result on commit
+        if: always() && github.event_name == 'push'
+        uses: actions/github-script@v7
+        env:
+          TESTS: ${{ steps.summary.outputs.tests }}
+          FAILURES: ${{ steps.summary.outputs.failures }}
+          ERRORS: ${{ steps.summary.outputs.errors }}
+          CLEANUP: ${{ steps.summary.outputs.cleanup }}
+          RUN_NUMBER: ${{ github.run_number }}
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              '## UI 回归结果',
+              '',
+              `- 用例总数：${process.env.TESTS}`,
+              `- 失败：${process.env.FAILURES}`,
+              `- 错误：${process.env.ERRORS}`,
+              `- 清理结果：${process.env.CLEANUP}`,
+              `- 报告 artifact：\`allure-report-ui-regression-${process.env.RUN_NUMBER}\``,
+              `- 运行记录：${runUrl}`,
+              '',
+              '> 报告不上传到公开 GitHub Pages；请在 Actions run 中下载 artifact。',
+            ].join('\n');
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body,
+            });

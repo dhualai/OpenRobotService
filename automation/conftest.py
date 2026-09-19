@@ -59,7 +59,13 @@ def _open_allure_report(alluredir: str) -> None:
         return
 
     report_dir = results_dir.parent / "allure-report"
-    allure_exe = shutil.which("allure") or shutil.which("allure.bat")
+    # npm installs Allure as allure.cmd on Windows. A bare "allure" resolves
+    # to allure.ps1 in PowerShell, which shutil.which does not execute.
+    allure_exe = (
+        shutil.which("allure.cmd")
+        or shutil.which("allure.bat")
+        or shutil.which("allure")
+    )
     if not allure_exe:
         print("  [allure] CLI not found, skip report generation")
         return

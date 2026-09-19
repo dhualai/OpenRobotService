@@ -1,3 +1,4 @@
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -75,7 +76,8 @@ class TestMySQLClient:
 
 
 class TestRedisClient:
-    def test_connect_missing_library(self):
+    def test_connect_missing_library(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "redis", None)
         client = RedisClient(RedisConfig(host="test-redis"))
         with pytest.raises(ImportError, match="redis library"):
             client.connect()
@@ -112,7 +114,8 @@ class TestRedisClient:
 
 
 class TestQdrantClient:
-    def test_connect_missing_library(self):
+    def test_connect_missing_library(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "qdrant_client", None)
         client = QdrantClient(QdrantConfig(host="test-qdrant"))
         with pytest.raises(ImportError, match="qdrant-client"):
             client.connect()
