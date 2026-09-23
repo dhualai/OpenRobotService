@@ -227,9 +227,11 @@ export async function fetchProjectMonthly(projectIds?: string[]): Promise<Projec
 }
 
 export interface TaskExecutionStats {
-  total_tasks: number;
-  finished_tasks: number;
+  // 项目没有任何采集数据时后端返回 null（页面按「-」展示），0 才是真实统计值
+  total_tasks: number | null;
+  finished_tasks: number | null;
   completion_rate: number | null;
+  data_date?: string | null; // 这组统计对应的数据日期（已导入的最新一天）
 }
 
 export interface ProjectListItem {

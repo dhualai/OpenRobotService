@@ -22,9 +22,6 @@ from ai.agents.AiTaskPlatform.schemas import (
     TaskAnalyzeRequest,
     TaskContext,
     SolutionDraft,
-    TaskListRequest,
-    TaskBrief,
-    TaskListResponse,
     TaskHealthResponse,
     AttachmentAnalysis,
 )
@@ -35,13 +32,10 @@ __all__ = [
     "get_task_agent",
     # 请求模型
     "TaskAnalyzeRequest",
-    "TaskListRequest",
     # 数据模型
     "TaskContext",
     "SolutionDraft",
-    "TaskBrief",
     "AttachmentAnalysis",
     # 响应模型
-    "TaskListResponse",
     "TaskHealthResponse",
 ]

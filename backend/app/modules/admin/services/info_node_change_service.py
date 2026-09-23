@@ -201,6 +201,19 @@ def build_node_move_detail(
     return f"把「{node_name}」从「{old_parent_name}」移到「{new_parent_name}」下"
 
 
+def build_reset_detail(removed_nodes: int, cleared: int) -> str:
+    """一键清空（恢复为模板结构）的整树级记录：删了多少增补节点、清了多少项内容。
+
+    只描述这两个数——细节在各条节点/值的记录里（调用方只在至少动了一样时才写这条）。
+    """
+    parts: List[str] = []
+    if removed_nodes:
+        parts.append(f"删除 {removed_nodes} 个增补节点")
+    if cleared:
+        parts.append(f"清空 {cleared} 项已填内容")
+    return "一键清空（恢复为模板结构）：" + "，".join(parts)
+
+
 def build_import_detail(source: str, added: int) -> str:
     if source == "template":
         return f"按预设模板同步信息树：新增 {added} 个节点"

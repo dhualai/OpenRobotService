@@ -139,7 +139,7 @@ async def test_data_collection():
         data = collector.collect_all(start, end, date_range_str)
         print(f"[OK] 采集完成: {data.date_range}")
         print(f"  项目: total={data.project.total}, active={data.project.active}")
-        print(f"  风险: total={data.risk.total}, new={data.risk.new_risks}, closed={data.risk.closed_risks}")
+        print(f"  风险: score={data.risk.score}, level={data.risk.level}, open_tickets={data.risk.open_tickets}, new_30d={data.risk.new_30d_tickets}, manual_risk={data.risk.manual_risk!r}")
         print(f"  工单: total={data.ticket.total}, new={data.ticket.new_tickets}, resolved={data.ticket.resolved}, overdue={data.ticket.overdue}, resolve_rate={data.ticket.resolve_rate}%")
 
         # 输出 JSON 预览（截断）

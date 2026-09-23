@@ -28,7 +28,7 @@ from app.core.database import get_async_db as get_db
 from app.core.database import AsyncSessionLocal
 from app.models.delivery import UNDERTAKE_PENDING, UNDERTAKE_YES
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
-from app.modules.admin.services.project_service import project_service
+from app.modules.admin.services.project_service import project_service, NO_TASK_EXECUTION_STATS
 from app.modules.admin.services.risk_service import risk_service
 
 dashboard_router = APIRouter(prefix="/dashboard", tags=["admin-dashboard"])
@@ -116,9 +116,10 @@ def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
 
     与 /projects/ 接口 include_analysis 逻辑保持一致：
     - risks：未关闭风险数（status != 关闭 计 1）
-    - task_execution_stats：近 7 天任务统计（总数/完成数/完成率，来自 collection_data）
-    - latest_manual_switch_count：切手动次数（collection_data 最新一天的
-      averageManualCount.averageManualCount，见 get_task_execution_metrics_7d_batch）
+    - task_execution_stats：任务统计（总数/完成数/完成率 + data_date 数据日期，
+      来自 collection_data 该项目已导入的最新一天）
+    - latest_manual_switch_count：切手动次数（同一最新一天的
+      averageManualCount.averageManualCount，见 get_task_execution_metrics_latest_batch）
     数据均按项目码批量查询（各 1 条 SQL），避免逐项目循环 3N 条查询。
     """
     project_codes = [p["project_code"] for p in projects]
@@ -126,16 +127,13 @@ def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
         return
 
     detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
-    metrics_7d = project_service.get_task_execution_metrics_7d_batch(project_codes)
+    metrics_latest = project_service.get_task_execution_metrics_latest_batch(project_codes)
 
     for project in projects:
         project_code = project["project_code"]
-        metric = metrics_7d.get(project_code)
+        metric = metrics_latest.get(project_code)
         project["risks"] = sum(1 for risk in detailed_risks.get(project_code, []) if risk.get("status") != "关闭")
-        project["task_execution_stats"] = (
-            metric["stats"] if metric
-            else {"total_tasks": 0, "finished_tasks": 0, "completion_rate": None, "manual_switch_count": None}
-        )
+        project["task_execution_stats"] = metric["stats"] if metric else NO_TASK_EXECUTION_STATS
         project["latest_manual_switch_count"] = (
             metric["stats"].get("manual_switch_count") if metric else None
         )

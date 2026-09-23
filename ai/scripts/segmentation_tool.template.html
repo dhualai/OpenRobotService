@@ -441,14 +441,22 @@ function renderFlow() {
         <div class="u"></div>`;
       rd.querySelector(".u").textContent = r.q || "(空)";
       if (r.fs && r.fs.length) {
-        // 附件原图（0920）：走查页同源直链；大图/gif 占位点击加载，点图放大
+        // 附件（0920）：图片直链显示（不用 lazy——本工具页懒加载不触发）；
+        // 非图片扩展（zip/log 等）渲染下载链接；大图/gif 占位点击加载
         const im = document.createElement("div");
         im.className = "imgs";
         im.innerHTML = r.fs.map(f => {
           const u = esc(f.p || "");
-          return (f.s > 3145728 || /\.gif$/i.test(u))
+          const ext = ((f.n || f.p || "").split(".").pop() || "").toLowerCase();
+          const isImg = ["png", "jpg", "jpeg", "webp", "bmp", "svg", "ico"].includes(ext);
+          if (!isImg) {
+            const kb = f.s >= 1048576 ? (f.s / 1048576).toFixed(1) + "MB"
+                                      : Math.max(1, Math.round(f.s / 1024)) + "KB";
+            return `<a href="${u}" download="${esc(f.n || "附件")}" style="display:inline-block;margin:4px 0;font-size:12.5px">📎 ${esc(f.n || "附件")}（${kb}）· 点击下载</a>`;
+          }
+          return (f.s > 3145728 || ext === "gif")
             ? `<span class="imgbig" data-p="${u}">🖼️ ${(f.s / 1048576).toFixed(1)}MB · 点击加载</span>`
-            : `<img loading="lazy" src="${u}" alt="${esc(f.n || "附件")}" onerror="this.replaceWith('(图片加载失败)')">`;
+            : `<img ${DATA.mode === "label" ? "" : 'loading="lazy" '}src="${u}" alt="${esc(f.n || "附件")}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🖼️ 图片未能加载'}))">`;
         }).join("");
         im.querySelectorAll(".imgbig").forEach(el => {
           el.onclick = () => {
@@ -463,7 +471,22 @@ function renderFlow() {
       if (r.a) {
         const det = document.createElement("details");
         det.innerHTML = `<summary>AI 回答</summary><div class="a"></div>`;
-        det.querySelector(".a").textContent = r.a;
+        const aEl = det.querySelector(".a");
+        // markdown 图片渲染（0920）：![](...) 显示为原图——站内绝对路径补站点
+        // 前缀，加载失败显示占位+原 URL（404 可见可查）；其余文本照常转义
+        const MDIMG = /!\[([^\]]*)\]\(([^)]+)\)/g;
+        let html = "", pos = 0, mm;
+        while ((mm = MDIMG.exec(r.a))) {
+          html += esc(r.a.slice(pos, mm.index));
+          const u = mm[2].trim();
+          const full = /^https?:/i.test(u) ? u
+            : (u.startsWith("/") ? DATA.site + u : DATA.site + "/api/ai/media/kb/" + u);
+          html += `<img ${DATA.mode === "label" ? "" : 'loading="lazy" '}src="${esc(full)}" alt="${esc(mm[1])}" style="max-width:100%;border-radius:8px;margin:4px 0;display:block" `
+                + `onerror="this.onerror=null;this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🖼️ 图片未能加载: ${esc(u.slice(0, 90))}'}))">`;
+          pos = mm.index + mm[0].length;
+        }
+        html += esc(r.a.slice(pos));
+        aEl.innerHTML = html;
         rd.appendChild(det);
       }
       seg.appendChild(rd);

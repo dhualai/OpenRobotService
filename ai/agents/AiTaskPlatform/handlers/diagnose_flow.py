@@ -64,7 +64,7 @@ class _DiagProgress:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[diagnose] ai.progress 广播失败 phase={phase} task={self._task_id}: {e}")
 
-    def add(self, key: str, description: str, status: str = "in_progress", capability: str = "") -> None:
+    def add(self, key: str, description: str, status: str = "in_progress", capability: str = "", result_summary: str = "") -> None:
         """新增一个待办项（或更新已有项描述），并广播当前快照。"""
         todo = self._idx.get(key)
         if todo is None:
@@ -79,6 +79,8 @@ class _DiagProgress:
             self._todos.append(todo)
         else:
             todo["description"] = description
+        if result_summary:
+            todo["result_summary"] = result_summary[:80]
         self._emit("running")
 
     def done(self, key: str, description: str | None = None, result_summary: str = "") -> None:
@@ -95,6 +97,17 @@ class _DiagProgress:
             todo["phase"] = "done"
             if description:
                 todo["description"] = description
+        if result_summary:
+            todo["result_summary"] = result_summary[:80]
+        self._emit("running")
+
+    def update(self, key: str, description: str | None = None, result_summary: str = "") -> None:
+        """更新待办项描述/结果（不改动状态），用于子步骤进度刷新。"""
+        todo = self._idx.get(key)
+        if todo is None:
+            return
+        if description:
+            todo["description"] = description
         if result_summary:
             todo["result_summary"] = result_summary[:80]
         self._emit("running")
@@ -381,7 +394,7 @@ class DiagnoseFlow:
         except Exception:
             self._diag_user_discussion = ""
 
-    async def diagnose(self, task_id: str) -> dict:
+    async def diagnose(self, task_id: str, username: str = "") -> dict:
         """全能力诊断 → 即时返回报告 JSON（不存库）。
 
         使用能力：附件分析 + 历史工单检索。
@@ -390,6 +403,16 @@ class DiagnoseFlow:
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
+
+        # 0. 用户画像注入（诊断 Agent 复用）
+        user_profile_block = ""
+        if username:
+            try:
+                from ai.core.user_profile import resolve_user_profile, format_user_profile_block
+                profile = await resolve_user_profile(username)
+                user_profile_block = format_user_profile_block(profile)
+            except Exception as e:
+                logger.warning(f"[diagnose] 用户画像解析失败(降级无画像): user={username}, err={e}")
 
         # 过程区进度：与 discuss 同款 ai.progress（事件封套只 running，收尾 done），
         # 让 [帮我分析] 也能在讨论区上方实时看到 AI 正在执行哪一步（像 @AI 讨论一样）。
@@ -410,12 +433,13 @@ class DiagnoseFlow:
                                 "has_problem_summary": bool(context.problem_summary)},
                         elapsed_ms=round((time.perf_counter() - t1) * 1000))
 
-        # 2. 附件分析（能力一：日志走 LogSubAgent+Discovery，其他走 parse_attachments）
+        # 2. 附件分析（能力一：日志/非日志/图片 并行分析，改造点 B / G2）
         t2 = time.perf_counter()
         prog.add("attachment", "分析附件与日志", capability="log_analyze")
         att_has_logs = False
         att_log_summary = ""
         log_sub_result = None
+        _tmp_dirs: list[str] = []
         try:
             if context.attachments:
                 # 2a. 日志文件提取（压缩包自动解压；带 task_id 落到稳定日志缓存目录跨讨论复用）
@@ -424,12 +448,53 @@ class DiagnoseFlow:
                     task_id=getattr(context, "task_id", "") or "",
                 )
 
-                if log_paths:
+                # ── 并行任务定义 ──────────────────────────────────────────
+                async def _analyze_single_log(log_path: str, task_ctx: dict, question: str) -> tuple[bool, str, object]:
+                    """分析单个日志文件：Discovery + LogSubAgent。返回 (has_logs, summary, sub_result)。"""
                     from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent
                     from ai.agents.AiTaskPlatform.log_analyzer.triage import run_triage
+                    sub = LogSubAgent(log_path)
+                    discovery_text = ""
+                    try:
+                        await sub._ensure_clients()
+                        triage_result = run_triage(log_path, user_question=question, index=sub._index)
+                        discovery_text = _discovery_to_text(triage_result)
+                    except Exception as e:
+                        logger.warning(f"诊断 Discovery 预处理失败({Path(log_path).name}): {e}")
+
+                    # 子步骤进度：把 LogSubAgent 内部轮次暴露到 diagnose 过程区
+                    def _sub_progress(payload: dict) -> None:
+                        try:
+                            pid = payload.get("id", "")
+                            if pid.startswith("log_r"):
+                                # 映射到 diagnose 过程区的子项
+                                sub_key = f"log_{Path(log_path).name}_{pid}"
+                                desc = payload.get("description", "")
+                                status = payload.get("status", "")
+                                rsum = payload.get("result_summary", "")
+                                if status == "in_progress":
+                                    prog.add(sub_key, desc, capability="log_analyze", result_summary=rsum)
+                                elif status == "completed":
+                                    prog.done(sub_key, desc, result_summary=rsum)
+                        except Exception:
+                            pass
+
+                    sub_result = await sub.analyze(task_ctx, user_question=question, progress=_sub_progress)
+                    if sub_result.conclusion:
+                        parts = []
+                        if discovery_text:
+                            parts.append(discovery_text)
+                        parts.append(sub_result.to_prompt_text())
+                        return True, "\n\n".join(parts), sub_result
+                    elif discovery_text:
+                        return True, discovery_text, sub_result
+                    return False, "", sub_result
+
+                async def _analyze_log() -> tuple[bool, str, object]:
+                    """日志分析：支持多日志文件并行分析，合并结果。返回 (has_logs, summary, primary_sub_result)。"""
+                    if not log_paths:
+                        return False, "", None
                     task_ctx = build_task_ctx(context)
-                    # 取第一个日志文件（后续可扩展到多个日志文件的合并分析）
-                    sub = LogSubAgent(log_paths[0])
                     auto_question = f"日志分析，重点排查: {context.problem_summary}"
                     if context.hypotheses:
                         auto_question += f"，可能原因: {'/'.join(context.hypotheses)}"
@@ -438,61 +503,125 @@ class DiagnoseFlow:
                     if context.robot_type:
                         auto_question += f"，车型: {context.robot_type}"
 
-                    # Discovery 预处理（纯程序）→ 与 LogSubAgent 共享同一份 LogIndex（只 build 一次）
-                    discovery_text = ""
-                    try:
-                        await sub._ensure_clients()  # 构建索引一次 + 初始化
-                        triage_result = run_triage(log_paths[0], user_question=auto_question,
-                                                   index=sub._index)
-                        discovery_text = _discovery_to_text(triage_result)
-                    except Exception as e:
-                        logger.warning(f"诊断 Discovery 预处理失败: {e}")
+                    # 单日志文件：直接分析
+                    if len(log_paths) == 1:
+                        return await _analyze_single_log(log_paths[0], task_ctx, auto_question)
 
-                    log_sub_result = await sub.analyze(task_ctx, user_question=auto_question)
-                    if log_sub_result.conclusion:
-                        att_has_logs = True
-                        parts = []
-                        if discovery_text:
-                            parts.append(discovery_text)
-                        parts.append(log_sub_result.to_prompt_text())
-                        att_log_summary = "\n\n".join(parts)
-                    elif discovery_text:
-                        att_has_logs = True
-                        att_log_summary = discovery_text
-                    self._add_trace(self.NODE_ATTACHMENT, "ok",
-                                    output={"has_logs": att_has_logs,
-                                            "sub_rounds": log_sub_result.queries_made,
-                                            "evidence_count": len(log_sub_result.evidence)},
-                                    elapsed_ms=round((time.perf_counter() - t2) * 1000))
+                    # 多日志文件：并行分析，合并结果
+                    logger.info(f"[diagnose] 多日志并行分析: {len(log_paths)} 个文件")
+                    log_futures = [
+                        _analyze_single_log(lp, task_ctx, auto_question)
+                        for lp in log_paths[:3]  # 最多并行分析 3 个日志文件（成本护栏）
+                    ]
+                    log_results = await asyncio.gather(*log_futures, return_exceptions=True)
 
-                    import shutil
-                    for td in _tmp_dirs:
-                        try:
-                            shutil.rmtree(td, ignore_errors=True)
-                        except Exception:
-                            pass
+                    merged_has = False
+                    merged_parts: list[str] = []
+                    primary_sub = None
+                    for i, res in enumerate(log_results):
+                        if isinstance(res, Exception):
+                            logger.warning(f"[diagnose] 日志文件 {i} 分析异常: {res}")
+                            continue
+                        has_logs, summary, sub_res = res
+                        if has_logs and summary:
+                            merged_has = True
+                            fname = Path(log_paths[i]).name
+                            merged_parts.append(f"【日志文件: {fname}】\n{summary}")
+                        if primary_sub is None and sub_res is not None:
+                            primary_sub = sub_res  # 保留第一个成功的 sub_result 用于 trace
 
-                # 2b. 非日志附件 → parser（图片/文档/结构化文件等，不含压缩包和日志）
-                from ai.agents.AiTaskPlatform.retrieval import rules as _rules
-                _PIPED_EXTS = _rules.PIPED_LOG_EXTS
-                non_log_atts = [a for a in context.attachments
-                                if not (a.get("filename") or a.get("name") or "").lower().endswith(_PIPED_EXTS)]
-                if non_log_atts and not att_has_logs:
+                    return merged_has, "\n\n".join(merged_parts), primary_sub
+
+                async def _analyze_non_log() -> tuple[bool, str]:
+                    """非日志附件解析。返回 (has_logs, summary)。"""
+                    from ai.agents.AiTaskPlatform.retrieval import rules as _rules
+                    _PIPED_EXTS = _rules.PIPED_LOG_EXTS
+                    non_log_atts = [
+                        a for a in context.attachments
+                        if not (a.get("filename") or a.get("name") or "").lower().endswith(_PIPED_EXTS)
+                    ]
+                    if not non_log_atts:
+                        return False, ""
                     from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
                     att_analysis = await parse_attachments(non_log_atts)
-                    att_has_logs = att_has_logs or att_analysis.has_logs
-                    if att_analysis.log_summary and not att_log_summary:
-                        att_log_summary = att_analysis.log_summary[:500]
+                    return att_analysis.has_logs, (att_analysis.log_summary or "")[:500]
 
-                # 2c. 图片附件 → 视觉 LLM 分析
-                try:
-                    from ai.agents.AiTaskPlatform.attachments.parser import analyze_images
-                    img_ctx = build_img_ctx(context)
-                    att_image_analysis = await analyze_images(context.attachments, img_ctx)
-                    if att_image_analysis:
-                        att_log_summary = (att_log_summary + "\n\n" + att_image_analysis).strip()
-                except Exception:
-                    pass
+                async def _analyze_images() -> str:
+                    """图片附件视觉分析。返回分析文本（空字符串表示无结果/异常）。"""
+                    try:
+                        from ai.agents.AiTaskPlatform.attachments.parser import analyze_images
+                        img_ctx = build_img_ctx(context)
+                        return await analyze_images(context.attachments, img_ctx) or ""
+                    except Exception:
+                        return ""
+
+                # 日志分析必须先完成 Discovery（串行），但 LogSubAgent.analyze 可与图片/非日志并行
+                # 实际并行：先跑日志（含 Discovery），同时启动图片和非日志
+                # 为了最大化并行，把 "日志提取+Discovery" 作为前置，然后 analyze 与图片/非日志并行
+                # 但 Discovery 是同步的且很快，所以整体把三个分析并行 gather
+                log_has, log_summary, log_sub_result = False, "", None
+                non_log_has, non_log_summary = False, ""
+                image_summary = ""
+
+                # 前置：日志索引构建（若存在日志）—— 这步必须串行，因为 analyze_images 不依赖它
+                if log_paths:
+                    try:
+                        from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent
+                        _pre_sub = LogSubAgent(log_paths[0])
+                        await _pre_sub._ensure_clients()
+                    except Exception:
+                        pass
+
+                # 并行执行三个分析任务
+                log_future = _analyze_log()
+                non_log_future = _analyze_non_log()
+                image_future = _analyze_images()
+
+                results = await asyncio.gather(
+                    log_future, non_log_future, image_future,
+                    return_exceptions=True,
+                )
+
+                # 解包结果（异常降级）
+                if isinstance(results[0], Exception):
+                    logger.warning(f"[diagnose] 日志分析异常: {results[0]}")
+                else:
+                    log_has, log_summary, log_sub_result = results[0]
+
+                if isinstance(results[1], Exception):
+                    logger.warning(f"[diagnose] 非日志附件解析异常: {results[1]}")
+                else:
+                    non_log_has, non_log_summary = results[1]
+
+                if isinstance(results[2], Exception):
+                    logger.warning(f"[diagnose] 图片分析异常: {results[2]}")
+                else:
+                    image_summary = results[2]
+
+                # 合并结果
+                att_has_logs = log_has or non_log_has
+                parts: list[str] = []
+                if log_summary:
+                    parts.append(log_summary)
+                if non_log_summary:
+                    parts.append(non_log_summary)
+                if image_summary:
+                    parts.append(image_summary)
+                att_log_summary = "\n\n".join(parts).strip()
+
+                self._add_trace(self.NODE_ATTACHMENT, "ok",
+                                output={"has_logs": att_has_logs,
+                                        "log_sub_rounds": getattr(log_sub_result, "queries_made", 0),
+                                        "evidence_count": len(getattr(log_sub_result, "evidence", []))},
+                                elapsed_ms=round((time.perf_counter() - t2) * 1000))
+
+                # 清理临时目录
+                import shutil
+                for td in _tmp_dirs:
+                    try:
+                        shutil.rmtree(td, ignore_errors=True)
+                    except Exception:
+                        pass
             else:
                 self._add_trace(self.NODE_ATTACHMENT, "skipped", elapsed_ms=0)
         except Exception as e:
@@ -597,9 +726,14 @@ class DiagnoseFlow:
             missing_info=missing_info_text,
         )
 
+        system_prompt = _select_system_prompt(self._is_platform_ticket(context), "diagnose")
+        # 注入用户画像到 system prompt（有画像时追加，无画像保持原样）
+        if user_profile_block:
+            system_prompt = f"{system_prompt}\n\n{user_profile_block}"
+
         raw = await self._llm_client.complete(
             prompt=prompt,
-            system_prompt=_select_system_prompt(self._is_platform_ticket(context), "diagnose"),
+            system_prompt=system_prompt,
             max_tokens=1500, temperature=0.3,
         )
         self._add_trace(self.NODE_LLM, "ok",
@@ -607,9 +741,32 @@ class DiagnoseFlow:
                         output={"response_chars": len(raw)},
                         elapsed_ms=round((time.perf_counter() - t4) * 1000))
 
-        # 5. 返回 Markdown 报告（无需 JSON 解析）
+        # 5. Evaluator-optimizer（改造点 C / G4）：诊断报告也做自评/重写，消除偏题/幻觉
         t5 = time.perf_counter()
         report_md = raw.strip()
+        eval_used = False
+        try:
+            from ai.agents.AiTaskPlatform.capabilities import Evaluator
+            # evidence = 附件分析 + 历史方案 + 知识库（诊断报告引用的全部证据）
+            evidence_parts = [att_text, hist_text, kb_context]
+            evidence = "\n\n".join(p for p in evidence_parts if p and "未检索" not in p and "无" not in p)[:2000]
+            eval_res = await Evaluator.evaluate_and_rewrite(
+                llm_client=self._llm_client,
+                draft=report_md,
+                evidence=evidence,
+                context=f"工单: {context.title or ''}\n用户问题: 帮我分析这个工单",
+            )
+            if eval_res.get("rewritten") or eval_res.get("eval_failed"):
+                eval_used = True
+            if eval_res.get("rewritten"):
+                report_md = eval_res["final"]
+                self._add_trace(self.NODE_LLM, "ok",
+                                output={"evaluator": "rewritten", "issues": eval_res.get("eval_notes", []), "report_chars": len(report_md)})
+            elif eval_res.get("eval_failed"):
+                self._add_trace(self.NODE_LLM, "ok",
+                                output={"evaluator": "eval_failed", "report_chars": len(report_md)})
+        except Exception as e:
+            logger.warning(f"[diagnose] Evaluator 执行异常，沿用初稿: {e}")
         conf = 0.0
         m = re.search(r'置信度[：:]\s*(\d+\.?\d*)', report_md)
         if m:

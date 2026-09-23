@@ -15,6 +15,7 @@
 注意：.doc 解析依赖系统 LibreOffice（soffice）；未安装时抛 SpecDocParseError。
 """
 import base64
+import binascii
 import io
 import logging
 import os
@@ -188,3 +189,58 @@ def _parse_doc(raw: bytes, image_handler: Optional[ImageHandler] = None) -> str:
 def _clean_markdown(md: str) -> str:
     """清理 mammoth 输出中的无意义锚点标签。"""
     return _MAMMOTH_ANCHOR_RE.sub("", md or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# 存量正文治理：内嵌 base64 图片外置
+# ---------------------------------------------------------------------------
+# 背景：md 正文内嵌 base64 图片（Word 解析降级 / 历史数据）会形成 100KB+ 的
+# 超长单行；前端 markdown 编辑器（@uiw/react-md-editor）挂载时用
+# Prism/refractor 做语法高亮，其 setext 标题正则在「超长单行 + == 结尾」形态下
+# 呈 O(n²) 灾难性回溯，可把主线程阻塞数十秒（工单 836 实测 81s，页面完全卡死）。
+# 治理：保存与存量修复时把内联图片外置为对象存储 URL，正文回到 KB 级。
+
+# 超过该字节数的内联图片才外置（图标类小图保持内联，避免无谓请求）
+INLINE_IMAGE_EXTERNALIZE_MIN = 8 * 1024
+
+# data:image/xxx;base64,<data>（正文里通常嵌在 markdown 图片语法 ![]( ... ) 内）
+_DATA_URI_RE = re.compile(r"data:(image/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)")
+
+
+def externalize_inline_images(
+    md: str,
+    image_handler: ImageHandler,
+    min_bytes: int = INLINE_IMAGE_EXTERNALIZE_MIN,
+) -> tuple[str, int]:
+    """把 markdown 正文里体积超阈值的 base64 内联图片外置为引用 URL。
+
+    :param image_handler: (图片字节, content_type) -> 引用 URL；返回空串表示外置失败
+    :return: (新正文, 成功外置数量)；外置失败的图片保持内联原样，图片永不丢
+    """
+    if not md or "data:image" not in md:
+        return md, 0
+
+    replaced = 0
+
+    def _sub(match: "re.Match[str]") -> str:
+        nonlocal replaced
+        content_type = match.group(1).lower()
+        raw_b64 = match.group(2)
+        # base64 字符数 → 原始字节数（4 字符约合 3 字节），未超阈值保持原样
+        if len(raw_b64) // 4 * 3 <= min_bytes:
+            return match.group(0)
+        try:
+            data = base64.b64decode(raw_b64, validate=True)
+        except (binascii.Error, ValueError):
+            return match.group(0)
+        try:
+            url = (image_handler(data, content_type) or "").strip()
+        except Exception as e:  # noqa: BLE001 - 单张外置失败不影响其余图片
+            logger.warning("[spec_doc] 内嵌图片外置失败: %s", e)
+            url = ""
+        if not url:
+            return match.group(0)
+        replaced += 1
+        return url
+
+    return _DATA_URI_RE.sub(_sub, md), replaced

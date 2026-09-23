@@ -99,6 +99,9 @@ class SummarizeFlow:
             diag = meta.get("diagnosis", {})
             diag_summary = diag.get("problem_summary", "") or ""
 
+            # 取工单处理人/创建人作为"当前用户"注入画像（摘要按处理人身份调整侧重点）
+            task_username = (task.assigned_to or task.created_by or "").strip() if task else ""
+
             last_summary_at_str = meta.get("ai_summary_at", "")
             last_summary_text = meta.get("ai_summary", "") or ""
             last_summary_at = None
@@ -152,9 +155,21 @@ class SummarizeFlow:
                 discussion_history=history_text,
             )
 
+        # 用户画像注入（按工单处理人身份调整摘要侧重点）
+        system_prompt = _select_system_prompt(_task_is_platform(task, task_title, task_desc), "summarize")
+        if task_username:
+            try:
+                from ai.core.user_profile import resolve_user_profile, format_user_profile_block
+                profile = await resolve_user_profile(task_username)
+                profile_block = format_user_profile_block(profile)
+                if profile_block:
+                    system_prompt = f"{system_prompt}\n\n{profile_block}"
+            except Exception as e:
+                logger.warning(f"[summarize] 用户画像解析失败(降级无画像): task={task_id}, user={task_username}, err={e}")
+
         summary = await self._llm_client.complete(
             prompt=prompt,
-            system_prompt=_select_system_prompt(_task_is_platform(task, task_title, task_desc), "summarize"),
+            system_prompt=system_prompt,
             max_tokens=300, temperature=0.3,
         )
         summary_text = summary.strip()

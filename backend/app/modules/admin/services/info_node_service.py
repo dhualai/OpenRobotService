@@ -48,6 +48,10 @@ MAX_INFO_DEPTH = 4
 # 因此增补节点永远不会撞上全局定义。
 CUSTOM_KEY_PREFIX = 'custom.'
 
+# 「一键清空」写进历史的变更原因：值清空、增补节点删除、整树级记录三处同源，
+# 前端与文档都按这个字符串认（见 docs/project_ext_info_info_nodes_api.md 5.17）。
+CLEAR_CHANGE_REASON = "一键清空"
+
 # 值类型 → 前端 content_type。
 # 前端只有四种内容形式；新模型的值类型更细，在接口层收敛回旧口径，
 # 「项目信息管理」卡与编辑页因此不必改渲染逻辑。
@@ -427,6 +431,118 @@ class InfoNodeService:
         if node.project_id == project_id:
             return
         raise PermissionError("该节点属于其它项目，不能写入本项目")
+
+    # ── 一键清空（把本项目恢复成模板的样子） ────────────────
+
+    def reset_to_template(self, project_id: str, operator: Optional[str] = None,
+                          operator_name: Optional[str] = None) -> Dict[str, int]:
+        """把本项目的信息树恢复成模板（全局字段定义）的样子。
+
+        删两样东西，其余一律不动：
+          - 本项目增补的节点（导入 / 同步 / 「增补信息」加进来的都在这里，连同子孙），
+            删完项目里剩下的就是全局模板结构；
+          - 本项目所有已填的值（回到「没填过」：0 行值，与「不预创建空值」同一口径）。
+        全局节点、下拉的选项定义、编辑历史都保留；增补节点上的「关注」随节点一起清掉
+        （树里已无此节点，星标点不开），全局节点上的关注不受影响——清的是数据与
+        多出来的结构，不是「谁关注了什么」。附件同样只解除挂载（资源库里的文件本体
+        不在这里删）。
+
+        记历史（change_reason 一律 CLEAR_CHANGE_REASON）：
+          - 增补节点每个**顶层子树**一条 delete，与被删节点的上级挂在一起（同 delete_node
+            的口径，编辑历史里能看到「删了哪个节点、带走了几个子节点」）；挂在被删节点
+            上的值不另记——节点都没了，「内容被清空」没有独立的展示位置；
+          - 再加一条整树级记录（node_id 为 NULL）报总数，项目级历史里一眼看到这次清空。
+        本来就没填的节点（没值行，或值行是空的）跳过不记，免得历史里刷出一串
+        「清空了内容（原为「空」）」；节点与值本来就没有（项目与模板一致）时整树级
+        那条也不记，不留空转记录。
+
+        返回 {"cleared": 清掉的字段数, "nodes_removed": 删掉的增补节点数}：
+        cleared 只数**留下来的全局节点**上被清掉的内容，与「清空了内容」的历史条数
+        一一对应；增补节点上的值随节点一起走，算进 nodes_removed 那一侧，不再单列。
+
+        错误约定（接口层映射）：LookupError → 404。
+        """
+        db = SessionLocal()
+        try:
+            if db.query(Project.id).filter(Project.id == project_id).first() is None:
+                raise LookupError("项目不存在")
+
+            now = _now_str()
+
+            # ① 增补节点：每个顶层子树一条删除记录（挂在它原来的上级下），同 delete_node 口径
+            custom_nodes = db.query(ProjectInfoNode).filter(
+                ProjectInfoNode.project_id == project_id,
+            ).all()
+            removed_ids = {node.id for node in custom_nodes}
+            for node in custom_nodes:
+                if node.parent_id in removed_ids:
+                    continue                    # 子树内部节点：由顶层那条记录概括
+                child_count = len(history_log.subtree_node_ids(custom_nodes, node.id)) - 1
+                history_log.add_history(
+                    db, project_id=project_id,
+                    operation_type=history_log.ACTION_DELETE,
+                    detail=history_log.build_node_delete_detail(node.node_name, child_count),
+                    node_id=node.id, parent_id=node.parent_id,
+                    node_key=node.node_key, node_name=node.node_name,
+                    node_type=node.node_type,
+                    changed_by=operator, changed_by_name=operator_name,
+                    change_reason=CLEAR_CHANGE_REASON, changed_at=now,
+                )
+
+            # ② 值：留下来的全局节点逐条记 delete；挂在被删节点上的随节点一起走，不另记
+            rows = db.query(ProjectInfoValue).filter(
+                ProjectInfoValue.project_id == project_id,
+            ).all()
+            kept_ids = [row.node_id for row in rows if row.node_id not in removed_ids]
+            nodes: Dict[str, ProjectInfoNode] = {
+                node.id: node for node in db.query(ProjectInfoNode).filter(
+                    ProjectInfoNode.id.in_(kept_ids),
+                ).all()
+            } if kept_ids else {}
+            cleared = 0
+            for row in rows:
+                node = nodes.get(row.node_id)
+                if node is None or _is_blank_value(row.value_json):
+                    continue
+                cleared += 1
+                detail = history_log.build_value_detail(
+                    node.value_type, row.value_json, None, history_log.ACTION_DELETE,
+                )
+                if detail:
+                    history_log.add_history(
+                        db, project_id=project_id,
+                        operation_type=history_log.ACTION_DELETE,
+                        detail=detail,
+                        node_id=node.id, parent_id=node.parent_id,
+                        node_key=node.node_key, node_name=node.node_name,
+                        node_type=node.node_type,
+                        old_value=row.value_json, new_value=None,
+                        changed_by=operator, changed_by_name=operator_name,
+                        change_reason=CLEAR_CHANGE_REASON, changed_at=now,
+                    )
+
+            # ③ 整树级一条：项目级历史里说明这次清空动了多少（什么都没动就不记）
+            if removed_ids or cleared:
+                history_log.add_history(
+                    db, project_id=project_id,
+                    operation_type=history_log.ACTION_DELETE,
+                    detail=history_log.build_reset_detail(len(removed_ids), cleared),
+                    changed_by=operator, changed_by_name=operator_name,
+                    change_reason=CLEAR_CHANGE_REASON, changed_at=now,
+                )
+
+            # ④ 落库：增补节点上的关注随节点清掉，值与增补节点整批删（与 ③ 同一事务）
+            node_marks.remove_marks(db, removed_ids)
+            db.query(ProjectInfoValue).filter(
+                ProjectInfoValue.project_id == project_id,
+            ).delete(synchronize_session=False)
+            db.query(ProjectInfoNode).filter(
+                ProjectInfoNode.project_id == project_id,
+            ).delete(synchronize_session=False)
+            db.commit()
+            return {"cleared": cleared, "nodes_removed": len(removed_ids)}
+        finally:
+            db.close()
 
     # ── 项目增补节点（普通用户的「增补信息」路径） ──────────
 
@@ -847,3 +963,12 @@ def _is_same_value(old, new) -> bool:
             return None
         return value
     return _norm(old) == _norm(new)
+
+
+def _is_blank_value(value) -> bool:
+    """值算不算「空」（一键清空据此跳过本来就没填的节点，不写空转的历史）。
+
+    与 _is_same_value 同一口径（None / 空串 / 空数组），另把空对象也算进来——
+    附件被摘掉后会留下 {}。
+    """
+    return (not value) if isinstance(value, dict) else _is_same_value(value, None)

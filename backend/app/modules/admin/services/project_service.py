@@ -133,6 +133,29 @@ def _to_float_or_none(value) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
+# 项目在 collection_data 里没有任何 GroupEfficiency 记录时的任务统计占位。
+# 数值一律 None，不能填 0：0 会被当成真实统计值渲染出来，前端对 None 才显示「-」。
+NO_TASK_EXECUTION_STATS = {
+    "total_tasks": None,
+    "finished_tasks": None,
+    "completion_rate": None,
+    "manual_switch_count": None,
+    "data_date": None,
+}
+
+def _record_data_date(data_start_time, record_time_str) -> Optional[str]:
+    """collection_data 记录归属的数据日期（YYYY-MM-DD）。
+
+    优先取记录自带 start_time（ISO 字符串，含数据源自身时区，如 "2026-08-31T00:00:00+08:00"），
+    与搬运效率分析解析记录的日期口径一致（不按时间戳做时区换算，避免数据源时区与服务器
+    时区不一致时整体错一天）；老数据缺失 start_time 时退回 time_str（"{start}|{end}"）的日期部分。
+    两者都拿不到返回 None，前端卡片显示「-」。
+    """
+    for raw in (data_start_time, record_time_str):
+        if isinstance(raw, str) and len(raw) >= 10:
+            return raw[:10]
+    return None
+
 def get_db():
     db = SessionLocal()
     try:
@@ -563,6 +586,11 @@ class ProjectService:
             db.execute(user_project_roles.delete().where(
                 user_project_roles.c.project_id == str(project.id)))
 
+            # 各人的置顶标注一并清掉：软删的项目不再进任何列表，
+            # 留着的置顶是点不开的孤儿记录（与节点关注随项目删除清理同口径）
+            from app.modules.admin.services.project_pin_service import remove_pins_for_project
+            remove_pins_for_project(db, str(project.id))
+
             # 软删除：保留 project 记录，仅标记为已删除。
             # 后续创建新项目时 check_project_duplicate 仍会命中本记录（按编号/名称），
             # 从而阻止编号/名称被复用，达到去重目的。
@@ -614,17 +642,19 @@ class ProjectService:
         finally:
             db.close()
     
-    def get_task_execution_metrics_7d_batch(self, project_codes: List[str]) -> Dict[str, Dict]:
-        """批量获取多项目任务执行指标（一次批量查询，取近 7 天内最新一天的数据）。
+    def get_task_execution_metrics_latest_batch(self, project_codes: List[str]) -> Dict[str, Dict]:
+        """批量获取多项目任务执行指标（一次批量查询，每个项目取系统中已导入的最新一天数据）。
 
         替代循环内逐项目调用 get_task_execution_status_7d / get_task_execution_stats_7d
         （两者 SQL 几乎相同，逐项目时为 2N 条 JSON 聚合查询，是 /projects?include_analysis
         列表接口的主要耗时来源）。数据源为 collection_data 表（indicator='GroupEfficiency'），
         某一天的数据整体存在 `data` JSON 字段（data[0] 为该日指标），按项目取
-        近 7 天内最新一天（MAX start_time_int）：
+        已导入的最新一天（MAX start_time_int，不限时间窗——各项目导入频率不同，
+        部分项目的最新数据是一周前甚至更早，卡近 7 天窗口会让这些项目直接显示无数据）：
         - 任务总数/已完成任务：dataIndicators.taskNumber.totalTasks / finishedTasks；
         - 任务完成率：dataIndicators.taskNumber.completionRate（如 "90%"，解析为小数）；
-        - 切手动次数：averageManualCount.averageManualCount（如 6.5）。
+        - 切手动次数：averageManualCount.averageManualCount（如 6.5）；
+        - 数据日期：该记录的日期（见 _record_data_date），卡片据此标注这组数据的真实日期。
         返回：
         {
           code: {
@@ -632,6 +662,7 @@ class ProjectService:
             "stats": {
                 "total_tasks": int, "finished_tasks": int,
                 "completion_rate": float|None, "manual_switch_count": float|None,
+                "data_date": "YYYY-MM-DD"|None,
             },
           }
         }
@@ -669,13 +700,14 @@ class ProjectService:
                 JSON_EXTRACT(
                     JSON_EXTRACT(cd.`data`, '$.data[0].averageManualCount'),
                     '$.averageManualCount'
-                ) AS latest_manual_count
+                ) AS latest_manual_count,
+                JSON_UNQUOTE(JSON_EXTRACT(cd.`data`, '$.start_time')) AS data_start_time,
+                cd.time_str AS record_time_str
             FROM collection_data cd
             JOIN (
                 SELECT project, MAX(start_time_int) AS max_start
                 FROM collection_data
                 WHERE indicator = 'GroupEfficiency'
-                AND start_time_int >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
                 AND project IN :codes
                 GROUP BY project
             ) t ON t.project = cd.project AND cd.start_time_int = t.max_start
@@ -701,6 +733,7 @@ class ProjectService:
                             row.latest_completion_rate, total_tasks, finished_tasks
                         ),
                         "manual_switch_count": _to_float_or_none(row.latest_manual_count),
+                        "data_date": _record_data_date(row.data_start_time, row.record_time_str),
                     },
                 }
             return metrics

@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     ALIYUN_OSS_UPLOAD_DIR: str = Field(default="")
     # 分片上传每片大小（MB），仅对 >100MB 大文件生效
     ALIYUN_OSS_PART_SIZE_MB: int = Field(default=10)
+    # 资源预签名下载链接有效期（分钟），修改 .env 后重启后端生效
+    RESOURCE_DOWNLOAD_URL_EXPIRES_MINUTES: int = Field(default=3, description="资源分享/下载预签名 URL 有效期（分钟）")
     
     REDIS_HOST: str = Field(default="localhost")
     REDIS_PORT: int = Field(default=6379)

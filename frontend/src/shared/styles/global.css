@@ -1367,7 +1367,7 @@ html, body, #root {
   gap: 10px;
   padding: 12px;
   background: var(--muted);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   animation: behalf-expand 0.2s ease;
 }
 
@@ -1434,17 +1434,20 @@ html, body, #root {
   gap: 10px;
   margin: 0 0 12px;
   padding: 12px 14px 12px 12px;
-  background: var(--card);
+  /* 毛玻璃卡片（同 .surface-card 规范）+ 左侧主色竖条 */
+  background: color-mix(in oklab, var(--card) 80%, transparent);
+  border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
   border-left: 3px solid var(--primary);
-  border-radius: 12px;
-  box-shadow: var(--shadow-sm, 0 2px 8px rgba(0, 0, 0, 0.04));
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
 }
 
 .proxy-banner--action {
   flex-direction: column;
   align-items: stretch;
   gap: 12px;
-  background: var(--blue-1, #e3f6ff);
+  /* 待办提示用品牌主色软底（--blue-1 是深蓝色阶，不可作背景色） */
+  background: var(--primary-soft);
   border-left-color: var(--primary);
 }
 
@@ -1475,7 +1478,7 @@ html, body, #root {
   flex: 1;
 }
 
-/* 关系状态胶囊：待确认（主色软底）/ 已跟进（浅绿）/ 已拒绝（中性灰） */
+/* 关系状态胶囊：待确认（系统蓝浅底+蓝字，同 mac-chip 信息胶囊）/ 已跟进（弱化底+深蓝字，同任务 resolved 惯例）/ 已拒绝（中性灰） */
 .proxy-pill {
   flex-shrink: 0;
   padding: 3px 10px;
@@ -1487,13 +1490,13 @@ html, body, #root {
 }
 
 .proxy-pill--pending {
-  background: var(--blue-1, #e3f6ff);
-  color: var(--primary);
+  background: var(--blue-soft);
+  color: var(--blue-2);
 }
 
 .proxy-pill--acknowledged {
-  background: var(--green-1, #e6f5ef);
-  color: var(--green-2, #3e9c7a);
+  background: var(--secondary);
+  color: var(--blue-1);
 }
 
 .proxy-pill--declined {
@@ -1515,8 +1518,8 @@ html, body, #root {
 }
 
 .proxy-card-pill--pending {
-  color: var(--primary);
-  background: var(--blue-1, #e3f6ff);
+  color: var(--blue-2);
+  background: var(--blue-soft);
 }
 
 /* 「待你跟进」小圆点：与底部导航角标同配色（主色实心 + 轻微呼吸） */
@@ -1549,7 +1552,7 @@ html, body, #root {
   gap: 12px;
   padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
   background: var(--card);
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
 .proxy-decline__title {
@@ -7061,6 +7064,16 @@ html, body, #root {
 }
 .chat-press-menu__item:last-child { border-right: none; }
 .chat-press-menu__item:active { background: var(--muted); }
+
+/* 长按就地选择（0922 微信式）：选中气泡放开文本选择（容器默认禁选），
+   其余消息/界面仍禁选；手柄 = 竖线 + 圆点（起点圆点在上、终点在下） */
+.chat-bubble-wrap.chat-sel-active,
+.chat-bubble-wrap.chat-sel-active .chat-bubble,
+.chat-bubble-wrap.chat-sel-active * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
 
 /* 气泡删除按钮（仅自己消息，hover/长按显示） */
 .detail-chat-bubble__del {

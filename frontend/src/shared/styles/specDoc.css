@@ -82,6 +82,18 @@
   overflow: hidden;
 }
 
+/* 打开编辑器前的「内嵌大图外置」准备态：此阶段不挂载 MDEditor，
+   避免 Prism 高亮在超大 base64 单行上触发 O(n²) 回溯卡死主线程 */
+.spec-editor__preparing {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted-foreground, #6b7280);
+  font-size: 14px;
+}
+
 /* 让 MDEditor 填满容器 */
 .spec-editor__body .w-md-editor {
   height: 100% !important;

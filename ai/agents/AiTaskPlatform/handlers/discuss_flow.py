@@ -15,6 +15,7 @@ from ai.agents.AiTaskPlatform.prompts import (
 from ai.agents.AiTaskPlatform.contexts import (
     extract_referenced_task_ids,
     format_referenced_tickets,
+    format_quoted_comment_block,
 )
 
 logger = get_logger("TASK_AGENT")
@@ -128,7 +129,7 @@ class DiscussFlow:
     # discuss — @U老师 讨论回复
     # ============================================================
 
-    async def discuss(self, task_id: str, query: str, context: dict) -> dict:
+    async def discuss(self, task_id: str, query: str, context: dict, username: str = "") -> dict:
         """@U老师 讨论：基于讨论历史 + 工单上下文 + 按需附件/历史工单 回复。
 
         Supervisor 派发能力时的实时进度会通过后端 WS 广播 ai.progress，前端动态
@@ -137,6 +138,16 @@ class DiscussFlow:
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
+
+        # 0. 用户画像注入（诊断 Agent 复用）
+        user_profile_block = ""
+        if username:
+            try:
+                from ai.core.user_profile import resolve_user_profile, format_user_profile_block
+                profile = await resolve_user_profile(username)
+                user_profile_block = format_user_profile_block(profile)
+            except Exception as e:
+                logger.warning(f"[discuss] 用户画像解析失败(降级无画像): user={username}, err={e}")
 
         # 1. 工单上下文
         ctx = await self._load_task_context(task_id)
@@ -166,6 +177,15 @@ class DiscussFlow:
             content_str = str(c.get("content", ""))[:200]
             discussion_lines.append(f"[{author}] {content_str}")
         discussion_history = "\n".join(discussion_lines) if discussion_lines else "（暂无讨论）"
+
+        # 2b. 讨论区「引用这句话」：用户引用某条评论后再 @U老师。
+        #     与 @# 同款预加载，单独成段，避免淹没在最近 10 条历史里。
+        quoted_comment = ""
+        try:
+            quoted_comment = format_quoted_comment_block(context or {})
+        except Exception as _q_e:
+            logger.warning(f"[discuss] 引用评论注入失败: {_q_e}")
+            quoted_comment = ""
 
         # 3. Supervisor 自主调度能力（方案甲全量收敛：图片/日志/代码/历史都由调度 LLM 决定）
         #    替代原先 3a/3b/3c/3d 写死的关键词触发。
@@ -290,6 +310,7 @@ class DiscussFlow:
             f"描述: {(ctx.description or '')[:200]}\n"
             f"假设: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}\n"
             f"用户问题: {query or '（本轮用户仅@U老师未附加文字，请基于下方讨论历史延续解答）'}\n"
+            f"{quoted_comment}"
             f"最近讨论历史:\n{(discussion_history if discussion_lines else '（暂无讨论）')[:600]}\n"
             f"本次新增/未解读附件（需重点分析）:\n{new_txt}\n"
             f"历史已解读附件摘要（**仅作历史参考**：图片结论稳定可复述；"
@@ -312,7 +333,7 @@ class DiscussFlow:
         #    图片 / 代码）还是 complexity=simple 直接回复。纯闲聊由 3.2b 的 Router
         #    （is_pure_chat）把关，不进 Supervisor。
         has_discussion = bool(discussion_lines)
-        need_supervisor = bool(query) or has_discussion
+        need_supervisor = bool(query) or has_discussion or bool(quoted_comment)
 
         # 3.2b LLM 意图路由（改造点 A / G1）：识别纯闲聊 → 走短 prompt 快路径，
         #      不派生任何工具/子 Agent，省一次 Supervisor 调度 + token。
@@ -557,10 +578,10 @@ class DiscussFlow:
 
         # 4. LLM（纯闲聊走 light 短 prompt，省 token）
         #    澄清（P4）不单独走 prompt：一律先生成分析答复，待确认问题在 4.7 作为"补充提问"追加。
-        #    若用户 @# 引用了历史工单（referenced_tickets 非空），说明在认真查工单问题，
-        #    绝非闲聊 —— 强制走完整 DISCUSS 模板（light 模板没有 referenced_tickets 占位，
-        #    会把引用内容整个丢弃导致 Agent 只能凭记忆/猜测回复，是幻觉来源之一）。
-        if is_pure_chat and not referenced_tickets:
+        #    若用户 @# 引用了历史工单（referenced_tickets 非空），或本轮引用了某条评论
+        #    （quoted_comment 非空），说明在针对具体内容提问，绝非闲聊 —— 强制走完整
+        #    DISCUSS 模板（light 模板原先没有这些占位，会把引用丢掉）。
+        if is_pure_chat and not referenced_tickets and not quoted_comment:
             from ai.agents.AiTaskPlatform.prompts import (
                 DISCUSS_LIGHT_SYSTEM_PROMPT, DISCUSS_LIGHT_USER_TEMPLATE,
             )
@@ -568,6 +589,7 @@ class DiscussFlow:
                 title=ctx.title or "",
                 description=(ctx.description or "")[:200],
                 discussion_history=discussion_history,
+                quoted_comment=quoted_comment or "",
                 query=query or "",
             )
             system_prompt = DISCUSS_LIGHT_SYSTEM_PROMPT
@@ -584,12 +606,17 @@ class DiscussFlow:
                 description=(ctx.description or "")[:200],
                 diagnosis_summary=diag_summary,
                 discussion_history=discussion_history,
+                quoted_comment=quoted_comment or "",
                 query=query or "请基于讨论历史和工单信息，给出你的分析和建议。",
                 referenced_tickets=referenced_tickets or "",
                 facultative_analysis=facultative,
             )
             system_prompt = _select_system_prompt(self._is_platform_ticket(ctx), "discuss")
             max_tokens = 600
+
+        # 注入用户画像到 system prompt（有画像时追加，无画像保持原样）
+        if user_profile_block:
+            system_prompt = f"{system_prompt}\n\n{user_profile_block}"
 
         t_llm = time.perf_counter()
         reply = await self._llm_client.complete(

@@ -2,8 +2,10 @@ import type { ReactNode } from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { Toast } from 'tdesign-mobile-react';
 import ProjectInfoEdit from '../admin/ProjectInfoEdit';
 import {
+  resetProjectInfoTreeApi,
   createInfoNodeApi,
   createCustomInfoNodeApi,
   deleteInfoNodeApi,
@@ -25,6 +27,7 @@ vi.mock('@/api/infoNodes', () => ({
   moveInfoNodeApi: vi.fn(),
   deleteInfoNodeApi: vi.fn(),
   importInfoTreeApi: vi.fn(),
+  resetProjectInfoTreeApi: vi.fn(),
   // 编辑历史：进页面会拉一次「各节点最新记录时间」算小红点，缺了页面会直接崩
   fetchInfoNodeChangesApi: vi.fn(),
   fetchInfoNodeChangeSummaryApi: vi.fn(),
@@ -73,7 +76,8 @@ vi.mock('tdesign-mobile-react', () => {
   );
   // 一键回到顶部按钮：无交互逻辑可测，渲染占位即可
   const BackTop = () => <div data-testid="backtop" />;
-  return { Navbar, Popup, Input, Toast: () => null, BackTop };
+  // Toast 是 spy：提示文案（成功/失败）也要能断言
+  return { Navbar, Popup, Input, Toast: vi.fn(), BackTop };
 });
 
 const TS = '2026-09-14 10:00:00';
@@ -309,6 +313,74 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
       expect(deleteInfoNodeApi).toHaveBeenCalledWith('r1');
     });
     expect(screen.queryByText('基础信息')).toBeNull();
+  });
+
+  it('一键清空：先确认再清（值清掉、增补节点删掉、模板字段还在），并报出两个计数', async () => {
+    vi.mocked(resetProjectInfoTreeApi).mockResolvedValue({ cleared: 1, nodesRemoved: 1 });
+    vi.mocked(fetchInfoTree).mockResolvedValue([
+      node({
+        id: 'r1', title: '基础信息', sort_order: 0,
+        children: [
+          node({ id: 'c1', parent_id: 'r1', title: '客户信息', value: '中力', sort_order: 0 }),
+          // 导入/同步加进来的增补节点：一键清空后连节点一起没（恢复成模板结构）
+          node({ id: 'x1', parent_id: 'r1', title: '导入信息', is_custom: true, value: '台账同步进来的', sort_order: 1 }),
+        ],
+      }),
+    ]);
+    renderEdit();
+    await screen.findByText('基础信息');
+
+    fireEvent.click(screen.getByRole('button', { name: '一键清空' }));
+    // 确认弹层：没点「清空」之前不发请求
+    expect(screen.getByText(/恢复成模板的样子/)).toBeTruthy();
+    expect(resetProjectInfoTreeApi).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '清空' }));
+    await waitFor(() => expect(resetProjectInfoTreeApi).toHaveBeenCalledWith('P1'));
+    await waitFor(() => {
+      expect((screen.getByLabelText('客户信息内容') as HTMLTextAreaElement).value).toBe('');
+    });
+    // 全局（模板）字段留着，增补节点没了
+    expect(screen.getByText('基础信息')).toBeTruthy();
+    expect(screen.getByText('客户信息')).toBeTruthy();
+    expect(screen.queryByText('导入信息')).toBeNull();
+    // 提示把两个数都报出来（清掉的内容 + 删掉的增补节点）
+    await waitFor(() => {
+      expect(vi.mocked(Toast)).toHaveBeenCalledWith({
+        message: '已恢复为模板结构：删除 1 个增补节点、清空 1 项已填内容',
+        theme: 'success',
+      });
+    });
+  });
+
+  it('一键清空：确认前点「取消」不发请求', async () => {
+    renderEdit();
+    await screen.findByText('基础信息');
+    fireEvent.click(screen.getByRole('button', { name: '一键清空' }));
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(resetProjectInfoTreeApi).not.toHaveBeenCalled();
+  });
+
+  it('不是这个项目的人看不到「一键清空」（值写入门槛之外的重操作）', async () => {
+    authState.permissions = [];
+    authState.projectIds = [];       // 只在别的项目下有角色
+    renderEdit();
+    await screen.findByText('基础信息');
+    expect(screen.queryByRole('button', { name: '一键清空' })).toBeNull();
+  });
+
+  it('一键清空：什么都没有可清时提示「本来就与模板一致」而不是「清空 0 项」', async () => {
+    vi.mocked(resetProjectInfoTreeApi).mockResolvedValue({ cleared: 0, nodesRemoved: 0 });
+    renderEdit();
+    await screen.findByText('基础信息');
+    fireEvent.click(screen.getByRole('button', { name: '一键清空' }));
+    fireEvent.click(screen.getByRole('button', { name: '清空' }));
+    await waitFor(() => {
+      expect(vi.mocked(Toast)).toHaveBeenCalledWith({
+        message: '本来就与模板一致，没有可清的内容',
+        theme: 'success',
+      });
+    });
   });
 
   it('全局字段定义不给结构操作，只留历史（改定义要走「详情模板」）', async () => {

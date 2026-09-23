@@ -43,6 +43,10 @@ from ai.core.vision_chat import (
     format_atlas_block_for_chat,
     strip_ungrounded_meanings,
 )
+from ai.core.user_profile import (
+    resolve_user_profile,
+    format_user_profile_block,
+)
 __all__ = [
     # LLM
     "LLMClient",
@@ -74,4 +78,7 @@ __all__ = [
     "format_atlas_block_for_chat",
     "compare_chat_vlm_with_atlas",
     "strip_ungrounded_meanings",
+    # 用户画像（诊断 / 任务 Agent 共用）
+    "resolve_user_profile",
+    "format_user_profile_block",
 ]

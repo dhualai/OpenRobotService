@@ -132,12 +132,12 @@ export default function FileExplorer() {
     window.open(`${ADMIN_BASE}${RESOURCES_PREFIX}/${item.id}/download?token=${token}`, '_blank');
   };
 
-  // 分享：获取 3 分钟有效的预签名 URL 并复制到剪贴板
+  // 分享：获取预签名 URL 并复制到剪贴板，有效期由后端 .env RESOURCE_DOWNLOAD_URL_EXPIRES_MINUTES 决定
   const share = async (item: ChildItem) => {
     setSharingId(item.id);
     try {
-      const res = await request<{ download_url?: string }>(
-        `${RESOURCES_PREFIX}/${item.id}/download-url?expires_minutes=3`,
+      const res = await request<{ download_url?: string; expires_in_minutes?: number }>(
+        `${RESOURCES_PREFIX}/${item.id}/download-url`,
         { skipCache: true },
       );
       const url = res?.download_url;
@@ -155,7 +155,8 @@ export default function FileExplorer() {
         document.execCommand('copy');
         document.body.removeChild(ta);
       }
-      Toast({ message: '下载链接已复制（3 分钟内有效）', theme: 'success' });
+      const mins = res?.expires_in_minutes ?? 0;
+      Toast({ message: mins > 0 ? `下载链接已复制（${mins} 分钟内有效）` : '下载链接已复制', theme: 'success' });
     } catch (err) {
       Toast({ message: `分享失败: ${String(err)}`, theme: 'error' });
     } finally {

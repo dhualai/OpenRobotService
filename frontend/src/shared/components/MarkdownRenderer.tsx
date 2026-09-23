@@ -85,6 +85,9 @@ function rewritePlaceholder(src: string): string {
   return svgPlaceholderDataUri(w, h, text);
 }
 
+// 内联 base64 图片大小上限：超过则降级为占位，避免浏览器同步解码超大图阻塞主线程
+const MAX_INLINE_B64 = 500 * 1024;
+
 // ---------------------------------------------------------------------------
 // 预处理：@# 跨工单引用 → 可点击链接
 // ---------------------------------------------------------------------------
@@ -373,6 +376,23 @@ const authImgInflight = new Map<string, Promise<AuthCacheEntry>>();
 /** 串上 token 作为缓存 key 的一部分，token 变更/失效后自动重新加载 */
 const authCacheKey = (fullUrl: string): string => `${fullUrl}::${useAuthStore.getState().token || ''}`;
 
+// 图片加载并发限制：避免一次性大量图片请求占满连接 / 主线程导致页面假死
+const MAX_CONCURRENT_IMG = 8;
+let _imgActive = 0;
+const _imgWaiters: Array<() => void> = [];
+function _acquireImgSlot(): Promise<void> {
+  if (_imgActive < MAX_CONCURRENT_IMG) {
+    _imgActive += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => _imgWaiters.push(resolve));
+}
+function _releaseImgSlot(): void {
+  _imgActive = Math.max(0, _imgActive - 1);
+  const next = _imgWaiters.shift();
+  if (next) next();
+}
+
 /** 鉴权加载单个图片（带缓存 + 并发去重），返回最终缓存条目 */
 function loadAuthImage(fullUrl: string): Promise<AuthCacheEntry> {
   const cacheKey = authCacheKey(fullUrl);
@@ -382,6 +402,7 @@ function loadAuthImage(fullUrl: string): Promise<AuthCacheEntry> {
   if (inflight) return inflight;
 
   const p = (async (): Promise<AuthCacheEntry> => {
+    await _acquireImgSlot();
     try {
       const token = useAuthStore.getState().token;
       if (!token) {
@@ -416,6 +437,8 @@ function loadAuthImage(fullUrl: string): Promise<AuthCacheEntry> {
       const entry: AuthCacheEntry = { status: 'direct' };
       authImgCache.set(cacheKey, entry);
       return entry;
+    } finally {
+      _releaseImgSlot();
     }
   })();
 
@@ -444,16 +467,21 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
   const urlInfo = useMemo(() => {
     if (!src) return { type: 'empty' as const, url: '' };
     const isAbsolute = /^https?:\/\//i.test(src);
+    const isData = /^data:/i.test(src);
     const isSameOrigin = isAbsolute && src.startsWith(window.location.origin);
-    const isRelative = !isAbsolute;
+    // data: 内联资源（如 base64 图片）不走鉴权 fetch，直接交给 <img> 解码渲染；
+    // 旧逻辑会把它误判成相对路径 → fetch('/data:image/...') 15s 超时，既发无效请求又长期 loading。
+    const isRelative = !isAbsolute && !isData;
     const needsAuth = isRelative || isSameOrigin;
-    const fullUrl = isAbsolute
+    const fullUrl = isData
       ? src
-      : src.startsWith('/api/')
-        ? `${ENV_PREFIX}${src}`
-        : src.startsWith('/')
-          ? src
-          : `/${src}`;
+      : isAbsolute
+        ? src
+        : src.startsWith('/api/')
+          ? `${ENV_PREFIX}${src}`
+          : src.startsWith('/')
+            ? src
+            : `/${src}`;
     return { type: needsAuth ? 'auth' as const : 'direct' as const, url: src, fullUrl };
   }, [src]);
 
@@ -534,6 +562,12 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
 
   if (imgState.status === 'idle') {
     if (urlInfo.type === 'direct') {
+      // 超大内联 base64 图片（>500KB）直接解码会阻塞主线程，降级为占位提示
+      if (urlInfo.url.startsWith('data:') && urlInfo.url.length > MAX_INLINE_B64) {
+        return (
+          <span className="md-media-fallback">图片数据过大（{(urlInfo.url.length / 1024).toFixed(0)}KB），已省略内联显示</span>
+        );
+      }
       return (
         <>
           <img

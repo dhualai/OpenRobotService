@@ -256,16 +256,24 @@ def invoke_remote_cmd(cfg: SshConfig, command, *, sudo=False):
 
 
 def send_tarball(cfg: SshConfig, local_tar, remote_name):
-    """将本地 tar 包 scp 到远端 /tmp/，返回远端 tar 路径。"""
-    remote_tar = f"/tmp/{remote_name}"
-    scp_args = cfg.ssh_args("scp") + [local_tar, f"{cfg.target()}:{remote_tar}"]
+    """将本地 tar 包 scp 到远端用户家目录，返回 bash 可用的远端 tar 路径。
+
+    说明：
+    临时文件放在 $HOME/tmp 下，避开 /tmp 或 /data/tmp 的 sticky/root 所有权权限问题。
+    scp 目标用 ~ 展开，bash 命令（mkdir/tar/rm）用 $HOME 展开（bash 双引号内 ~ 不会展开）。
+    """
+    scp_dir = "~/tmp"                  # scp 目标路径
+    bash_dir = "$HOME/tmp"             # bash 命令路径（双引号内 $HOME 可展开，~ 不行）
+    invoke_remote_cmd(cfg, f"mkdir -p {bash_dir}")
+
+    scp_args = cfg.ssh_args("scp") + [local_tar, f"{cfg.target()}:{scp_dir}/{remote_name}"]
     if cfg.dry_run:
         write_info(f"[dryrun] scp {' '.join(scp_args)}")
-        return remote_tar
+        return f"{bash_dir}/{remote_name}"
     rc = _run(["scp"] + scp_args)
     if rc != 0:
         raise RuntimeError(f"scp 上传失败: {local_tar}")
-    return remote_tar
+    return f"{bash_dir}/{remote_name}"
 
 
 def new_local_tar(source_dir, paths, excludes=None, dry_run=False):
@@ -347,8 +355,12 @@ def deploy_frontend(cfg: SshConfig, repo_root: Path, env: dict, skip_build: bool
 
     nginx_html = env["NginxHtml"]
     extract_cmd = (
-        f'mkdir -p "{nginx_html}" && rm -rf "{nginx_html}"/* '
-        f'&& tar -xzf "{remote_tar}" -C "{nginx_html}" '
+        f'mkdir -p "{nginx_html}" && rm -rf "$HOME/tmp/_ors_extract/frontend" '
+        f'&& mkdir -p "$HOME/tmp/_ors_extract/frontend" '
+        f'&& tar -xzf "{remote_tar}" -C "$HOME/tmp/_ors_extract/frontend" -m --no-same-permissions --no-same-owner '
+        f'&& rm -rf "{nginx_html}"/* '
+        f'&& cp -rf "$HOME/tmp/_ors_extract/frontend/." "{nginx_html}/" '
+        f'&& rm -rf "$HOME/tmp/_ors_extract/frontend" '
         f'&& rm -f "{remote_tar}" && echo FRONTEND_DONE'
     )
     write_info(f"远端解压到 {nginx_html}")
@@ -374,8 +386,12 @@ def deploy_backend(cfg: SshConfig, repo_root: Path, env: dict, clean_remote: boo
     backend_remote = env["BackendRemote"]
     clean_cmd = f'rm -rf "{backend_remote}/app" && ' if clean_remote else ""
     extract_cmd = (
-        f'mkdir -p "{backend_remote}" && {clean_cmd}'
-        f'tar -xzf "{remote_tar}" -C "{backend_remote}" '
+        f'mkdir -p "{backend_remote}" && rm -rf "$HOME/tmp/_ors_extract/backend" '
+        f'&& mkdir -p "$HOME/tmp/_ors_extract/backend" '
+        f'&& tar -xzf "{remote_tar}" -C "$HOME/tmp/_ors_extract/backend" -m --no-same-permissions --no-same-owner '
+        f'&& {clean_cmd}'
+        f'cp -rf "$HOME/tmp/_ors_extract/backend/." "{backend_remote}/" '
+        f'&& rm -rf "$HOME/tmp/_ors_extract/backend" '
         f'&& rm -f "{remote_tar}" && echo BACKEND_UPLOAD_DONE'
     )
     write_info(f"远端解压到 {backend_remote}")
@@ -413,7 +429,11 @@ def deploy_ai(cfg: SshConfig, repo_root: Path, env: dict):
 
     ai_remote = env["AiRemote"]
     extract_cmd = (
-        f'mkdir -p "{ai_remote}" && tar -xzf "{remote_tar}" -C "{ai_remote}" '
+        f'mkdir -p "{ai_remote}" && rm -rf "$HOME/tmp/_ors_extract/ai" '
+        f'&& mkdir -p "$HOME/tmp/_ors_extract/ai" '
+        f'&& tar -xzf "{remote_tar}" -C "$HOME/tmp/_ors_extract/ai" -m --no-same-permissions --no-same-owner '
+        f'&& cp -rf "$HOME/tmp/_ors_extract/ai/." "{ai_remote}/" '
+        f'&& rm -rf "$HOME/tmp/_ors_extract/ai" '
         f'&& rm -f "{remote_tar}" && echo AI_UPLOAD_DONE'
     )
     write_info(f"远端解压到 {ai_remote}")

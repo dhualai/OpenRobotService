@@ -44,7 +44,7 @@ def _local_safe_key(object_path: str) -> str:
     """仅本地代理场景下，对被拦截后缀的 object key 追加安全后缀；否则原样返回。
 
     例如 xxx.zip → xxx.zip.localproxy（URL 不再以 .zip 结尾，绕开 nginx deny all）。
-    上传/读取统一走此归一化，保证对象名一致、能正常读写。
+    **上传**走此归一化；**读取**见 `_read_key_candidates`（原始 key 与 .localproxy 都试）。
     """
     if not _via_proxy():
         return object_path
@@ -52,6 +52,48 @@ def _local_safe_key(object_path: str) -> str:
     if any(low.endswith(s) for s in _BLOCKED_SUFFIXES) and not low.endswith(_LOCAL_SAFE_SUFFIX):
         return object_path + _LOCAL_SAFE_SUFFIX
     return object_path
+
+
+def _is_missing_object(e: S3Error) -> bool:
+    return (getattr(e, "code", None) or "") in ("NoSuchKey", "NoSuchObject", "NotFound")
+
+
+def _read_key_candidates(object_name: str) -> list[str]:
+    """读取用的 object key 候选：优先 DB/线上原始名，再试 .localproxy。
+
+    线上评论附件是 `.zip`；本地经代理上传的是 `.zip.localproxy`。两边都要能命中。
+    """
+    keys: list[str] = []
+
+    def _add(key: str) -> None:
+        if key and key not in keys:
+            keys.append(key)
+
+    _add(object_name)
+    low = object_name.lower()
+    if low.endswith(_LOCAL_SAFE_SUFFIX):
+        _add(object_name[: -len(_LOCAL_SAFE_SUFFIX)])
+    elif any(low.endswith(s) for s in _BLOCKED_SUFFIXES):
+        _add(object_name + _LOCAL_SAFE_SUFFIX)
+    return keys
+
+
+def _try_read_keys(func, object_name: str):
+    """按候选 key 依次调用 func(key)，NoSuchKey 则试下一个。"""
+    last_err: Optional[S3Error] = None
+    for key in _read_key_candidates(object_name):
+        try:
+            result = func(key)
+            if key != object_name:
+                logger.info("MinIO 使用备用 object key: %s -> %s", object_name, key)
+            return result
+        except S3Error as e:
+            last_err = e
+            if not _is_missing_object(e):
+                raise
+    if last_err:
+        raise last_err
+    raise RuntimeError(f"MinIO object not found: {object_name}")
 
 
 class AIMinIOClient:
@@ -77,7 +119,7 @@ class AIMinIOClient:
                             url = urlunparse(parsed._replace(path=new_path))
                     return super().urlopen(method, url, **kwargs)
 
-            cls._instance._client = Minio(
+            raw = Minio(
                 cfg.minio_endpoint,
                 access_key=cfg.minio_access_key,
                 secret_key=cfg.minio_secret_key,
@@ -93,6 +135,8 @@ class AIMinIOClient:
                     timeout=urllib3.Timeout(connect=10.0, read=60.0)
                 ),
             )
+            cls._instance._raw_client = raw
+            cls._instance._client = _ReadFallbackMinio(raw)
         return cls._instance
 
     @property
@@ -128,15 +172,15 @@ class AIMinIOClient:
         return urlunparse(parsed._replace(path=prefix + path))
 
     def resolve_key(self, object_path: str) -> str:
-        """对外暴露 object key 归一化（供 raw client 调用点统一使用）。
+        """读取侧返回 DB 中的原始 object key。
 
-        仅本地代理场景会对被拦截后缀追加《.localproxy》；生产直连原样返回。
+        真正 GET/STAT/预签名由 client 包装层同时尝试原始 key 与 `.localproxy`。
+        上传请走 upload_bytes（仍写 `.localproxy` 以绕开本地 nginx deny）。
         """
-        return _local_safe_key(object_path)
+        return object_path
 
     def get_presigned_url(self, object_path: str, expires_minutes: int = 5) -> str:
         bucket_name, object_name = self._split(object_path)
-        object_name = _local_safe_key(object_name)
         return self._with_api_prefix(self.client.presigned_get_object(
             bucket_name, object_name, expires=timedelta(minutes=expires_minutes)
         ))
@@ -145,7 +189,6 @@ class AIMinIOClient:
         """下载对象到本地文件路径（object_path = bucket/key）。"""
         try:
             bucket_name, object_name = self._split(object_path)
-            object_name = _local_safe_key(object_name)
             self.client.fget_object(bucket_name, object_name, local_path)
             return True
         except S3Error as e:
@@ -193,11 +236,49 @@ class AIMinIOClient:
     def get_file_info(self, object_path: str):
         try:
             bucket_name, object_name = self._split(object_path)
-            object_name = _local_safe_key(object_name)
             return self.client.stat_object(bucket_name, object_name)
         except S3Error as e:
             logger.warning("获取文件信息失败: %s", e)
             return None
+
+
+class _ReadFallbackMinio:
+    """包装 Minio SDK：读操作同时尝试原始 key 与 .localproxy；写操作原样转发。"""
+
+    def __init__(self, inner: Minio):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def fget_object(self, bucket_name, object_name, file_path, *args, **kwargs):
+        return _try_read_keys(
+            lambda key: self._inner.fget_object(
+                bucket_name, key, file_path, *args, **kwargs
+            ),
+            object_name,
+        )
+
+    def get_object(self, bucket_name, object_name, *args, **kwargs):
+        return _try_read_keys(
+            lambda key: self._inner.get_object(bucket_name, key, *args, **kwargs),
+            object_name,
+        )
+
+    def stat_object(self, bucket_name, object_name, *args, **kwargs):
+        return _try_read_keys(
+            lambda key: self._inner.stat_object(bucket_name, key, *args, **kwargs),
+            object_name,
+        )
+
+    def presigned_get_object(self, bucket_name, object_name, *args, **kwargs):
+        def _sign_existing(key: str):
+            self._inner.stat_object(bucket_name, key)
+            return self._inner.presigned_get_object(
+                bucket_name, key, *args, **kwargs
+            )
+
+        return _try_read_keys(_sign_existing, object_name)
 
 
 minio_client = AIMinIOClient()

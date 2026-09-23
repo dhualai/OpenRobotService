@@ -844,18 +844,22 @@ async def _upload_events(
                 pass
             yield {"event": "vision_start", "names": names}
             prompt = (
-                f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
+                f"分析图片 {names}。\n"
                 f"{vlm_context}"
+                f"⚠️ 上面的对话记录只用于理解图片的排查场景；画面要点以**图片上真实可见**"
+                f"的内容为准——可见的内容必须写（哪怕与对话重复），图片上没有的禁止补全。\n"
                 f"请用**结构化要点**输出，总字数 ≤ 200 字：\n"
-                f"- 画面类型（调度界面截图 / 设备现场照 / 文档表格 / 其他）\n"
-                f"- 画面上可见的关键内容：界面名称/页面元素、文字标签、数值（含错误码、机器人ID）、"
-                f"指示灯/设备状态——**逐字原样抄录，禁止推测补全**，看不清的写「（模糊）」\n"
+                f"- 画面类型：调度界面截图 / 聊天对话截图 / 设备现场照 / 文档表格 / 其他"
+                f"（五选一；禁止附加任何用途推断或「这是XX操作页面」式的定性）\n"
+                f"- 画面上可见的关键内容：可见的文字/按钮/列表项**逐字原样抄录**"
+                f"（含错误码、机器人ID），看不清的写「（模糊）」，禁止推测补全，"
+                f"禁止总结画面用途\n"
                 f"- 仅当画面上有明确的错误提示/告警标识时，原样转述该提示文字；画面正常就写「画面无报错提示」\n"
-                f"要点之后另起一行写「【回应】」加一句话（≤40 字），结合画面要点和上面的对话背景：\n"
-                f"- 背景已明确在排查什么 → 自然接话（如「这个数值确实不对，先记下了」）\n"
-                f"- 看不出用户目的 → 一句话问清意图（要查图上的报错，还是问这个界面怎么操作，还是其他情况）\n"
-                f"- 画面无报错且没有对话背景 → 问「这是遇到什么问题了，还是想了解这个界面的配置？」\n"
-                f"要点部分禁止推测故障原因；回应部分不要给排查步骤、不要下诊断结论。"
+                f"要点之后另起一行写「【回应】」加一句话（≤40 字）：\n"
+                f"- 对话背景里用户已明确表达意图（报错/要求提单/补充信息）→ 只确认收到，"
+                f"如「截图已看到，问题已记录」，🚫 禁止反问用户意图\n"
+                f"- 确实看不出用户目的 → 一句话问清意图（要查图上的报错，还是问这个界面怎么操作）\n"
+                f"要点部分禁止推测故障原因和界面用途；回应部分不要给排查步骤、不要下诊断结论。"
             )
             try:
                 async for tok in llm.stream_vision(
@@ -865,7 +869,8 @@ async def _upload_events(
                         "你是 AGV/AMR 调度系统的图片转述员，只做客观转述、不做分析判断："
                         "把画面上真实可见的内容（文字、数值、状态、错误码）逐字抄录成要点，"
                         "总字数 ≤ 200 字。看不清的注明「（模糊）」，禁止编造画面上没有的信息，"
-                        "禁止推测故障原因。最后按 prompt 要求在「【回应】」行用一句话回应用户。"
+                        "禁止推测故障原因，禁止对界面用途下定性结论（只抄看到的，不定性这是"
+                        "「什么操作页面」）。最后按 prompt 要求在「【回应】」行用一句话回应用户。"
                     ),
                     max_tokens=600,
                     temperature=0.3,
@@ -1604,23 +1609,29 @@ class SummarizeRequest(BaseModel):
 
 class TaskDiagnoseRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
+    username: str = Field(default="", description="当前用户（后端从 token 解析，前端可不传）")
 
 class TaskDiscussRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
     query: str = Field(..., description="用户问题（如 @U老师 帮我分析这个日志）")
-    context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments: [{author, content}]}")
+    context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments, quoted_comment, reply_to}")
+    username: str = Field(default="", description="当前用户（后端从 token 解析，前端可不传）")
 
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
-async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
+async def task_diagnose(body: TaskDiagnoseRequest, request: Request) -> dict:
     """全能力诊断 → 即时返回报告（不存库）"""
     import logging, time
     logger = logging.getLogger("TASK_AGENT")
     t_start = time.perf_counter()
-    logger.info(f"[diagnose] 入口: task_id={body.task_id}")
+    # 从 token 解析当前用户，注入用户画像让 AI 按身份调整回答深浅
+    username, _ = _current_user(request)
+    if not username:
+        username = (body.username or "").strip()
+    logger.info(f"[diagnose] 入口: task_id={body.task_id}, user={username}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
-        result = await agent.diagnose(task_id=body.task_id)
+        result = await agent.diagnose(task_id=body.task_id, username=username)
         elapsed = (time.perf_counter() - t_start) * 1000
         report_len = len(result.get("report_md", ""))
         logger.info(f"[diagnose] 完成: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
@@ -1634,13 +1645,17 @@ async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
 
 
 @task_agent_router.post("/discuss", summary="@U老师 讨论")
-async def task_discuss(body: TaskDiscussRequest) -> dict:
+async def task_discuss(body: TaskDiscussRequest, request: Request) -> dict:
     """@U老师 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
     import logging, time
     logger = logging.getLogger("TASK_AGENT")
     t_start = time.perf_counter()
     query_preview = (body.query or "")[:60]
-    logger.info(f"[discuss] 入口: task_id={body.task_id}, query={query_preview}")
+    # 从 token 解析当前用户，注入用户画像让 AI 按身份调整回答深浅
+    username, _ = _current_user(request)
+    if not username:
+        username = (body.username or "").strip()
+    logger.info(f"[discuss] 入口: task_id={body.task_id}, query={query_preview}, user={username}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
@@ -1648,6 +1663,7 @@ async def task_discuss(body: TaskDiscussRequest) -> dict:
             task_id=body.task_id,
             query=body.query,
             context=body.context,
+            username=username,
         )
         elapsed = (time.perf_counter() - t_start) * 1000
         reply_len = len(result.get("reply", ""))

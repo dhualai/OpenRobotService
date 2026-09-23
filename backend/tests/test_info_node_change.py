@@ -34,6 +34,7 @@ from app.modules.admin.services.info_node_change_service import (
     build_node_delete_detail,
     build_node_move_detail,
     build_rename_detail,
+    build_reset_detail,
     build_sync_detail,
     build_value_detail,
     describe_value,
@@ -148,6 +149,13 @@ class TestStructuralDetails:
 
     def test_模板变更文案(self):
         assert build_sync_detail(2, 5, 1) == "全局模板变更：新增 2 个、更新 5 个、停用 1 个节点"
+
+    def test_一键清空整树级文案(self):
+        # 两样都动了：都报出来（删除在前——结构变动比值更醒目）
+        assert build_reset_detail(4, 132) == "一键清空（恢复为模板结构）：删除 4 个增补节点，清空 132 项已填内容"
+        # 只动了其中一样：另一项不出现（调用方本来也只在至少动了一样时才写这条）
+        assert build_reset_detail(4, 0) == "一键清空（恢复为模板结构）：删除 4 个增补节点"
+        assert build_reset_detail(0, 7) == "一键清空（恢复为模板结构）：清空 7 项已填内容"
 
 
 class TestSubtreeNodeIds:

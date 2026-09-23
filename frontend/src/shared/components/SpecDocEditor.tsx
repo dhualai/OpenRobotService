@@ -9,11 +9,16 @@
  * - 粘贴富文本：剪贴板 HTML → markdown（shared/utils/htmlToMarkdown）
  */
 import { useEffect, useRef, useState } from 'react';
-import { Popup, Toast } from 'tdesign-mobile-react';
+import { Loading, Popup, Toast } from 'tdesign-mobile-react';
 import MDEditor, { type RefMDEditor } from '@uiw/react-md-editor';
 import '@uiw/react-md-editor/markdown-editor.css';
 import '@uiw/react-markdown-preview/markdown.css';
-import { parseSpecDocFile, uploadSpecDocImage } from '@/api/specDoc';
+import {
+  externalizeInlineImages,
+  foldHugeInlineImages,
+  parseSpecDocFile,
+  uploadSpecDocImage,
+} from '@/api/specDoc';
 import { htmlToMarkdown } from '@/shared/utils/htmlToMarkdown';
 import { appUrlTransform } from '@/shared/utils/markdown';
 import { isImageFile, SPEC_DOC_ACCEPT, SPEC_DOC_FILE_MAX_MB } from '@/shared/utils/fileKind';
@@ -40,17 +45,61 @@ export default function SpecDocEditor({
   const [content, setContent] = useState(initialValue);
   const [mode, setMode] = useState<'edit' | 'preview'>('edit');
   const [uploading, setUploading] = useState(false);
+  // 打开编辑器前的「大图外置」准备态：准备完成前不挂载 MDEditor
+  const [preparing, setPreparing] = useState(false);
   const editorRef = useRef<RefMDEditor | null>(null);
   const imgInputRef = useRef<HTMLInputElement | null>(null);
   const docInputRef = useRef<HTMLInputElement | null>(null);
 
-  // 每次打开重置为传入内容与编辑态
+  // 每次打开：重置编辑态；正文含大体积内嵌 base64 图时，先把它们外置为在线图片再挂载编辑器。
+  // 关键：MDEditor（@uiw/react-md-editor）mount 即对内容做 Prism/refractor 语法高亮，
+  // 其 setext 标题正则在「超长单行 base64 + == 结尾」形态下是 O(n²) 灾难性回溯
+  // （工单 836 实测阻塞主线程 81s），因此必须先完成外置/折叠才能渲染编辑器。
   useEffect(() => {
-    if (visible) {
-      setContent(initialValue);
-      setMode('edit');
-      setUploading(false);
+    if (!visible) {
+      setPreparing(false);
+      return;
     }
+    let cancelled = false;
+    setMode('edit');
+    setUploading(false);
+
+    if (!initialValue.includes('data:image')) {
+      setContent(initialValue);
+      setPreparing(false);
+      return;
+    }
+
+    setPreparing(true);
+    externalizeInlineImages(initialValue)
+      .then((r) => {
+        if (cancelled) return;
+        let next = r.content;
+        if (r.failed > 0) {
+          // 外置失败的大图折叠兜底：宁可让用户重新插入，也不能让编辑器卡死
+          const folded = foldHugeInlineImages(next);
+          next = folded.content;
+          Toast({ message: `有 ${r.failed} 张内嵌图片转为在线图片失败，已折叠以免页面卡顿，请重新插入`, theme: 'warning' });
+        } else if (r.replaced > 0) {
+          Toast({ message: `已自动将 ${r.replaced} 张内嵌图片转为在线图片，保存后生效`, theme: 'success' });
+        }
+        setContent(next);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const folded = foldHugeInlineImages(initialValue);
+        setContent(folded.content);
+        if (folded.folded > 0) {
+          Toast({ message: '内嵌图片处理失败，已折叠超大图片以免页面卡顿', theme: 'warning' });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPreparing(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [visible, initialValue]);
 
   /** 在光标位置插入文本（textarea 不存在时追加到尾部） */
@@ -164,6 +213,10 @@ export default function SpecDocEditor({
       closeOnOverlayClick={false}
       style={{ zIndex: 13000 }}
     >
+      {/* 懒挂载：visible=false 时完全不渲染编辑器子树（含重型 MDEditor）。
+          否则展示态也会挂载 MDEditor 并触发 Prism 高亮 —— 超大 base64 正文
+          会因此把主线程卡死数十秒（详见上方 useEffect 注释）。 */}
+      {visible && (
       <div className="spec-editor" data-color-mode="light">
         <div className="spec-editor__head">
           <span className="spec-editor__title">{title}</span>
@@ -193,7 +246,7 @@ export default function SpecDocEditor({
               type="button"
               className="spec-editor__tool"
               onClick={() => imgInputRef.current?.click()}
-              disabled={uploading || mode !== 'edit'}
+              disabled={uploading || preparing || mode !== 'edit'}
               aria-label="插入图片"
             >
               图片
@@ -202,7 +255,7 @@ export default function SpecDocEditor({
               type="button"
               className="spec-editor__tool"
               onClick={() => docInputRef.current?.click()}
-              disabled={uploading}
+              disabled={uploading || preparing}
               aria-label="导入文档"
             >
               {uploading ? '处理中…' : '导入文档'}
@@ -235,6 +288,12 @@ export default function SpecDocEditor({
         </div>
 
         <div className="spec-editor__body">
+          {preparing ? (
+            <div className="spec-editor__preparing">
+              <Loading size="20px" />
+              <span>正在把内嵌图片转为在线图片…</span>
+            </div>
+          ) : (
           <MDEditor
             ref={editorRef}
             value={content}
@@ -252,6 +311,7 @@ export default function SpecDocEditor({
               onDragOver: handleDragOver,
             }}
           />
+          )}
         </div>
 
         <div className="spec-editor__btns">
@@ -266,12 +326,13 @@ export default function SpecDocEditor({
             type="button"
             className="spec-editor__btn spec-editor__btn--confirm"
             onClick={() => onSave(content)}
-            disabled={saving || uploading}
+            disabled={saving || uploading || preparing}
           >
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
       </div>
+      )}
     </Popup>
   );
 }

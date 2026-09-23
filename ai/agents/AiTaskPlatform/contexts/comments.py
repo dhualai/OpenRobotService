@@ -9,11 +9,62 @@
 不依赖 AiTaskAgent 实例状态，可独立使用。
 """
 
+import re
 from typing import Optional
 
 from ai.core.logging import get_logger
 
 logger = get_logger("TASK_AGENT")
+
+_HTML_TAG = re.compile(r"<[^>]+>")
+
+
+def _plain_comment_text(raw: str, limit: int = 800) -> str:
+    text = _HTML_TAG.sub(" ", str(raw or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def load_quoted_comment(comment_id) -> dict:
+    """按评论 id 读被引用的那一条（作者 + 正文），读不到返回空 dict。"""
+    from app.models.task import TaskComment
+    from app.core.database import SessionLocal
+
+    try:
+        cid = int(comment_id)
+    except (TypeError, ValueError):
+        return {}
+    db = SessionLocal()
+    try:
+        c = db.query(TaskComment).filter(TaskComment.id == cid).first()
+        if not c:
+            return {}
+        return {
+            "id": c.id,
+            "author": getattr(c, "created_by", None) or "?",
+            "content": c.content or "",
+        }
+    except Exception as e:
+        logger.warning(f"[quoted_comment] 读取失败 id={comment_id}: {e}")
+        return {}
+    finally:
+        db.close()
+
+
+def format_quoted_comment_block(context: dict) -> str:
+    """把本轮「引用这句话」做成独立 prompt 段；前端没带正文时按 reply_to 查库。"""
+    ctx = context or {}
+    qc = ctx.get("quoted_comment")
+    if not isinstance(qc, dict) or not str(qc.get("content") or "").strip():
+        reply_to = ctx.get("reply_to")
+        qc = load_quoted_comment(reply_to) if reply_to else {}
+    if not isinstance(qc, dict):
+        return ""
+    content = _plain_comment_text(qc.get("content") or "")
+    if not content:
+        return ""
+    author = qc.get("author") or qc.get("created_by_name") or qc.get("created_by") or "?"
+    return f"## 用户本轮引用的评论\n[{author}] {content}\n"
 
 
 def load_discussion(task_id: str, limit: int = 20) -> str:

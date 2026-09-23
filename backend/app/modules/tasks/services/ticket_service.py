@@ -1,9 +1,10 @@
 import logging
 import threading
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_, case
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, or_, and_, case
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.attributes import set_committed_value
 from starlette.concurrency import run_in_threadpool
@@ -19,6 +20,48 @@ from app.utils.image_processor import ImageProcessor
 from app.services.user_service import user_service
 from app.core.user_identity import identity_keys, to_user_id, to_username
 from app.modules.tasks import participant_service
+
+logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────
+# AI 服务 Assigner Worker 集成：Redis Pub/Sub
+# ──────────────────────────────────────────────────────────────
+# 频道名和消息格式与 ai/core/memory.py 的 publish_new_ticket 完全一致
+#   await client.publish("usp:new_ticket", str(task_id))
+_ASSIGNER_PUBSUB_CHANNEL = "usp:new_ticket"
+
+
+async def _publish_new_ticket_to_assigner(task_id: int) -> None:
+    """发布新工单到 AI 服务 Assigner Worker（异步，fire-and-forget）。
+
+    Assigner Worker（ai/agents/.../assigner/pipeline/worker.py）订阅
+    ``usp:new_ticket``，收到后会触发 DispatchFlow 完整流水线派单
+    （Step0 指定人 → Step1 部门收紧 → Step2~4 召回精排 → Step6 LLM 决策 → Step7 兜底）。
+
+    与 ChatPanel 提单走的是**同一条派单路径**，派单质量和一致性有保证。
+
+    失败降级：Redis 不可用（未启动 / 连接超时） → 静默跳过，工单
+    assigned_to 保持 NULL、status=NEW，靠 Assigner Worker 的定时 MySQL
+    扫描兜底（通常分钟级，而非 24H）。
+    """
+    _log = logging.getLogger(__name__)
+    try:
+        import redis.asyncio as redis_async
+        url = f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+        client = redis_async.from_url(
+            url, decode_responses=True,
+            socket_connect_timeout=2, socket_timeout=2,
+        )
+        try:
+            await client.ping()
+            await client.publish(_ASSIGNER_PUBSUB_CHANNEL, str(task_id))
+            _log.info(f"已发布新工单到 Assigner Worker: ticket_id={task_id}")
+        finally:
+            await client.close()
+    except Exception as e:
+        # 降级：不阻塞 create_ticket 返回，Worker 定时扫描兜底
+        _log.warning(f"发布到 Assigner Worker 失败 ticket_id={task_id}: {e}")
 
 
 def convert_to_shanghai_time(dt: Optional[datetime]) -> Optional[datetime]:
@@ -309,7 +352,8 @@ class TicketService:
 
         created_by_id = to_user_id(created_by) or created_by
         assigned_to_raw = ticket_data.assigned_to
-        assigned_to_id = (to_user_id(assigned_to_raw) or assigned_to_raw) if assigned_to_raw else created_by_id
+        # 前端显式传了 assigned_to → 用它；没传 → 留 None，创建后立即触发 AI 派单
+        assigned_to_id = (to_user_id(assigned_to_raw) or assigned_to_raw) if assigned_to_raw else None
 
         user_map = await TicketService._get_user_map(token)
         created_by_name = user_map.get(created_by_id, created_by)
@@ -416,6 +460,14 @@ class TicketService:
                 logger.warning(f"新建工单通知发送失败 ticket_id={ticket.id}: {e}")
         else:
             logger.info(f"工单未显式指派受理人，跳过新建通知: ticket_id={ticket.id}, assigned_to={ticket.assigned_to}")
+
+        # ── 未显式指定处理人 → 发布到 AI 服务 Assigner Worker 立即派单 ──
+        # 与 ChatPanel 提单走同一条派单路径（DispatchFlow Step0~Step7 完整流水线）。
+        # 派单是**异步**的——publish 之后 create_ticket 立即返回，Assigner Worker
+        # 在另一端收到 Redis Pub/Sub 后执行派单并写回 tasks.assigned_to。
+        # 派单完成后 Assigner Worker 内部会发通知，create_ticket 侧不再等待。
+        if not assigned_to_raw:
+            await _publish_new_ticket_to_assigner(ticket.id)
 
         # 代他人提单：写入关系（pending）并通知被代理人。
         # 失败不阻塞提单主流程（工单已落库，代理人仍是 created_by，可正常推进）。
@@ -1513,98 +1565,7 @@ class TicketService:
             "pages": pages
         }
 
-    @staticmethod
-    async def get_ai_referee(title: str, comments: List[str], workload_map: Dict[str, int]) -> Dict[str, Any]:
-        url = "http://localhost:9081/api/ticketReferee"
-        data = {
-            "title": title,
-            "comments": comments,
-            "workload_map": workload_map
-        }
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    url,
-                    json=data,
-                    timeout=60.0
-                )
-                response.raise_for_status()
-                result = response.json()
-                return result
-        except Exception as e:
-            return {"code": 500, "message": f"AI服务调用失败: {str(e)}", "data": {}}
 
-    @staticmethod
-    async def assign_ticket_by_ai(db: AsyncSession, ticket: Ticket, token: Optional[str] = None) -> Dict[str, Any]:
-        try:
-            if ticket.assigned_to:
-                return {"code": 200, "message": "工单已有处理人", "data": {"assigned_to": ticket.assigned_to}}
-            
-            workload_query = await db.execute(
-                select(Ticket.assigned_to, func.count(Ticket.id))
-                .where(Ticket.status != TicketStatus.CLOSED)
-                .group_by(Ticket.assigned_to)
-            )
-            workload_result = workload_query.all()
-            
-            workload_map = {}
-            for user_id, count in workload_result:
-                if user_id:
-                    user_map = await TicketService._get_user_map(token)
-                    user_name = user_map.get(user_id, user_id)
-                    workload_map[user_name] = count
-            
-            comments = []
-            comment_query = await db.execute(
-                select(TicketComment.content)
-                .where(TicketComment.task_id == ticket.id)
-                .order_by(TicketComment.created_at.asc())
-                .limit(1)
-            )
-            comment_result = comment_query.scalar_one_or_none()
-            if comment_result:
-                comments.append(comment_result)
-            
-            ai_result = await TicketService.get_ai_referee(
-                title=ticket.title,
-                comments=comments,
-                workload_map=workload_map
-            )
-            
-            if ai_result.get("code") == 200 and ai_result.get("data", {}).get("name"):
-                ai_assigned_name = ai_result["data"]["name"]
-                user_map = await TicketService._get_user_map(token)
-                reverse_user_map = {v: k for k, v in user_map.items()}
-                ai_assigned_id = reverse_user_map.get(ai_assigned_name)
-                
-                if ai_assigned_id:
-                    # 派单只写 assigned_to，不改状态——工单保持「待处理」，由处理人「首次响应」后才进入「处理中」
-                    ticket.assigned_to = ai_assigned_id
-                    await db.commit()
-                    operator = user_map.get(ticket.created_by, ticket.created_by)
-                    await NotificationUtils.send_ticket_create_notification(
-                        ticket.id, ticket.title, ticket.project_name, operator, ticket.deadline_at, [ai_assigned_id], token)
-                    return {"code": 200, "message": "AI分配处理人成功", "data": {"assigned_to": ai_assigned_id, "assigned_to_name": ai_assigned_name}}
-            
-            return {"code": 400, "message": "AI分配处理人失败", "data": {}}
-        except Exception as e:
-            print(f"AI分配处理人失败: {str(e)}")
-            return {"code": 500, "message": f"AI分配处理人失败: {str(e)}", "data": {}}
-
-    @staticmethod
-    async def trigger_ai_assignment(ticket_id: int, token: Optional[str] = None) -> Dict[str, Any]:
-        try:
-            from app.core.database import AsyncSessionLocal
-            async with AsyncSessionLocal() as async_db:
-                ticket = await TicketService.get_ticket_by_id(async_db, ticket_id)
-                if not ticket:
-                    return {"code": 404, "message": "工单不存在", "data": {}}
-                
-                return await TicketService.assign_ticket_by_ai(async_db, ticket, token)
-        except Exception as e:
-            print(f"触发AI分配处理人失败: {str(e)}")
-            return {"code": 500, "message": f"触发AI分配处理人失败: {str(e)}", "data": {}}
 
     @staticmethod
     async def get_user_ticket_stats(db: AsyncSession, username: str, near_deadline_hours: int = 24) -> Dict[str, Any]:

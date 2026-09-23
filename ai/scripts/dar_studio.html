@@ -469,6 +469,55 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
 .kbc-hd .kc{margin-left:auto;flex-shrink:0}
 .kbc-pv{font-size:12px;color:var(--ink3);margin-top:5px;line-height:1.7;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+/* ── 页签5 知识补充 ── */
+.sup-wrap{display:grid;grid-template-columns:330px 1fr;grid-template-rows:calc(100vh - 180px)}
+.sup-wrap>*{min-height:0}
+.sup-list{overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding-right:2px}
+.sup-it{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer;transition:.15s}
+.sup-it:hover{border-color:#b9c4d6}
+.sup-it.on{border-color:var(--brand2);box-shadow:0 0 0 2px rgba(99,102,241,.15)}
+.sup-it .t{font-size:13px;font-weight:600;line-height:1.5;word-break:break-all}
+.sup-it .t .orig{color:var(--ink3);font-weight:400}
+.sup-it .m{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;align-items:center}
+.sup-it .m .chip{font-size:11px;background:#f1f5f9;color:var(--ink2);border-radius:99px;padding:1px 8px}
+.sup-it .m .chip.ty{background:var(--brand-soft);color:var(--brand)}
+.sup-it .m .chip.ty2{background:var(--warn-soft);color:var(--warn)}
+.sup-it .m .chip.bad{background:var(--danger-soft);color:var(--danger)}
+.sup-it .m .chip.okc{background:var(--ok-soft);color:var(--ok)}
+.sup-it .m .chip.dimc{background:#f1f5f9;color:var(--ink3)}
+.sup-edit{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow-y:auto}
+.sup-edit:empty::after{content:"← 从左侧选择一条待补充问题";display:flex;align-items:center;justify-content:center;height:100%;color:var(--ink3);font-size:13px}
+.sup-sec>b{display:block;font-size:12.5px;color:var(--ink2);margin-bottom:6px}
+.sup-qrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sup-qrow input[type=text]{flex:1;min-width:220px}
+.sup-dialog{border:1px solid var(--line);border-radius:10px;padding:10px 12px;max-height:260px;overflow-y:auto;background:#f8fafc}
+.sup-dialog .fq{font-size:13px;line-height:1.7;margin:6px 0}
+.sup-dialog .fq b{color:var(--brand);margin-right:6px}
+.sup-dialog .fa{background:#f8fafc;border-left:3px solid var(--brand);border-radius:6px;padding:6px 10px;font-size:12.5px;color:#334155;white-space:pre-wrap;line-height:1.7;margin:4px 0 4px 14px}
+.sup-att{position:relative;display:inline-block;margin:4px 6px 4px 0}
+.sup-att img{max-width:150px;max-height:100px;height:auto;border-radius:8px;border:1px solid var(--line);display:block}
+.sup-att .ins{position:absolute;right:4px;top:4px;opacity:0;transition:.15s;border:none;background:var(--brand);color:#fff;border-radius:6px;padding:2px 8px;cursor:pointer;font-size:11px}
+.sup-att:hover .ins{opacity:1}
+.sup-att .ins:disabled{background:#94a3b8}
+.sup-ta{width:100%;min-height:300px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.8;
+  font-family:ui-monospace,Consolas,monospace;resize:vertical;outline:none;background:#fff;color:var(--ink)}
+.sup-ta:focus{border-color:var(--brand2);box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+.sup-bar{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.sup-bar .hint{font-size:12px;color:var(--ink3)}
+.sup-logs{margin-top:10px;background:var(--term);border-radius:10px;padding:10px 12px;max-height:200px;overflow-y:auto;
+  font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--term-ink);white-space:pre-wrap;display:none}
+.sup-logs.on{display:block}
+#supprev{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:60;display:none;align-items:center;justify-content:center}
+#supprev.on{display:flex}
+#supprev .box{background:#fff;border-radius:14px;max-width:860px;width:92%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden}
+#supprev .hd{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+#supprev .bd{overflow-y:auto;padding:16px 22px;line-height:1.8;font-size:13.5px}
+#supprev .bd img{max-width:100%;border-radius:8px;margin:6px 0;display:block}
+#supprev .bd pre{background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;font-size:12px}
+#supprev .bd code{font-family:ui-monospace,Consolas,monospace}
+#supprev .bd table{border-collapse:collapse;font-size:12.5px}
+#supprev .bd table th,#supprev .bd table td{border:1px solid var(--line);padding:4px 10px}
 </style>
 </head>
 <body>
@@ -480,6 +529,7 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
       <button id="nav-test"><span class="dot"></span>在线测试</button>
       <button id="nav-sink"><span class="dot"></span>工单沉淀</button>
       <button id="nav-kb"><span class="dot"></span>知识库</button>
+      <button id="nav-sup"><span class="dot"></span>知识补充</button>
     </nav>
     <div class="fill"></div>
     <div class="conn">
@@ -521,6 +571,7 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
             <span class="hint" id="fsegcount"></span>
             <a href="javascript:void(0)" id="fsegpage" target="_blank"
                style="font-size:12.5px;font-weight:600;color:var(--brand)">整层新开网页审 ↗</a>
+            <button class="btn sm" id="supbatch" style="display:none" onclick="supAddLayer()">🩹 本层全部加入补充</button>
             <span style="flex:1"></span>
             <input type="text" id="fsegfilter" placeholder="过滤：用户/关键词" style="width:180px;font-size:12px;padding:4px 8px">
           </div>
@@ -718,6 +769,26 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
       <div class="kbgraph" id="kbgraph"></div>
       <div class="kbtree" id="kbtree" style="display:none"><div class="empty">加载中…</div></div>
     </section>
+
+    <!-- ══ 页签5 知识补充 ══ -->
+    <section class="view" id="view-sup">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <h2 class="pg" style="margin:0">知识补充</h2>
+        <span class="badge dim" id="supstat">加载中…</span>
+        <span style="flex:1"></span>
+        <button class="btn" id="supingest" onclick="supIngest()" title="把已保存答案入库（ingest_all --domain team，增量只嵌新卡）">⬆ 一键入库（本地知识库）</button>
+        <button class="btn sm" onclick="loadSupList()">刷新</button>
+      </div>
+      <p class="sub" style="margin-bottom:12px">
+        从漏斗「未直答·库未覆盖」层把问题送进补充队列 → AI 整理（问题重写·探针验覆盖·类型归类）→
+        在这里人工补答案（支持图文、Ctrl+V 贴图）→ 保存 → 一键入库本地知识库。
+        <b style="color:var(--warn)">入库只进本地/测试知识库，生产同步走既有入库流程。</b>
+      </p>
+      <div class="sup-wrap">
+        <div class="sup-list" id="suplist"></div>
+        <div class="sup-edit" id="supedit"></div>
+      </div>
+    </section>
   </main>
 </div>
 <div id="kbprev">
@@ -732,6 +803,13 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
     <button class="btn sm" id="kbprev-close">关闭 ✕</button>
   </div>
   <div class="kbprev-body" id="kbprev-body"></div>
+</div>
+<div id="supprev" onclick="if(event.target===this)this.classList.remove('on')">
+  <div class="box">
+    <div class="hd"><b id="supprev-title">答案预览</b><span style="flex:1"></span>
+      <button class="btn sm" onclick="document.getElementById('supprev').classList.remove('on')">关闭 ✕</button></div>
+    <div class="bd" id="supprev-body"></div>
+  </div>
 </div>
 <div id="toasts"></div>
 
@@ -785,18 +863,21 @@ async function sse(url, body, onEvent, onDone){
 
 /* ── 导航 ── */
 function nav(v){
-  ["week","test","sink","kb"].forEach(k=>{
+  ["week","test","sink","kb","sup"].forEach(k=>{
     $("#nav-"+k).classList.toggle("on", v===k);
     $("#view-"+k).classList.toggle("on", v===k);
   });
   // 知识库页签懒加载：首次切入才请求统计（parser 全量 parse 约几秒）
   if(v==="kb" && !window._kbLoaded){ window._kbLoaded = true; loadKB(); }
+  // 知识补充页签懒加载：首次切入才拉队列清单
+  if(v==="sup" && !window._supLoaded){ window._supLoaded = true; loadSupList(); }
   try { localStorage.setItem("dar_studio_tab", v); } catch (e) {}
 }
 $("#nav-week").onclick = ()=>nav("week");
 $("#nav-test").onclick = ()=>nav("test");
 $("#nav-sink").onclick = ()=>nav("sink");
 $("#nav-kb").onclick = ()=>nav("kb");
+$("#nav-sup").onclick = ()=>nav("sup");
 // 启动恢复上次页签：F5 刷新停留在原页签，不回第一个
 nav(localStorage.getItem("dar_studio_tab") || "week");
 // SKIP_USER_IDS 静默归到「测试人员」层，不在 UI 单独展示（用户硬要求）
@@ -2076,6 +2157,8 @@ async function loadSegs(layer){
   $("#fsegs").style.display = "";
   $("#fseglayer").textContent = (FL.find(x=>x.id===layer)||{}).name || layer;
   $("#fsegpage").href = `/layer_page?env=prod&layer=${layer}`;
+  // 知识补充批量入口：只在「未直答·库未覆盖」层开放
+  $("#supbatch").style.display = layer === "uncovered" ? "" : "none";
   $("#fseglist").innerHTML = '<div class="empty">加载中…</div>';
   try{
     const j = await (await fetch(`/api/funnel_segs?env=prod&layer=${layer}`)).json();
@@ -2106,6 +2189,7 @@ function renderSegs(){
         ${r.n_files?`<span title="段内附件图 ${r.n_files} 张" style="color:var(--brand)">📷 ${r.n_files}</span>`:""}
       </div>
       ${canLabel ? `<div class="ops">${LABELS.map(lb=>`<button class="lbtn${r.eff===lb&&r.src==="manual"?" on":""}" data-lb="${lb}" onclick="labelSeg(${r.cid},${r.astart},'${lb}',this)">${lb}</button>`).join("")}</div>` : ""}
+      ${fCur.layer==="uncovered" ? `<button class="lbtn supadd" data-cid="${r.cid}" data-a0="${r.astart}" onclick="supAddSeg(${r.cid},${r.astart},${r.aend},this)">🩹 补知识</button>` : ""}
       <div class="fdet" style="display:none"></div>
     </div>`;
   }).join("") || '<div class="empty">该层无段</div>';
@@ -2258,6 +2342,283 @@ $("#fsegfilter").addEventListener("input", ()=>{ fCur.idx = -1; renderSegs(); })
 $("#fimgbase").value = localStorage.getItem("fimgbase") || "";
 $("#fimgbase").addEventListener("change", ()=>{ localStorage.setItem("fimgbase", $("#fimgbase").value.trim()); });
 loadFunnel();
+
+/* ══ 页签5 知识补充：漏斗未覆盖 → AI 整理 → 人工补答案 → 一键入库 ══ */
+let supItems = [], supCurId = null, supTimer = null;
+
+function supStatusBadge(it){
+  if(it.status === "ingested") return `<span class="chip okc">已入库 ✓</span>`;
+  if(it.status === "saved") return `<span class="chip ty">已保存·待入库</span>`;
+  if((it.task || "") === "analyzing") return `<span class="chip dimc">AI 整理中…</span>`;
+  if(it.task && it.task !== "done") return `<span class="chip bad" title="${esc(it.task)}">整理失败</span>`;
+  if(it.status === "ready") return `<span class="chip dimc">待写答案</span>`;
+  return `<span class="chip dimc">处理中</span>`;
+}
+
+function renderSupList(){
+  const el = $("#suplist");
+  if(!supItems.length){
+    el.innerHTML = `<div style="color:var(--ink3);font-size:12.5px;padding:20px 4px;line-height:1.8">
+      队列为空。<br>去「质量看板」→ 漏斗走查 →「未直答·库未覆盖」层，<br>点段行 <b>🩹 补知识</b> 或层头 <b>🩹 本层全部加入补充</b>。</div>`;
+    $("#supstat").textContent = "共 0 条";
+    return;
+  }
+  el.innerHTML = supItems.map(it=>{
+    const title = it.question_norm || it.question_orig || "（无文本）";
+    const orig = it.question_norm && it.question_orig && it.question_norm !== it.question_orig
+      ? `<div class="orig" style="font-size:11.5px;margin-top:3px">原问：${esc(it.question_orig.slice(0,40))}${it.question_orig.length>40?"…":""}</div>` : "";
+    const chips = [
+      it.qtype ? `<span class="chip ty">${esc(it.qtype)}</span>` : "",
+      supStatusBadge(it),
+      (it.probe && it.probe.suspicious && it.status !== "ingested") ? `<span class="chip ty2" title="生产知识库探针命中 ${it.probe.n_chunks} 块，可能已有覆盖——写之前先看看现有知识">疑似已覆盖</span>` : "",
+    ].filter(Boolean).join("");
+    return `<div class="sup-it${it.id===supCurId?" on":""}" data-id="${esc(it.id)}" onclick="openSupItem('${esc(it.id)}')">
+      <div class="t">${esc(title)}${orig}</div>
+      <div class="m">${chips}<span style="flex:1"></span><span style="font-size:11px;color:var(--ink3)">#${esc(String(it.cid))}</span></div>
+    </div>`;
+  }).join("");
+  const nAll = supItems.length;
+  const nSaved = supItems.filter(x=>x.status==="saved").length;
+  const nIng = supItems.filter(x=>x.status==="ingested").length;
+  $("#supstat").textContent = `共 ${nAll} 条 · 待写 ${nAll - nSaved - nIng} · 待入库 ${nSaved} · 已入库 ${nIng}`;
+}
+
+async function loadSupList(){
+  try{
+    const j = await (await fetch("/api/supplement/list?env=prod")).json();
+    supItems = j.items || [];
+    renderSupList();
+    // 有条目在整理中 → 轮询直到全部完成（编辑器头部状态由 openSupItem 拉取，不受影响）
+    if(supItems.some(it=>(it.task||"") === "analyzing")){
+      clearTimeout(supTimer);
+      supTimer = setTimeout(loadSupList, 4000);
+    }
+  }catch(e){ $("#supstat").textContent = "加载失败：" + e.message; }
+}
+
+async function supAddSeg(cid, a0, a1, btn){
+  btn.disabled = true; btn.textContent = "加入中…";
+  try{
+    const r = await (await fetch("/api/supplement/add", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env:"prod", segs:[{cid, astart:a0, aend:a1}]})})).json();
+    if(!r.ok) throw new Error(r.detail || "失败");
+    btn.textContent = "✓ 已进队列";
+    toast(`已进补充队列，AI 整理中（去「知识补充」页签处理）`);
+    if(window._supLoaded) loadSupList();
+  }catch(e){ toast("加入失败：" + e.message, "err"); btn.disabled = false; btn.textContent = "🩹 补知识"; }
+}
+
+async function supAddLayer(){
+  const rows = (fCur.rows || []).filter(r=>r.layer !== false);
+  if(!rows.length){ toast("当前层无段"); return; }
+  if(!confirm(`把「${$("#fseglayer").textContent}」层的 ${rows.length} 段全部加入补充队列？（已加过的自动去重）`)) return;
+  const segs = rows.map(r=>({cid:r.cid, astart:r.astart, aend:r.aend}));
+  try{
+    const r = await (await fetch("/api/supplement/add", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env:"prod", segs})})).json();
+    if(!r.ok) throw new Error(r.detail || "失败");
+    toast(`已加入 ${r.added} 条（重复 ${r.dup} 条），AI 逐条整理中`);
+  }catch(e){ toast("批量加入失败：" + e.message, "err"); }
+}
+
+async function openSupItem(id){
+  supCurId = id;
+  document.querySelectorAll("#suplist .sup-it").forEach(e=>e.classList.toggle("on", e.dataset.id===id));
+  const ed = $("#supedit");
+  ed.innerHTML = '<div style="color:var(--ink3);font-size:12.5px;padding:30px;text-align:center">加载中…</div>';
+  try{
+    const j = await (await fetch(`/api/supplement/item?env=prod&id=${encodeURIComponent(id)}`)).json();
+    renderSupEditor(j.item, j.rounds || []);
+  }catch(e){ ed.innerHTML = `<div style="color:var(--danger);padding:20px">加载失败：${esc(e.message)}</div>`; }
+}
+
+function supRoundsHtml(rounds){
+  const base = fImgBase();
+  return rounds.map(r=>{
+    const atts = (r.files||[]).map(f=>{
+      const url = base + f.object_path;
+      return `<span class="sup-att"><img src="${esc(url)}" loading="lazy" title="${esc(f.filename||"")}"
+        onerror="imgFail(this)"><button class="ins" onclick="supInsAtt(this)" data-url="${esc(url)}">＋插入答案</button></span>`;
+    }).join("");
+    const ans = (r.a_seg||[]).filter(s=>s.action!=="ticket_draft" && (s.text||"").trim())
+      .map(s=>`<div class="fa">${esc((s.text||"").slice(0,500))}</div>`).join("");
+    return `<div class="fq"><b>用户</b>${esc((r.q||"").slice(0,300))}${atts?`<div>${atts}</div>`:""}</div>${ans}`;
+  }).join("");
+}
+
+function renderSupEditor(it, rounds){
+  const ed = $("#supedit");
+  const probeHtml = it.probe ? (()=>{
+    const hits = (it.probe.hits || []).map(h=>
+      `<span style="display:inline-block;font-size:11px;background:#f1f5f9;border-radius:6px;padding:2px 8px;margin:2px 4px 2px 0;color:var(--ink2)">${esc(h.route||"")} ${esc(h.title||"")}</span>`).join("");
+    return `<div class="sup-sec"><b>覆盖探针（生产知识库）</b>
+      <div style="font-size:12.5px;color:${it.probe.n_chunks ? "var(--ink2)" : "var(--ok)"}">
+        ${it.probe.n_chunks ? `命中 <b>${it.probe.n_chunks}</b> 块` : "无命中 ✓（确认未覆盖）"}
+        ${it.probe.suspicious ? '<span class="badge warn" style="margin-left:8px">疑似已覆盖——建议先看下面的现有知识再动笔</span>' : ""}</div>
+      ${hits ? `<div style="margin-top:4px">${hits}</div>` : ""}</div>`;
+  })() : (it.task === "analyzing" ? `<div class="sup-sec"><b>覆盖探针</b><div class="hint">AI 整理中，探针随后…</div></div>` : "");
+  const saved = it.status !== "added" && it.status !== "ready";
+  ed.innerHTML = `
+    <div class="sup-sec">
+      <div class="sup-qrow">
+        <b style="font-size:13px;flex-shrink:0">规范问题</b>
+        <input type="text" id="supq" value="${esc(it.question_norm || "")}" placeholder="${esc((it.question_orig||"").slice(0,40))}（AI 重写后出现在这）">
+        <select id="supqtype" style="width:110px">
+          ${["产品","平台操作","车端","算法","业务流程","其他"].map(t=>`<option${t===(it.qtype||"其他")?" selected":""}>${t}</option>`).join("")}
+        </select>
+        <button class="btn sm" onclick="supAnalyze()" title="重跑 AI 整理（重写+探针）">↻ 重跑整理</button>
+        ${supStatusBadge(it)}
+      </div>
+      ${it.question_orig ? `<div style="font-size:12px;color:var(--ink3);margin-top:6px">原问（会话 #${esc(String(it.cid))} 段${it.astart}）：${esc(it.question_orig)}</div>` : ""}
+    </div>
+    ${probeHtml}
+    <details class="sup-sec" ${it.status==="added"?"open":""}>
+      <b style="cursor:pointer">原始对话（点图上的「＋插入答案」把现场图写进知识卡）</b>
+      <div class="sup-dialog" id="supdialog">${supRoundsHtml(rounds) || "（空段）"}</div>
+    </details>
+    <div class="sup-sec">
+      <b>答案（Markdown · 支持表格/代码块/图片 · Ctrl+V 直接贴图）</b>
+      <textarea class="sup-ta" id="supta" placeholder="用规范问题做标题下方的正文，写清：结论/操作步骤/注意事项…">${esc(it.answer_md || "")}</textarea>
+      <div class="sup-bar">
+        <button class="btn pri" onclick="supSave()">💾 保存为知识卡</button>
+        <button class="btn" onclick="supPreview()">👁 预览</button>
+        <span style="flex:1"></span>
+        ${it.file ? `<span class="hint">已存 <b>${esc(it.file)}</b>${it.ingested_at ? " · 入库于 " + esc(it.ingested_at.slice(5,16)) : ""}</span>`
+                  : '<span class="hint">保存后落 kb/team/chat_qa/，一键入库进本地知识库</span>'}
+        <button class="btn sm dng" onclick="supRemove()">删除条目</button>
+      </div>
+      ${it.verify && !it.verify.ok ? `<div style="margin-top:6px;font-size:12px;color:var(--warn)">⚠ 入库后探针未验证到本卡（${esc(String(it.verify.n_chunks))} 命中）——可能冷启动未就绪，入库日志里重跑探针即可</div>` : ""}
+    </div>`;
+  bindSupEditor();
+}
+
+function bindSupEditor(){
+  const ta = $("#supta");
+  if(!ta) return;
+  ta.addEventListener("paste", async e=>{
+    const files = [...(e.clipboardData?.items || [])].filter(i=>i.type.startsWith("image/"));
+    if(!files.length) return;
+    e.preventDefault();
+    for(const f of files){
+      const blob = f.getAsFile();
+      if(!blob) continue;
+      const b64 = await new Promise(res=>{
+        const rd = new FileReader();
+        rd.onload = ()=>res(rd.result);
+        rd.readAsDataURL(blob);
+      });
+      await supMediaUpload({data_b64: b64, ext: (blob.type.split("/")[1]||"png").split("+")[0], at: ta.selectionStart});
+    }
+  });
+}
+
+async function supMediaUpload(payload){
+  const ta = $("#supta");
+  try{
+    const r = await (await fetch("/api/supplement/media", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env:"prod", id: supCurId, ...payload})})).json();
+    if(!r.ok) throw new Error(r.detail || "上传失败");
+    const md = r.md;
+    const at = payload.at != null ? payload.at : (ta ? ta.selectionStart : null);
+    if(ta && at != null){
+      ta.value = ta.value.slice(0, at) + md + ta.value.slice(ta.selectionEnd || at);
+      ta.dispatchEvent(new Event("input"));
+    } else {
+      toast("图片已存 media/" + r.name + "，md：`" + md + "`");
+    }
+    ta && ta.focus();
+  }catch(e){ toast("图片落盘失败：" + e.message, "err"); }
+}
+
+async function supInsAtt(btn){
+  btn.disabled = true; btn.textContent = "落盘中…";
+  await supMediaUpload({url: btn.dataset.url, at: ($("#supta")?.selectionStart ?? null)});
+  btn.textContent = "✓ 已插入";
+}
+
+function supCollect(){
+  return {
+    id: supCurId,
+    question_norm: $("#supq").value.trim(),
+    answer_md: $("#supta").value,
+    note: "",
+  };
+}
+
+async function supSave(){
+  const body = supCollect();
+  if(!body.answer_md.trim()){ toast("答案还没写"); return; }
+  try{
+    const r = await (await fetch("/api/supplement/save", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env:"prod", ...body})})).json();
+    if(!r.ok) throw new Error(r.detail || "失败");
+    toast("已保存 " + r.file + "，可一键入库");
+    loadSupList();
+    openSupItem(supCurId);  // 重渲染头部状态（textarea 有值会回填）
+  }catch(e){ toast("保存失败：" + e.message, "err"); }
+}
+
+async function supPreview(){
+  const md = $("#supta")?.value || "";
+  if(!md.trim()){ toast("没有可预览的内容"); return; }
+  try{
+    const r = await (await fetch("/api/supplement/preview", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({md})})).json();
+    $("#supprev-title").textContent = ($("#supq")?.value || "答案预览");
+    $("#supprev-body").innerHTML = r.html || "（空）";
+    $("#supprev").classList.add("on");
+  }catch(e){ toast("预览失败：" + e.message, "err"); }
+}
+
+async function supAnalyze(){
+  if(!supCurId) return;
+  try{
+    await (await fetch("/api/supplement/analyze", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env:"prod", segs:[{id: supCurId}]})})).json();
+    toast("AI 重新整理中…");
+    setTimeout(loadSupList, 800);
+  }catch(e){ toast("触发失败：" + e.message, "err"); }
+}
+
+async function supRemove(){
+  const it = supItems.find(x=>x.id===supCurId);
+  if(!it) return;
+  if(!confirm(`删除条目「${(it.question_norm || it.question_orig || "").slice(0,30)}」？${it.file ? "\n（已保存的知识卡 md 一并删除）" : ""}`)) return;
+  try{
+    const r = await (await fetch("/api/supplement/remove", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env:"prod", id: supCurId, del_file: !!it.file})})).json();
+    if(!r.ok) throw new Error(r.detail || "失败");
+    supCurId = null;
+    $("#supedit").innerHTML = "";
+    loadSupList();
+    toast("已删除");
+  }catch(e){ toast("删除失败：" + e.message, "err"); }
+}
+
+async function supIngest(){
+  const n = supItems.filter(x=>x.status==="saved").length;
+  if(!n){ toast("没有待入库条目（先在编辑器保存答案）"); return; }
+  if(!confirm(`把 ${n} 张已保存知识卡入库本地知识库？（增量，只嵌新卡；生产同步走既有流程）`)) return;
+  $("#supingest").disabled = true;
+  const logs = $("#supedit").querySelector(".sup-logs") || (()=>{
+    const d = document.createElement("div");
+    d.className = "sup-logs";
+    $("#supedit").appendChild(d);
+    return d;
+  })();
+  logs.classList.add("on");
+  logs.textContent = "启动入库（ingest_all --domain team）…\n";
+  try{
+    await sse("/api/supplement/ingest", {env:"prod"}, ev=>{
+      if(ev.event === "log") logs.textContent += ev.data.line + "\n", logs.scrollTop = logs.scrollHeight;
+      else if(ev.event === "done"){
+        toast(ev.data.rc === 0 ? "入库完成，后台验证补齐中…" : `入库失败 rc=${ev.data.rc}，看日志`);
+      }
+    });
+  }catch(e){ toast("入库失败：" + e.message, "err"); }
+  $("#supingest").disabled = false;
+  setTimeout(loadSupList, 500);
+}
 </script>
 </body>
 </html>

@@ -13,6 +13,7 @@ import pytest
 from app.utils.spec_doc_parser import (
     MAX_DOC_SIZE,
     SpecDocParseError,
+    externalize_inline_images,
     parse_spec_document,
 )
 
@@ -167,6 +168,79 @@ def test_docx_image_handler_failure_fallback_data_uri():
     md = parse_spec_document("spec.docx", docx, boom)
     assert "data:image/png;base64," in md
     assert "问题说明文字" in md
+
+
+# ── 存量正文治理：externalize_inline_images（超长 base64 单行外置） ──
+
+
+def _data_uri_of(size_bytes: int) -> str:
+    """构造指定原始字节数的可解码 base64 data URI（PNG 头 + 零填充）。"""
+    payload = _PNG_1PX + b"\x00" * max(0, size_bytes - len(_PNG_1PX))
+    return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
+
+
+def test_externalize_replaces_large_inline_image():
+    """超过阈值的内联图 → 替换为 handler 返回的 URL，正文不再含 data:image。"""
+    big = _data_uri_of(20 * 1024)
+    md = f"说明\n\n![图]({big})\n结尾"
+    calls = []
+
+    def handler(data: bytes, content_type: str) -> str:
+        calls.append((len(data), content_type))
+        return "/api/tasks/files/bucket/spec-doc/images/x.png"
+
+    new_md, replaced = externalize_inline_images(md, handler)
+
+    assert replaced == 1
+    assert "/api/tasks/files/bucket/spec-doc/images/x.png" in new_md
+    assert "data:image" not in new_md
+    assert "说明" in new_md and "结尾" in new_md
+    assert calls[0][1] == "image/png"
+    assert calls[0][0] >= 20 * 1024  # 解码后的原始字节传给了 handler
+
+
+def test_externalize_keeps_small_inline_image():
+    """小于阈值的内联图（图标类）保持原样，避免无谓请求。"""
+    small = _data_uri_of(1024)
+    md = f"![icon]({small})"
+    new_md, replaced = externalize_inline_images(md, lambda d, ct: "/never")
+    assert replaced == 0
+    assert new_md == md
+
+
+def test_externalize_keeps_inline_on_handler_failure():
+    """外置失败（返回空串/抛异常）→ 保持内联，图片永不丢。"""
+    big = _data_uri_of(20 * 1024)
+    md = f"![图]({big})"
+    assert externalize_inline_images(md, lambda d, ct: "") == (md, 0)
+
+    def boom(data: bytes, content_type: str) -> str:
+        raise RuntimeError("minio down")
+
+    assert externalize_inline_images(md, boom) == (md, 0)
+
+
+def test_externalize_idempotent_and_noop():
+    """已治理正文（无 data:image）/ 无图正文 → 原样返回，可安全重跑。"""
+    md_url = "说明\n\n![图](/api/tasks/files/bucket/spec-doc/images/x.png)"
+    assert externalize_inline_images(md_url, lambda d, ct: "/never") == (md_url, 0)
+
+    md_plain = "普通正文，无内联图片"
+    assert externalize_inline_images(md_plain, lambda d, ct: "/never") == (md_plain, 0)
+
+
+def test_externalize_multiple_images_in_one_line():
+    """同一行内多张超长内联图（836 工单形态）逐张外置，正文显著缩短。"""
+    a, b = _data_uri_of(10 * 1024), _data_uri_of(12 * 1024)
+    md = f"![a]({a})    ![b]({b})"
+    urls = iter(["/api/tasks/files/x1.png", "/api/tasks/files/x2.png"])
+    new_md, replaced = externalize_inline_images(md, lambda d, ct: next(urls))
+
+    assert replaced == 2
+    assert "data:image" not in new_md
+    assert "/api/tasks/files/x1.png" in new_md
+    assert "/api/tasks/files/x2.png" in new_md
+    assert len(new_md) < 200
 
 
 def test_docx_image_handler_empty_fallback_data_uri():

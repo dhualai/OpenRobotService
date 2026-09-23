@@ -57,7 +57,18 @@ def _sample_collected() -> dict:
             "new_by_day": {"2026-09-08": 5, "2026-09-09": 3, "2026-09-10": 8},
             "overdue_list": [{"工单ID": 1, "标题": "示例工单"}],
         },
-        "risk": {"total": 30, "by_level": {"高": 5, "中": 10, "低": 15}},
+        "risk": {
+            "assessment": [
+                {"项目代码": "PROJ001", "项目名称": "示例项目", "风险分数": 85,
+                 "风险等级": "高", "未关闭工单数": 6, "近30天新增工单数": 3,
+                 "AGV数量": 10, "AGV种类": 2, "项目类型": "PK项目",
+                 "人工风险点": "高风险承接", "风险因素": ["未关闭工单 6 条"]},
+            ],
+            "by_level": {"高": 5, "中": 10, "低": 15},
+            "items_dist": {"高": 5, "中": 10, "低": 15},
+            "high_risk_count": 5,
+            "assessed_count": 30,
+        },
         "project": {"total": 8, "active_count": 3},
     }
 
@@ -102,15 +113,21 @@ def test_build_charts(mods) -> bool:
     assert x_data == sorted(x_data), "折线图 x 轴应按日期升序"
     print("  [OK] 趋势 → 折线图，日期升序")
 
-    # 1e. 明细列表不配图不配卡
+    # 1e. 明细列表不配图不配卡（无 items_dist 时）
     charts, cards = build_charts(["ticket.overdue_list"], collected)
     assert not charts and not cards, "明细列表不应产出图表/卡片"
     print("  [OK] 明细列表（LIST）不配图不配卡")
 
     # 1f. 未知指标 key 跳过
-    charts, cards = build_charts(["ticket.not_exist", "risk.total"], collected)
-    assert len(cards) == 1 and cards[0].label == "风险总数"
+    charts, cards = build_charts(["ticket.not_exist", "risk.high_risk_count"], collected)
+    assert len(cards) == 1 and cards[0].label == "高风险项目数" and cards[0].value == "5"
     print("  [OK] 未知指标 key 跳过，已知 key 正常产出")
+
+    # 1g. 风险评估明细（LIST 带 items_dist）→ 配等级分布图，无卡片
+    charts, cards = build_charts(["risk.assessment"], collected)
+    assert len(charts) == 1 and charts[0].title == "风险评估明细分布"
+    assert not cards, "LIST 指标不配卡片"
+    print("  [OK] 风险评估明细（LIST）配等级分布图，不配卡片")
     return ok
 
 
@@ -128,11 +145,15 @@ def test_localize(mods) -> bool:
     assert localized["工单"]["状态分布"]["已解决"] == 90
     assert localized["工单"]["每日新增"]["2026-09-08"] == 5
     assert localized["风险"]["等级分布"]["高"] == 5
+    assert localized["风险"]["高风险项目数"] == 5
+    assert localized["风险"]["已评估项目数"] == 30
+    assert localized["风险"]["风险评估明细"][0]["人工风险点"] == "高风险承接"
     assert localized["项目"]["活跃数"] == 3
 
     raw = json.dumps(localized, ensure_ascii=False)
     for en_key in ("new_count", "resolve_rate", "by_status", "new_by_day",
-                   "active_count", "by_level", "date_range", "ticket", "project", "risk"):
+                   "active_count", "by_level", "date_range", "ticket", "project", "risk",
+                   "assessment", "high_risk_count", "assessed_count"):
         assert en_key not in raw, f"中文化后仍存在英文字段名 {en_key}"
     # 明细列表内的中文 key 原样保留
     assert localized["工单"]["逾期明细"][0]["工单ID"] == 1

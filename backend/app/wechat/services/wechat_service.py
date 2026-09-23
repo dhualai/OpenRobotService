@@ -26,6 +26,15 @@ class WechatService:
             'expires_at': 0
         }
 
+    def _invalidate_token_cache(self) -> None:
+        """清除 access_token 缓存，强制下次 get_access_token() 向微信拉新 token。
+
+        触发时机：微信返回 40001 / 42001 时，表示当前 token 已失效
+        （被多进程互踢或自然过期），必须清掉让下次走 CGI 重新拉。
+        """
+        self.access_token_info['access_token'] = ''
+        self.access_token_info['expires_at'] = 0
+
     def get_access_token(self) -> Optional[str]:
         now = int(time.time())
 
@@ -63,20 +72,34 @@ class WechatService:
                 'content': content + (f'\n\n点击查看：{url}' if url else '')
             }
         }
-        print(data)
         try:
             headers = {'Content-Type': 'application/json'}
             response = self.session.post(url_endpoint, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
             result = response.json()
 
             if result.get('errcode') == 0:
-                print(f'成功推送消息给用户 {open_id}')
+                logger.info(f'成功推送消息给用户 {open_id}')
                 return True
-            else:
-                print(f'推送消息失败: {result}')
+
+            # access_token 失效 → 清缓存重试一次
+            if result.get('errcode') in (40001, 42001):
+                logger.warning(f'access_token 失效(errcode={result.get("errcode")})，刷新后重试')
+                self._invalidate_token_cache()
+                new_token = self.get_access_token()
+                if new_token:
+                    retry_url = f'{settings.WECHAT_SEND_MESSAGE_URL}?access_token={new_token}'
+                    response2 = self.session.post(retry_url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
+                    result2 = response2.json()
+                    if result2.get('errcode') == 0:
+                        logger.info(f'文本消息重试成功，用户 {open_id}')
+                        return True
+                    logger.warning(f'文本消息重试仍失败: {result2}')
                 return False
+
+            logger.warning(f'推送消息失败: {result}')
+            return False
         except Exception as e:
-            print(f'请求推送消息异常: {e}')
+            logger.error(f'请求推送消息异常: {e}')
             return False
 
     def send_link_message_to_user(self, open_id: str, title: str, description: str, url: str) -> bool:
@@ -95,20 +118,36 @@ class WechatService:
                 'url': url
             }
         }
-        print(data)
         try:
             headers = {'Content-Type': 'application/json'}
             response = self.session.post(url_endpoint, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
             result = response.json()
 
             if result.get('errcode') == 0:
-                print(f'成功推送链接消息给用户 {open_id}')
+                logger.info(f'成功推送链接消息给用户 {open_id}')
                 return True, None
-            else:
-                print(f'推送链接消息失败: {result}')
+
+            # access_token 失效 → 清缓存重试一次
+            if result.get('errcode') in (40001, 42001):
+                logger.warning(f'access_token 失效(errcode={result.get("errcode")})，刷新后重试')
+                self._invalidate_token_cache()
+                new_token = self.get_access_token()
+                if new_token:
+                    retry_url = f'{settings.WECHAT_SEND_MESSAGE_URL}?access_token={new_token}'
+                    response2 = self.session.post(retry_url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
+                    result2 = response2.json()
+                    if result2.get('errcode') == 0:
+                        logger.info(f'链接消息重试成功，用户 {open_id}')
+                        return True, None
+                    logger.warning(f'链接消息重试仍失败: {result2}')
+                    return False, result2
+                logger.warning('刷新 access_token 失败，无法重试链接消息')
                 return False, result
+
+            logger.warning(f'推送链接消息失败: {result}')
+            return False, result
         except Exception as e:
-            print(f'请求推送链接消息异常: {e}')
+            logger.error(f'请求推送链接消息异常: {e}')
             return False, {'errcode': -1, 'errmsg': str(e)}
 
     def send_news_message_to_user(self, open_id: str, title: str, description: str, url: str, picurl: str = '') -> bool:
@@ -142,9 +181,24 @@ class WechatService:
             if result.get('errcode') == 0:
                 logger.info(f'成功推送图文消息给用户 {open_id}')
                 return True
-            else:
-                logger.warning(f'推送图文消息失败: {result}')
+
+            # access_token 失效 → 清缓存重试一次
+            if result.get('errcode') in (40001, 42001):
+                logger.warning(f'access_token 失效(errcode={result.get("errcode")})，刷新后重试')
+                self._invalidate_token_cache()
+                new_token = self.get_access_token()
+                if new_token:
+                    retry_url = f'{settings.WECHAT_SEND_MESSAGE_URL}?access_token={new_token}'
+                    response2 = self.session.post(retry_url, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
+                    result2 = response2.json()
+                    if result2.get('errcode') == 0:
+                        logger.info(f'图文消息重试成功，用户 {open_id}')
+                        return True
+                    logger.warning(f'图文消息重试仍失败: {result2}')
                 return False
+
+            logger.warning(f'推送图文消息失败: {result}')
+            return False
         except Exception as e:
             logger.error(f'请求推送图文消息异常: {e}')
             return False
@@ -157,36 +211,53 @@ class WechatService:
         if not access_token:
             return False, {"errmsg": "获取access_token失败"}
 
-        url = f'{settings.WECHAT_TEMPLATE_MESSAGE_URL}?access_token={access_token}'
+        def _build_request_data() -> dict:
+            if link_url:
+                return {
+                    'touser': open_id,
+                    'template_id': template_id,
+                    'data': data,
+                    'url': link_url,
+                }
+            return {
+                'touser': open_id,
+                'template_id': template_id,
+                'data': data,
+            }
 
-        if link_url:
-            request_data = {
-                'touser': open_id,
-                'template_id': template_id,
-                'data': data,
-                'url': link_url
-            }
-        else:
-            request_data = {
-                'touser': open_id,
-                'template_id': template_id,
-                'data': data,
-            }
+        url = f'{settings.WECHAT_TEMPLATE_MESSAGE_URL}?access_token={access_token}'
 
         try:
             headers = {'Content-Type': 'application/json'}
-            response = self.session.post(url, data=json.dumps(request_data, ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
+            response = self.session.post(url, data=json.dumps(_build_request_data(), ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
             result = response.json()
 
             if result.get('errcode') == 0:
-                print(f'成功推送模板消息给用户 {open_id}')
+                logger.info(f'成功推送模板消息给用户 {open_id}')
                 return True, None
 
-            else:
-                print(f'推送模板消息失败: {result}')
+            # access_token 失效（40001 被其他进程互踢 / 42001 自然过期）→ 清缓存重试一次
+            if result.get('errcode') in (40001, 42001):
+                logger.warning(f'access_token 失效(errcode={result.get("errcode")})，刷新后重试: {result}')
+                self._invalidate_token_cache()
+                new_token = self.get_access_token()
+                if new_token:
+                    retry_url = f'{settings.WECHAT_TEMPLATE_MESSAGE_URL}?access_token={new_token}'
+                    response2 = self.session.post(retry_url, data=json.dumps(_build_request_data(), ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
+                    result2 = response2.json()
+                    if result2.get('errcode') == 0:
+                        logger.info(f'模板消息重试成功，用户 {open_id}')
+                        return True, None
+                    else:
+                        logger.warning(f'模板消息重试仍失败: {result2}')
+                        return False, result2
+                logger.warning('刷新 access_token 失败，无法重试模板消息')
                 return False, result
+
+            logger.warning(f'推送模板消息失败: {result}')
+            return False, result
         except Exception as e:
-            print(f'请求推送模板消息异常: {e}')
+            logger.error(f'请求推送模板消息异常: {e}')
             return False, {'errcode': -1, 'errmsg': str(e)}
 
     def get_user_list(self, next_openid: str = '') -> Optional[Dict]:

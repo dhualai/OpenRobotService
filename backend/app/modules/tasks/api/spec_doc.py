@@ -34,10 +34,12 @@ from app.modules.tasks.schemas.spec_doc import (
     SpecDocUpdate,
 )
 from app.utils.minio_client import minio_client
+from app.utils.spec_doc_image_store import upload_inline_image as _upload_inline_image
 from app.utils.spec_doc_parser import (
     MAX_DOC_SIZE,
     SpecDocParseError,
     ext_of,
+    externalize_inline_images,
     parse_spec_document,
 )
 
@@ -57,19 +59,6 @@ _IMAGE_MAGICS: List[tuple] = [
     (b"GIF89a", "image/gif"),
     (b"BM", "image/bmp"),
 ]
-# mammoth image_handler 的 content_type → 扩展名（emf/wmf 转存为 png 后缀名不合适，按原样保存）
-_CONTENT_TYPE_EXT = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/gif": ".gif",
-    "image/webp": ".webp",
-    "image/bmp": ".bmp",
-    "image/tiff": ".tiff",
-    "image/x-emf": ".emf",
-    "image/x-wmf": ".wmf",
-}
-
-
 def _sniff_image_mime(raw: bytes) -> str:
     """按魔数嗅探图片 MIME；RIFF 容器须为 WEBP。非图片返回空串。"""
     for magic, mime in _IMAGE_MAGICS:
@@ -180,10 +169,24 @@ async def upsert_spec_doc(
     username = actor_username(current_user)
     doc = await _load_doc(db, task_id)
 
+    # 保存时自动外置内嵌 base64 大图：防止正文形成超长单行，让前端编辑器
+    # （@uiw/react-md-editor 的 Prism 语法高亮）与 markdown 解析在 O(n²)
+    # 回溯上卡死主线程（工单 836 实测阻塞 81s）。外置失败按原文保存，不阻断。
+    content = payload.content or ""
+    if "data:image" in content:
+        try:
+            content, externalized = await run_in_threadpool(
+                externalize_inline_images, content, _upload_inline_image
+            )
+            if externalized:
+                logger.info("[spec_doc] 保存时外置内嵌图片 %s 张 (task=%s)", externalized, task_id)
+        except Exception as e:  # noqa: BLE001 - 治理失败不影响保存主流程
+            logger.warning("[spec_doc] 内嵌图片外置失败，按原文保存: %s", e)
+
     if doc is None:
         doc = TaskSpecDoc(
             task_id=task_id,
-            content=payload.content,
+            content=content,
             content_type="markdown",
             source=payload.source or "inline",
             source_files=payload.source_files or [],
@@ -197,7 +200,7 @@ async def upsert_spec_doc(
             raise HTTPException(
                 status_code=409, detail="文档已被他人更新，请刷新后重试"
             )
-        doc.content = payload.content
+        doc.content = content
         if payload.source:
             doc.source = payload.source
         if payload.source_files is not None:
@@ -227,18 +230,9 @@ async def parse_spec_doc(
     if len(raw) > MAX_DOC_SIZE:
         raise HTTPException(status_code=400, detail="文件过大，上限 5MB")
 
-    def _upload_image(data: bytes, content_type: str) -> str:
-        """mammoth image_handler：内嵌图片落 MinIO，返回 /api/tasks/files 代理 URL。"""
-        ct = (content_type or "").strip().lower() or "image/png"
-        ext = _CONTENT_TYPE_EXT.get(ct, ".png")
-        object_path = f"{settings.COMMENT_BUCKET}/spec-doc/images/{uuid.uuid4().hex}{ext}"
-        if not minio_client.upload_bytes(data, object_path, ct):
-            return ""  # 空串 → parser 侧降级 base64 内联
-        return f"/api/tasks/files/{object_path}"
-
     filename = file.filename or "document"
     try:
-        content = await run_in_threadpool(parse_spec_document, filename, raw, _upload_image)
+        content = await run_in_threadpool(parse_spec_document, filename, raw, _upload_inline_image)
     except SpecDocParseError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

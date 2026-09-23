@@ -476,6 +476,35 @@ class ProjectInfoNodeMark(Base):
                 f"operator='{self.operator}', project_id='{self.project_id}')>")
 
 
+class ProjectPin(Base):
+    """项目「置顶」标注（个人置顶：项目进度管理页长按卡片 → 置顶）。
+
+    项目进度管理页的项目列表按「置顶优先」排序，置顶的项目排在最前（同一人置顶多个时
+    按置顶时间新的在前）。置顶入口与删除同在一个长按操作卡里。
+
+    **每人一份置顶列表**：主键 (project_id, operator)——同一个项目可被多人各存一行，
+    列表顺序按当前登录人过滤（自己置顶的只有自己看得见）。按人隔离靠登录名（JWT sub），
+    取不到用户身份的请求接口层拒绝（401），与 project_info_node_mark（节点关注）同口径。
+
+    项目被删除（软删）时本方标注一并清理，避免列表里出现点不开的「孤儿置顶」；
+    清理只是保持数据整洁——软删的项目本来也不会进入任何项目列表。
+    """
+    __tablename__ = 'project_pin'
+
+    project_id = Column(String(64), primary_key=True, comment='被置顶的项目ID')
+    operator = Column(String(64), primary_key=True, comment='置顶人登录名（置顶列表按人隔离）')
+    operator_name = Column(String(64), nullable=True, comment='置顶人显示名')
+    created_at = Column(String(30), nullable=False, comment='置顶时间')
+
+    __table_args__ = (
+        Index('idx_project_pin_operator', 'operator', 'created_at'),
+    )
+
+    def __repr__(self):
+        return (f"<ProjectPin(project_id='{self.project_id}', "
+                f"operator='{self.operator}')>")
+
+
 class ProjectBlockingConfig(Base):
     """项目「核心阻滞工单」AI 配置（项目详情页-项目工单卡）。
 

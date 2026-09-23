@@ -3,7 +3,7 @@
 > **定位**：从开源 coding agent [earendil-works/pi](https://github.com/earendil-works/pi) 中提炼可落地原语，
 > 加固 AiTaskPlatform 现有的多 Agent 编排内核。与 `TASK_AGENT_TARGET_ARCH.md`（架构）、
 > `IMPROVE_PLAN_2026-08-16.md`（能力提升）并行。
-> **状态**：草案，待评审。
+> **状态**：已归档（草案，未进入本版实施）。保留供后续迭代参考。
 > **原则**：延续「服务端确定性兜底优先」「能不加复杂度就不加」「手册=数据、Agent=策略」。
 > 所有改造**只加字段/钩子，不动内核结构**，避免引入新框架。
 

@@ -3,6 +3,7 @@
 口径（与 app/modules/admin/api/info_nodes.py 顶部注释同一份）：
   结构类写接口  POST /projects/{id}（增补节点）、/projects/{id}/import（整树导入）、
                 /projects/{id}/parse-file（AI 识别预览）、
+                /projects/{id}/reset-to-template（一键清空：删增补节点 + 清全部已填值）、
                 PUT /nodes/{id}、PATCH /nodes/{id}/move、DELETE /nodes/{id}
                 → 「该项目下的人」（user_project_roles 里该项目有任一角色）或 admin。
                   节点级路由的项目不在路径上，按节点反查归属项目；全局字段
@@ -60,6 +61,7 @@ def svc(monkeypatch):
         move_node=MagicMock(return_value={"id": "n-1"}),
         delete_node=MagicMock(return_value=True),
         import_tree=MagicMock(return_value=2),
+        reset_to_template=MagicMock(return_value={"cleared": 3, "nodes_removed": 2}),
         set_value=MagicMock(return_value={"id": "n-1", "value": "x"}),
     )
     for name, mock in vars(mocks).items():
@@ -97,6 +99,10 @@ def test_project_member_can_add_node_and_import_tree(client, svc):
     assert imported.status_code == 200
     assert imported.json() == {"imported": 2}
 
+    cleared = client.post("/api/admin/info-nodes/projects/P1/reset-to-template")  # 恢复成模板：删增补节点 + 清全部已填值
+    assert cleared.status_code == 200
+    assert cleared.json() == {"cleared": 3, "nodes_removed": 2}
+
 
 def test_project_member_can_drive_node_level_routes(client, svc):
     svc.get_node.return_value = _node_in("P1")
@@ -119,6 +125,7 @@ def test_non_member_is_denied_on_every_structural_route(client, svc):
     for response in (
         client.post("/api/admin/info-nodes/projects/P2", json={"title": "新标签"}),
         client.post("/api/admin/info-nodes/projects/P2/import", json={"nodes": []}),
+        client.post("/api/admin/info-nodes/projects/P2/reset-to-template"),
         client.put("/api/admin/info-nodes/nodes/n-1", json={"title": "改名"}),
         client.patch("/api/admin/info-nodes/nodes/n-1/move", json={"new_sort_order": 0}),
         client.delete("/api/admin/info-nodes/nodes/n-1"),
@@ -131,6 +138,7 @@ def test_non_member_is_denied_on_every_structural_route(client, svc):
     svc.move_node.assert_not_called()
     svc.delete_node.assert_not_called()
     svc.import_tree.assert_not_called()
+    svc.reset_to_template.assert_not_called()
 
 
 def test_parse_file_is_gated_like_the_rest_of_the_import_flow(client, svc):

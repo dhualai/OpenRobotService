@@ -26,7 +26,6 @@ from ai.core.database import (
     SessionLocal,
     Task,
     ProjectDelivery,
-    Risk,
     User,
     UserProjectRole,
     CollectionData,
@@ -50,6 +49,7 @@ from .report_schemas import (
     TicketStats,
     CollectedData,
 )
+from .risk_assessor import ProjectRiskSignals, assess_projects
 
 logger = get_logger("ReportGenerator")
 
@@ -97,11 +97,87 @@ _PROJECT_STATUS_CN = {
 # 超出部分只计数量（已截断标记），避免全量明细喂 LLM 撑爆上下文。
 _PROJECT_ITEMS_PER_GROUP_LIMIT = 30
 
-_RISK_STATUS_CN = {
-    "open": "未关闭",
-    "opened": "未关闭",
-    "closed": "已关闭",
+# ── 风险推算节点定义（风险口径改造：不再读 risk 表）─────────────
+# 风险改为从项目信息节点 + 工单数据按规则推算（risk_assessor.py）。
+# 节点 key 与 backend info_node_seed_service.TITLE_KEY_MAP 对齐：
+# - 总车数 = AGV 数量；车型1/车型2 及各自「数量」= AGV 种类
+# - 项目类型（基础信息 > 项目类型，select）
+# - 风险点（项目特性 > 风险点，select，人工标记）
+_RISK_NODE_KEYS: dict[str, str] = {
+    "project_type": "base.project_type",
+    "agv_total": "hardware.vehicle.total_count",
+    "model_1": "hardware.vehicle.model_1",
+    "model_1_qty": "hardware.vehicle.model_1.quantity",
+    "model_2": "hardware.vehicle.model_2",
+    "model_2_qty": "hardware.vehicle.model_2.quantity",
+    "manual_risk": "project_feature.risk",
 }
+
+# 近30天新增工单的统计窗口（天）
+_RISK_NEW_TICKET_WINDOW_DAYS = 30
+
+# 风险评估明细最多喂 LLM 的项目数（按分数降序截断）
+_RISK_ITEMS_LIMIT = 50
+
+
+def _risk_node_value_str(value: object) -> str:
+    """节点值 → 字符串：select 存 {"selected": ...}，text 存原生值。"""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        selected = value.get("selected")
+        return str(selected).strip() if selected not in (None, "") else ""
+    return str(value).strip()
+
+
+def _risk_parse_int(value: object) -> int:
+    try:
+        return max(int(float(str(value).strip())), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _risk_select_value(values: dict, project_id: str, id_by_key: dict, slot: str) -> str:
+    node_id = id_by_key.get(_RISK_NODE_KEYS.get(slot, ""))
+    if not node_id:
+        return ""
+    return _risk_node_value_str(values.get((project_id, node_id)))
+
+
+def _agv_count_of(values: dict, project_id: str, id_by_key: dict) -> int:
+    """AGV 数量：总车数节点优先，缺失时回退车型1/车型2 数量之和。"""
+    total = _risk_parse_int(
+        _risk_node_value_str(
+            values.get((project_id, id_by_key.get(_RISK_NODE_KEYS["agv_total"])))
+        )
+    )
+    if total > 0:
+        return total
+    return sum(
+        _risk_parse_int(
+            _risk_node_value_str(
+                values.get((project_id, id_by_key.get(_RISK_NODE_KEYS[slot])))
+            )
+        )
+        for slot in ("model_1_qty", "model_2_qty")
+    )
+
+
+def _agv_model_count_of(values: dict, project_id: str, id_by_key: dict) -> int:
+    """AGV 种类：车型1/车型2 中数量 > 0 的车型数；数量缺失但车型已选时也计 1 种。"""
+    count = 0
+    for model_slot, qty_slot in (("model_1", "model_1_qty"), ("model_2", "model_2_qty")):
+        qty = _risk_parse_int(
+            _risk_node_value_str(
+                values.get((project_id, id_by_key.get(_RISK_NODE_KEYS[qty_slot])))
+            )
+        )
+        selected = _risk_node_value_str(
+            values.get((project_id, id_by_key.get(_RISK_NODE_KEYS[model_slot])))
+        )
+        if qty > 0 or selected:
+            count += 1
+    return count
 
 # 项目信息变更历史 operation_type → 中文（project_info_value_history 表）
 _PROJECT_INFO_OP_CN = {
@@ -457,66 +533,43 @@ class ReportDataCollector:
     def collect_risk_data(
         self, start: datetime, end: datetime
     ) -> RiskStats:
-        """查询 risk 表，统计指定时间范围内的风险变化。"""
+        """按规则推算项目风险（不再读 risk 表）。
+
+        报告路径：统计范围即 collector 的项目范围（日报/周报为单项目）。
+        评估口径与对话窗一致：项目信息（AGV 数量/种类、项目类型、人工风险点）
+        + 工单（未关闭数、近30天新增数），由 risk_assessor 按 yaml 规则推算。
+        """
         db = self._get_db()
         try:
-            q = db.query(Risk)
+            project_q = db.query(ProjectDelivery)
             if self._project_ids:
-                # risk 表以 project_code 关联（project.id 与 code 一致）
-                q = q.filter(Risk.project_code.in_(self._project_ids))
+                project_q = project_q.filter(ProjectDelivery.id.in_(self._project_ids))
+            projects = project_q.all()
 
-            all_risks = q.all()
-            total = len(all_risks)
-
-            # 按创建时间判断新增
-            new_risks = 0
-            closed_risks = 0
-            by_level: dict[str, int] = {}
-            by_status: dict[str, int] = {}
-            items = []
-
-            start_str = start.strftime("%Y-%m-%d")
-            end_str = end.strftime("%Y-%m-%d")
-
-            for r in all_risks:
-                # 风险等级统计
-                level = r.risk_level or "未知"
-                by_level[level] = by_level.get(level, 0) + 1
-
-                # 风险状态统计（中文化展示）
-                status = _cn_label(_RISK_STATUS_CN, r.status, "未知")
-                by_status[status] = by_status.get(status, 0) + 1
-
-                # 判断新增（created_at 在时间范围内）
-                created = r.created_at or ""
-                if start_str <= created[:10] <= end_str:
-                    new_risks += 1
-
-                # 判断关闭（close_time 在时间范围内）
-                close = r.close_time or ""
-                if close and start_str <= close[:10] <= end_str:
-                    closed_risks += 1
-
-                items.append({
-                    "风险代码": r.risk_code,
-                    "项目代码": r.project_code,
-                    "项目名称": r.project_name,
-                    "风险分类": r.risk_category,
-                    "风险等级": r.risk_level,
-                    "风险描述": (r.description or "")[:100],
-                    "状态": status,
-                    "负责人": r.responsible_person,
-                    "创建时间": r.created_at,
-                    "关闭时间": r.close_time,
-                })
-
+            assessments = assess_projects(self._build_risk_signals(db, projects))
+            if not assessments:
+                return RiskStats(
+                    score=0,
+                    level="低",
+                    open_tickets=0,
+                    new_30d_tickets=0,
+                    agv_count=0,
+                    agv_model_count=0,
+                    project_type="",
+                    manual_risk="",
+                    factors=["无足够数据评估项目风险"],
+                )
+            item = assessments[0]
             return RiskStats(
-                total=total,
-                new_risks=new_risks,
-                closed_risks=closed_risks,
-                by_level=by_level,
-                by_status=by_status,
-                items=items,
+                score=item["风险分数"],
+                level=item["风险等级"],
+                open_tickets=item["未关闭工单数"],
+                new_30d_tickets=item["近30天新增工单数"],
+                agv_count=item["AGV数量"],
+                agv_model_count=item["AGV种类"],
+                project_type=item["项目类型"],
+                manual_risk=item["人工风险点"],
+                factors=item["风险因素"],
             )
         finally:
             db.close()
@@ -1037,101 +1090,122 @@ class ReportDataCollector:
         finally:
             db.close()
 
-    # ── 风险维度指标采集 ────────────────────────────────────
+    # ── 风险维度指标采集（规则推算口径） ────────────────────
 
     def _collect_risk_metrics(
         self, keys: set[str], start: datetime, end: datetime
     ) -> dict:
-        """一次性采集所有请求的风险指标。"""
+        """一次性采集所有请求的风险指标（推算口径）。
+
+        数据来源不再是 risk 表，而是：
+        - project 表（评估对象清单，受 _project_ids 范围约束）
+        - project_info_node / project_info_value（AGV 数量/种类、项目类型、人工风险点）
+        - tasks 表（未关闭工单数、近30天新增工单数，报障/bug 类加权）
+        由 risk_assessor 按 yaml 规则推算分数与等级，结果确定性可复现。
+        """
         db = self._get_db()
         try:
-            q = db.query(Risk)
+            project_q = db.query(ProjectDelivery)
             if self._project_ids:
-                q = q.filter(Risk.project_code.in_(self._project_ids))
+                project_q = project_q.filter(ProjectDelivery.id.in_(self._project_ids))
+            projects = project_q.all()
 
-            all_risks = q.all()
-            result: dict = {}
+            assessments = assess_projects(self._build_risk_signals(db, projects))
+            # 高风险优先排序：分数降序，明细列表与 LLM 一眼看到大头
+            assessments.sort(key=lambda x: -x["风险分数"])
 
-            if "risk.total" in keys:
-                result["total"] = len(all_risks)
+            by_level: dict[str, int] = {}
+            for item in assessments:
+                level = item["风险等级"]
+                by_level[level] = by_level.get(level, 0) + 1
 
-            if "risk.new_count" in keys:
-                start_s = start.strftime("%Y-%m-%d")
-                end_s = end.strftime("%Y-%m-%d")
-                result["new_count"] = sum(
-                    1 for r in all_risks
-                    if r.created_at and start_s <= r.created_at[:10] <= end_s
-                )
-                # 顺带按天序列：标量指标配趋势图（图+文字展示）
-                trend: dict[str, int] = {}
-                for r in all_risks:
-                    if r.created_at and start_s <= r.created_at[:10] <= end_s:
-                        day = r.created_at[:10]
-                        trend[day] = trend.get(day, 0) + 1
-                result["new_count_by_day"] = dict(sorted(trend.items()))
-
-            if "risk.closed_count" in keys:
-                start_s = start.strftime("%Y-%m-%d")
-                end_s = end.strftime("%Y-%m-%d")
-                result["closed_count"] = sum(
-                    1 for r in all_risks
-                    if r.close_time and start_s <= r.close_time[:10] <= end_s
-                )
-                # 顺带按天序列：标量指标配趋势图（图+文字展示）
-                trend: dict[str, int] = {}
-                for r in all_risks:
-                    if r.close_time and start_s <= r.close_time[:10] <= end_s:
-                        day = r.close_time[:10]
-                        trend[day] = trend.get(day, 0) + 1
-                result["closed_count_by_day"] = dict(sorted(trend.items()))
-
-            if "risk.by_level" in keys:
-                dist: dict[str, int] = {}
-                for r in all_risks:
-                    level = r.risk_level or "未知"
-                    dist[level] = dist.get(level, 0) + 1
-                result["by_level"] = dist
-
-            if "risk.by_status" in keys:
-                dist: dict[str, int] = {}
-                for r in all_risks:
-                    label = _cn_label(_RISK_STATUS_CN, r.status, "未知")
-                    dist[label] = dist.get(label, 0) + 1
-                result["by_status"] = dist
-
-            if "risk.by_category" in keys:
-                dist: dict[str, int] = {}
-                for r in all_risks:
-                    cat = r.risk_category or "未分类"
-                    dist[cat] = dist.get(cat, 0) + 1
-                result["by_category"] = dist
-
-            if "risk.items" in keys:
-                items = []
-                for r in all_risks[:50]:
-                    items.append({
-                        "风险代码": r.risk_code,
-                        "项目代码": r.project_code,
-                        "项目名称": r.project_name,
-                        "风险分类": r.risk_category,
-                        "风险等级": r.risk_level,
-                        "风险描述": (r.description or "")[:100],
-                        "状态": _cn_label(_RISK_STATUS_CN, r.status, "未知"),
-                        "负责人": r.responsible_person,
-                        "创建时间": r.created_at,
-                        "关闭时间": r.close_time,
-                    })
-                result["items"] = items
-                # 顺带按风险等级分布：明细列表配分布图（图+文字展示）
-                level_dist: dict[str, int] = {}
-                for it in items:
-                    lv = it["风险等级"] or "未知"
-                    level_dist[lv] = level_dist.get(lv, 0) + 1
-                result["items_dist"] = level_dist
-
-            return result
+            return {
+                "assessment": assessments[:_RISK_ITEMS_LIMIT],  # 与指标 key risk.assessment 对齐（build_charts 按后缀取值）
+                "items_dist": by_level,   # 明细列表配等级分布图
+                "by_level": by_level,
+                "high_risk_count": by_level.get("高", 0),
+                "assessed_count": len(assessments),
+            }
         finally:
             db.close()
+
+    def _build_risk_signals(self, db, projects) -> list[ProjectRiskSignals]:
+        """汇总项目信息节点值与工单数据，构建风险推算信号。
+
+        节点取值口径（与 backend info_node_service 一致）：
+        - select 节点（项目类型/风险点/车型）：value_json 为 {"selected": ...}
+          或原生字符串；车型节点仅作「数量 > 0」的种类判定
+        - text 节点（总车数/车型数量）：原生数字字符串
+        """
+        if not projects:
+            return []
+        project_ids = [p.id for p in projects if p.id]
+
+        # 1. 项目信息节点定义与值
+        node_rows = (
+            db.query(ProjectInfoNode.id, ProjectInfoNode.node_key)
+            .filter(
+                ProjectInfoNode.node_key.in_(set(_RISK_NODE_KEYS.values())),
+                ProjectInfoNode.project_id.is_(None),
+            )
+            .all()
+        )
+        id_by_key = {node_key: node_id for node_id, node_key in node_rows}
+        values: dict = {}
+        if id_by_key:
+            for v in (
+                db.query(ProjectInfoValue)
+                .filter(
+                    ProjectInfoValue.project_id.in_(project_ids),
+                    ProjectInfoValue.node_id.in_(set(id_by_key.values())),
+                )
+                .all()
+            ):
+                values[(str(v.project_id), v.node_id)] = v.value_json
+
+        # 2. 工单聚合：未关闭 + 近30天新增（报障/bug 加权）
+        open_map: dict[str, int] = {}
+        open_problem_map: dict[str, int] = {}
+        new_map: dict[str, int] = {}
+        new_problem_map: dict[str, int] = {}
+        window_start = datetime.now() - timedelta(days=_RISK_NEW_TICKET_WINDOW_DAYS)
+        for row in (
+            db.query(Task.project_id, Task.status, Task.task_type, Task.created_at)
+            .filter(Task.project_id.in_(project_ids))
+            .all()
+        ):
+            project_id, status, task_type, created_at = row
+            if not project_id:
+                continue
+            pid = str(project_id)
+            is_open = _norm_enum(status) in ("new", "in_progress", "pending")
+            is_problem = _norm_enum(task_type) in ("problem", "bug")
+            if is_open:
+                open_map[pid] = open_map.get(pid, 0) + 1
+                if is_problem:
+                    open_problem_map[pid] = open_problem_map.get(pid, 0) + 1
+            if created_at and created_at >= window_start:
+                new_map[pid] = new_map.get(pid, 0) + 1
+                if is_problem:
+                    new_problem_map[pid] = new_problem_map.get(pid, 0) + 1
+
+        # 3. 组装信号
+        signals: list[ProjectRiskSignals] = []
+        for p in projects:
+            pid = str(p.id)
+            signals.append(ProjectRiskSignals(
+                project_id=pid,
+                project_name=p.name or pid,
+                open_tickets=open_map.get(pid, 0),
+                open_problem_tickets=open_problem_map.get(pid, 0),
+                new_30d_tickets=new_map.get(pid, 0),
+                new_30d_problem_tickets=new_problem_map.get(pid, 0),
+                agv_count=_agv_count_of(values, pid, id_by_key),
+                agv_model_count=_agv_model_count_of(values, pid, id_by_key),
+                project_type=_risk_select_value(values, pid, id_by_key, "project_type"),
+                manual_risk=_risk_select_value(values, pid, id_by_key, "manual_risk"),
+            ))
+        return signals
 
     # ── 采集数据（collection_data）维度指标采集 ──────────────
 
@@ -1492,8 +1566,8 @@ class ReportDataCollector:
             ticket=ticket,
         )
         logger.info(
-            "数据采集完成 projects=%d risks=%d tickets=%d",
-            project.total, risk.total, ticket.total,
+            "数据采集完成 projects=%d risk_score=%d tickets=%d",
+            project.total, risk.score, ticket.total,
         )
         return data
 
@@ -1520,7 +1594,7 @@ class ReportGenerator:
 
         关联逻辑：user_project_roles.user_id ↔ users.id；返回的 project_id
         即 project.id（与 project.code 一致），可直接用于
-        ProjectDelivery.id / Risk.project_code / Task.project_id 过滤。
+        ProjectDelivery.id / Task.project_id 过滤。
 
         兼容两种传参：users.id 或 username（前端登录态只有 username，
         按 id 关联不到时回退按 username 关联再查）。
@@ -1709,10 +1783,11 @@ class ReportGenerator:
                 }
             elif "风险" in title_lower:
                 metrics = {
-                    "total": collected.risk.total,
-                    "new": collected.risk.new_risks,
-                    "closed": collected.risk.closed_risks,
-                    "by_level": collected.risk.by_level,
+                    "score": collected.risk.score,
+                    "level": collected.risk.level,
+                    "open_tickets": collected.risk.open_tickets,
+                    "new_30d_tickets": collected.risk.new_30d_tickets,
+                    "factors": collected.risk.factors,
                 }
             elif "工单" in title_lower:
                 metrics = {

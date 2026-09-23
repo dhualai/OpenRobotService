@@ -669,11 +669,21 @@ export default function TicketDetailPage() {
           return { ...prev, comments: updatedComments };
         });
       } catch { /* 保存用户消息失败不阻塞 AI 调用 */ }
-      // 2. 调 AI 讨论
+      // 2. 调 AI 讨论（引用某条后再 @U老师：把被引评论单独带上，避免淹没在最近 10 条里）
       const recentComments = (ticket.comments || []).slice(-10).map((c) => ({
         author: c.created_by_name || c.created_by || '?',
         content: c.content,
       }));
+      const quotedSrc = options?.replyTo != null
+        ? (ticket.comments || []).find((c) => String(c.id) === String(options.replyTo))
+        : undefined;
+      const quotedComment = quotedSrc
+        ? {
+            id: quotedSrc.id,
+            author: quotedSrc.created_by_name || quotedSrc.created_by || '?',
+            content: quotedSrc.content,
+          }
+        : undefined;
       const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/discuss`, {
         method: 'POST',
         body: JSON.stringify({
@@ -681,7 +691,11 @@ export default function TicketDetailPage() {
           // 去掉文本中任意位置的 @U老师 标记（可能有空格/重复），保留整段话作为 query，
           // 兼容"先说话、句尾@U老师"的场景（否则 @U老师 在尾部时 query 会带残留或丢失）
           query: userMsg.replace(/\s*@U老师\s*/g, ' ').trim(),
-          context: { recent_comments: recentComments },
+          context: {
+            recent_comments: recentComments,
+            ...(quotedComment ? { quoted_comment: quotedComment } : {}),
+            ...(options?.replyTo != null ? { reply_to: options.replyTo } : {}),
+          },
         }),
       });
       const data = await res.json();

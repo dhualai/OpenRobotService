@@ -627,6 +627,7 @@ def reset_retrieval(req: ResetReq):
 _ARTIFACT_PATTERNS = [
     "processed/weekly_*.md", "processed/weekly_*.json", "meta.json",
     "processed/unanswered_*.json",
+    "supplement_queue.json",
     "processed/segmentation_tool.html", "processed/segmentation_tool_bounds.html",
     "processed/retrieval_check_*.json",
     "processed/l3_judge_*.json",
@@ -1923,6 +1924,537 @@ def sink_review(dir: str = ""):
     return FileResponse(p, headers={"Cache-Control": "no-cache"})
 
 
+# ── 知识补充（页签5：漏斗未覆盖 → AI 整理 → 人工补答案 → 一键入库）──
+# 链路：漏斗 uncovered 层「补知识」→ 段对话进队列（supplement_queue.json）→
+# LLM 整理（问题规范化重写 + 探针验覆盖 + 类型归类；答案纯人工写，AI 不碰
+# 内容——未覆盖=库无料，AI 起草即无根之木，用户定调）→ 编辑器写答案（图文，
+# 图片统一落 kb/team/chat_qa/media/）→ 保存成 md（frontmatter 溯源；正文
+# H1+答案 ≤2000 字走 _split_generic 短文档路径整卡一 chunk，图文同在）→
+# 一键入库（ingest_all --domain team 增量，只有新文件会嵌入）→ 探针 local
+# 复跑验「已补齐」。入库只进本地知识库；生产同步走既有入库流程（UI 明示）。
+# sub_domain 无需注册：KBDomainIngester 按父目录自动推断 → "chat_qa"。
+
+
+def _supp_qfile(env: str) -> str:
+    return os.path.join(DATA_ROOT, env, "supplement_queue.json")
+
+
+def _supp_kb_dir():
+    from ai.config import _KB_DIR
+    return _KB_DIR / "team" / "chat_qa"
+
+
+def _supp_media_dir():
+    return _supp_kb_dir() / "media"
+
+
+_supp_lock = threading.Lock()
+_supp_tasks: dict = {}      # f"{env}:{item_id}" -> "analyzing" | "done" | str(error)
+_sup_ing: dict = {"busy": False, "logs": [], "rc": None, "verify": ""}
+
+
+def _supp_load(env: str) -> dict:
+    p = _supp_qfile(env)
+    if os.path.exists(p):
+        try:
+            d = json.load(open(p, encoding="utf-8"))
+            if isinstance(d, dict) and isinstance(d.get("items"), list):
+                return d
+        except Exception:
+            pass
+    return {"items": []}
+
+
+def _supp_save(env: str, d: dict):
+    os.makedirs(os.path.dirname(_supp_qfile(env)), exist_ok=True)
+    with open(_supp_qfile(env), "w", encoding="utf-8") as fh:
+        json.dump(d, fh, ensure_ascii=False, indent=1)
+
+
+def _supp_item(d: dict, item_id: str):
+    return next((it for it in d["items"] if it.get("id") == item_id), None)
+
+
+def _load_conv(env: str, cid) -> dict | None:
+    """split 里找会话（整会话原始数据，段切片由调用方做）。仅后台任务/线程池
+    里调（jsonl 几十 MB，同步读别放事件循环线程）。"""
+    split_p = os.path.join(DATA_ROOT, env, "processed", "conversations_split.jsonl")
+    if not os.path.exists(split_p):
+        return None
+    with open(split_p, encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip() and str(json.loads(line).get("conversation_id")) == str(cid):
+                return json.loads(line)
+    return None
+
+
+def _load_conv_map(env: str) -> dict:
+    """一次全读 split → {cid_str: conv}（批量补知识用，避免逐条全文件扫）。"""
+    split_p = os.path.join(DATA_ROOT, env, "processed", "conversations_split.jsonl")
+    out = {}
+    if os.path.exists(split_p):
+        with open(split_p, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    c = json.loads(line)
+                    out[str(c.get("conversation_id"))] = c
+    return out
+
+
+_bg_tasks: set = set()  # 持有后台整理 task 引用（不持有会被 GC 半路取消）
+
+
+class SuppAddReq(BaseModel):
+    env: str = "prod"
+    segs: list[dict]  # [{cid, astart, aend}]
+
+
+@app.post("/api/supplement/add")
+async def supp_add(req: SuppAddReq):
+    """漏斗行「补知识」/层头「批量加入」：段对话进队列并触发后台 AI 整理。"""
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    if not req.segs:
+        raise HTTPException(400, "segs 为空")
+    added, dup = [], 0
+    conv_map = await asyncio.to_thread(_load_conv_map, req.env)  # 一次全读，批量不逐条扫
+    with _supp_lock:
+        d = _supp_load(req.env)
+        now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        for s in req.segs:
+            cid, a0, a1 = s.get("cid"), s.get("astart"), s.get("aend")
+            if not cid or a0 is None or a1 is None or a1 <= a0:
+                continue
+            key = (str(cid), int(a0))
+            if any((str(it.get("cid")), int(it.get("astart") or 0)) == key
+                   for it in d["items"]):
+                dup += 1
+                continue
+            conv = conv_map.get(str(cid))
+            rounds = (conv or {}).get("rounds") or []
+            seg_rounds = rounds[a0:a1]
+            q_orig = next((rr.get("q") or "" for rr in seg_rounds if (rr.get("q") or "").strip()), "")
+            item = {
+                "id": f"s{uuid.uuid4().hex[:10]}",
+                "cid": cid, "astart": a0, "aend": a1,
+                "question_orig": q_orig[:300],
+                "question_norm": "", "qtype": "",
+                "status": "added",        # added→ready(整理完)→saved(已存md)→ingested(已入库)
+                "task": "analyzing",      # 实时任务态：analyzing|done|错误信息
+                "probe": None,            # {n_chunks, hits:[{title,route}]}（prod 源）
+                "verify": None,           # 入库后 local 源复跑 {ok, n_chunks, top_title}
+                "answer_md": "", "media": [],
+                "file": "", "note": "",
+                "created_at": now, "updated_at": now,
+                "ingested_at": "", "error": "",
+            }
+            d["items"].insert(0, item)
+            added.append(item["id"])
+        _supp_save(req.env, d)
+    for iid in added:
+        t = asyncio.create_task(_supp_analyze(req.env, iid))
+        _bg_tasks.add(t)
+        t.add_done_callback(_bg_tasks.discard)
+    return {"ok": True, "added": len(added), "dup": dup}
+
+
+async def _supp_analyze(env: str, item_id: str):
+    """后台 AI 整理：问题规范化重写（症状化语言）+ 探针验覆盖 + 类型归类。
+
+    只做整理侧三件事，不生成答案内容（用户定调：未覆盖=库无料，AI 起草
+    即无根之木）。探针打 prod 只读——验证的是线上知识库真实覆盖状态。"""
+    key = f"{env}:{item_id}"
+    _supp_tasks[key] = "analyzing"
+    try:
+        with _supp_lock:
+            d = _supp_load(env)
+            it = _supp_item(d, item_id)
+            if not it:
+                _supp_tasks[key] = "条目不存在"
+                return
+            cid, a0, a1 = it["cid"], it["astart"], it["aend"]
+        conv = await asyncio.to_thread(_load_conv, env, cid)
+        if not conv:
+            raise RuntimeError(f"会话 {cid} 不在 conversations_split.jsonl")
+        rounds = (conv.get("rounds") or [])[a0:a1]
+        lines = []
+        for rr in rounds:
+            q = (rr.get("q") or "").strip()
+            if q:
+                lines.append(f"用户：{q[:300]}")
+            n_img = len(rr.get("files") or [])
+            if n_img:
+                lines.append(f"[用户发送了 {n_img} 张图片]")
+            a_all = " ".join((s.get("text") or "") for s in (rr.get("a_seg") or [])
+                             if s.get("action") != "ticket_draft").strip()
+            if a_all:
+                lines.append(f"AI：{a_all[:800]}")
+        dialog = "\n".join(lines)[:4000]
+        prompt = (
+            "你是知识库管理助手。下面是一段用户与 AI 客服的对话，用户的问题在知识库"
+            "中没有覆盖（AI 当时无法直接回答）。你的任务：\n"
+            "1. 提炼用户的真实询问意图，重写为一个规范化的知识条目标题（question_norm）："
+            "用症状化、具体的表述；保留对话中的设备型号、功能名、错误码、界面名称等关键"
+            "实体；把指代词还原成实际对象；不超过 40 个字，以疑问句式收尾。\n"
+            "2. 判断问题类型（qtype），只能从这些取值里选：产品、平台操作、车端、算法、"
+            "业务流程、其他。\n"
+            "只输出 JSON：{\"question_norm\": \"...\", \"qtype\": \"...\"}\n\n"
+            f"对话记录：\n{dialog}")
+        from dar_llm import get_dar_client
+        client = await get_dar_client()
+        raw = await client.chat([{"role": "user", "content": prompt}],
+                                max_tokens=300, temperature=0.1)
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            raise RuntimeError(f"LLM 输出非 JSON：{raw[:120]}")
+        obj = json.loads(m.group(0))
+        q_norm = str(obj.get("question_norm") or "").strip()[:80]
+        qtype = str(obj.get("qtype") or "其他").strip()
+        if qtype not in ("产品", "平台操作", "车端", "算法", "业务流程", "其他"):
+            qtype = "其他"
+        if not q_norm:
+            raise RuntimeError("LLM 未给出重写问题")
+        # 探针 prod：命中块数只是辅助信号（原文探针也可能碰上弱相关块），
+        # ≥3 块给「疑似已覆盖」徽标，最终由人判断
+        probe_res, _ = await asyncio.to_thread(_run_probe_sync, q_norm, "prod")
+        chunks = (probe_res or {}).get("chunks") or []
+        probe = {"n_chunks": len(chunks), "suspicious": len(chunks) >= 3,
+                 "hits": [{"title": (c.get("title") or "")[:60],
+                           "route": c.get("route", "")} for c in chunks[:4]]}
+        with _supp_lock:
+            d = _supp_load(env)
+            it = _supp_item(d, item_id)
+            if it:
+                it.update(question_norm=q_norm, qtype=qtype,
+                          status="ready" if it["status"] == "added" else it["status"],
+                          probe=probe, task="done", error="",
+                          updated_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                _supp_save(env, d)
+        _supp_tasks[key] = "done"
+    except Exception as e:
+        _supp_tasks[key] = f"{type(e).__name__}: {e}"
+        with _supp_lock:
+            d = _supp_load(env)
+            it = _supp_item(d, item_id)
+            if it:
+                it["task"] = f"{type(e).__name__}: {e}"
+                it["status"] = "ready" if it["status"] == "added" else it["status"]
+                _supp_save(env, d)
+
+
+@app.get("/api/supplement/list")
+def supp_list(env: str = "prod"):
+    if env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    with _supp_lock:
+        items = _supp_load(env)["items"]
+    return {"items": [{k: it.get(k) for k in
+                       ("id", "cid", "astart", "aend", "question_orig", "question_norm",
+                        "qtype", "status", "task", "probe", "verify", "file",
+                        "created_at", "updated_at", "ingested_at", "error")}
+                      for it in items]}
+
+
+@app.post("/api/supplement/analyze")
+async def supp_analyze(req: SuppAddReq):  # 复用请求模型：env + segs 里带 id
+    """重跑 AI 整理（重写+探针+归类）。前端传 {env, segs:[{id}]}。"""
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    ids = [s.get("id") for s in req.segs if s.get("id")]
+    if not ids:
+        raise HTTPException(400, "缺 id")
+    for iid in ids:
+        with _supp_lock:
+            d = _supp_load(req.env)
+            it = _supp_item(d, iid)
+            if it and it.get("task") != "analyzing":
+                it["task"] = "analyzing"
+                it["error"] = ""
+                _supp_save(req.env, d)
+        t = asyncio.create_task(_supp_analyze(req.env, iid))
+        _bg_tasks.add(t)
+        t.add_done_callback(_bg_tasks.discard)
+    return {"ok": True, "triggered": len(ids)}
+
+
+@app.get("/api/supplement/item")
+def supp_item(env: str = "prod", id: str = ""):
+    if env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    with _supp_lock:
+        it = _supp_item(_supp_load(env), id)
+        if not it:
+            raise HTTPException(404, "条目不存在")
+        data = dict(it)
+    conv = _load_conv(env, it.get("cid"))
+    a0, a1 = int(it.get("astart") or 0), int(it.get("aend") or 0)
+    rounds = ((conv or {}).get("rounds") or [])[a0:a1] if conv else []
+    return {"item": data, "rounds": rounds}
+
+
+class SuppSaveReq(BaseModel):
+    env: str = "prod"
+    id: str
+    question_norm: str = ""
+    answer_md: str
+    note: str = ""
+
+
+@app.post("/api/supplement/save")
+def supp_save(req: SuppSaveReq):
+    """答案写盘：md 落 kb/team/chat_qa/（frontmatter 溯源；H1=规范化问题，
+    正文=人工答案。≤2000 字整卡一 chunk，问题标题与答案同块）。"""
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    if not req.answer_md.strip():
+        raise HTTPException(400, "答案内容为空")
+    with _supp_lock:
+        d = _supp_load(req.env)
+        it = _supp_item(d, req.id)
+        if not it:
+            raise HTTPException(404, "条目不存在")
+        q_norm = (req.question_norm or it.get("question_norm")
+                  or it.get("question_orig") or "").strip()[:80]
+        if not q_norm:
+            raise HTTPException(400, "缺规范化问题（先跑 AI 整理或手动填写）")
+        it["question_norm"] = q_norm
+        it["answer_md"] = req.answer_md
+        it["note"] = req.note
+        # 同段重复保存覆盖同名文件；文件名全 ASCII（qa0921_12345_0.md）
+        fname = time.strftime("qa%m%d_") + f"{it['cid']}_{it['astart']}.md"
+        media = it.get("media") or []
+        orig = (it.get("question_orig") or "")[:120]
+        fm = (f"---\nsource: chat_qa\ncid: {it['cid']}\nastart: {it['astart']}\n"
+              f"qtype: {it.get('qtype') or '其他'}\n"
+              f"orig_question: {orig}\n"
+              f"author: {_tokens.get(DEFAULT_AI, {}).get('username') or '本地'}\n"
+              f"created: {time.strftime('%Y-%m-%d')}\n---\n\n")
+        content = fm + f"# {q_norm}\n\n" + req.answer_md.strip() + "\n"
+        out = _supp_kb_dir() / fname
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(content, encoding="utf-8")
+        it["file"] = f"team/chat_qa/{fname}"
+        it["status"] = "saved"
+        it["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        _supp_save(req.env, d)
+    return {"ok": True, "file": it["file"], "media": media}
+
+
+class SuppMediaReq(BaseModel):
+    env: str = "prod"
+    id: str
+    # 二选一：data_b64（粘贴/本地上传，dataURL 或裸 base64）或 url（对话附件完整 URL）
+    data_b64: str = ""
+    ext: str = "png"     # data_b64 时的扩展名
+    url: str = ""        # 对话附件：后端代下载落盘（知识库自持，不依赖原站点存活）
+
+
+@app.post("/api/supplement/media")
+def supp_media(req: SuppMediaReq):
+    """图片落盘到 kb/team/chat_qa/media/，返回 md 引用片段。两张来路：
+    ① 对话附件（url=完整附件 URL，后端代下载）② 本地/粘贴图（data_b64）。"""
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    mdir = _supp_media_dir()
+    mdir.mkdir(parents=True, exist_ok=True)
+    if req.url:
+        if not req.url.startswith(("http://", "https://")):
+            raise HTTPException(400, "url 非法")
+        import httpx as _hx
+        r = _hx.get(req.url, timeout=60, follow_redirects=True)
+        r.raise_for_status()
+        blob = r.content
+        ext = "." + (req.url.rsplit(".", 1)[-1].lower()[:5] or "png")
+        if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            ext = ".png"
+        name = f"att_{uuid.uuid4().hex[:8]}{ext}"
+    elif req.data_b64:
+        import base64 as _b64
+        raw = req.data_b64.split(",", 1)[-1]
+        blob = _b64.b64decode(raw)
+        ext = "." + req.ext.lstrip(".").lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+            ext = ".png"
+        name = f"img_{uuid.uuid4().hex[:8]}{ext}"
+    else:
+        raise HTTPException(400, "data_b64 与 url 至少给一个")
+    if len(blob) > 20 * 1024 * 1024:
+        raise HTTPException(400, "图片超过 20MB")
+    (mdir / name).write_bytes(blob)
+    with _supp_lock:
+        d = _supp_load(req.env)
+        it = _supp_item(d, req.id)
+        if it:
+            it.setdefault("media", []).append(name)
+            it["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            _supp_save(req.env, d)
+    return {"ok": True, "name": name,
+            "md": f"![图片](media/{name})", "preview": f"/api/kb_media?rel=team/chat_qa/media/{name}"}
+
+
+class SuppRemoveReq(BaseModel):
+    env: str = "prod"
+    id: str
+    del_file: bool = False   # 已保存的连 md 一起删（media 留存，可能被别的卡引用）
+
+
+@app.post("/api/supplement/remove")
+def supp_remove(req: SuppRemoveReq):
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    with _supp_lock:
+        d = _supp_load(req.env)
+        it = _supp_item(d, req.id)
+        if not it:
+            raise HTTPException(404, "条目不存在")
+        if req.del_file and it.get("file"):
+            p = _supp_kb_dir().parent.parent / it["file"]
+            if p.is_file():
+                p.unlink()
+        d["items"] = [x for x in d["items"] if x.get("id") != req.id]
+        _supp_save(req.env, d)
+    return {"ok": True}
+
+
+class SuppPreviewReq(BaseModel):
+    md: str
+
+
+@app.post("/api/supplement/preview")
+def supp_preview(req: SuppPreviewReq):
+    """答案 md → 渲染 html（与知识库预览同款渲染 kb_md.md_to_html，
+    media/ 相对引用走 /api/kb_media）。"""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    from kb_md import md_to_html
+    from urllib.parse import quote as _q
+    html = md_to_html(req.md or "")
+    html = re.sub(r'src="(media/[^"]+)"',
+                  lambda m: 'src="/api/kb_media?rel=' + _q("team/chat_qa/" + m.group(1), safe="") + '"',
+                  html)
+    return {"html": html}
+
+
+class SuppIngestReq(BaseModel):
+    env: str = "prod"
+
+
+@app.post("/api/supplement/ingest")
+async def supp_ingest(req: SuppIngestReq):
+    """一键入库（单卡增量）：已保存的卡逐张 parse→嵌入→upsert 进 team 当前
+    活动集合。不走 ingest_all——那边 rebuild=True 恒全量重建集合（重嵌全域
+    1438 chunks，一张卡没道理背这个成本）；单卡 upsert 不建集合不切指针，
+    卡在 kb/ 源目录里，下次全量入库天然被扫描，两轨兼容。
+    完成后后台逐卡探针 local 验「已补齐」。只进本地知识库。"""
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    if _sup_ing.get("busy"):
+        raise HTTPException(409, "已有入库在跑")
+    with _supp_lock:
+        saved = [dict(it) for it in _supp_load(req.env)["items"] if it.get("status") == "saved"]
+    if not saved:
+        raise HTTPException(400, "没有已保存待入库的条目（先在编辑器保存答案）")
+    _sup_ing.update(busy=True, logs=[], rc=None, verify="")
+
+    async def gen():
+        yield f"data: {json.dumps({'event': 'begin', 'data': {'n_saved': len(saved)}}, ensure_ascii=False)}\n\n"
+
+        def L(msg):
+            _sup_ing["logs"].append(msg)
+            return f"data: {json.dumps({'event': 'log', 'data': {'line': msg}}, ensure_ascii=False)}\n\n"
+
+        rc = 0
+        try:
+            from ai.config import get_ai_config, get_active_collection_for
+            from ai.ingestion.parsers.kb_markdown import KBDomainIngester
+            from ai.ingestion.base import BaseIngester
+            col = get_active_collection_for("team")
+            # 指针失效自愈（dar-qdrant-pointer-traps 老坑：指针指向已清理
+            # 的集合）——不越权改指针文件，仅在现存 team_* 集合里挑名字最新
+            # 的用，并明写日志；下次全量入库会正常切指针。
+            ing = KBDomainIngester(domain="team")
+            qc = BaseIngester._make_qdrant_client(get_ai_config())
+            try:
+                if not col or not qc.collection_exists(col):
+                    avail = sorted(c.name for c in qc.get_collections().collections
+                                   if c.name.startswith("team_"))
+                    if not avail:
+                        raise RuntimeError("本地无任何 team_* 集合（先全量入库一次）")
+                    yield L(f"[WARN] 活动指针 {col or '（空）'} 指向不存在集合，fallback → {avail[-1]}")
+                    col = avail[-1]
+                yield L(f"[INFO] 目标集合 {col}（单卡增量，不动指针）")
+                done = 0
+                for it in saved:
+                    done += 1
+                    fname = os.path.basename(it.get("file") or "")
+                    p = _supp_kb_dir() / fname
+                    tag = f"[{done}/{len(saved)}] {fname}"
+                    if not p.is_file():
+                        yield L(f"[MISS] {tag} 卡文件不在盘上，跳过")
+                        continue
+                    ing.source_paths = [p]
+                    chunks = [ing.to_chunk(e) for e in ing.parse()]
+                    if not chunks:
+                        yield L(f"[WARN] {tag} 解析出 0 chunk，跳过")
+                        continue
+                    await ing.embed_and_upsert(chunks, col, client=qc)
+                    yield L(f"[OK] {tag} → {len(chunks)} chunk 已入")
+            finally:
+                qc.close()
+        except Exception as e:
+            rc = 1
+            yield L(f"[ERR] {type(e).__name__}: {e}")
+        _sup_ing["rc"] = rc
+        if rc == 0:
+            _sup_ing["verify"] = "running"
+            yield L("入库完成，逐卡探针验证「已补齐」中…（结果稍后刷新清单可见）")
+            t = asyncio.create_task(_supp_verify_ingested(req.env))
+            _bg_tasks.add(t)
+            t.add_done_callback(_bg_tasks.discard)
+        yield f"data: {json.dumps({'event': 'done', 'data': {'rc': rc, 'verify': _sup_ing['verify']}}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        _sup_ing["busy"] = False
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+async def _supp_verify_ingested(env: str):
+    """入库后逐条探针 local 验「已补齐」：命中→status=ingested；未命中保留
+    saved 并记 verify 供排查（可能是冷启动吞域——重跑一次即知）。"""
+    with _supp_lock:
+        items = [it for it in _supp_load(env)["items"] if it.get("status") == "saved"]
+    for it in items:
+        q = it.get("question_norm") or it.get("question_orig") or ""
+        if not q:
+            continue
+        res, _ = await asyncio.to_thread(_run_probe_sync, q, "local")
+        chunks = (res or {}).get("chunks") or []
+        top = chunks[0] if chunks else {}
+        # 命中块的 title=卡片 H1=规范化问题（_split_generic 短文档路径
+        # doc_title 即 H1）——top 标题含问题前缀即认「已补齐」
+        ok = bool(chunks) and q[:12] in (top.get("title") or "")
+        with _supp_lock:
+            d = _supp_load(env)
+            cur = _supp_item(d, it["id"])
+            if cur:
+                cur["verify"] = {"ok": ok, "n_chunks": len(chunks),
+                                 "top_title": (top.get("title") or "")[:60]}
+                if ok:
+                    cur["status"] = "ingested"
+                    cur["ingested_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                _supp_save(env, d)
+
+
+@app.get("/api/supplement/ingest_status")
+def supp_ingest_status():
+    """入库任务状态（页面刷新恢复现场；SSE 断开任务即中止，重跑即可）。"""
+    return {"running": bool(_sup_ing.get("busy")), "rc": _sup_ing["rc"],
+            "verify": _sup_ing["verify"],
+            "n": len(_sup_ing["logs"]),
+            "logs": _sup_ing["logs"][-40:]}
+
+
 # ── 知识库结构（页签4 知识库）────────────────────────────────
 # sub_domain → 检索标签（仅展示用；与 retrieval.py / pipeline.py 的 _sub_labels
 # 同源，那边新增子域后这里补一行即可，漏了只影响着色不影响功能）
@@ -1934,6 +2466,7 @@ _KB_LABELS = {
     "vehicle_implementation/huarui": "🤖 华睿", "vehicle_implementation/科钛VDA5050接入": "🤖 科钛",
     "ORS": "🎫 服务号",
     "team/diagnosis_cards": "🔍 诊断卡", "USP/faq": "📋 FAQ", "USP/manual": "📖 手册",
+    "team/chat_qa": "💬 对话补充",
     "USP/error_codes": "🚨 平台错误码", "USP/overview": "📘 模块文档",
     "USP/troubleshooting": "🏭 排查树", "USP/translation": "🌐 翻译",
     "USP/terminology": "🔤 术语表", "USP/ui_pages": "🧭 页面导航",
@@ -1949,6 +2482,7 @@ _KB_DIR_CN = {
     "科钛VDA5050接入": "🤖 科钛",
     "vehicle_calibration": "车辆标定", "vehicle_io": "IO 定义", "vehicle_motion": "运动控制",
     "ORS": "服务号平台", "USP": "USP 平台",
+    "chat_qa": "对话补充",
     "diagnosis_cards": "诊断知识卡", "error_codes": "平台错误码", "faq": "常见问答",
     "manual": "操作手册", "overview": "模块概览", "terminology": "术语表",
     "translation": "翻译对照", "troubleshooting": "故障排查树", "ui_pages": "页面导航",

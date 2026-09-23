@@ -4,7 +4,7 @@ regions JSON 元素约定：
   {id, x, y, w, h, question, answer, status}
   坐标为相对图宽高的 0～1；status: pending|answered|skipped
 """
-from sqlalchemy import Column, Integer, String, Text, JSON, DateTime
+from sqlalchemy import Column, Integer, String, Text, JSON, DateTime, text
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.sql import func
 
@@ -34,5 +34,8 @@ class UiAtlasCard(Base):
         comment="draft|pending_answers|published",
     )
     regions = Column(JSON, nullable=False, default=list, comment="难懂区域列表")
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    # 用 CURRENT_TIMESTAMP 而非 func.now()：SQLAlchemy 在 MySQL >= 8.0.13 上会把
+    # func.now() 渲染成表达式默认值 DEFAULT (now())，而 8.0.13 对含该默认值的表
+    # 执行 ALTER（CREATE INDEX 等）会报 1067 Invalid default value。
+    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now())

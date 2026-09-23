@@ -40,6 +40,48 @@ export interface DiscussionComment {
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
+/** 执行过程按工单缓存在 sessionStorage：切到别的页再回来仍能看到上次 todo。 */
+const aiProgressKey = (taskId: string | number) => `ors:ai-progress:${taskId}`;
+type AiProgressSnap = { runId?: string; todos: AiProgressTodo[]; phase: 'running' | 'done' };
+
+function readAiProgress(taskId?: string | number): AiProgressSnap | null {
+  if (taskId == null || taskId === '') return null;
+  try {
+    const raw = sessionStorage.getItem(aiProgressKey(taskId));
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (!p || !Array.isArray(p.todos) || p.todos.length === 0) return null;
+    return {
+      runId: typeof p.runId === 'string' ? p.runId : undefined,
+      todos: p.todos,
+      phase: p.phase === 'running' ? 'running' : 'done',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeAiProgress(taskId: string | number | undefined, snap: AiProgressSnap) {
+  if (taskId == null || taskId === '') return;
+  if (!snap.todos.length) return;
+  try {
+    sessionStorage.setItem(aiProgressKey(taskId), JSON.stringify(snap));
+  } catch { /* 隐私模式等写入失败忽略 */ }
+}
+
+function clearAiProgress(taskId: string | number | undefined) {
+  if (taskId == null || taskId === '') return;
+  try {
+    sessionStorage.removeItem(aiProgressKey(taskId));
+  } catch { /* ignore */ }
+}
+
+function isTeacherComment(c?: { created_by?: string; created_by_name?: string } | null): boolean {
+  if (!c) return false;
+  return c.created_by === 'U老师' || c.created_by_name === 'U老师';
+}
+
 /** 解析评论附件（字符串 object_path 或字典），提取 object_path/filename/isImage */
 const parseAttachment = (a: string | { path?: string; filename?: string; size?: number }) => {
   const objectPath = typeof a === 'string' ? a : (a.path || '');
@@ -180,29 +222,81 @@ export default function DiscussionPanel({
   // 长按操作菜单的浮层由 TDesign Mobile <Popover> 承载（自带箭头/动画/外点关闭）；
   // 通过「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect，避免覆盖气泡交互。
   // ── U老师 执行过程（Claude Code 式动态展示）──
-  // 后端在 Supervisor 派发能力时逐项推送 ai.progress(phase=running)，全部完成推 phase=done。
-  // 执行中在输入框上方渲染过程区；done 收尾后短暂保留再由 sending(false) 隐藏。
-  const [aiRunId, setAiRunId] = useState<string | undefined>();
-  const [aiTodos, setAiTodos] = useState<AiProgressTodo[]>([]);
-  const [aiPhase, setAiPhase] = useState<'running' | 'done'>('done');
-  // 过程区是否"活跃"：sending（@U老师 讨论 POST）或 optimisticAi（[帮我分析] diagnose）
-  // 任一为 true 都表示有一段 AI 执行正在进行。用于：
-  // ① 忽略 AI 结束后迟到的 running 事件（done 丢失又把过程区点亮）
-  // ② AI 执行结束（两标志均 false）后强制收起过程区，不再强依赖 WS done 事件送达。
+  // 跑的时候显示；回复一旦上屏就收起。sessionStorage 只用来接「切走时还在跑」的那一轮。
+  const cachedSnap = readAiProgress(taskId);
+  const [aiRunId, setAiRunId] = useState<string | undefined>(() => (
+    cachedSnap?.phase === 'running' ? cachedSnap.runId : undefined
+  ));
+  const [aiTodos, setAiTodos] = useState<AiProgressTodo[]>(() => (
+    cachedSnap?.phase === 'running' ? cachedSnap.todos : []
+  ));
+  const [aiPhase, setAiPhase] = useState<'running' | 'done'>(() => (
+    cachedSnap?.phase === 'running' ? 'running' : 'done'
+  ));
   const aiActive = sending || optimisticAi;
   const aiActiveRef = useRef<boolean>(aiActive);
   aiActiveRef.current = aiActive;
+  const aiPhaseRef = useRef(aiPhase);
+  aiPhaseRef.current = aiPhase;
+  const aiRunIdRef = useRef(aiRunId);
+  aiRunIdRef.current = aiRunId;
+  // 本轮开始时评论区最后一条 id：用来判断「新的 U老师回复」而不是历史回复。
+  const runAnchorCommentIdRef = useRef<string | number | null>(null);
+  const prevAiActiveRef = useRef<boolean>(aiActive);
+
+  const dismissAiProcess = useCallback(() => {
+    setAiRunId(undefined);
+    setAiTodos([]);
+    setAiPhase('done');
+    clearAiProgress(taskId);
+  }, [taskId]);
+
+  const applyAiProgress = useCallback((ev: { run_id?: string; phase: 'running' | 'done'; todos: AiProgressTodo[] }) => {
+    if (ev.phase === 'done') {
+      // 过程收尾时评论已落库，过程区可以收了。
+      dismissAiProcess();
+      return;
+    }
+    const todos = ev.todos || [];
+    const runId = ev.run_id || aiRunIdRef.current;
+    if (runId) setAiRunId(runId);
+    setAiPhase('running');
+    setAiTodos(todos);
+    writeAiProgress(taskId, { runId, todos, phase: 'running' });
+  }, [taskId, dismissAiProcess]);
 
   const handleWsAiProgress = useCallback((ev: { run_id?: string; phase: 'running' | 'done'; todos: AiProgressTodo[] }) => {
-    // AI 执行已结束（sending/optimisticAi 均 false）后到的事件一律忽略：
-    // 本轮过程区已由收尾逻辑强制收起，迟到的 running（WS 重连/竞态）不应再点亮它。
-    if (!aiActiveRef.current) return;
-    if (ev.phase === 'running') {
-      setAiRunId((prev) => (prev === undefined ? ev.run_id : prev));
+    if (aiActiveRef.current) {
+      applyAiProgress(ev);
+      return;
     }
-    setAiPhase(ev.phase);
-    setAiTodos(ev.todos || []);
-  }, []);
+    if (
+      ev.phase === 'running'
+      && aiPhaseRef.current === 'done'
+      && ev.run_id
+      && ev.run_id === aiRunIdRef.current
+    ) {
+      return;
+    }
+    applyAiProgress(ev);
+  }, [applyAiProgress]);
+
+  useEffect(() => {
+    const snap = readAiProgress(taskId);
+    const last = comments[comments.length - 1];
+    // 回复已经在最新一条：不要把完成态过程区再灌回来。
+    if (!snap || snap.phase !== 'running' || isTeacherComment(last)) {
+      setAiRunId(undefined);
+      setAiTodos([]);
+      setAiPhase('done');
+      if (snap) clearAiProgress(taskId);
+      return;
+    }
+    setAiRunId(snap.runId);
+    setAiTodos(snap.todos);
+    setAiPhase('running');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
 
   // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 + U老师 进度 ──
   const {
@@ -219,13 +313,11 @@ export default function DiscussionPanel({
     deletedIds,
   } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated, onAiProgress: handleWsAiProgress });
 
-  // 过程区可见性：U老师 正在分析（sending）且至少跑过 running 或有进行中项；done 由 sending(false) 隐藏。
-  // optimisticAi：点击 [帮我分析] 时立即置为 true → 前端主动显示占位 todo，不等 WS 首条 running
-  //（避免 diagnose 这类“点击即执行、报告几秒返回”的任务，过程区晚出现/闪一下就消失）。
+  // 过程区只在执行中显示；回复上屏 / done 后收起。
   const showAiProcess =
     (aiPhase === 'running' && aiTodos.length > 0) ||
-    (sending && aiRunId !== undefined) ||
-    optimisticAi;
+    optimisticAi ||
+    (sending && aiRunId !== undefined);
 
   // 乐观占位 todo：仅当 optimisticAi 且尚无真实 todo 时启用（planning+进行中）
   // 文案用通用“分析/规划”，[帮我分析] 与 @U老师 讨论共用。
@@ -240,29 +332,38 @@ export default function DiscussionPanel({
   const anyTodoRunning = displayTodos.some((t) => t.phase === 'running' || t.status === 'in_progress');
   const allTodosDone = displayTodos.length > 0 && !anyTodoRunning;
 
-  // 新一轮 U老师 讨论开始（sending false→true）：重置过程区
+  // 新一轮开始：记下当时最后一条评论，用来识别「本轮新回复」。
+  // 回复上屏或 POST 结束后立刻收起过程区，不用等到再发下一条。
   const prevSendingRef = useRef<boolean>(sending);
   useEffect(() => {
+    const wasActive = prevAiActiveRef.current;
+    if (aiActive && !wasActive) {
+      const last = displayComments[displayComments.length - 1];
+      runAnchorCommentIdRef.current = last?.id ?? null;
+    }
     if (sending && !prevSendingRef.current) {
       setAiRunId(undefined);
       setAiTodos([]);
       setAiPhase('done');
     }
     prevSendingRef.current = sending;
-    // AI 执行结束（sending/optimisticAi 均 false）→ 短暂保留过程区让用户看到结果，
-    // 随后**强制收起**。这里不再强依赖 allTodosDone（等价于收到 WS done 事件）——
-    // done 广播可能因 WS 断线/竞态丢失，若仅靠它收起，aiPhase 会卡在 'running'
-    // 导致过程区「一直挂着」。只要 aiActive=false 即说明 POST 已返回、AI 已跑完，
-    // 故直接复位 aiPhase + 清空 todos。
-    if (!aiActive && aiRunId !== undefined) {
-      const t = setTimeout(() => {
-        setAiRunId(undefined);
-        setAiTodos([]);
-        setAiPhase('done');
-      }, 400);
-      return () => clearTimeout(t);
+    prevAiActiveRef.current = aiActive;
+    // 本页这一轮刚跑完（POST / 帮我分析结束）：回复已返回，过程区立刻收。
+    // 切走再回来时 wasActive 为 false，不会误清「还在跑」的缓存。
+    if (wasActive && !aiActive) {
+      dismissAiProcess();
     }
-  }, [sending, allTodosDone, aiTodos, aiRunId, aiActive]);
+  }, [sending, aiActive, dismissAiProcess, displayComments]);
+
+  // 评论区已经出现本轮 U老师 回复 → 过程区可以收（不必等下一轮发送）。
+  useEffect(() => {
+    if (aiTodos.length === 0 && aiPhase !== 'running') return;
+    const last = displayComments[displayComments.length - 1];
+    if (!isTeacherComment(last)) return;
+    const anchor = runAnchorCommentIdRef.current;
+    if (anchor != null && String(last.id) === String(anchor)) return;
+    dismissAiProcess();
+  }, [displayComments, aiTodos.length, aiPhase, dismissAiProcess]);
 
   // username → 展示名 映射（用于在线头像 / 输入中提示）
   const nameMap = useMemo(() => {

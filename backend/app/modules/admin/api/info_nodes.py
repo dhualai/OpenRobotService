@@ -7,7 +7,9 @@
   结构类写接口 = 改「这个项目的树」：`POST /projects/{id}`（增补节点）、
   `POST /projects/{id}/import`（文件导入落库的整树导入）、`PUT /nodes/{id}`、
   `PATCH /nodes/{id}/move`、`DELETE /nodes/{id}`、`POST /projects/{id}/parse-file`、
-  `GET /projects/{id}/ledger-sync`（企业微信台账同步预览，读整棵树 + 读本地台账镜像）
+  `GET /projects/{id}/ledger-sync`（企业微信台账同步预览，读整棵树 + 读本地台账镜像）、
+  `POST /projects/{id}/reset-to-template`（一键清空：删掉本项目增补的节点与全部已填值，
+  恢复成模板的样子——动结构，与结构类同门槛）
   → **该项目下的人**（user_project_roles 里该项目有任一角色）都能改，admin 直通
   （`require_project_member`）。节点级路由的项目不在路径上，按节点反查归属项目
   （`_require_node_project_member`）。只靠前端藏按钮是拦不住的（接口可直连），
@@ -333,6 +335,33 @@ def import_info_tree(project_id: str, data: InfoNodeImport,
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"imported": count}
+
+
+@info_node_router.post("/projects/{project_id}/reset-to-template",
+                       summary="一键清空并恢复为模板结构（项目成员）")
+def reset_project_info_tree(project_id: str,
+                            current_user: Dict[str, Any] = Depends(require_project_member),
+                            actor: Dict[str, Optional[str]] = Depends(get_request_actor_optional)):
+    """把本项目的信息树恢复成模板的样子（「信息节点」页的「一键清空」）。
+
+    删掉本项目**增补的节点**（导入 / 同步 / 「增补信息」加进来的，含子孙）与**所有已填的值**，
+    剩下的就是全局模板字段本身（都是空的）。全局节点、下拉选项定义、编辑历史保留；
+    增补节点上的关注随节点清掉（全局节点上的不受影响）；附件只解除挂载。
+    逐条记入编辑历史（delete + change_reason=一键清空）：谁清的、删了哪些节点、
+    清了哪些内容都可查。返回 {"cleared": 清掉的字段数, "nodes_removed": 删掉的增补节点数}。
+
+    门槛比「填一个节点的值」高一档（require_project_member）：值写入是登录即可，
+    而这里会拆掉本项目的整片增补结构——与「整树导入」「删节点」同性质，拦在闸门上
+    而不是只藏前端按钮。错误约定：403=不是该项目的人，404=项目不存在。
+    """
+    try:
+        return info_node_service.reset_to_template(
+            project_id,
+            operator=actor.get("username") or current_user.get("username"),
+            operator_name=actor.get("name") or current_user.get("name"),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 # ── 编辑历史（节点操作记录） ──────────────────────────

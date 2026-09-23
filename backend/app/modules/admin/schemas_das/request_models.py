@@ -222,8 +222,10 @@ class ProjectResponse(ProjectBase):
     system_integration: Optional[List[Union[str, SystemIntegrationType]]] = None
     server_deployment_status: Optional[Union[str, ServerDeploymentStatus]] = None
     # 运行时附加的分析字段（服务层就地补充，非 Project 表列）：
-    # task_execution_stats = {"total_tasks", "finished_tasks", "completion_rate", "manual_switch_count"}
-    # latest_manual_switch_count = collection_data 最新一天的 averageManualCount
+    # task_execution_stats = {"total_tasks", "finished_tasks", "completion_rate", "manual_switch_count", "data_date"}
+    #   data_date = 这组统计对应的数据日期（collection_data 该项目已导入的最新一天，YYYY-MM-DD）
+    #   项目没有任何采集记录时五个字段一律为 None（前端显示「-」），不用 0 冒充——0 是真实统计值
+    # latest_manual_switch_count = 同一最新一天的 averageManualCount（无记录时为 None）
     # ticket_count = tasks 表按 project_id 统计的工单数（口径同仪表盘「总工单数」）
     task_execution_stats: Optional[Dict[str, Any]] = None
     latest_manual_switch_count: Optional[float] = None

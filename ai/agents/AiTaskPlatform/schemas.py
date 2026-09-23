@@ -14,11 +14,6 @@ class TaskAnalyzeRequest(BaseModel):
     session_id: str = Field(..., description="对话 session，多轮分析共享")
 
 
-class TaskListRequest(BaseModel):
-    """列出待处理工单请求"""
-    username: str = Field(..., description="当前用户（从 token 解析）")
-
-
 # ============================================================
 # 核心数据模型
 # ============================================================
@@ -96,24 +91,6 @@ class TaskContext(BaseModel):
 # ============================================================
 # 响应模型
 # ============================================================
-
-class TaskBrief(BaseModel):
-    """工单摘要（用于列表展示）"""
-    task_id: str
-    title: str
-    description: str = ""
-    priority: str = ""
-    status: str = ""
-    project_name: Optional[str] = None
-    created_at: Optional[str] = None
-    has_attachments: bool = False
-
-
-class TaskListResponse(BaseModel):
-    """工单列表响应"""
-    code: int = 0
-    data: dict = Field(default_factory=dict)
-
 
 class TaskHealthResponse(BaseModel):
     """健康检查响应"""
