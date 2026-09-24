@@ -427,6 +427,15 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                       {t.proxy_agent_name} 代提
                     </span>
                   )}
+                  {/* 接单人视角：处理人也能看到「谁代谁提单」，便于判断该找谁对接（只读信息） */}
+                  {t.is_proxy_assignee && t.proxy_agent_name && t.proxy_principal_name && (
+                    <span
+                      className="proxy-card-pill proxy-card-pill--mini"
+                      title={`${t.proxy_agent_name} 代 ${t.proxy_principal_name} 提交`}
+                    >
+                      {t.proxy_agent_name} 代 {t.proxy_principal_name}
+                    </span>
+                  )}
                 </div>
                 <div className={(t.participants || []).length > 0 ? 'task-card2__flow task-card2__flow--stacked' : 'task-card2__flow'}>
                   {/* 线在前、堆叠在后：有堆叠时线退到底部作下划线，头像在线上方 */}

@@ -13,6 +13,7 @@ OpenRobotService 一键部署脚本（前端 + 后端 + 算法）。
   - 上传 dist 内容到 nginx html 目录
   - 上传 backend/app，重启 supervisor 后端服务
   - 上传 ai 代码（忽略 run.py），重启 supervisor 算法服务
+  - 部署前自动备份远端现状，失败可一键回滚（--list-backups / --rollback / --no-backup）
 使用 tar 打包 + scp 上传 + ssh 远程执行，兼容 Windows 10+ 自带 OpenSSH 与 bsdtar。
 
 敏感信息说明：
@@ -27,11 +28,14 @@ import json
 import os
 import random
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -211,6 +215,8 @@ class SshConfig:
     identity: str
     sudo_password: str
     dry_run: bool = False
+    no_sudo: bool = False      # True 时 supervisorctl 不加 sudo（CI 走 supervisor 组权限）
+    remote_tmp: str = "~/tmp"  # 远端暂存目录（避开 /tmp 的 sticky/root 权限限制；scp 展开 ~，bash 侧转 $HOME）
 
     def target(self):
         return f"{self.user}@{self.host}"
@@ -255,15 +261,88 @@ def invoke_remote_cmd(cfg: SshConfig, command, *, sudo=False):
         raise RuntimeError(f"远程命令执行失败: {command}")
 
 
+def _run_capture(cmd, input_bytes=None, label=""):
+    """运行子进程：逐行流式输出到日志，同时累积并返回 stdout 文本。失败抛 RuntimeError。"""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdin=subprocess.PIPE if input_bytes is not None else None)
+    chunks = []
+    if input_bytes is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(input_bytes)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+    if proc.stdout is not None:
+        for raw in iter(proc.stdout.readline, b""):
+            line = raw.decode("utf-8", "replace").rstrip("\n")
+            chunks.append(line)
+            _emit(line, "cmd")
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError(f"{label or '远程命令'}执行失败（exit={proc.returncode}）")
+    return "\n".join(chunks)
+
+
+def run_remote_script(cfg: SshConfig, script, *, label="远程脚本"):
+    """把多行脚本经 stdin 送达远端 bash 执行（规避命令行引号转义问题）。
+
+    返回远端 stdout 文本；同时流式打印到日志。失败抛 RuntimeError。
+    """
+    ssh_args = cfg.ssh_args("ssh") + [cfg.target(), "bash -s"]
+    if cfg.dry_run:
+        write_info(f"[dryrun] ssh {' '.join(ssh_args)} <<'EOS'")
+        for line in script.splitlines():
+            write_info(f"[dryrun] | {line}")
+        return ""
+    return _run_capture(["ssh"] + ssh_args,
+                        input_bytes=script.encode("utf-8"), label=label)
+
+
+def restart_supervisor(cfg: SshConfig, service: str):
+    """重启 supervisor 服务：默认 sudo；no_sudo 时直接用 supervisor 组 socket 权限。"""
+    if cfg.no_sudo:
+        write_info(f"重启 supervisor 服务: {service}（免 sudo）")
+        invoke_remote_cmd(cfg, f"supervisorctl restart {service} && echo RESTART_DONE")
+    else:
+        write_info(f"重启 supervisor 服务: {service}")
+        invoke_remote_cmd(cfg,
+                          f"sudo supervisorctl restart {service} && echo RESTART_DONE",
+                          sudo=True)
+
+
+_REMOTE_PATH_RE = re.compile(r"^(~|/)[A-Za-z0-9._/~-]*$")
+
+
+def validate_remote_path(path, label="远端路径"):
+    """校验远端路径：须以 / 或 ~ 开头且只含安全字符（防路径穿越与命令注入）。"""
+    p = (path or "").strip().rstrip("/")
+    if not p or ".." in p or not _REMOTE_PATH_RE.match(p):
+        raise RuntimeError(f"{label}非法: {path!r}（须以 / 或 ~ 开头，不含 .. 与特殊字符）")
+    return p
+
+
+def to_bash_path(path):
+    """把 scp 形式的远端路径转成 bash 可用形式。
+
+    scp 会展开 ~ 为家目录，但 bash 双引号内 ~ 不展开，需替换为 $HOME。
+    """
+    if path == "~":
+        return "$HOME"
+    if path.startswith("~/"):
+        return "$HOME/" + path[2:]
+    return path
+
+
 def send_tarball(cfg: SshConfig, local_tar, remote_name):
-    """将本地 tar 包 scp 到远端用户家目录，返回 bash 可用的远端 tar 路径。
+    """将本地 tar 包 scp 到远端暂存目录，返回 bash 可用的远端 tar 路径。
 
     说明：
-    临时文件放在 $HOME/tmp 下，避开 /tmp 或 /data/tmp 的 sticky/root 所有权权限问题。
-    scp 目标用 ~ 展开，bash 命令（mkdir/tar/rm）用 $HOME 展开（bash 双引号内 ~ 不会展开）。
+    - 暂存目录由 --remote-tmp 指定（默认 ~/tmp），避开 /tmp 或 /data/tmp 的
+      sticky/root 所有权权限问题；
+    - scp 目标用 ~ 形式（scp 会展开），bash 命令用 $HOME 形式（双引号内 ~ 不展开）。
     """
-    scp_dir = "~/tmp"                  # scp 目标路径
-    bash_dir = "$HOME/tmp"             # bash 命令路径（双引号内 $HOME 可展开，~ 不行）
+    scp_dir = validate_remote_path(cfg.remote_tmp, "远端暂存目录")
+    bash_dir = to_bash_path(scp_dir)
     invoke_remote_cmd(cfg, f"mkdir -p {bash_dir}")
 
     scp_args = cfg.ssh_args("scp") + [local_tar, f"{cfg.target()}:{scp_dir}/{remote_name}"]
@@ -398,10 +477,7 @@ def deploy_backend(cfg: SshConfig, repo_root: Path, env: dict, clean_remote: boo
     invoke_remote_cmd(cfg, extract_cmd)
     write_ok("后端代码上传完成")
 
-    write_info(f"重启 supervisor 服务: {env['SupBackend']}")
-    invoke_remote_cmd(cfg,
-                      f"sudo supervisorctl restart {env['SupBackend']} && echo BACKEND_RESTART_DONE",
-                      sudo=True)
+    restart_supervisor(cfg, env["SupBackend"])
     write_ok("后端部署完成")
 
     if tarball and os.path.exists(tarball):
@@ -440,10 +516,7 @@ def deploy_ai(cfg: SshConfig, repo_root: Path, env: dict):
     invoke_remote_cmd(cfg, extract_cmd)
     write_ok("算法代码上传完成")
 
-    write_info(f"重启 supervisor 服务: {env['SupAi']}")
-    invoke_remote_cmd(cfg,
-                      f"sudo supervisorctl restart {env['SupAi']} && echo AI_RESTART_DONE",
-                      sudo=True)
+    restart_supervisor(cfg, env["SupAi"])
     write_ok("算法部署完成")
 
     if tarball and os.path.exists(tarball):
@@ -469,6 +542,344 @@ def parse_components(components):
     return parts
 
 
+# ====================== 备份 / 回滚 ======================
+# 远端备份结构：$HOME/deploy_backups/{env}/{backup_id}/
+#   ├── frontend.tar.gz / backend.tar.gz / ai.tar.gz（按备份的组件存在）
+#   └── manifest.json（含提交号、时间、组件与各包大小/校验和）
+# 仅含 manifest.json 的目录才被视为「有效备份」，可被 --list-backups 列出与回滚。
+BACKUP_ROOT = "deploy_backups"
+BACKUP_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
+BACKUP_KEEP_DEFAULT = 10
+
+# 备份时排除的大目录/易变内容：与上传时的排除表同源，避免备份体积失控
+# （ai/kb、ai/embed_models、日志、虚拟环境等不属于「代码」，无需备份）
+_AI_EXCLUDES = [
+    "__pycache__", "*.pyc", "*.pyo",
+    ".venv", "venv", "env",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "kb", "embed_models", "docs", "tests", "tools", "uploads",
+    ".env", ".env.*", "*.log", "logs", "*.sqlite3", "*.db",
+    ".git", ".idea", ".vscode",
+]
+_BACKEND_EXCLUDES = ["__pycache__", "*.pyc", "*.pyo",
+                     ".pytest_cache", ".mypy_cache", ".ruff_cache"]
+
+
+def make_backup_id():
+    """备份 id：时间戳 + 随机短哈希（白名单格式，可安全拼进远端命令）。"""
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+
+
+def validate_backup_id(backup_id):
+    """校验备份 id 格式，防路径穿越 / 命令注入。"""
+    bid = (backup_id or "").strip()
+    if not BACKUP_ID_RE.match(bid):
+        raise RuntimeError(
+            f"备份 id 非法: {backup_id!r}（应形如 20260923-153000-ab12cd）")
+    return bid
+
+
+def _tar_exclude_args(excludes):
+    """排除项转 tar 参数；用 shlex 加引号，避免远端 shell 展开 *.pyc 等通配符。"""
+    return " ".join(f"--exclude={shlex.quote(e)}" for e in excludes)
+
+
+def _backup_script(environment, env, components, backup_id):
+    """生成远端备份脚本（路径全部来自环境常量；backup_id 已通过白名单校验）。"""
+    lines = [
+        "set -euo pipefail",
+        f'BK="$HOME/{BACKUP_ROOT}/{environment}/{backup_id}"',
+        'mkdir -p "$BK"',
+        "emit_bkfile() {",
+        "  printf 'BKFILE\\t%s\\t%s\\t%s\\n' \"$1\" \"$(stat -c %s \"$BK/$1\")\""
+        " \"$(sha256sum \"$BK/$1\" | cut -d' ' -f1)\"",
+        "}",
+    ]
+    if "frontend" in components:
+        html = env["NginxHtml"]
+        lines += [
+            f'HTML="{html}"',
+            'if [ -d "$HTML" ] && [ -n "$(ls -A "$HTML" 2>/dev/null)" ]; then',
+            '  tar -czf "$BK/frontend.tar.gz" -C "$HTML" .',
+            '  emit_bkfile frontend.tar.gz',
+            'else',
+            '  echo "BACKUP_SKIP frontend 远端目录为空或不存在"',
+            'fi',
+        ]
+    if "backend" in components:
+        be = env["BackendRemote"]
+        lines += [
+            f'BE="{be}"',
+            'BK_ITEMS=""',
+            'if [ -d "$BE/app" ]; then BK_ITEMS="$BK_ITEMS app"; fi',
+            'if [ -f "$BE/main.py" ]; then BK_ITEMS="$BK_ITEMS main.py"; fi',
+            'if [ -n "$BK_ITEMS" ]; then',
+            f'  tar -czf "$BK/backend.tar.gz" -C "$BE" '
+            f'{_tar_exclude_args(_BACKEND_EXCLUDES)} $BK_ITEMS',
+            '  emit_bkfile backend.tar.gz',
+            'else',
+            '  echo "BACKUP_SKIP backend 远端代码不存在"',
+            'fi',
+        ]
+    if "ai" in components:
+        ai = env["AiRemote"]
+        lines += [
+            f'AI="{ai}"',
+            'if [ -d "$AI" ]; then',
+            f'  tar -czf "$BK/ai.tar.gz" -C "$AI" '
+            f'{_tar_exclude_args(_AI_EXCLUDES)} .',
+            '  emit_bkfile ai.tar.gz',
+            'else',
+            '  echo "BACKUP_SKIP ai 远端目录不存在"',
+            'fi',
+        ]
+    lines.append("echo BACKUP_DONE")
+    return "\n".join(lines)
+
+
+def prune_old_backups(cfg: SshConfig, environment, keep):
+    """只保留最近 keep 份有效备份（按目录名时间戳倒序）；失败仅告警不阻断。"""
+    if keep is None or keep <= 0:
+        return
+    script = "\n".join([
+        "set -euo pipefail",
+        f'cd "$HOME/{BACKUP_ROOT}/{environment}" 2>/dev/null || exit 0',
+        f"ls -1dt */ 2>/dev/null | tail -n +{keep + 1} | while read -r d; do",
+        '  if [ -f "$d/manifest.json" ]; then rm -rf -- "$d"; echo "PRUNED $d"; fi',
+        "done || true",
+        "echo PRUNE_DONE",
+    ])
+    try:
+        run_remote_script(cfg, script, label="清理旧备份")
+    except RuntimeError as e:
+        write_info(f"清理旧备份未成功（不影响本次部署）: {e}")
+
+
+def create_backup(cfg: SshConfig, environment, env, components, *,
+                  git_commit="", keep=BACKUP_KEEP_DEFAULT):
+    """部署前备份远端现状，返回 backup_id。
+
+    只备份本次将要覆盖的组件；远端打包 → 本地写 manifest（含 sha256）→ 上传 → 存在性复核。
+    任一步失败即抛 RuntimeError，调用方应中止部署（绝不带着「无备份」继续覆盖）。
+    """
+    write_step("【备份】部署前备份远端现状")
+    backup_id = make_backup_id()
+    out = run_remote_script(cfg, _backup_script(environment, env, components, backup_id),
+                            label="远端备份")
+    if cfg.dry_run:
+        return backup_id
+
+    files = {}
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 4 and parts[0] == "BKFILE":
+            try:
+                files[parts[1]] = {"size": int(parts[2]), "sha256": parts[3]}
+            except ValueError:
+                pass
+    if not files:
+        raise RuntimeError("备份失败：远端未生成任何备份包（已中止部署）")
+
+    manifest = {
+        "backup_id": backup_id,
+        "environment": environment,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "created_by": "ci" if os.environ.get("CI") else "local",
+        "git_commit": git_commit or "",
+        "components": sorted(components),
+        "files": files,
+    }
+    local_manifest = os.path.join(tempfile.gettempdir(), f"ors_backup_{backup_id}.json")
+    with open(local_manifest, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    try:
+        # scp 远端用相对路径（相对远端 HOME），兼容新版 sftp 后端与旧版 scp
+        rel_target = f"{BACKUP_ROOT}/{environment}/{backup_id}/manifest.json"
+        scp_args = cfg.ssh_args("scp") + [local_manifest, f"{cfg.target()}:{rel_target}"]
+        if _run(["scp"] + scp_args) != 0:
+            raise RuntimeError("备份清单上传失败（已中止部署）")
+    finally:
+        try:
+            os.remove(local_manifest)
+        except OSError:
+            pass
+
+    verify = run_remote_script(
+        cfg,
+        f'test -f "$HOME/{BACKUP_ROOT}/{environment}/{backup_id}/manifest.json" '
+        f'&& echo BACKUP_VERIFIED',
+        label="备份复核")
+    if "BACKUP_VERIFIED" not in verify:
+        raise RuntimeError("备份复核失败：清单未落盘（已中止部署）")
+
+    write_ok("备份内容: " + ", ".join(
+        f"{k}({v['size']}B)" for k, v in sorted(files.items())))
+    prune_old_backups(cfg, environment, keep)
+    write_ok(f"备份完成: {backup_id}")
+    return backup_id
+
+
+def _parse_manifests(out):
+    """从远端输出中提取所有 manifest.json 内容（按备份 id 倒序）。"""
+    items, buf, inside = [], [], False
+    for line in out.splitlines():
+        if line.startswith("MANIFEST_BEGIN"):
+            inside, buf = True, []
+            continue
+        if inside and "MANIFEST_END" in line:
+            # 兼容 manifest 末尾无换行的情况（此时 END 标记与 "}" 粘在同一行）
+            head = line.split("MANIFEST_END", 1)[0]
+            if head.strip():
+                buf.append(head)
+            inside = False
+            if buf:
+                try:
+                    items.append(json.loads("\n".join(buf)))
+                except json.JSONDecodeError:
+                    pass
+            continue
+        if inside:
+            buf.append(line)
+    items.sort(key=lambda m: m.get("backup_id", ""), reverse=True)
+    return items
+
+
+def list_backups(cfg: SshConfig, environment):
+    """列出远端有效备份（存在 manifest.json 的目录），供 --list-backups / 回滚选择。"""
+    script = "\n".join([
+        "set -euo pipefail",
+        f'cd "$HOME/{BACKUP_ROOT}/{environment}" 2>/dev/null || exit 0',
+        "for d in */; do",
+        '  if [ -f "$d/manifest.json" ]; then',
+        '    echo "MANIFEST_BEGIN $d"',
+        '    cat "$d/manifest.json"',
+        '    echo "MANIFEST_END"',
+        "  fi",
+        "done || true",
+    ])
+    return _parse_manifests(run_remote_script(cfg, script, label="列出备份"))
+
+
+def rollback_to_backup(cfg: SshConfig, environment, env, backup_id):
+    """把远端还原到指定备份并重启受影响的服务。
+
+    还原动作与部署动作保持对称：前端「清空后解压」、后端「删除 app 后解压」、
+    AI「覆盖解压（不动 kb/embed_models/.env 等数据目录）」。
+    """
+    bid = validate_backup_id(backup_id)
+    write_step(f"【回滚】还原到备份 {bid}")
+    html, be, ai = env["NginxHtml"], env["BackendRemote"], env["AiRemote"]
+    lines = [
+        "set -euo pipefail",
+        f'BK="$HOME/{BACKUP_ROOT}/{environment}/{bid}"',
+        'if [ ! -f "$BK/manifest.json" ]; then echo ROLLBACK_NO_MANIFEST; exit 3; fi',
+        f'HTML="{html}"',
+        'if [ -f "$BK/frontend.tar.gz" ]; then',
+        '  mkdir -p "$HTML"',
+        '  find "$HTML" -mindepth 1 -maxdepth 1 -exec rm -rf {} +',
+        '  tar -xzf "$BK/frontend.tar.gz" -C "$HTML"',
+        '  echo "ROLLBACK_APPLIED frontend"',
+        'fi',
+        f'BE="{be}"',
+        'if [ -f "$BK/backend.tar.gz" ]; then',
+        '  mkdir -p "$BE"',
+        '  rm -rf "$BE/app"',
+        '  tar -xzf "$BK/backend.tar.gz" -C "$BE"',
+        '  echo "ROLLBACK_APPLIED backend"',
+        'fi',
+        f'AI="{ai}"',
+        'if [ -f "$BK/ai.tar.gz" ]; then',
+        '  mkdir -p "$AI"',
+        '  tar -xzf "$BK/ai.tar.gz" -C "$AI"',
+        '  echo "ROLLBACK_APPLIED ai"',
+        'fi',
+        "echo ROLLBACK_DONE",
+    ]
+    out = run_remote_script(cfg, "\n".join(lines), label="回滚还原")
+    if cfg.dry_run:
+        return bid
+    applied = [ln.split()[-1] for ln in out.splitlines() if ln.startswith("ROLLBACK_APPLIED")]
+    if not applied:
+        raise RuntimeError(f"备份 {bid} 未包含任何可还原的组件包")
+    if "backend" in applied:
+        restart_supervisor(cfg, env["SupBackend"])
+    if "ai" in applied:
+        restart_supervisor(cfg, env["SupAi"])
+    write_ok(f"回滚完成（{bid}）: {', '.join(applied)}")
+    return bid
+
+
+def _validate_health_urls(raw):
+    """解析并校验健康检查 URL（逗号分隔）：仅允许 http/https 且不含 shell 危险字符。"""
+    urls = [u.strip() for u in (raw or "").split(",") if u.strip()]
+    for u in urls:
+        if not re.match(r"^https?://", u) or re.search(r"""[\s'"`\\|<>$;]""", u):
+            raise RuntimeError(f"健康检查 URL 非法: {u!r}（仅允许 http/https 且无特殊字符）")
+    return urls
+
+
+def remote_health_check(cfg: SshConfig, urls, retries=20, interval=3):
+    """在远端 curl 各健康端点（带重试，等服务重启后预热）。全部通过返回 True。
+
+    不抛异常：失败由调用方决定是否回滚，便于在 CI 中保留清晰的失败语义。
+    """
+    if not urls:
+        return True
+    write_step("【健康检查】服务就绪校验")
+    quoted = " ".join(shlex.quote(u) for u in urls)
+    script = "\n".join([
+        "set -uo pipefail",
+        f"for i in $(seq 1 {int(retries)}); do",
+        "  ok=1",
+        f"  for u in {quoted}; do",
+        '    if ! curl -fsS --max-time 5 "$u" >/dev/null 2>&1; then ok=0; fi',
+        "  done",
+        '  if [ "$ok" = "1" ]; then echo "HEALTH_OK"; exit 0; fi',
+        '  echo "HEALTH_RETRY $i"',
+        f"  sleep {int(interval)}",
+        "done",
+        'echo "HEALTH_FAIL"',
+    ])
+    out = run_remote_script(cfg, script, label="健康检查")
+    if cfg.dry_run:
+        return True
+    for line in out.splitlines():
+        if line.startswith("HEALTH_OK"):
+            write_ok(f"健康检查通过（{', '.join(urls)}）")
+            return True
+    write_err(f"健康检查未通过（已重试 {retries} 次，每次间隔 {interval}s）: {', '.join(urls)}")
+    return False
+
+
+def _print_backups_json(items, environment):
+    """用固定标记包裹单行 JSON，便于 CI 提取（其余日志走 stderr/彩色输出不影响）。"""
+    payload = {"environment": environment, "count": len(items), "backups": items}
+    print("BACKUPS_JSON_BEGIN")
+    print(json.dumps(payload, ensure_ascii=False))
+    print("BACKUPS_JSON_END")
+
+
+def _print_backups_md(items, environment):
+    """输出 Markdown 表格（CI 写入 Step Summary，供人工在 Actions 页面挑选备份）。"""
+    print(f"### {environment} 环境可用备份（{len(items)} 份）")
+    print("")
+    if not items:
+        print("暂无可用备份：每次部署前会自动生成一份。")
+        return
+    print("| 备份 id | 创建时间 | 提交 | 组件 | 大小 |")
+    print("| --- | --- | --- | --- | --- |")
+    for it in items:
+        files = it.get("files") or {}
+        size_kb = sum(int((f or {}).get("size") or 0) for f in files.values()) // 1024
+        commit = (it.get("git_commit") or "")[:8]
+        comps = ", ".join(it.get("components") or [])
+        print(f"| `{it.get('backup_id', '')}` | {it.get('created_at', '')} "
+              f"| `{commit}` | {comps} | {size_kb} KB |")
+    print("")
+    print("回滚方式：重新运行本工作流并选择 action=rollback，将上表 id 填入 backup_id。")
+
+
 # ====================== 命令行入口 ======================
 def build_ssh_config(args) -> SshConfig:
     # 合并优先级：命令行参数 > 本地配置文件 > DEFAULTS
@@ -480,7 +891,9 @@ def build_ssh_config(args) -> SshConfig:
     sudo_password = args.sudo_password or defaults.get("sudo_password", "")
     return SshConfig(host=host, user=user, port=port,
                      identity=identity, sudo_password=sudo_password,
-                     dry_run=args.dry_run)
+                     dry_run=args.dry_run,
+                     no_sudo=getattr(args, "no_sudo", False),
+                     remote_tmp=getattr(args, "remote_tmp", None) or "~/tmp")
 
 
 def main_cli(args):
@@ -504,24 +917,65 @@ def main_cli(args):
             if not cfg.host:
                 raise RuntimeError("必须提供远程服务器地址")
 
-        for tool in ["tar", "scp", "ssh", "npm"]:
+        # 仅查询备份 / 执行回滚时不构建前端，无需 npm
+        query_only = bool(args.list_backups or args.rollback)
+        for tool in (["ssh"] if query_only else ["tar", "scp", "ssh", "npm"]):
             if not test_command(tool):
                 raise RuntimeError(
                     f"未找到依赖工具: {tool}。请确保其已安装并在 PATH 中。")
 
+        env = get_env_config(args.environment)
+
+        # ---------- 只读查询：列出可用备份（供 CI 摘要与人工选择） ----------
+        if args.list_backups:
+            write_step(f"列出 {args.environment} 环境可用备份")
+            items = list_backups(cfg, args.environment)
+            if args.backups_format == "md":
+                _print_backups_md(items, args.environment)
+            else:
+                _print_backups_json(items, args.environment)
+            return 0
+
+        # ---------- 回滚到指定备份 ----------
+        if args.rollback:
+            target = args.rollback.strip()
+            if target == "latest":
+                items = list_backups(cfg, args.environment)
+                if not items:
+                    raise RuntimeError(f"{args.environment} 环境没有任何可用备份")
+                target = items[0]["backup_id"]
+            rollback_to_backup(cfg, args.environment, env, target)
+            # 回滚后同样校验服务就绪；失败只报警并以 1 退出（不再递归回滚）
+            health_urls = _validate_health_urls(args.health_urls)
+            if health_urls and not remote_health_check(cfg, health_urls,
+                                                       args.health_retries,
+                                                       args.health_interval):
+                write_err("回滚后健康检查未通过，请立即人工介入")
+                return 1
+            write_step("全部完成")
+            return 0
+
         components = parse_components(args.components)
 
-        if args.environment == "prod" and not args.dry_run:
+        if args.environment == "prod" and not args.dry_run and not args.yes:
             confirm = input(f"即将部署到【生产环境】服务器 {cfg.host}，确认继续？输入 yes 继续: ").strip()
             if confirm != "yes":
                 print("已取消。")
                 return 0
 
-        env = get_env_config(args.environment)
-
         write_ok(f"环境: {args.environment} | 服务器: {cfg.user}@{cfg.host}:{cfg.port}")
         write_ok(f"组件: {', '.join(components)}")
         write_ok(f"远端基目录: {env['RemoteBase']}")
+
+        backup_id = None
+        if args.no_backup:
+            write_info("已按要求跳过部署前备份（--no-backup）")
+        else:
+            backup_id = create_backup(cfg, args.environment, env, components,
+                                      git_commit=args.git_commit or "",
+                                      keep=args.backup_keep)
+            # 固定格式输出，供 CI 抓取：部署失败时据此自动回滚到「本次部署前」
+            print(f"DEPLOY_BACKUP_ID={backup_id}")
 
         if "frontend" in components:
             deploy_frontend(cfg, repo_root, env, args.skip_build)
@@ -529,6 +983,22 @@ def main_cli(args):
             deploy_backend(cfg, repo_root, env, args.clean_remote)
         if "ai" in components:
             deploy_ai(cfg, repo_root, env)
+
+        # ---------- 部署后健康检查；未通过则自动回滚到本次部署前 ----------
+        health_urls = _validate_health_urls(args.health_urls)
+        if health_urls and not remote_health_check(cfg, health_urls,
+                                                   args.health_retries,
+                                                   args.health_interval):
+            if backup_id:
+                write_err("健康检查未通过，自动回滚到本次部署前的备份")
+                try:
+                    rollback_to_backup(cfg, args.environment, env, backup_id)
+                    write_ok("已自动回滚，请人工确认服务状态")
+                except RuntimeError as e:
+                    write_err(f"自动回滚失败，请立即人工处理: {e}")
+            else:
+                write_err("健康检查未通过，且本次未生成备份，无法自动回滚")
+            return 1
 
         write_step("全部完成")
         write_ok(f"{args.environment} 环境部署结束: {', '.join(components)}")
@@ -862,6 +1332,36 @@ def build_parser():
                         help="项目根目录（包含 frontend/backend/ai）。默认为脚本上一级目录。")
     parser.add_argument("--dry-run", action="store_true",
                         help="只打印将要执行的命令，不真正执行。")
+    # ---------- 自动化（CI / 无人值守）相关参数 ----------
+    parser.add_argument("--yes", action="store_true",
+                        help="跳过交互式确认（CI 非交互执行时必须指定）。")
+    parser.add_argument("--no-sudo", dest="no_sudo", action="store_true",
+                        help="supervisorctl 不加 sudo（服务器已给 supervisor 组 socket 权限时使用）。")
+    parser.add_argument("--remote-tmp", dest="remote_tmp", default="~/tmp",
+                        help="远端暂存目录，默认 ~/tmp（scp 自动展开 ~，bash 侧自动转 $HOME）；"
+                             "家目录亦不可写时可用绝对路径覆盖。")
+    parser.add_argument("--no-backup", dest="no_backup", action="store_true",
+                        help="跳过部署前自动备份（不推荐：将失去本次回滚能力）。")
+    parser.add_argument("--backup-keep", dest="backup_keep", type=int,
+                        default=BACKUP_KEEP_DEFAULT,
+                        help=f"保留最近 N 份备份，0 表示不清理。默认 {BACKUP_KEEP_DEFAULT}。")
+    parser.add_argument("--git-commit", dest="git_commit", default="",
+                        help="写入备份清单的提交号（CI 传入，便于追溯）。")
+    parser.add_argument("--list-backups", dest="list_backups", action="store_true",
+                        help="列出远端可用备份后退出，不执行部署。")
+    parser.add_argument("--backups-format", dest="backups_format", default="json",
+                        choices=["json", "md"],
+                        help="--list-backups 输出格式：json（默认，供 CI 解析）"
+                             "或 md（Markdown 表格，供 Actions 摘要）。")
+    parser.add_argument("--rollback", dest="rollback", default="",
+                        help="回滚到指定备份 id（或 latest）后退出，不执行部署。")
+    parser.add_argument("--health-urls", dest="health_urls", default="",
+                        help="部署后健康检查地址（逗号分隔，服务器本机可访问的 HTTP 端点）。"
+                             "检查失败会自动回滚到本次部署前的备份。")
+    parser.add_argument("--health-retries", dest="health_retries", type=int, default=20,
+                        help="健康检查重试次数（默认 20，配合 --health-interval 共等待 60 秒）。")
+    parser.add_argument("--health-interval", dest="health_interval", type=int, default=3,
+                        help="健康检查重试间隔秒数（默认 3）。")
     return parser
 
 

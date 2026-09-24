@@ -64,6 +64,8 @@ interface Ticket {
   proxy_principal_name?: string | null;
   is_proxy_agent?: boolean;
   is_principal?: boolean;
+  /** 我是本单接单人：可见「谁代谁提单」胶囊（后端下发，前端不自行判定） */
+  is_proxy_assignee?: boolean;
 }
 
 /** username / user_id → avatar_resource_id 的查找表；缺失时回退为首字母头像 */
@@ -381,6 +383,15 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
           {t.is_principal && t.proxy_agent_name && (
             <span className="proxy-card-pill proxy-card-pill--mini" title={`${t.proxy_agent_name} 代你提交`}>
               {t.proxy_agent_name} 代提
+            </span>
+          )}
+          {/* 接单人视角：处理人也能看到「谁代谁提单」，便于判断该找谁对接（只读信息） */}
+          {t.is_proxy_assignee && t.proxy_agent_name && t.proxy_principal_name && (
+            <span
+              className="proxy-card-pill proxy-card-pill--mini"
+              title={`${t.proxy_agent_name} 代 ${t.proxy_principal_name} 提交`}
+            >
+              {t.proxy_agent_name} 代 {t.proxy_principal_name}
             </span>
           )}
         </div>

@@ -396,6 +396,50 @@ export async function fetchLedgerSyncPreviewApi(projectId: string): Promise<ApiL
   };
 }
 
+// —— 一键导入全部项目节点内容（仅管理员/超级管理员）：后台管理-项目管理页 ——
+
+/** POST /info-nodes/ledger-sync/all 返回：整批的汇总计数（单个项目的问题也在里面报，不失败整批） */
+export interface ApiImportAllResult {
+  /** 台账镜像（project 表）里的项目总数 */
+  project_total: number;
+  /** 有新写入 / 跑过但无需改动 / 跳过（无信息节点）/ 出错的项目数（四类互斥） */
+  project_written: number;
+  project_no_change: number;
+  project_skipped: number;
+  project_failed: number;
+  /** 新填条数 / 覆盖条数 */
+  filled: number;
+  overwritten: number;
+  /** 台账有、树里没有的条目数：没落库，提示还要去详情模板补字段 */
+  unmatched: number;
+  failures: { project_id: string; project_name: string; reason: string }[];
+  duration_ms: number;
+}
+
+/**
+ * 一键把台账（本地 project 表镜像）里有值的内容写进**全部项目**的信息节点：
+ * 空的填上、与台账矛盾的就地覆盖（逐条进编辑历史），不新建节点。
+ * 数据量大（几百个项目、上千条写入），超时按整批给足。
+ */
+export async function importAllProjectsLedgerApi(): Promise<ApiImportAllResult> {
+  const data = await request()<ApiImportAllResult>('/info-nodes/ledger-sync/all', {
+    method: 'POST',
+    timeout: 300000,
+  });
+  return {
+    project_total: data?.project_total ?? 0,
+    project_written: data?.project_written ?? 0,
+    project_no_change: data?.project_no_change ?? 0,
+    project_skipped: data?.project_skipped ?? 0,
+    project_failed: data?.project_failed ?? 0,
+    filled: data?.filled ?? 0,
+    overwritten: data?.overwritten ?? 0,
+    unmatched: data?.unmatched ?? 0,
+    failures: Array.isArray(data?.failures) ? data.failures : [],
+    duration_ms: data?.duration_ms ?? 0,
+  };
+}
+
 // —— 项目详情模板（仅管理员）：编辑模板 → 保存并同步到所有项目的节点 ——
 
 /** 模板节点（递归树；id 是节点身份的稳定 UUID，改名不换 id，历史与关注不断线） */

@@ -35,6 +35,7 @@ const makeRelation = (over: Partial<ProxyRelation> = {}): ProxyRelation => ({
   remark: null,
   is_agent: false,
   is_principal: false,
+  is_assignee: false,
   agent_name: '张三',
   principal_name: '李四',
   notified_at: null,
@@ -71,6 +72,20 @@ describe('ProxyRelationBanner', () => {
       />,
     );
 
+    expect(screen.getByText('已跟进')).toBeInTheDocument();
+    expect(screen.queryByText('确认跟进')).toBeNull();
+  });
+
+  it('接单人视角：展示「谁代谁提单」+ 关系状态胶囊，且只读无操作按钮', () => {
+    render(
+      <ProxyRelationBanner
+        ticketId={100}
+        relation={makeRelation({ is_assignee: true, relation_status: 'acknowledged' })}
+      />,
+    );
+
+    expect(screen.getByText('张三')).toBeInTheDocument();
+    expect(screen.getByText('李四')).toBeInTheDocument();
     expect(screen.getByText('已跟进')).toBeInTheDocument();
     expect(screen.queryByText('确认跟进')).toBeNull();
   });

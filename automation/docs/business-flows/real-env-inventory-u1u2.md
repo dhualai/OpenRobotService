@@ -1,6 +1,10 @@
 # 测试环境盘点与 U1/U2 创建参数
 
-> 状态：`u1_auto`/`u2_auto` 已创建并可登录；GitHub Actions 专用 key 已加固；Secrets 已配置待实测；可控回复待确认
+> 状态：`u1_auto`/`u2_auto` 已创建并可登录；可控回复待确认
+> 变更（2026-09-22）：**CI 接入方式已由「SSH 隧道」改为「self-hosted runner 直连」**，
+> 专用 SSH key 已作废——`TEST_SSH_PRIVATE_KEY` Secret 已删除，服务器 `authorized_keys`
+> 中的 `openrobot-ci-actions` 公钥已移除。下文 2.1 / 2.2 / 5.1 / 5.2 中关于 SSH key
+> 与 `real-access-check.yml` 的描述均为历史记录。
 > 日期：2026-09-09
 > 目标环境：真实后端 `TestOpenRobotService`
 
@@ -33,7 +37,10 @@ GitHub Actions 若使用 GitHub 托管 runner，不能直接请求 `9400`，需�
 - 测试前建立 SSH 隧道：`125.122.97.107:8802` -> `localhost:9400`。
 - 后端访问地址仍使用 `http://localhost:9400`，实际经隧道转发到测试环境后端。
 
-### 2.1 GitHub Actions 专用 SSH key
+### 2.1 GitHub Actions 专用 SSH key（已废弃）
+
+> 本节已作废，仅作历史记录保留。当前 CI 通过 self-hosted runner 在本机直连
+> `127.0.0.1:9400` / `127.0.0.1:9411`，不再使用任何 SSH 密钥或端口转发。
 
 - 已生成独立密钥对，不使用个人 SSH 私钥。
 - 公钥已加入测试服务器 `usp-a` 的 `authorized_keys`。
@@ -44,14 +51,14 @@ GitHub Actions 若使用 GitHub 托管 runner，不能直接请求 `9400`，需�
 
 ### 2.2 CI 连通性检查范围与触发方式
 
-第一版检查分两层：
+第一版检查分两层（**该设计已废弃**，`real-access-check.yml` 已删除）：
 
-1. 访问层（`real-access-check.yml`）：
+1. 访问层（`real-access-check.yml`）——**已删除**：
    - GitHub 托管 runner -> `125.122.97.107:8802`。
    - 专用 SSH key 鉴权 -> SSH 隧道 -> `127.0.0.1:9400`。
    - 只调用 `GET /api/health`，验证网络、密钥、隧道和后端进程是否可用。
-2. 业务链路层（待实现）：
-   - GitHub 托管 runner -> SSH 隧道 -> 后端 9400。
+2. 业务链路层（已实现，改为 self-hosted 直连）：
+   - self-hosted runner 在本机直接访问后端 9400。
    - U1/U2 登录、摇人问答、转工单、自动派单、处理、已解决、关闭。
    - 间接覆盖后端依赖的 `helpdesk_test`、Redis、AI 服务 9401 和派单 Worker。
 
@@ -141,12 +148,13 @@ GitHub Actions 若使用 GitHub 托管 runner，不能直接请求 `9400`，需�
 
 - U1/U2 的用户名和显示名采用第 4 节参数。
 - 固定问答第一版采用 `problem` 工单类型。
-- GitHub Actions 采用 SSH 端口转发访问测试环境后端。
+- GitHub Actions 原采用 SSH 端口转发访问测试环境后端；已改为 self-hosted runner 直连。
 - PR 仅跑 Mock/无 secret 测试；真实后端链路仅允许 `push test` 和 `workflow_dispatch`。
-- GitHub Actions 专用 SSH key 已限制为只能访问 `127.0.0.1:9400`，不能执行远程命令。
+- 原 GitHub Actions 专用 SSH key 已作废并清理，不再保留任何 CI 登录凭据。
 
 ### 5.2 待确认
 
-1. 手动触发 `real-access-check.yml`，确认 GitHub 托管 runner 可访问真实后端。
+1. ~~手动触发 `real-access-check.yml`，确认 GitHub 托管 runner 可访问真实后端。~~
+   该 workflow 已删除；连通性改由 self-hosted runner 直连验证。
 2. 可控 AI 回复的实现/配置方案。
 3. 自动清理：临时清理脚本已提供；长期仍需后端修复管理员硬删除接口或提供测试专用清理接口。

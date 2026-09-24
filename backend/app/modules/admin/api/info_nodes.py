@@ -24,6 +24,10 @@
   `_GLOBAL_ROLE_DERIVED_PERMISSIONS`（派生出权限码 `PERM_PROJECT_INFO_TEMPLATE`，
   后端 require_permission 与前端 hasPermission 读同一个码）。
 
+  `POST /ledger-sync/all`（一键导入全部项目的台账内容）也是这一层：它一次写**所有项目**
+  的数据，不属于任何单个项目，所以按管理员/超级管理员把关（`get_current_admin_user`，
+  与「配置阻滞权重」同一判据）；单个项目的台账同步仍是 `require_project_member`。
+
   值类写接口 = 填「项目数据」：`PUT /nodes/{id}/value`
   → 任何登录用户都能写，且只能写**已存在节点**的值，不能改结构、不能加节点。
   要记表外信息，走 `POST /projects/{id}/custom-nodes`——即「增补信息」，
@@ -46,6 +50,7 @@ from app.modules.admin.api.auth import (
 )
 from app.services.permission_service import PERM_PROJECT_INFO_TEMPLATE
 from app.modules.admin.api.permissions import (
+    get_current_admin_user,
     is_project_member_or_admin,
     require_project_member,
 )
@@ -514,6 +519,33 @@ def preview_ledger_sync(project_id: str,
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@info_node_router.post("/ledger-sync/all",
+                       summary="一键导入全部项目的台账内容（管理员/超级管理员）")
+def import_all_projects_ledger(
+    current_user: Dict[str, Any] = Depends(get_current_admin_user),
+):
+    """把本地台账镜像（project 表）里有值的内容批量写进**全部项目**的信息节点。
+
+    单项目同步（GET /projects/{id}/ledger-sync）是「预览 → 勾选 → 落库」，这里是它的
+    一键批量版：逐项目跑同一套比对，直接落「将填写」与「将覆盖」两类——
+    空的填上、与台账矛盾的就地覆盖（覆盖同样逐条进编辑历史，change_reason
+    记「一键导入（项目台账）」）；**不建节点**（台账有、树里没有的列只计数返回，
+    那属于「去详情模板里补字段」）。已有值与台账一致的不动，重复点击天然幂等。
+
+    这是全局批量写（一次可能写上万条、覆盖所有项目），所以闸门是管理员/超级管理员
+    （`get_current_admin_user`，与「配置阻滞权重」同一判据），而不是项目成员——
+    项目成员只能同步自己的项目，走上面那条单项目接口。
+
+    响应是汇总计数（project_total / project_written / project_no_change /
+    project_skipped / project_failed / filled / overwritten / unmatched /
+    failures / duration_ms），前端据此提示「导了多少、还剩多少没匹配上」。
+    """
+    return info_node_ledger_sync_service.import_all_projects(
+        operator=current_user.get("username"),
+        operator_name=current_user.get("name"),
+    )
 
 
 # ── 详情模板（全局字段定义）：全局角色 开发者 / 超级管理员 维护 ──

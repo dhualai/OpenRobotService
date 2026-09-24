@@ -1,11 +1,13 @@
 // 代他人提单 —— 工单详情页关系横幅。
 //
-// 两种视角两套内容（后端通过 is_agent / is_principal 下发视角标记，前端**不自行拼身份判定**）：
+// 三种视角三套内容（后端通过 is_agent / is_principal / is_assignee 下发视角标记，
+// 前端**不自行拼身份判定**）：
 //  - 代理人视角：你代 X 提交 + 关系状态胶囊（待确认 / 已跟进 / 已拒绝）
 //  - 被代理人视角：
 //      · pending      → 「X 代你提交了本工单」+ 操作按钮（确认跟进 / 与我无关）
 //      · acknowledged → 弱化只读态「你已确认跟进」
 //      · declined     → 弱化只读态「你已表示与本单无关」
+//  - 接单人视角：X 代 Y 提交 + 关系状态胶囊（只读，便于处理人判断该找谁对接）
 //
 // 视觉：复用 .surface-card 毛玻璃 + 左侧主色竖条，配色全部走 global.css 的 oklch token。
 import { useState } from 'react';
@@ -155,6 +157,19 @@ const ProxyRelationBanner = ({ ticketId, relation, onChanged }: Props) => {
       <div className="proxy-banner">
         <div className="proxy-banner__text">
           你代 <strong>{otherName || '对方'}</strong> 提交
+        </div>
+        <span className={`proxy-pill proxy-pill--${status}`}>{STATUS_TEXT[status] || status}</span>
+      </div>
+    );
+  }
+
+  // ── 接单人视角 ──：处理人也能看到「谁代谁提单」，便于判断该找谁对接（只读信息态）。
+  // 姓名对非参与人不下发，故此处同样以「双方姓名齐备」为前提，缺则与其他视角一致地不渲染。
+  if (relation.is_assignee && relation.agent_name && relation.principal_name) {
+    return (
+      <div className="proxy-banner proxy-banner--muted">
+        <div className="proxy-banner__text">
+          <strong>{relation.agent_name}</strong> 代 <strong>{relation.principal_name}</strong> 提交
         </div>
         <span className={`proxy-pill proxy-pill--${status}`}>{STATUS_TEXT[status] || status}</span>
       </div>

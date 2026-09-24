@@ -119,6 +119,8 @@ export interface ProxyRelation {
   /** 当前登录用户视角，后端下发，前端不自行拼身份判定 */
   is_agent: boolean;
   is_principal: boolean;
+  /** 当前登录用户是否为本单接单人（接单人视角：可见「谁代谁提单」） */
+  is_assignee: boolean;
   agent_name?: string | null;
   principal_name?: string | null;
   notified_at?: string | null;

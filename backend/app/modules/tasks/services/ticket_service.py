@@ -196,7 +196,8 @@ class TicketService:
         回填字段（挂在 ORM 实例上，由响应模型决定是否输出）：
         - proxy_relation_status：pending / acknowledged / declined
         - proxy_agent_name / proxy_principal_name：参与人姓名（来自 user_map）
-        - is_proxy_agent / is_principal：当前登录用户视角标记，供前端免二次判定
+        - is_proxy_agent / is_principal / is_proxy_assignee：当前登录用户视角标记，
+          供前端免二次判定（is_proxy_assignee = 我是本单接单人，供接单人视角展示「谁代谁提单」）
         """
         if not tickets:
             return
@@ -221,17 +222,22 @@ class TicketService:
                     continue
                 is_proxy_agent = bool(me_keys) and rel.agent_id in me_keys
                 is_principal = bool(me_keys) and rel.principal_id in me_keys
+                is_proxy_assignee = (
+                    bool(me_keys) and getattr(ticket, "assigned_to", None) in me_keys
+                )
                 # 脱敏：仅当当前用户是本单参与人（代理人/被代理人/提单人/处理人）时，
                 # 才下发「谁代谁提单」的姓名，避免通过列表接口探测他人代理关系。
+                # 接单人本就是参与人 → 姓名照常下发，故接单人视角可直接看到双方姓名。
                 is_participant = (
                     is_proxy_agent
                     or is_principal
                     or (bool(me_keys) and getattr(ticket, "created_by", None) in me_keys)
-                    or (bool(me_keys) and getattr(ticket, "assigned_to", None) in me_keys)
+                    or is_proxy_assignee
                 )
                 setattr(ticket, "proxy_relation_status", rel.relation_status)
                 setattr(ticket, "is_proxy_agent", is_proxy_agent)
                 setattr(ticket, "is_principal", is_principal)
+                setattr(ticket, "is_proxy_assignee", is_proxy_assignee)
                 if is_participant:
                     setattr(
                         ticket, "proxy_agent_name",

@@ -1,5 +1,10 @@
 # Task 51：UI 回归 GitHub Actions 接入
 
+> **后续变更（2026-09-22）**：本文描述的 CI 接入方式已整体废弃。当前改为
+> self-hosted runner 直连 `127.0.0.1:9400` / `127.0.0.1:9411`，不再使用 SSH 密钥、
+> `authorized_keys` 白名单或 `permitopen`。相关 Secret 与公钥均已删除。
+> 本文属于历史归档，勿作为现行口径。
+
 > 日期：2026-09-19
 > 状态：实现完成，等待 GitHub workflow 实测
 

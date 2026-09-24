@@ -265,6 +265,8 @@ export interface AiTicketBrief {
   proxy_relation_status?: 'pending' | 'acknowledged' | 'declined' | null;
   is_proxy_agent?: boolean;
   is_principal?: boolean;
+  /** 当前登录用户是否为本单接单人（接单人视角：可见「谁代谁提单」） */
+  is_proxy_assignee?: boolean;
   proxy_agent_name?: string | null;
   proxy_principal_name?: string | null;
   // 评论区参与讨论人员（头像堆叠；已按评论数→评论时间降序，含未读红点标记）
