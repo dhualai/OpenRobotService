@@ -88,7 +88,8 @@ FAST_PATH_CASES: list[dict] = [
     },
     {
         "question": "风险等级分布",
-        "metric_keys": ["risk.by_level"],
+        # 快路径：(等级|级别) 子规则 → 等级分布 + 高风险项目数
+        "metric_keys": ["risk.by_level", "risk.high_risk_count"],
         "time_type": "recent_days",
         "time_explicit": False,
         "action": "distribution",
@@ -144,27 +145,29 @@ FAST_PATH_CASES: list[dict] = [
         "action": "summary",
         "scope_type": "global",
     },
-    # 风险维度
+    # 风险维度（规则推算口径：项目信息 AGV 数量/车型、项目类型、人工风险点 + 关联工单综合评分）
     {
-        "question": "今天新增了多少风险",
-        "metric_keys": ["risk.new_count"],
+        "question": "今天哪些项目风险比较高",
+        # 快路径：无「等级|级别」等子规则命中 → 落兜底评估明细；「比较高」触发 compare
+        "metric_keys": ["risk.assessment", "risk.by_level", "risk.high_risk_count"],
         "time_type": "today",
         "time_explicit": True,
-        "action": "summary",
+        "action": "compare",
         "scope_type": "global",
     },
     {
-        "question": "本周关闭了多少风险",
-        "metric_keys": ["risk.closed_count"],
+        "question": "本周风险怎么样",
+        # 推算口径不依赖时间范围，但「本周」仍被识别为时间词
+        "metric_keys": ["risk.assessment", "risk.by_level", "risk.high_risk_count"],
         "time_type": "this_week",
         "time_explicit": True,
         "action": "summary",
         "scope_type": "global",
     },
     {
-        "question": "风险分类分布",
-        # 快路径："分类|类别" 子规则命中 by_category
-        "metric_keys": ["risk.by_category"],
+        "question": "风险分布",
+        # 「分布」动作词 + 兜底指标；distribution 补丁已有 by_level 不重复追加
+        "metric_keys": ["risk.assessment", "risk.by_level", "risk.high_risk_count"],
         "time_type": "recent_days",
         "time_explicit": False,
         "action": "distribution",
@@ -409,7 +412,7 @@ SLOW_PATH_CASES: list[dict] = [
     },
     {
         "question": "高等级风险都有哪些",
-        "expect_contains": ["risk.by_level", "risk.items"],
+        "expect_contains": ["risk.assessment", "risk.by_level"],
     },
     {
         "question": "最近哪个项目问题最多",
@@ -433,14 +436,10 @@ CLARIFY_CASES: list[dict] = [
         "missing": ["time_range"],
     },
     {
-        "question": "新增风险情况",
-        "metric_keys": ["risk.new_count"],
-        "missing": ["time_range"],
-    },
-    {
-        "question": "风险关闭情况",
-        "metric_keys": ["risk.closed_count"],
-        "missing": ["time_range"],
+        # 风险为规则推算口径（项目信息 + 工单），不要求时间范围 → 不应澄清（对照组）
+        "question": "项目风险评估",
+        "metric_keys": ["risk.assessment", "risk.by_level", "risk.high_risk_count"],
+        "missing": [],
     },
     {
         # 解决率不要求时间范围 → 不应澄清（对照组）
@@ -502,19 +501,6 @@ MULTI_ROUND_CASES: list[dict] = [
         "final": {
             "metric_keys": ["ticket.new_count", "ticket.new_by_day"],
             "time_type": "recent_days",
-            "time_explicit": True,
-            "action": "summary",
-        },
-    },
-    {
-        "name": "缺时间 → 补充本周",
-        "rounds": [
-            ("新增风险情况", "clarify", ["time_range"]),
-            ("本周", "analysis", []),
-        ],
-        "final": {
-            "metric_keys": ["risk.new_count"],
-            "time_type": "this_week",
             "time_explicit": True,
             "action": "summary",
         },

@@ -78,16 +78,23 @@ class ProjectStats(BaseModel):
 
 
 class RiskStats(BaseModel):
-    """风险维度统计数据。"""
+    """风险维度统计（规则推算口径，不再读 risk 表）。
+
+    评估依据：项目信息（AGV 数量/种类、项目类型、人工风险点）
+    + 关联工单（未关闭数、近30天新增数），由 risk_assessor 按规则推算。
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    total: int = Field(0, alias="风险总数")
-    new_risks: int = Field(0, alias="新增风险")
-    closed_risks: int = Field(0, alias="已关闭风险")
-    by_level: dict[str, int] = Field(default_factory=dict, alias="按等级分布")
-    by_status: dict[str, int] = Field(default_factory=dict, alias="按状态分布")
-    items: list[dict[str, Any]] = Field(default_factory=list, alias="风险明细")
+    score: int = Field(0, alias="风险分数")
+    level: str = Field("低", alias="风险等级")
+    open_tickets: int = Field(0, alias="未关闭工单数")
+    new_30d_tickets: int = Field(0, alias="近30天新增工单数")
+    agv_count: int = Field(0, alias="AGV数量")
+    agv_model_count: int = Field(0, alias="AGV种类")
+    project_type: str = Field("", alias="项目类型")
+    manual_risk: str = Field("", alias="人工风险点")
+    factors: list[str] = Field(default_factory=list, alias="风险因素")
 
 
 class TicketStats(BaseModel):

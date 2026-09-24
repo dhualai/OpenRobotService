@@ -219,11 +219,10 @@ _DIMENSION_RULES: list[tuple[re.Pattern, str, list[tuple[re.Pattern | None, list
         re.compile(r"风险"),
         "risk",
         [
-            (re.compile(r"(等级|级别)"), ["risk.by_level"]),
-            (re.compile(r"(新增|新建)"), ["risk.new_count"]),
-            (re.compile(r"(关闭|闭环)"), ["risk.closed_count"]),
-            (re.compile(r"(分类|类别)"), ["risk.by_category"]),
-            (None, ["risk.total", "risk.new_count", "risk.by_level", "risk.by_status"]),
+            (re.compile(r"(等级|级别)"), ["risk.by_level", "risk.high_risk_count"]),
+            # 风险为规则推算口径（项目信息 + 工单综合评分），无「新增/关闭/分类」
+            # 概念，此类问法一律落兜底评估明细
+            (None, ["risk.assessment", "risk.by_level", "risk.high_risk_count"]),
         ],
     ),
     (
@@ -381,7 +380,7 @@ def _fast_path_parse(
             metric_keys.extend(["ticket.by_status", "ticket.by_type"])
         elif matched_dim == "risk" \
                 and not any(k.startswith("risk.by_") for k in metric_keys):
-            metric_keys.extend(["risk.by_level", "risk.by_status"])
+            metric_keys.append("risk.by_level")
         elif matched_dim == "project" \
                 and not any(k.startswith("project.by_") for k in metric_keys):
             metric_keys.append("project.by_status")
