@@ -100,7 +100,7 @@ describe('项目管理 · 一键导入所有项目节点内容', () => {
     await confirmImport();
 
     await waitFor(() => expect(vi.mocked(Toast)).toHaveBeenCalled());
-    expect(vi.mocked(Toast).mock.calls[0][0].message).toContain('没有需要写入的内容');
+    expect((vi.mocked(Toast).mock.calls[0]![0] as { message: string }).message).toContain('没有需要写入的内容');
   });
 
   it('有项目失败时补一条提示（带首个失败项目与原因）', async () => {
