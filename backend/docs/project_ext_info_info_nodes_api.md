@@ -1,6 +1,6 @@
 # 项目扩展信息（ext_info）与项目信息树（info_nodes）后端接口变更说明
 
-> 变更日期：2026-09-14（初版）；2026-09-15 新增 5.8 文件识别接口；2026-09-16 新增 4.4 AI 项目摘要接口、5.9 / 5.10 节点操作记录（编辑历史）接口、5.11～5.13 节点关注与项目动态接口；2026-09-17 4.4 的大模型客户端改为 backend 自维护的 `app/core/llm_client.py`（不再依赖仓库根 `ai/core/llm.py`，`requirements.txt` 移除 tenacity）；同日性能修复：info-nodes 组纯同步路由去 async（改走 FastAPI 线程池，避免同步 DB 阻塞事件循环）、parse-file 文件抽取移入线程池（`asyncio.to_thread`）、5.13 项目动态查询改 `GROUP BY max(id)` 按主键回查（不再全量拉历史）、info_node 三 service 与 project_service 收敛共享 `app/core/db.py` 引擎（`pool_pre_ping`/`pool_recycle`，空闲连接失效自愈）；2026-09-20 新增 5.16 企业微信台账同步预览接口（项目信息编辑页「同步」：把台账列名与信息节点对齐后给出 填写 / 覆盖 / 新增 三组预览，**不落库**）；2026-09-21 5.16 的台账数据源改为**本地 `project` 表镜像**（不再请求 AI 服务的 /api/ai/wecom/projects，删掉 503 失败态与「台账里找不到记录」的 400，路由由 async 改回同步 def、走线程池）；同日 5.9 新增 `include_descendants` 子树口径：一级标签的「历史」汇总这一级下所有节点的变动（含子树里被删节点的删除记录），前端按节点分组渲染成 Markdown 文档（第九节第 9、17 条）；2026-09-21 5.16 的匹配新增**按值认节点**（台账列的值正好是某个下拉节点的可选项时认到那个节点上，列名对不上也认，`_pin_option_values`），且「同步」不再新建一级标签——没归属的列只作提醒，不再堆进「导入信息」兜底根节点（第九节第 16 条）；2026-09-21 基础模板调整（迁移 `6f2c8a1d9b47`，第三节）：`基础信息` 下新增 项目编号/订单号/时间信息汇总（+5 子节点）、`硬件/车型信息`（原「车辆」改名）下新增 总车数、`调度软件/版本` 下新增 版本号；台账列 `项目编号` 随之不再是定位列（要填进同名节点）、文件导入提示词同步更新（车型归属路径按「车型N 槽位的父级」定位 + 新增「总车数」规则）；2026-09-21 新增 5.17 一键清空接口（`POST /projects/{id}/reset-to-template`：把本项目的信息树**恢复成模板的样子**——删掉导入/同步/增补加进来的节点（`project_id` 非空，含子孙）+ 清掉全部已填值；全局字段定义、下拉选项、编辑历史保留，增补节点上的关注随节点清掉，附件只解除挂载；逐条记 `delete` 历史并加一条整树级记录，门槛同结构类写接口；编辑页按钮在「同步」右侧。首版只清值不动结构，同日按用户口径改为「清理成模板的结构」）
+> 变更日期：2026-09-14（初版）；2026-09-15 新增 5.8 文件识别接口；2026-09-16 新增 4.4 AI 项目摘要接口、5.9 / 5.10 节点操作记录（编辑历史）接口、5.11～5.13 节点关注与项目动态接口；2026-09-17 4.4 的大模型客户端改为 backend 自维护的 `app/core/llm_client.py`（不再依赖仓库根 `ai/core/llm.py`，`requirements.txt` 移除 tenacity）；同日性能修复：info-nodes 组纯同步路由去 async（改走 FastAPI 线程池，避免同步 DB 阻塞事件循环）、parse-file 文件抽取移入线程池（`asyncio.to_thread`）、5.13 项目动态查询改 `GROUP BY max(id)` 按主键回查（不再全量拉历史）、info_node 三 service 与 project_service 收敛共享 `app/core/db.py` 引擎（`pool_pre_ping`/`pool_recycle`，空闲连接失效自愈）；2026-09-20 新增 5.16 企业微信台账同步预览接口（项目信息编辑页「同步」：把台账列名与信息节点对齐后给出 填写 / 覆盖 / 新增 三组预览，**不落库**）；2026-09-21 5.16 的台账数据源改为**本地 `project` 表镜像**（不再请求 AI 服务的 /api/ai/wecom/projects，删掉 503 失败态与「台账里找不到记录」的 400，路由由 async 改回同步 def、走线程池）；同日 5.9 新增 `include_descendants` 子树口径：一级标签的「历史」汇总这一级下所有节点的变动（含子树里被删节点的删除记录），前端按节点分组渲染成 Markdown 文档（第九节第 9、17 条）；2026-09-21 5.16 的匹配新增**按值认节点**（台账列的值正好是某个下拉节点的可选项时认到那个节点上，列名对不上也认，`_pin_option_values`），且「同步」不再新建一级标签——没归属的列只作提醒，不再堆进「导入信息」兜底根节点（第九节第 16 条）；2026-09-21 基础模板调整（迁移 `6f2c8a1d9b47`，第三节）：`基础信息` 下新增 项目编号/订单号/时间信息汇总（+5 子节点）、`硬件/车型信息`（原「车辆」改名）下新增 总车数、`调度软件/版本` 下新增 版本号；台账列 `项目编号` 随之不再是定位列（要填进同名节点）、文件导入提示词同步更新（车型归属路径按「车型N 槽位的父级」定位 + 新增「总车数」规则）；2026-09-21 新增 5.17 一键清空接口（`POST /projects/{id}/reset-to-template`：把本项目的信息树**恢复成模板的样子**——删掉导入/同步/增补加进来的节点（`project_id` 非空，含子孙）+ 清掉全部已填值；全局字段定义、下拉选项、编辑历史保留，增补节点上的关注随节点清掉，附件只解除挂载；逐条记 `delete` 历史并加一条整树级记录，门槛同结构类写接口；编辑页按钮在「同步」右侧。首版只清值不动结构，同日按用户口径改为「清理成模板的结构」）；2026-09-22 新增 5.18 一键导入全部项目节点内容（`POST /info-nodes/ledger-sync/all`，后台管理-项目管理页「项目导入」区的按钮，仅管理员/超级管理员：对 297 个项目各跑一遍 5.16 的比对，把「将填写 + 将覆盖」两类**直接落库**——空的填上、与台账矛盾的就地覆盖并逐条进编辑历史，不建不删节点；台账有、树里没有的只计数返回。单项目失败不中断整批，重复点击幂等）
 > 模块：`app/modules/admin`（后台管理）
 > 路由公共前缀：`/api/admin`（`/api` 来自 `API_V1_STR`，`/admin` 来自 `admin_router`）
 
@@ -242,7 +242,7 @@ Service 逻辑（`update_project`）：
 - `ProjectUpdate`：新增 `ext_info`、`version: Optional[int]`
 - `ProjectResponse`：新增 `ext_info`、`version: int = 1`
 
-## 五、项目信息树接口（新增，18 个）
+## 五、项目信息树接口（新增，19 个）
 
 路由文件：[info_nodes.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/api/info_nodes.py)
 Service：[info_node_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/info_node_service.py)、[info_node_import_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/info_node_import_service.py)（仅 5.8）
@@ -258,6 +258,7 @@ Service：[info_node_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/ap
 > | `PUT /nodes/{id}/value` 值写入 | 任何登录用户（只能写已存在节点的值，不改结构）|
 > | `POST /projects/{id}/custom-nodes` 增补信息 | 任何登录用户（限父节点必填、层数 ≤ 4）|
 > | `GET/POST /template` 详情模板 | 模板权限码 `frontend:admin:project-info-template:show` 或 admin — 由**全局角色**「开发者 / 超级管理员」派生（`permission_service._GLOBAL_ROLE_DERIVED_PERMISSIONS`）|
+> | 5.18 `POST /ledger-sync/all` 一键导入全部项目 | **管理员/超级管理员**（`get_current_admin_user`，判据 = `permissions` 含 `admin`，与「配置阻滞权重」同一个）——它一次写全体项目的数据，不归任何单个项目管 |
 >
 > **全局字段定义**（`project_id` 为空的行）不属于任何项目，改它等于改全体项目：节点级闸门对它放行，由 Service 层回 `403 全局字段定义请在「详情模板」里修改`——真正的原因归 Service 说，闸门不拿「越权」搪塞。
 > 写接口额外挂了 `get_request_actor_optional`（**尽力识别、不拦截**）：带 `Authorization: Bearer` 时把操作人记进操作记录（2.4），不带/解析失败按匿名记录。
@@ -490,6 +491,48 @@ Service：[info_node_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/ap
 - 错误：`404`（项目不存在，含软删除）。
 - **与 5.5 删除节点的区别**：5.5 是挑一棵增补子树删（结构操作，值随之没）；这里是「全删增补节点 + 清全部值」的一揽子恢复，一次把项目拉回模板形态。前端确认弹层文案：「清空本项目所有已填的内容，并删除导入/同步/增补加进来的节点，恢复成模板的样子」。
 
+### 5.18 POST /info-nodes/ledger-sync/all —— 一键导入全部项目的台账内容（管理员/超级管理员）
+
+- 功能：后台管理 → 项目管理 → 「项目导入」区的「一键导入所有项目节点内容」按钮
+  （用户口径 2026-09-22：「增加一个管理员和超级管理员权限的一键导入所有项目节点内容的按钮，
+  可以直接从 project 里导入数据」）。把 5.16 的比对**对全部项目各跑一遍并直接落库**——
+  5.16 是「预览 → 勾选 → 落库」，这里是它的一键批量版，没有逐条勾选那一步。
+- 鉴权：**管理员/超级管理员**（`get_current_admin_user`，`permissions` 含 `admin`；
+  前端的按钮可见性用同一判据）。一次写全体项目，不归任何单个项目管，所以不按项目成员把关——
+  项目成员要同步自己的项目走 5.16。
+- Service（`info_node_ledger_sync_service.import_all_projects`）：项目表逐行 →
+  对每个项目跑 `build_sync_preview`（同一套匹配内核，见 5.16）→ 把 `fill` + `overwrite`
+  两类逐条写进 `info_node_service.set_value`（**值与历史同一事务**，与 5.3 值写入、
+  单项目同步是同一条落库路径；`change_reason` 一律 `一键导入（项目台账）`，操作人取当前登录人）。
+- **写什么、不写什么**（用户口径「空缺 + 覆盖矛盾项」）：
+
+| 台账 vs 节点 | 动作 |
+|------|------|
+| 节点为空（`fill`）| 写入台账值 |
+| 节点有内容且与台账不同（`overwrite`）| **就地覆盖**（旧值留在编辑历史里）|
+| 节点内容与台账一致 | 不动（重复点击天然幂等，第二次跑 `filled`/`overwritten` 均为 0）|
+| 台账有、树里没有（`unmatched`）| **不建节点**，只计数返回——那属于「去详情模板里补字段」，与 5.16 的「不新建一级标签」同一口径 |
+
+  节点定义一概不动：不新建、不改名、不删（增补节点数与全局节点数跑完不变）。
+- 单项目失败不中断整批：单个值写不进去（如节点已被别处删掉）就把该项目记进 `failures`
+  并跳到下一个项目；项目还没有信息节点（5.16 会 400 的那种）计入 `project_skipped`，
+  不算失败。每个值各自提交，失败项目里已写成功的部分保留，再点一次即可补齐。
+- 响应 `200`（汇总计数，前端据此提示）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `project_total` | int | 台账镜像里的项目总数 |
+| `project_written` / `project_no_change` / `project_skipped` / `project_failed` | int | 有新写入 / 跑过但无需改动 / 跳过（无信息节点）/ 出错的项目数（四类互斥，加总 = `project_total`）|
+| `filled` / `overwritten` | int | 新填条数 / 覆盖条数（= 写出的编辑历史条数）|
+| `unmatched` | int | 没匹配到节点、因此没落库的台账条目数（提示「还有多少列要去详情模板补字段」）|
+| `failures` | 数组 | 最多 20 条 `{project_id, project_name, reason}`（`reason` 带节点路径，便于定位）|
+| `duration_ms` | int | 整批耗时（实测 297 个项目、1787 条写入约 12s）|
+
+- 错误：`403`（不是管理员/超级管理员）。**没有 400/404**——单个项目的问题一律在汇总里返回，
+  不让整批请求失败。
+- 前端超时按整批给足（`timeout: 300000`）：数据量大时 30s 默认超时会误报失败，
+  而服务端其实已经在写了。
+
 ## 六、并发与一致性小结
 
 1. **ext_info 并发编辑**：靠 `version` 乐观锁（冲突 409）+ 更新瞬间行锁串行化；内部系统写入不带 version，显式绕过乐观锁。
@@ -505,7 +548,7 @@ Service：[info_node_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/ap
 |--------|------|------|
 | 400 | 更新节点时无任何有效字段；授权接口 type 参数非法；AI 摘要时信息树无节点；台账同步时项目还没有信息节点 | info-nodes / licenses / projects（ai-summary） |
 | 401 | 未提供/无效 token、token 缺用户信息（/me 类接口）；关注/项目动态接口识别不到登录人（5.11～5.13，关注列表按人隔离） | projects、info-nodes |
-| 403 | 不是这个项目的人动结构（5.2～5.6、5.8、5.16、5.17）：`只有该项目下的人员可以编辑项目信息树`；改全局字段定义（5.3～5.5）：`全局字段定义请在「详情模板」里修改`；没有模板权限码碰 `/template`：`权限不足` | info-nodes |
+| 403 | 不是这个项目的人动结构（5.2～5.6、5.8、5.16、5.17）：`只有该项目下的人员可以编辑项目信息树`；改全局字段定义（5.3～5.5）：`全局字段定义请在「详情模板」里修改`；没有模板权限码碰 `/template`：`权限不足`；不是管理员/超级管理员碰 5.18：`需要管理员权限` | info-nodes |
 | 404 | 项目/节点不存在（含软删除项目）；对不存在的节点点关注（5.12） | projects、info-nodes |
 | 409 | 项目编号/名称重复；**乐观锁版本冲突** | projects（PUT） |
 | 422 | 请求体字段非法：`changes` 的 `limit` 越界（1～500）、`limit` 非整数 | info-nodes（changes） |
@@ -522,7 +565,7 @@ Service：[info_node_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/ap
 | API | [api/projects.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/api/projects.py)、[api/info_nodes.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/api/info_nodes.py) |
 | Service | [services/project_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/project_service.py)、[services/info_node_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/info_node_service.py)、[services/info_node_import_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/info_node_import_service.py)、[services/project_ai_summary_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/project_ai_summary_service.py)（4.4）、[services/info_node_change_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/info_node_change_service.py)（2.4 / 5.9 / 5.10，另被 info_node_service、info_template_service 调用写记录；5.9 的子树口径 `list_for_subtree` 与纯函数 `subtree_node_ids` 也在这个文件里）、[services/info_node_mark_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/info_node_mark_service.py)（2.5 / 5.11～5.13，另被 info_node_service、info_template_service 调用清理标注）、[services/info_node_ledger_sync_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/info_node_ledger_sync_service.py)（5.16 企业微信台账同步预览：读本地 `project` 表镜像，复用 info_node_import_service 的 `match_items` 内核，自己不引大模型也不调外部服务，只做「台账列名/值 → 节点」的精确对齐 + 归属建议；按值认节点的 `_option_taker` / `_pin_option_values`、按列名的 `_pin_group_values`、未匹配的 `_enrich_unmatched` 都在这个文件里）、[services/info_node_seed_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/services/info_node_seed_service.py)（空库启动播种全局节点：`TITLE_KEY_MAP`（标题路径 → node_key）、`_seed_node_id`（标题路径 → 确定性 UUIDv5，改名节点走 `_ID_PATH_ALIASES` 按老路径推）、`build_seed_rows` / `ensure_global_info_nodes`；只在一个全局节点都没有时整棵写入） |
 | 公共组件 | [app/core/llm_client.py](file:///d:/CODE/9_14/OpenRobotService/backend/app/core/llm_client.py)（backend 自维护的 LLM 客户端：DeepSeek/OpenAI 兼容非流式补全 + 网络重试，供 4.4 AI 摘要等 backend 大模型功能共用；密钥/模型与「文件识别」同源于 `settings`） |
-| 测试 | [tests/test_info_nodes_authz.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_nodes_authz.py)（信息树写接口的鉴权闸门：项目成员放行/非成员全拦/节点级按归属项目判/全局字段放行给 Service/值写入与增补信息仍是登录即可/详情模板要权限码/**一键清空 5.17 同结构类门槛**，11 用例）、[tests/test_info_node_reset_to_template.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_reset_to_template.py)（一键清空 5.17 的鉴权与出参：成员放行且操作人记进历史、两个计数原样透传/非成员 403 且 Service 一次没被调/项目不存在 404/「空值」判据（`''`、`[]` 算空，`'0'`、`0`、`False` 不算），5 用例；删哪些行、记哪条历史由真库验证覆盖 `~/verify_reset_to_template.py`）、[tests/test_info_node_import.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_import.py)（文本抽取/目录与 prompt 构造/LLM 返回解析/标题模糊兜底 0.75 阈值（0.75～0.9 之间认包含关系、不认换字，0.75 以下不认）/select 选项匹配与「建议归属附近下拉」兜底/归属解析/车型分组与「总车数」路径解析（车型分组自己也叫「车型…」，别把它的父级当归属路径），32 用例）、[tests/test_project_ai_summary.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_project_ai_summary.py)（节点内容解码/信息树渲染/prompt 组装/输出清洗，10 用例）、[tests/test_info_node_change.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_change.py)（节点值→人话/逐字段变动文案/各操作类型文案（含 5.17 一键清空的整树级文案 `build_reset_detail`）/子树 id 先序（5.9 子树口径的纯函数，含已删根与成环兜底）/记录 id 时间有序，37 用例）、[tests/test_info_node_mark.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_mark.py)（根标题回溯/关注切换按人过滤（假 session）/标注清理，15 用例）、[tests/test_info_node_ledger_sync.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_ledger_sync.py)（台账同步 5.16：取值口径 / `project` 行 → 台账列还原（含 adapter 兜底值跳过）/ 空值与定位列过滤 / 按值指位（精确命中唯一的下拉选项；相似度、单字值、多候选都不认）/ 分组指位（同名与去限定词）/ 未匹配条目的归属建议与备注 / 整条预览的分桶与元信息（含按值认节点落到 `fill`、台账 `项目编号` 落到同名节点 `fill` 的用例），17 用例）、[tests/test_info_node_seed_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_seed_service.py)（`TITLE_KEY_MAP` 与 `default.yaml` 逐条对齐、播出树的层级/排序/类型、确定性 id 与开发库一致（改名节点按老路径推 id）、新节点的位置与序号、车型下拉目录、空库才播种，8 用例） |
+| 测试 | [tests/test_info_nodes_authz.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_nodes_authz.py)（信息树写接口的鉴权闸门：项目成员放行/非成员全拦/节点级按归属项目判/全局字段放行给 Service/值写入与增补信息仍是登录即可/详情模板要权限码/**一键清空 5.17 同结构类门槛**，11 用例）、[tests/test_info_node_reset_to_template.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_reset_to_template.py)（一键清空 5.17 的鉴权与出参：成员放行且操作人记进历史、两个计数原样透传/非成员 403 且 Service 一次没被调/项目不存在 404/「空值」判据（`''`、`[]` 算空，`'0'`、`0`、`False` 不算），5 用例；删哪些行、记哪条历史由真库验证覆盖 `~/verify_reset_to_template.py`）、[tests/test_info_node_import.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_import.py)（文本抽取/目录与 prompt 构造/LLM 返回解析/标题模糊兜底 0.75 阈值（0.75～0.9 之间认包含关系、不认换字，0.75 以下不认）/select 选项匹配与「建议归属附近下拉」兜底/归属解析/车型分组与「总车数」路径解析（车型分组自己也叫「车型…」，别把它的父级当归属路径），32 用例）、[tests/test_project_ai_summary.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_project_ai_summary.py)（节点内容解码/信息树渲染/prompt 组装/输出清洗，10 用例）、[tests/test_info_node_change.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_change.py)（节点值→人话/逐字段变动文案/各操作类型文案（含 5.17 一键清空的整树级文案 `build_reset_detail`）/子树 id 先序（5.9 子树口径的纯函数，含已删根与成环兜底）/记录 id 时间有序，37 用例）、[tests/test_info_node_mark.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_mark.py)（根标题回溯/关注切换按人过滤（假 session）/标注清理，15 用例）、[tests/test_info_node_ledger_sync.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_ledger_sync.py)（台账同步 5.16：取值口径 / `project` 行 → 台账列还原（含 adapter 兜底值跳过）/ 空值与定位列过滤 / 按值指位（精确命中唯一的下拉选项；相似度、单字值、多候选都不认）/ 分组指位（同名与去限定词）/ 未匹配条目的归属建议与备注 / 整条预览的分桶与元信息（含按值认节点落到 `fill`、台账 `项目编号` 落到同名节点 `fill` 的用例），17 用例；2026-09-22 加 5.18 一键导入全部项目 4 用例：只落将填写 + 将覆盖、未匹配不落库 / 写入顺序与 `change_reason`·操作人 / 无信息节点的项目算跳过而非失败 / 单项目写入失败与整项目预览失败都只记一条、后面的项目照写——真库行为（写哪些行、多少条、幂等、留痕）由 `~/verify_import_all.py` 在可回滚事务里覆盖）、[tests/test_info_node_seed_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/tests/test_info_node_seed_service.py)（`TITLE_KEY_MAP` 与 `default.yaml` 逐条对齐、播出树的层级/排序/类型、确定性 id 与开发库一致（改名节点按老路径推 id）、新节点的位置与序号、车型下拉目录、空库才播种，8 用例） |
 | 模板 | [config/project_templates/default.yaml](file:///d:/CODE/9_9/OpenRobotService/backend/app/config/project_templates/default.yaml) |
 | 路由挂载 | [modules/admin/__init__.py](file:///d:/CODE/9_9/OpenRobotService/backend/app/modules/admin/__init__.py) |
 
@@ -545,3 +588,4 @@ Service：[info_node_service.py](file:///d:/CODE/9_9/OpenRobotService/backend/ap
 15. 项目详情页卡片裁剪（按用户要求）：只保留 项目概况 / 项目信息管理 / 项目动态 三张卡；原「项目生命周期」卡删除后**项目阶段**下拉挪进项目概况（仍可编辑）；基础画像 / 风险管理 / 责任体系等被删卡片的字段在前端本页不再有编辑入口（后端字段未动）。
 16. 信息编辑页「同步」（`ProjectInfoLedgerSync.tsx`，入口在卡头操作区最左、`canEditTree` 才显示）走 5.16：弹层标题「同步信息」，小字为「基础信息比对：…」；打开即拉预览（转圈 → 三组勾选 → 确认后逐节点 CRUD，与 7 同款弹层，共用 `ProjectInfoImportPreview.tsx`）。前端约定：**三组默认全勾**（用户口径「节点默认全选」，落库前仍可逐条取消；共用组件用 `defaultCheckedAll` 开关，文件导入不受影响），`unmatched` 组在 `canEditTree=false` 时置灰且不默认勾（新建节点要改树结构）；预览取不到时（`400` 还没有信息节点 / `404` 项目不存在）在弹层里显示 detail 原文 + 「重试」，不留空预览。落库成功后外层刷新树与历史水位。**同步不新建一级标签**（用户口径「不要新增根节点，而是把台账和各节点及其下拉选项相匹配」）：共用组件加 `allowFallbackRoot`，文件导入 `true`（没归属的仍挂「导入信息」兜底根，行为不变）、同步 `false`——没归属的条目在预览里置灰、不默认勾、落库时跳过，行上写明「同步不新建一级标签，可到编辑页增补这类字段后再同步」，按钮数字也只算真能落库的行。
 17. 根节点历史的子树口径（5.9 的 `include_descendants`）为什么必须带删除记录：按 2.4 的归属规则，删除是**整棵子树一条记录挂在被删节点的上级**上，被删的子孙自己已不在节点表里——只看 `node_id` 会把这一整片漏掉，所以后端按 `parent_id IN 子树 AND action=delete` 一并捞回。前端分组时这些记录的 `node_id` 在树里找不到，正好落进「已删除」组。已读水位不受影响：打开一级标签的历史时前端本来就把整棵子树标记已读（第 10、11 条）。**只读接口**：子树口径与 5.10 的红点一样走网关管控，不额外鉴权。
+18. 项目管理页「项目导入」区的「一键导入所有项目节点内容」（`ProjectImport.tsx`，2026-09-22）走 5.18：按钮**仅管理员/超级管理员可见**（`useAuthStore` 取 `permissions` 含 `admin`，与项目工单卡「配置阻滞权重」同一判据；后端 `get_current_admin_user` 是同一个口径）。点击先 `Dialog.confirm`（文案说明「空的填上、与台账不一致的覆盖、不新建删除节点」），确认后 `importAllProjectsLedgerApi()`（超时 300s——整批实测约 12s，默认 30s 会误报超时）→ 转圈期间按钮禁用并显示「导入中…」→ 成功后 Toast 汇总「已处理 N 个项目，新填 X 项，覆盖 Y 项」，有跳过/失败再各补一句（失败句带首个失败项目与原因）；请求失败给 error Toast，不谎报成功。

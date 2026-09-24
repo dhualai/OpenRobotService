@@ -1,10 +1,9 @@
 name: UI Regression
 
+# 注意：SSH 隧道链路已下线（TEST_SSH_PRIVATE_KEY 已删除），当前只保留手动触发。
+# 待原仓库注册 self-hosted runner 并切换为直连模式后，恢复 push 触发。
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - test
 
 permissions:
   contents: write

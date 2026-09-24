@@ -1,0 +1,374 @@
+name: Deploy
+
+# 网页手动触发：Actions → Deploy → Run workflow
+#   - 本文件须存在于默认分支（main）才会出现 "Run workflow" 按钮；
+#   - 实际部署的代码由「代码分支」输入决定（默认 test→test、prod→dev）；
+#   - 构建/备份/上传/重启/健康检查/回滚全部在 deploy/deploy.py 内实现，
+#     通知在 deploy/notify.py 内实现，本文件只做编排与门禁，避免第二套部署实现。
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "目标环境（prod 为生产，需填写确认词）"
+        type: choice
+        required: true
+        default: test
+        options: [test, prod]
+      components:
+        description: "部署组件"
+        type: choice
+        required: true
+        default: all
+        options: [all, frontend, backend, ai]
+      git_ref:
+        description: "代码分支（留空则 test→test、prod→dev）"
+        type: string
+        required: false
+        default: ""
+      skip_gate:
+        description: "紧急跳过测试门禁（会在日志与通知中显著标注）"
+        type: boolean
+        required: true
+        default: false
+      confirm:
+        description: "生产确认词：environment=prod 时必须精确填写 DEPLOY-PROD"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+# 同一环境串行执行且不自动取消，避免两人同时发布互相覆盖
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  # 优先读 DEPLOY_*；未配置时回退到仓库已有的 UI_REGRESSION_*（同一台服务器、同一账号）
+  DEPLOY_SSH_HOST: ${{ vars.DEPLOY_SSH_HOST || vars.UI_REGRESSION_SSH_HOST }}
+  DEPLOY_SSH_USER: ${{ vars.DEPLOY_SSH_USER || vars.UI_REGRESSION_SSH_USER || 'usp-a' }}
+  DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT || vars.UI_REGRESSION_SSH_PORT || '8802' }}
+  # 服务器 /tmp 不可写（软链到 /data/tmp），统一用家目录 ~/tmp 做暂存
+  # （scp 侧自动展开 ~，远端 bash 命令侧由 deploy.py 自动转成 $HOME）
+  DEPLOY_REMOTE_TMP: ${{ vars.DEPLOY_REMOTE_TMP || '~/tmp' }}
+
+jobs:
+  # ---------------- 输入校验与参数解析 ----------------
+  guard:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      git_ref: ${{ steps.resolve.outputs.git_ref }}
+      health_urls: ${{ steps.resolve.outputs.health_urls }}
+      backup_keep: ${{ steps.resolve.outputs.backup_keep }}
+    steps:
+      # 供下方安全校验使用：确认 git_ref 是本仓库的既有分支，而非 fork 或其他仓库的 ref
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate and resolve
+        id: resolve
+        env:
+          ENV_NAME: ${{ inputs.environment }}
+          CONFIRM: ${{ inputs.confirm }}
+          INPUT_REF: ${{ inputs.git_ref }}
+          COMPONENTS: ${{ inputs.components }}
+          SKIP_GATE: ${{ inputs.skip_gate }}
+          HEALTH_TEST: ${{ vars.DEPLOY_TEST_HEALTH_URLS }}
+          HEALTH_PROD: ${{ vars.DEPLOY_PROD_HEALTH_URLS }}
+          BACKUP_KEEP: ${{ vars.DEPLOY_BACKUP_KEEP }}
+        run: |
+          set -euo pipefail
+
+          # 生产二次确认：确认词不符直接拦在门禁之前
+          if [ "$ENV_NAME" = "prod" ] && [ "$CONFIRM" != "DEPLOY-PROD" ]; then
+            echo "::error::生产部署需在 confirm 输入框精确填写 DEPLOY-PROD"
+            exit 1
+          fi
+
+          # 连接信息快速失败：避免到 SSH 阶段才报模糊错误
+          if [ -z "${DEPLOY_SSH_HOST:-}" ] || [ -z "${DEPLOY_SSH_USER:-}" ]; then
+            echo "::error::未解析到服务器连接信息，请在仓库 Variables 配置 DEPLOY_SSH_HOST / DEPLOY_SSH_USER（或沿用 UI_REGRESSION_SSH_*）"
+            exit 1
+          fi
+
+          ref="$INPUT_REF"
+          if [ -z "$ref" ]; then
+            if [ "$ENV_NAME" = "prod" ]; then ref="dev"; else ref="test"; fi
+          fi
+
+          # 安全：只允许部署「本仓库已存在的分支」。
+          #  - 阻断 owner:branch 形式（指向 fork 等其他仓库）与 refs/pull/* 等非分支 ref，
+          #    否则触发者可以把一段外部代码当作待部署代码，从 runner 上取走 secrets；
+          #  - 字符白名单同时阻止选项注入（如 --upload-pack=...）与 shell 元字符。
+          case "$ref" in
+            *:*)
+              echo "::error::git_ref 不允许包含 ':'（该形式指向 fork 等其他仓库的分支）"
+              exit 1 ;;
+            [!A-Za-z0-9]*|*[!A-Za-z0-9._/-]*)
+              echo "::error::git_ref 含非法字符，仅允许字母、数字与 . _ / -，且需以字母或数字开头"
+              exit 1 ;;
+          esac
+          if ! git ls-remote --exit-code --heads origin "$ref" >/dev/null 2>&1; then
+            echo "::error::git_ref=$ref 不是本仓库的既有分支，已拒绝（禁止部署本仓库之外的代码）"
+            exit 1
+          fi
+
+          # 健康检查地址（由服务器本机 curl，均为实测可用地址；可用仓库 Variables 覆盖）
+          if [ "$ENV_NAME" = "test" ]; then
+            health="${HEALTH_TEST:-http://127.0.0.1:9400/api/health,http://127.0.0.1:9411/health,https://usp.ep-zl.com/t/app/}"
+          else
+            health="${HEALTH_PROD:-http://127.0.0.1:8400/api/health,http://127.0.0.1:8401/health,https://usp.ep-zl.com/p/app/}"
+          fi
+
+          echo "git_ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "health_urls=$health" >> "$GITHUB_OUTPUT"
+          echo "backup_keep=${BACKUP_KEEP:-10}" >> "$GITHUB_OUTPUT"
+
+          gate_label="启用"
+          if [ "$SKIP_GATE" = "true" ]; then gate_label="**已跳过（紧急）**"; fi
+          {
+            echo "### 部署计划"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 环境 | \`$ENV_NAME\` |"
+            echo "| 组件 | \`$COMPONENTS\` |"
+            echo "| 代码分支 | \`$ref\` |"
+            echo "| 测试门禁 | $gate_label |"
+            echo "| 服务器 | \`$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST:$DEPLOY_SSH_PORT\` |"
+            echo "| 健康检查 | \`$health\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------- 测试门禁（硬拦；skip_gate 时整体跳过） ----------------
+  gate:
+    name: Test gate (pytest + vitest)
+    needs: guard
+    if: ${{ !cancelled() && needs.guard.result == 'success' && !inputs.skip_gate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.git_ref }}
+
+      # 分支未包含流水线改动时给出明确指引，避免出现难以理解的参数报错
+      - name: Verify deploy script supports CI flags
+        env:
+          GIT_REF: ${{ needs.guard.outputs.git_ref }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for flag in --yes --remote-tmp --backup-keep --health-urls --rollback --list-backups; do
+            grep -q -- "$flag" deploy/deploy.py || missing="$missing $flag"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::分支 $GIT_REF 的 deploy/deploy.py 缺少流水线所需参数：$missing"
+            echo "该分支尚未包含部署流水线改动，请把 git_ref 指向已合并的分支，或先合并对应 PR。"
+            exit 1
+          fi
+          echo "deploy/deploy.py 参数就绪"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Backend tests (pytest)
+        if: ${{ inputs.components == 'all' || inputs.components == 'backend' }}
+        working-directory: backend
+        env:
+          CI: "true"
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-test.txt
+          pytest --ignore=tests/tasks -q
+
+      - name: Frontend tests (vitest)
+        if: ${{ inputs.components == 'all' || inputs.components == 'frontend' }}
+        env:
+          CI: "true"
+        run: |
+          set -euo pipefail
+          npm ci --prefix frontend
+          npm run test --prefix frontend
+
+      - name: AI component notice
+        if: ${{ inputs.components == 'ai' }}
+        run: echo "::notice::AI 组件无自动门禁（ai/tests 依赖外部服务），本次跳过测试，请确认已人工验证"
+
+  # ---------------- 部署 ----------------
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: [guard, gate]
+    if: ${{ !cancelled() && needs.guard.result == 'success' && (inputs.skip_gate || needs.gate.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.git_ref }}
+
+      # skip_gate=true 时门禁 job 不执行，此处再自查一次
+      - name: Verify deploy script supports CI flags
+        env:
+          GIT_REF: ${{ needs.guard.outputs.git_ref }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for flag in --yes --remote-tmp --backup-keep --health-urls --rollback --list-backups; do
+            grep -q -- "$flag" deploy/deploy.py || missing="$missing $flag"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::分支 $GIT_REF 的 deploy/deploy.py 缺少流水线所需参数：$missing"
+            exit 1
+          fi
+
+      - name: Resolve commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        if: ${{ inputs.components == 'all' || inputs.components == 'frontend' }}
+        run: npm ci --prefix frontend
+
+      - name: Prepare SSH key
+        env:
+          TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TEST_SSH_PRIVATE_KEY:-}" ]; then
+            echo "::error::secret TEST_SSH_PRIVATE_KEY 未配置，无法连接服务器"
+            exit 1
+          fi
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$TEST_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/ci_key"
+          chmod 600 "$HOME/.ssh/ci_key"
+
+      - name: Preflight SSH connectivity
+        run: |
+          set -euo pipefail
+          ssh -i "$HOME/.ssh/ci_key" -p "$DEPLOY_SSH_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+            "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
+            'echo SSH_OK; supervisorctl status' | tee preflight.log
+
+      - name: Deploy (backup + upload + restart + health check)
+        env:
+          ENV_NAME: ${{ inputs.environment }}
+          COMPONENTS: ${{ inputs.components }}
+          HEALTH_URLS: ${{ needs.guard.outputs.health_urls }}
+          BACKUP_KEEP: ${{ needs.guard.outputs.backup_keep }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -uo pipefail
+          # 不加 -e：deploy.py 返回非 0 时仍需抓取备份 id 与回滚标记供通知/摘要使用
+          python deploy/deploy.py \
+            -e "$ENV_NAME" \
+            -c "$COMPONENTS" \
+            --ssh-host "$DEPLOY_SSH_HOST" \
+            --ssh-user "$DEPLOY_SSH_USER" \
+            --ssh-port "$DEPLOY_SSH_PORT" \
+            --ssh-identity "$HOME/.ssh/ci_key" \
+            --remote-tmp "$DEPLOY_REMOTE_TMP" \
+            --yes \
+            --no-sudo \
+            --git-commit "$COMMIT_SHA" \
+            --backup-keep "$BACKUP_KEEP" \
+            --health-urls "$HEALTH_URLS" \
+            --health-retries 20 \
+            --health-interval 3 2>&1 | tee deploy.log
+          rc=${PIPESTATUS[0]}
+          backup_id=$(grep -oE 'DEPLOY_BACKUP_ID=[0-9a-z-]+' deploy.log | tail -n1 | cut -d= -f2 || true)
+          auto_rollback="no"
+          if grep -q "已自动回滚" deploy.log; then auto_rollback="yes"; fi
+          {
+            echo "DEPLOY_BACKUP_ID=$backup_id"
+            echo "DEPLOY_AUTO_ROLLBACK=$auto_rollback"
+          } >> "$GITHUB_ENV"
+          exit "$rc"
+
+      - name: Summary
+        if: always()
+        env:
+          ENV_NAME: ${{ inputs.environment }}
+          COMPONENTS: ${{ inputs.components }}
+          GIT_REF: ${{ needs.guard.outputs.git_ref }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+          SKIP_GATE: ${{ inputs.skip_gate }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -uo pipefail
+          backup_id="${DEPLOY_BACKUP_ID:-（无）}"
+          auto_rollback="${DEPLOY_AUTO_ROLLBACK:-no}"
+          gate_label="已通过"
+          if [ "$SKIP_GATE" = "true" ]; then gate_label="**已跳过（紧急）**"; fi
+          rollback_label="否"
+          if [ "$auto_rollback" = "yes" ]; then rollback_label="**是（健康检查未通过，已回滚）**"; fi
+          {
+            echo "### 部署结果：$JOB_STATUS"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 环境 | \`$ENV_NAME\` |"
+            echo "| 组件 | \`$COMPONENTS\` |"
+            echo "| 分支 | \`$GIT_REF\` @ \`${COMMIT_SHA:0:8}\` |"
+            echo "| 测试门禁 | $gate_label |"
+            echo "| 部署前备份 | \`$backup_id\` |"
+            echo "| 自动回滚 | $rollback_label |"
+            echo ""
+            echo "需要回滚时：Actions → Rollback 工作流（无需本地环境），"
+            echo "或本地执行 \`python deploy/deploy.py -e $ENV_NAME --rollback $backup_id\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deploy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-log-${{ inputs.environment }}-${{ github.run_id }}
+          path: |
+            deploy.log
+            preflight.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Notify
+        if: always()
+        env:
+          NOTIFY_WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK }}
+          NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
+          NOTIFY_PROVIDER: ${{ vars.NOTIFY_PROVIDER || 'wecom' }}
+          NOTIFY_STATUS: ${{ job.status }}
+          NOTIFY_TITLE: 部署
+          ENV_NAME: ${{ inputs.environment }}
+          COMPONENTS: ${{ inputs.components }}
+          GIT_REF: ${{ needs.guard.outputs.git_ref }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+          SKIP_GATE: ${{ inputs.skip_gate }}
+          AUTO_ROLLBACK: ${{ env.DEPLOY_AUTO_ROLLBACK }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python deploy/notify.py

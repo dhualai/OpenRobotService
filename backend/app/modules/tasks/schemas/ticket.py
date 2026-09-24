@@ -245,6 +245,10 @@ class TicketListItemResponse(TicketBase):
     proxy_principal_name: Optional[str] = Field(None, description="被代理人姓名（仅参与人可见）")
     is_proxy_agent: bool = Field(False, description="当前登录用户是否为该单代理人")
     is_principal: bool = Field(False, description="当前登录用户是否为该单被代理人")
+    is_proxy_assignee: bool = Field(
+        False,
+        description="当前登录用户是否为该代理单的接单人（接单人视角展示「谁代谁提单」）",
+    )
 
     class Config:
         from_attributes = True
@@ -397,6 +401,7 @@ class ProxyRelationResponse(BaseModel):
     # 当前登录用户视角，避免前端自行拼身份判定
     is_agent: bool = Field(False, description="当前用户是否为代理人")
     is_principal: bool = Field(False, description="当前用户是否为被代理人")
+    is_assignee: bool = Field(False, description="当前用户是否为该代理单接单人")
     agent_name: Optional[str] = Field(None, description="代理人姓名（参与人可见）")
     principal_name: Optional[str] = Field(None, description="被代理人姓名（参与人可见）")
     notified_at: Optional[datetime] = None

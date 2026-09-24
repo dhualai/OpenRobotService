@@ -1531,10 +1531,14 @@ async def list_all_tickets(
                 _rel = rel_map.get(r.id)
                 _is_agent = bool(_rel and _me_keys and _rel.agent_id in _me_keys)
                 _is_principal = bool(_rel and _me_keys and _rel.principal_id in _me_keys)
+                # 接单人视角：我是本单处理人 → 允许看到「谁代谁提单」（姓名本就对其下发）
+                _is_proxy_assignee = bool(
+                    _rel and _me_keys and assigned_to and assigned_to in _me_keys
+                )
                 _is_participant = bool(
                     _rel and _me_keys and (
-                        _is_agent or _is_principal
-                        or created_by in _me_keys or assigned_to in _me_keys
+                        _is_agent or _is_principal or _is_proxy_assignee
+                        or created_by in _me_keys
                     )
                 )
                 items.append({
@@ -1560,10 +1564,12 @@ async def list_all_tickets(
                     # 复用后端同一聚合服务，保证两个列表口径一致（含红点 has_unread）。
                     "participants": participants_map.get(r.id, []),
                     # 代他人提单（代理提单）：关系状态 + 视角标记 + 参与人姓名。
-                    # 姓名对非参与人下发 None（避免通过列表探测他人代理关系）。
+                    # 姓名对非参与人下发 None（避免通过列表探测他人代理关系）；
+                    # is_proxy_assignee = 我是本单接单人，供接单人视角展示「谁代谁提单」。
                     "proxy_relation_status": _rel.relation_status if _rel else None,
                     "is_proxy_agent": _is_agent,
                     "is_principal": _is_principal,
+                    "is_proxy_assignee": _is_proxy_assignee,
                     "proxy_agent_name": (
                         user_map.get(_rel.agent_id) or _rel.agent_username or _rel.agent_id
                     ) if _is_participant else None,

@@ -1087,6 +1087,7 @@ def _proxy_relation_response(relation, roles) -> ProxyRelationResponse:
         remark=getattr(relation, "remark", None),
         is_agent=roles.is_agent,
         is_principal=roles.is_principal or roles.is_pending_principal,
+        is_assignee=roles.is_assignee,
         agent_name=user_map.get(agent_id) or getattr(relation, "agent_username", None) or agent_id,
         principal_name=user_map.get(principal_id) or getattr(relation, "principal_username", None) or principal_id,
         notified_at=relation.notified_at,
@@ -1877,10 +1878,17 @@ async def update_task_status(
     username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
 
+    # 统一角色解析（含被代理人）：与 respond / reopen-step 同口径。
+    # 原双键直比 created_by/assigned_to 会漏掉「已确认跟进的被代理人」，
+    # 使其看得见工单却关不掉（can_close 已放行，接口却 403，两处口径打架）。
+    _roles = await get_ticket_roles(db, ticket, current_user)
+
     # AI 工单（source='ai'）允许任何登录用户操作状态（created_by='system' 不是真实用户）
     if ticket.source == 'ai':
         pass
-    elif not user_matches(current_user, ticket.created_by, ticket.assigned_to) and not is_admin:
+    elif not (
+        _roles.is_creator or _roles.is_assignee or _roles.is_principal or is_admin
+    ):
         raise HTTPException(status_code=403, detail="无权限更新任务状态")
 
     try:
@@ -1980,6 +1988,10 @@ async def update_task_status(
         # _add_system_comment 的 commit 会使 updated_ticket 的 comments 关系过期，
         # 需重新查询以避免 FastAPI 序列化时触发异步外的懒加载（MissingGreenlet）
         return await _reload_ticket_with_comments(db, task_id)
+    except HTTPException:
+        # 业务性拒绝（403 撤回收窄 / 400 缺少解决方式 / 422 前置阻塞）需原样透出，
+        # 否则会被下方兜底 except 重新包成 500，前端拿不到可展示的原因。
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -2058,11 +2070,18 @@ async def respond_task(
     username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
+    # 统一角色解析（含被代理人）：**必须早于下方 _actor_side 调用**——
+    # 命中请求级缓存后 side 才识别得出「已确认跟进的被代理人」属 creator 侧；
+    # 否则 fallback 双键比较不认识被代理人，回合归属会丢失（既不错记也不记录）。
+    _roles = await get_ticket_roles(db, ticket, current_user)
 
-    # AI 工单（created_by='system'）允许任何登录用户操作；其余需处理人/提单人/管理员/操作权限
+    # AI 工单（created_by='system'）允许任何登录用户操作；
+    # 其余需处理人/提单人/被代理人(已确认跟进)/管理员/操作权限
     if ticket.source == 'ai':
         pass
-    elif not (user_matches(current_user, ticket.assigned_to) or user_matches(current_user, ticket.created_by) or is_admin or can_operate):
+    elif not (
+        _roles.is_assignee or _roles.is_creator or _roles.is_principal or is_admin or can_operate
+    ):
         raise HTTPException(status_code=403, detail="无权限响应此工单")
 
     old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
@@ -2171,9 +2190,11 @@ async def complete_task_step(
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
     roles = await get_ticket_roles(db, ticket, current_user)
-    if not can_operate:
-        can_operate = roles.can_operate
 
+    # 权限：仅接单人 / 管理员 / operate 权限位（与前端 isAssignee 门控、set-step-time 口径一致）。
+    # ⚠️ 不可回填 `roles.can_operate`：该字段在 resolve_ticket_roles 内被 OR 上了
+    # is_creator / is_principal，会把提单人、已确认跟进的被代理人一并放行，
+    # 使其可绕过前端替处理人推进阶段并设定下一阶段 SLA（接口越权 + 打乱协商回合）。
     if ticket.source == 'ai':
         pass
     elif not (roles.is_assignee or is_admin or can_operate):
@@ -2422,8 +2443,9 @@ async def set_step_time(
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
 
-    # 仅处理人/管理员/操作权限
-    _is_assignee = user_matches(current_user, ticket.assigned_to)
+    # 仅处理人/管理员/操作权限（角色口径统一走 roles，且早于 _actor_side 调用以命中缓存）
+    _roles = await get_ticket_roles(db, ticket, current_user)
+    _is_assignee = _roles.is_assignee
     if ticket.source != 'ai' and not (_is_assignee or is_admin or can_operate):
         raise HTTPException(status_code=403, detail="无权限设置节点时间")
 
@@ -2437,7 +2459,9 @@ async def set_step_time(
     ticket.curr_step_endtime = endtime
     ticket.deadline_at = endtime  # 一锤定音设置时间 → 更新工单截止时间
     ticket.curr_step_agreed = True
-    ticket.step_last_updated_by = 'assigned'
+    # 一锤定音由谁按下就归谁的侧别（已确认跟进的被代理人亦归 creator 侧）；
+    # 纯管理员/运维等非参与者 fallback 为接单人侧（语义：轮到问题方确认）
+    ticket.step_last_updated_by = _actor_side(ticket, current_user, username) or _ACTOR_SIDE_ASSIGNED
     ticket.step_last_updated_at = func.now()
     await db.commit()
     await db.refresh(ticket)
@@ -2528,7 +2552,9 @@ async def reopen_step(
     ticket.curr_step_agreed = False
     ticket.step_negotiation_round = 0
     ticket.step_phase_round = 0  # 打回重开：阶段回合数归零，回到第一轮
-    ticket.step_last_updated_by = 'creator'  # 提单人打回提案 → 轮到处理人确认
+    # 打回提案按真实操作人侧别记录（已确认跟进的被代理人同属 creator 侧）；
+    # 纯管理员/运维等非参与者 fallback 为 creator（打回语义即「轮到处理人确认」）
+    ticket.step_last_updated_by = _actor_side(ticket, current_user, username) or _ACTOR_SIDE_CREATOR
     ticket.step_last_updated_at = func.now()
     ticket.resolved_at = None
     ticket.updated_at = func.now()

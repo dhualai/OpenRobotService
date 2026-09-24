@@ -42,12 +42,20 @@ export const buildRelevanceFilters = (
         },
         // 代他人提单（决策 6+10）：我是被代理人的单——
         //  · pending/acknowledged 均需看到（pending 需我确认跟进，acknowledged 我参与协办）
-        //  · resolved 需我确认关闭
         // value 仅为占位，后端统一用 token 解析的当前用户，杜绝越权看他人代提关系。
         {
           and: [
             { field: 'principalBy', op: 'eq', value: true },
-            { or: [...workingStatusFilters, { field: 'status', op: 'eq', value: 'resolved' }] },
+            { or: workingStatusFilters },
+          ],
+        },
+        // resolved 需我确认关闭，但仅限「已确认跟进」者：
+        // 未确认（pending/declined）的被代理人不再看到该单，消除「看得见、无按钮可点」。
+        {
+          and: [
+            { field: 'principalBy', op: 'eq', value: true },
+            { field: 'proxyRelationStatus', op: 'eq', value: 'acknowledged' },
+            { field: 'status', op: 'eq', value: 'resolved' },
           ],
         },
         // 回合协商：接单人刚改过 step 且尚未协商一致，轮到提单人确认/答复
