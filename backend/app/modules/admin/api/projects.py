@@ -9,13 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Dict, List, Any
 from app.modules.admin.schemas_das.request_models import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.modules.admin.services.project_service import project_service, ProjectConflictError, NO_TASK_EXECUTION_STATS
+from app.modules.admin.services.project_pin_service import project_pin_service
 from app.modules.admin.services.risk_service import risk_service
 from app.modules.admin.services import project_ai_summary_service
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.config import security, DEBUG_MODE
 from app.core.database import db_manager, get_async_db as get_db
-from app.modules.admin.api.auth import require_permission
+from app.modules.admin.api.auth import get_request_actor_optional, require_permission
 import logging
 
 logger = logging.getLogger("admin")
@@ -282,6 +283,60 @@ async def get_my_project_relevance(
         key=lambda x: (-x["count"], x["code"]),
     )
     return {"ticketed": ticketed_sorted, "owned": sorted(owned)}
+
+
+# ── 项目置顶（个人置顶，项目进度管理页长按卡片） ──
+# 这三条必须注册在 GET /{project_id} 之前：路由按注册顺序匹配，
+# 否则 /projects/pins 会被贪婪的路径参数当成 project_id="pins" 吞掉
+# （与 /projects/me 同样的顺序约束）。
+
+def _require_pin_operator(actor: Dict[str, Optional[str]]) -> str:
+    """置顶是「每人一份」，识别不到操作人就无法读写个人列表 → 401。
+
+    正常前端请求带 Bearer token（JWT sub 即登录名）；401 会触发前端的
+    刷新重试链路，token 过期场景可自愈（与 info-nodes 的关注同一口径）。
+    """
+    username = actor.get("username")
+    if not username:
+        raise HTTPException(status_code=401, detail="无法识别当前用户，请重新登录后再操作")
+    return username
+
+
+@project_router.get("/pins", summary="当前用户置顶的项目ID列表")
+async def get_project_pins(
+    actor: Dict[str, Optional[str]] = Depends(get_request_actor_optional)
+) -> Dict[str, List[str]]:
+    """返回当前登录人置顶的项目 id（最近置顶的在前）。
+
+    置顶按人隔离：置顶列表只影响自己的项目列表顺序，别人看不到。
+    前端在项目列表加载后据此把置顶项目排到最前。
+    """
+    operator = _require_pin_operator(actor)
+    return {"project_ids": project_pin_service.list_for_operator(operator)}
+
+
+@project_router.post("/{project_id}/pin", summary="置顶项目")
+async def pin_project(
+    project_id: str,
+    actor: Dict[str, Optional[str]] = Depends(get_request_actor_optional)
+) -> Dict[str, bool]:
+    """把项目置顶到当前用户的列表最前（重复置顶幂等）。项目不存在返回 404。"""
+    operator = _require_pin_operator(actor)
+    if not project_service.get_project(project_id):
+        raise HTTPException(status_code=404, detail="项目不存在")
+    project_pin_service.pin(project_id, operator, operator_name=actor.get("name"))
+    return {"pinned": True}
+
+
+@project_router.delete("/{project_id}/pin", summary="取消置顶")
+async def unpin_project(
+    project_id: str,
+    actor: Dict[str, Optional[str]] = Depends(get_request_actor_optional)
+) -> Dict[str, bool]:
+    """取消当前用户对该项目的置顶（未置顶时为幂等空操作）。"""
+    operator = _require_pin_operator(actor)
+    project_pin_service.unpin(project_id, operator)
+    return {"pinned": False}
 
 
 @project_router.get("/{project_id}", summary="获取单个项目")

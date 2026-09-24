@@ -844,18 +844,22 @@ async def _upload_events(
                 pass
             yield {"event": "vision_start", "names": names}
             prompt = (
-                f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
+                f"分析图片 {names}。\n"
                 f"{vlm_context}"
+                f"⚠️ 上面的对话记录只用于理解图片的排查场景；画面要点以**图片上真实可见**"
+                f"的内容为准——可见的内容必须写（哪怕与对话重复），图片上没有的禁止补全。\n"
                 f"请用**结构化要点**输出，总字数 ≤ 200 字：\n"
-                f"- 画面类型（调度界面截图 / 设备现场照 / 文档表格 / 其他）\n"
-                f"- 画面上可见的关键内容：界面名称/页面元素、文字标签、数值（含错误码、机器人ID）、"
-                f"指示灯/设备状态——**逐字原样抄录，禁止推测补全**，看不清的写「（模糊）」\n"
+                f"- 画面类型：调度界面截图 / 聊天对话截图 / 设备现场照 / 文档表格 / 其他"
+                f"（五选一；禁止附加任何用途推断或「这是XX操作页面」式的定性）\n"
+                f"- 画面上可见的关键内容：可见的文字/按钮/列表项**逐字原样抄录**"
+                f"（含错误码、机器人ID），看不清的写「（模糊）」，禁止推测补全，"
+                f"禁止总结画面用途\n"
                 f"- 仅当画面上有明确的错误提示/告警标识时，原样转述该提示文字；画面正常就写「画面无报错提示」\n"
-                f"要点之后另起一行写「【回应】」加一句话（≤40 字），结合画面要点和上面的对话背景：\n"
-                f"- 背景已明确在排查什么 → 自然接话（如「这个数值确实不对，先记下了」）\n"
-                f"- 看不出用户目的 → 一句话问清意图（要查图上的报错，还是问这个界面怎么操作，还是其他情况）\n"
-                f"- 画面无报错且没有对话背景 → 问「这是遇到什么问题了，还是想了解这个界面的配置？」\n"
-                f"要点部分禁止推测故障原因；回应部分不要给排查步骤、不要下诊断结论。"
+                f"要点之后另起一行写「【回应】」加一句话（≤40 字）：\n"
+                f"- 对话背景里用户已明确表达意图（报错/要求提单/补充信息）→ 只确认收到，"
+                f"如「截图已看到，问题已记录」，🚫 禁止反问用户意图\n"
+                f"- 确实看不出用户目的 → 一句话问清意图（要查图上的报错，还是问这个界面怎么操作）\n"
+                f"要点部分禁止推测故障原因和界面用途；回应部分不要给排查步骤、不要下诊断结论。"
             )
             try:
                 async for tok in llm.stream_vision(
@@ -865,7 +869,8 @@ async def _upload_events(
                         "你是 AGV/AMR 调度系统的图片转述员，只做客观转述、不做分析判断："
                         "把画面上真实可见的内容（文字、数值、状态、错误码）逐字抄录成要点，"
                         "总字数 ≤ 200 字。看不清的注明「（模糊）」，禁止编造画面上没有的信息，"
-                        "禁止推测故障原因。最后按 prompt 要求在「【回应】」行用一句话回应用户。"
+                        "禁止推测故障原因，禁止对界面用途下定性结论（只抄看到的，不定性这是"
+                        "「什么操作页面」）。最后按 prompt 要求在「【回应】」行用一句话回应用户。"
                     ),
                     max_tokens=600,
                     temperature=0.3,
@@ -1186,6 +1191,10 @@ class ChatRequest(BaseModel):
     max_tokens: int = Field(default=2000)
     temperature: float = Field(default=0.7, ge=0, le=2)
     system_prompt: str = Field(default="", max_length=20000, description="可选系统提示词")
+    thinking: bool | None = Field(
+        default=None,
+        description="是否开启思考模式；None 用默认（reasoning_effort 配置决定），False 显式关闭",
+    )
     tools: list | None = Field(
         default=None, description="OpenAI tools 协议工具定义；非空时走工具调用模式"
     )
@@ -1262,6 +1271,7 @@ async def chat(request: ChatRequest) -> dict:
                 system_prompt=request.system_prompt or None,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                thinking=request.thinking,
             )
         total_ms = round((time.perf_counter() - t0) * 1000)
         # 空回答不落库（agentic 中间轮只调工具无正文时避免历史污染）
@@ -1289,6 +1299,7 @@ async def chat_stream(request: ChatRequest):
                 system_prompt=request.system_prompt or None,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                thinking=request.thinking,
             )):
                 if token is None:
                     yield _HEARTBEAT_SSE
@@ -1520,10 +1531,14 @@ async def list_all_tickets(
                 _rel = rel_map.get(r.id)
                 _is_agent = bool(_rel and _me_keys and _rel.agent_id in _me_keys)
                 _is_principal = bool(_rel and _me_keys and _rel.principal_id in _me_keys)
+                # 接单人视角：我是本单处理人 → 允许看到「谁代谁提单」（姓名本就对其下发）
+                _is_proxy_assignee = bool(
+                    _rel and _me_keys and assigned_to and assigned_to in _me_keys
+                )
                 _is_participant = bool(
                     _rel and _me_keys and (
-                        _is_agent or _is_principal
-                        or created_by in _me_keys or assigned_to in _me_keys
+                        _is_agent or _is_principal or _is_proxy_assignee
+                        or created_by in _me_keys
                     )
                 )
                 items.append({
@@ -1549,10 +1564,12 @@ async def list_all_tickets(
                     # 复用后端同一聚合服务，保证两个列表口径一致（含红点 has_unread）。
                     "participants": participants_map.get(r.id, []),
                     # 代他人提单（代理提单）：关系状态 + 视角标记 + 参与人姓名。
-                    # 姓名对非参与人下发 None（避免通过列表探测他人代理关系）。
+                    # 姓名对非参与人下发 None（避免通过列表探测他人代理关系）；
+                    # is_proxy_assignee = 我是本单接单人，供接单人视角展示「谁代谁提单」。
                     "proxy_relation_status": _rel.relation_status if _rel else None,
                     "is_proxy_agent": _is_agent,
                     "is_principal": _is_principal,
+                    "is_proxy_assignee": _is_proxy_assignee,
                     "proxy_agent_name": (
                         user_map.get(_rel.agent_id) or _rel.agent_username or _rel.agent_id
                     ) if _is_participant else None,

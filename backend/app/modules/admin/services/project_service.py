@@ -586,6 +586,11 @@ class ProjectService:
             db.execute(user_project_roles.delete().where(
                 user_project_roles.c.project_id == str(project.id)))
 
+            # 各人的置顶标注一并清掉：软删的项目不再进任何列表，
+            # 留着的置顶是点不开的孤儿记录（与节点关注随项目删除清理同口径）
+            from app.modules.admin.services.project_pin_service import remove_pins_for_project
+            remove_pins_for_project(db, str(project.id))
+
             # 软删除：保留 project 记录，仅标记为已删除。
             # 后续创建新项目时 check_project_duplicate 仍会命中本记录（按编号/名称），
             # 从而阻止编号/名称被复用，达到去重目的。

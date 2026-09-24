@@ -21,6 +21,8 @@ from app.services.user_service import user_service
 from app.core.user_identity import identity_keys, to_user_id, to_username
 from app.modules.tasks import participant_service
 
+logger = logging.getLogger(__name__)
+
 
 # ──────────────────────────────────────────────────────────────
 # AI 服务 Assigner Worker 集成：Redis Pub/Sub
@@ -43,6 +45,7 @@ async def _publish_new_ticket_to_assigner(task_id: int) -> None:
     assigned_to 保持 NULL、status=NEW，靠 Assigner Worker 的定时 MySQL
     扫描兜底（通常分钟级，而非 24H）。
     """
+    _log = logging.getLogger(__name__)
     try:
         import redis.asyncio as redis_async
         url = f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
@@ -53,12 +56,12 @@ async def _publish_new_ticket_to_assigner(task_id: int) -> None:
         try:
             await client.ping()
             await client.publish(_ASSIGNER_PUBSUB_CHANNEL, str(task_id))
-            logger.info(f"已发布新工单到 Assigner Worker: ticket_id={task_id}")
+            _log.info(f"已发布新工单到 Assigner Worker: ticket_id={task_id}")
         finally:
             await client.close()
     except Exception as e:
         # 降级：不阻塞 create_ticket 返回，Worker 定时扫描兜底
-        logger.warning(f"发布到 Assigner Worker 失败 ticket_id={task_id}: {e}")
+        _log.warning(f"发布到 Assigner Worker 失败 ticket_id={task_id}: {e}")
 
 
 def convert_to_shanghai_time(dt: Optional[datetime]) -> Optional[datetime]:
@@ -193,7 +196,8 @@ class TicketService:
         回填字段（挂在 ORM 实例上，由响应模型决定是否输出）：
         - proxy_relation_status：pending / acknowledged / declined
         - proxy_agent_name / proxy_principal_name：参与人姓名（来自 user_map）
-        - is_proxy_agent / is_principal：当前登录用户视角标记，供前端免二次判定
+        - is_proxy_agent / is_principal / is_proxy_assignee：当前登录用户视角标记，
+          供前端免二次判定（is_proxy_assignee = 我是本单接单人，供接单人视角展示「谁代谁提单」）
         """
         if not tickets:
             return
@@ -218,17 +222,22 @@ class TicketService:
                     continue
                 is_proxy_agent = bool(me_keys) and rel.agent_id in me_keys
                 is_principal = bool(me_keys) and rel.principal_id in me_keys
+                is_proxy_assignee = (
+                    bool(me_keys) and getattr(ticket, "assigned_to", None) in me_keys
+                )
                 # 脱敏：仅当当前用户是本单参与人（代理人/被代理人/提单人/处理人）时，
                 # 才下发「谁代谁提单」的姓名，避免通过列表接口探测他人代理关系。
+                # 接单人本就是参与人 → 姓名照常下发，故接单人视角可直接看到双方姓名。
                 is_participant = (
                     is_proxy_agent
                     or is_principal
                     or (bool(me_keys) and getattr(ticket, "created_by", None) in me_keys)
-                    or (bool(me_keys) and getattr(ticket, "assigned_to", None) in me_keys)
+                    or is_proxy_assignee
                 )
                 setattr(ticket, "proxy_relation_status", rel.relation_status)
                 setattr(ticket, "is_proxy_agent", is_proxy_agent)
                 setattr(ticket, "is_principal", is_principal)
+                setattr(ticket, "is_proxy_assignee", is_proxy_assignee)
                 if is_participant:
                     setattr(
                         ticket, "proxy_agent_name",

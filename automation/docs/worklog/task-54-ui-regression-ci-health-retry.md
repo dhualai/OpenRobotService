@@ -1,5 +1,9 @@
 # Task 54：UI Regression CI 健康检查重试
 
+> **后续变更（2026-09-22）**：本文针对的「GitHub 托管 runner + 受限 SSH key 隧道」链路
+> 已停用，改为 self-hosted runner 直连。下文提到的 `TEST_SSH_PRIVATE_KEY`、
+> `permitopen`、调试 key 等均已作废并清理，仅作历史记录。
+
 > 日期：2026-09-20
 > ORS：877
 > 状态：实现完成，本地验证通过，待 GitHub Actions 验证
@@ -12,7 +16,7 @@
 
 - 测试后端 `9400/api/health` 返回 `200`。
 - 自动化 AI `9411/health` 返回 `200`。
-- CI key 已配置 `permitopen="127.0.0.1:9411"`。
+- ~~CI key 已配置 `permitopen="127.0.0.1:9411"`。~~（该 key 已作废）
 - 使用受限调试 key 从本机建立单会话多端口转发后，AI health 返回 `200`。
 - GitHub Actions 连续多次在 backend 或 AI 首轮 health 请求上超时。
 

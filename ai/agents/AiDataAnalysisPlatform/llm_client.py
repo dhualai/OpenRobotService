@@ -76,6 +76,7 @@ class LLMClient:
         temperature: float | None,
         max_tokens: int | None,
         session_id: str | None = None,
+        thinking: bool | None = None,
     ) -> dict:
         return {
             # 显式传入时复用该会话（AI 服务端自动注入历史对话）→ 多轮记忆；
@@ -85,6 +86,8 @@ class LLMClient:
             "system_prompt": system_prompt or "",
             "max_tokens": max_tokens if max_tokens is not None else self._max_tokens,
             "temperature": temperature if temperature is not None else self._temperature,
+            # None 由 AI 服务端默认决定；False 显式关闭思考（如模板化报告）
+            "thinking": thinking,
         }
 
     # ── 同步接口 ────────────────────────────────────────────
@@ -97,6 +100,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         session_id: str | None = None,
+        thinking: bool | None = None,
     ) -> tuple[str, dict | None]:
         """发送对话请求，返回 (回复文本, usage 信息)。
 
@@ -115,7 +119,7 @@ class LLMClient:
             ``/api/ai/chat`` 不返回 token 使用量，故 usage 恒为 ``None``。
         """
         payload = self._build_payload(
-            system_prompt, user_prompt, temperature, max_tokens, session_id
+            system_prompt, user_prompt, temperature, max_tokens, session_id, thinking
         )
         url = f"{self._base_url}/api/ai/chat"
         try:
@@ -143,6 +147,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         session_id: str | None = None,
+        thinking: bool | None = None,
     ) -> AsyncIterator[str]:
         """流式对话，逐 chunk 返回文本片段。
 
@@ -158,7 +163,7 @@ class LLMClient:
             每个 chunk 的文本内容。
         """
         payload = self._build_payload(
-            system_prompt, user_prompt, temperature, max_tokens, session_id
+            system_prompt, user_prompt, temperature, max_tokens, session_id, thinking
         )
         url = f"{self._base_url}/api/ai/chat/stream"
         try:

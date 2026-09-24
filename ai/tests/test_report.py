@@ -175,8 +175,28 @@ async def test_report_generation():
     try:
         mods = _load_report_modules()
         generate_report = mods["report_generator"].generate_report
-        result = await generate_report(period="daily", date=date.today().strftime("%Y-%m-%d"))
-        print(f"[OK] 日报生成成功")
+        # 项目必选：从数据库取第一个项目 code 作为报告范围
+        db_mod = _preload_database_module()
+        db = db_mod.SessionLocal()
+        try:
+            first_project_code = (
+                db.query(db_mod.ProjectDelivery.code)
+                .filter(db_mod.ProjectDelivery.code.isnot(None))
+                .order_by(db_mod.ProjectDelivery.id)
+                .first()
+            )
+        finally:
+            db.close()
+        if not first_project_code:
+            print("[SKIP] project 表无可用项目 code，无法生成单项目日报")
+            return
+        project_code = first_project_code[0]
+        result = await generate_report(
+            period="daily",
+            date=date.today().strftime("%Y-%m-%d"),
+            project_code=project_code,
+        )
+        print(f"[OK] 日报生成成功（项目 {project_code}）")
         print(f"  周期: {result.period}")
         print(f"  日期范围: {result.date_range}")
         print(f"  章节数: {len(result.sections)}")

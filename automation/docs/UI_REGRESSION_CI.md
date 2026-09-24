@@ -1,5 +1,16 @@
 # UI 回归 GitHub Actions 使用说明
 
+> **已废弃（2026-09-22）：本文描述的「GitHub 托管 runner + SSH 隧道」链路已停用。**
+>
+> 现行方案改为 **self-hosted runner 直连**：
+>
+> - runner 部署在测试服务器本机，标签 `self-hosted, linux, x64, ors-test`
+> - 直接访问 `http://127.0.0.1:9400`（后端）与 `http://127.0.0.1:9411`（可控 AI），不再需要端口转发
+> - `TEST_SSH_PRIVATE_KEY` Secret 已删除；服务器 `authorized_keys` 中对应的
+>   `openrobot-ci-actions` 公钥也已移除
+>
+> 本文仅作历史记录保留，现行口径见 `automation/docs/SELF_HOSTED_RUNNER.md`。
+
 ## 1. 触发条件
 
 ```text
@@ -36,9 +47,11 @@ UI_REGRESSION_CLEANUP_TITLE_PREFIX
 
 非敏感端口、项目 ID 和标题前缀有默认值。
 
-## 4. SSH 白名单
+## 4. SSH 白名单（已废弃）
 
-`TEST_SSH_PRIVATE_KEY` 对应的公钥必须允许：
+> 本节随 `TEST_SSH_PRIVATE_KEY` 一并废弃，仅作历史记录保留。
+
+`TEST_SSH_PRIVATE_KEY` 对应的公钥当时需要允许：
 
 ```text
 permitopen="127.0.0.1:9400"

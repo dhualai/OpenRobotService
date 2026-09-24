@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .agent import DataAnalysisAgent
@@ -265,13 +265,75 @@ async def list_analysis_types():
 # -- 报告生成 -------------------------------------------------------
 
 
+def _current_username(request: Request) -> str:
+    """从 Authorization 头解出当前登录用户名；无效/缺失返回空串。"""
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not token:
+        return ""
+    from app.core.security import decode_token  # 惰性：避免启动期触发 backend 装配
+
+    payload = decode_token(token)
+    if not payload:
+        return ""
+    return (payload.get("sub") or "").strip()
+
+
+def _get_user_project_codes(username: str) -> set[str]:
+    """查询用户在 user_project_roles 中关联的全部项目 code（project.id ↔ code 同值）。
+
+    关联逻辑：users.username ↔ user_project_roles.user_id ↔ project.id；
+    返回 project.code 集合，与前端 /api/admin/projects/me 的选择口径一致。
+    """
+    from ai.core.database import (
+        SessionLocal,
+        User,
+        UserProjectRole,
+        ProjectDelivery,
+    )
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return set()
+        rows = (
+            db.query(ProjectDelivery.code)
+            .join(
+                UserProjectRole, UserProjectRole.project_id == ProjectDelivery.id
+            )
+            .filter(UserProjectRole.user_id == user.id)
+            .all()
+        )
+        return {r[0] for r in rows if r[0]}
+    finally:
+        db.close()
+
+
 @router.post("/report/generate", summary="生成日报/周报")
-async def generate_report_api(request: ReportRequest):
-    """生成日报或周报。
+async def generate_report_api(request: ReportRequest, http_req: Request):
+    """生成日报或周报（项目必选，统计范围仅限 request.project_code）。
+
+    权限校验：project_code 必须属于当前登录用户关联的项目
+    （user_project_roles），防止越权查看其他项目数据。
 
     - 非流式（stream=false）：返回结构化 ReportResult。
     - 流式（stream=true）：返回 SSE 文本流。
     """
+    # 项目必选 + 归属校验（在 SSE 流开启前执行，确保 401/403 能被前端处理）
+    username = _current_username(http_req)
+    if not username:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+    user_project_codes = _get_user_project_codes(username)
+    if request.project_code not in user_project_codes:
+        logger.warning(
+            "用户 %s 尝试生成非关联项目 %s 的报告，已拒绝",
+            username, request.project_code,
+        )
+        raise HTTPException(
+            status_code=403, detail="仅允许生成您关联项目的日报/周报"
+        )
+
     agent = get_agent()
     llm_client = agent._llm
     generator = ReportGenerator(llm_client)
@@ -284,7 +346,6 @@ async def generate_report_api(request: ReportRequest):
                     period=request.period,
                     target_date=target_date,
                     project_code=request.project_code,
-                    user_id=request.user_id,
                 ):
                     payload = json.dumps(
                         {"content": chunk}, ensure_ascii=False
@@ -308,7 +369,6 @@ async def generate_report_api(request: ReportRequest):
             period=request.period,
             target_date=target_date,
             project_code=request.project_code,
-            user_id=request.user_id,
         )
         return {"code": 0, "data": result.model_dump()}
     except ValueError as exc:

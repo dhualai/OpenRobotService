@@ -15,6 +15,8 @@ interface Props {
   title?: string;
   /** AI 给的项目名：value(project_code) 为空时按名称在名下项目里匹配预填，减少用户手选 */
   nameHint?: string | null;
+  /** 外部项目列表：传入时不再拉取全量项目，只在传入列表内搜索/选择（如“仅用户关联项目”场景） */
+  projects?: ProjectItem[] | null;
 }
 
 // 库里遗留的英文状态（列默认值）映射为中文；中文生命周期状态原样透传
@@ -33,6 +35,7 @@ export default function ProjectSelect({
   placeholder = '请选择绑定项目',
   title = '选择项目',
   nameHint = null,
+  projects: externalProjects = null,
 }: Props) {
   const [visible, setVisible] = useState(false);
   const [projects, setProjects] = useState<ProjectItem[]>(projectCache || []);
@@ -41,12 +44,20 @@ export default function ProjectSelect({
   const [keyword, setKeyword] = useState('');
   const [error, setError] = useState('');
 
+  // 外部列表模式（仅用户关联项目）：候选集直接取外部传入列表
+  const candidateProjects = externalProjects ?? projects;
+
   const selected = useMemo(
-    () => projects.find((p) => p.project_code === value) || null,
-    [projects, value],
+    () => candidateProjects.find((p) => p.project_code === value) || null,
+    [candidateProjects, value],
   );
 
   const loadProjects = async () => {
+    // 外部列表模式：不拉全量项目，直接使用调用方传入的关联项目列表
+    if (externalProjects) {
+      setProjects(externalProjects);
+      return;
+    }
     const now = Date.now();
     // 相关性信号（提过单/名下）：失败静默——排序退化为原序，不阻塞选项目
     const loadRelevance = (async () => {
@@ -88,30 +99,30 @@ export default function ProjectSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  // AI 项目名预填：value(project_code) 为空且 AI 给了项目名 → 按名称在名下项目里匹配，替用户预选。
+  // AI 项目名预填：value(project_code) 为空且 AI 给了项目名 → 按名称在候选列表里匹配，替用户预选。
   // 匹配策略：① 忽略大小写/首尾空格精确等值；② 互为包含（AI 名可能带"项目"后缀或简写）；命中即预选。
   useEffect(() => {
-    if (value || !nameHint || projects.length === 0) return;
+    if (value || !nameHint || candidateProjects.length === 0) return;
     const hint = nameHint.trim().toLowerCase();
-    const hit = projects.find((p) => {
+    const hit = candidateProjects.find((p) => {
       const n = (p.name || '').trim().toLowerCase();
       return n && (n === hint || n.includes(hint) || hint.includes(n));
     });
     if (hit) onChange?.(hit);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects, value, nameHint]);
+  }, [candidateProjects, value, nameHint]);
 
   // 相关性排序：搜索过滤后按 提过单 > 名下 > 其他 排列，
   // 同一项目两属性兼有时归入「提过单」组；提单组内按提单数降序（同数保持原序）
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
     const base = kw
-      ? projects.filter(
+      ? candidateProjects.filter(
           (p) =>
             (p.name || '').toLowerCase().includes(kw) ||
             (p.project_code || '').toLowerCase().includes(kw),
         )
-      : projects;
+      : candidateProjects;
     if (relevance.ticketed.length === 0 && relevance.owned.length === 0) return base;
     const ticketed = new Set(relevance.ticketed.map((t) => t.code));
     const ticketedCount = new Map(relevance.ticketed.map((t) => [t.code, t.count]));
@@ -125,7 +136,7 @@ export default function ProjectSelect({
     const g2 = base.filter((p) => !ticketed.has(p.project_code) && owned.has(p.project_code));
     const rest = base.filter((p) => !ticketed.has(p.project_code) && !owned.has(p.project_code));
     return g1.length || g2.length ? [...g1, ...g2, ...rest] : base;
-  }, [projects, keyword, relevance]);
+  }, [candidateProjects, keyword, relevance]);
 
   const relLabel = (code: string): { text: string; cls: string } | null => {
     if (relevance.ticketed.some((t) => t.code === code)) return { text: '你提过单的项目', cls: 'user-select__status--ticketed' };

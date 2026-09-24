@@ -20,36 +20,20 @@ class ReportPeriod(str, Enum):
     WEEKLY = "weekly"
 
 
-class ReportScope(str, Enum):
-    """报告数据范围，由前端请求参数决定，据此选用不同的提示词模板。
-
-    - SINGLE_PROJECT：前端传了 project_code，仅分析该单个项目
-    - USER_PROJECTS：未传 project_code 但传了 user_id，分析该用户关联的全部项目与工单
-    - GLOBAL：均未传，平台全局统计
-    """
-
-    SINGLE_PROJECT = "single_project"
-    USER_PROJECTS = "user_projects"
-    GLOBAL = "global"
-
-
 # ── 请求 ─────────────────────────────────────────────────────
 
 class ReportRequest(BaseModel):
-    """日报/周报生成请求。"""
+    """日报/周报生成请求。
+
+    项目必选：project_code 为必填字段，报告仅统计指定单个项目的数据。
+    """
 
     period: ReportPeriod = Field(..., description="报告周期：daily / weekly")
     date: str | None = Field(
         default=None,
         description="指定日期 YYYY-MM-DD，默认今天（日报）或本周一（周报）",
     )
-    project_code: str | None = Field(
-        default=None, description="按项目代码过滤（可选，与 user_id 同时传时以 project_code 为准）"
-    )
-    user_id: str | None = Field(
-        default=None,
-        description="用户ID，用于查询该用户关联的全部项目（可选，为空时不按用户过滤）",
-    )
+    project_code: str = Field(..., description="项目代码（必填，报告仅统计该项目）")
     stream: bool = Field(default=False, description="是否流式输出")
 
 

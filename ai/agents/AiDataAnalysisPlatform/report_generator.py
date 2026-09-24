@@ -4,13 +4,13 @@
 
 用法::
 
-    # 手动调用（API 或脚本）
+    # 手动调用（API 或脚本，项目必选）
     from ai.agents.AiDataAnalysisPlatform.report_generator import generate_report
 
-    result = await generate_report(period="daily", date="2026-07-20")
+    result = await generate_report(period="daily", date="2026-07-20", project_code="PROJ001")
 
-    # 定时任务调用（APScheduler / cron）
-    result = await generate_report(period="weekly", date="2026-07-20")
+    # 定时任务调用（APScheduler / cron，同样需指定项目）
+    result = await generate_report(period="weekly", date="2026-07-20", project_code="PROJ001")
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ from .report_schemas import (
     ReportPeriod,
     ReportRequest,
     ReportResult,
-    ReportScope,
     ReportSection,
     ProjectStats,
     RiskStats,
@@ -134,6 +133,26 @@ def _cn_label(mapping: dict[str, str], value: str | None, default: str) -> str:
     if not key:
         return default
     return mapping.get(key, str(value).strip())
+
+
+def _fmt_solve_duration(
+    created: datetime | None, resolved: datetime | None
+) -> str | None:
+    """工单从创建到解决的中文耗时（如「3小时25分钟」「1天4小时」）。
+
+    数据异常（缺创建/解决时间或解决早于创建）时返回 None，由上层置空。
+    """
+    if not created or not resolved or resolved < created:
+        return None
+    seconds = int((resolved - created).total_seconds())
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days > 0:
+        return f"{days}天{hours}小时" if hours else f"{days}天"
+    if hours > 0:
+        return f"{hours}小时{minutes}分钟" if minutes else f"{hours}小时"
+    return f"{minutes}分钟"
 
 
 def _norm_settlement_period(value: str | None) -> str:
@@ -613,7 +632,7 @@ class ReportDataCollector:
                     items.append({
                         "工单ID": t.id,
                         "标题": t.title,
-                        "描述": (t.description or "")[:80],
+                        "描述": (t.description or "")[:200],
                         "状态": status,
                         "类型": ttype,
                         "优先级": priority,
@@ -622,6 +641,10 @@ class ReportDataCollector:
                         "创建时间": created.isoformat() if created else None,
                         "更新时间": updated.isoformat() if updated else None,
                         "解决时间": t.resolved_at.isoformat() if t.resolved_at else None,
+                        # 周期内已解决的工单：给出从创建到解决的耗时，供报告展示处理时长
+                        "解决耗时": _fmt_solve_duration(created, t.resolved_at)
+                        if (t.resolved_at and start <= t.resolved_at <= end)
+                        else None,
                     })
 
             # 工单解决率（全量口径：已解决 + 已关闭 / 总数）
@@ -855,13 +878,18 @@ class ReportDataCollector:
                         items.append({
                             "工单ID": t.id,
                             "标题": t.title,
-                            "描述": (t.description or "")[:80],
+                            "描述": (t.description or "")[:200],
                             "状态": _cn_label(_TICKET_STATUS_CN, t.status, "未知"),
                             "类型": _cn_label(_TICKET_TYPE_CN, t.task_type, "其他"),
                             "优先级": _cn_label(_TICKET_PRIORITY_CN, t.priority, "中"),
                             "项目名称": t.project_name,
                             "创建时间": created.isoformat() if created else None,
                             "更新时间": updated.isoformat() if updated else None,
+                            "解决时间": t.resolved_at.isoformat() if t.resolved_at else None,
+                            # 周期内已解决的工单：给出从创建到解决的耗时，供报告展示处理时长
+                            "解决耗时": _fmt_solve_duration(created, t.resolved_at)
+                            if (t.resolved_at and start <= t.resolved_at <= end)
+                            else None,
                         })
                 result["items"] = items
                 # 顺带按状态分布：明细列表配分布图（图+文字展示）
@@ -1472,6 +1500,11 @@ class ReportDataCollector:
 
 # ── 报告生成器 ─────────────────────────────────────────────────────
 
+# 报告输出预算：模板化报告为长文本，且已显式关闭思考（thinking=False），
+# 预算全部留给正文；过小会导致正文被截断甚至为空（前端表现为空白）。
+REPORT_MAX_TOKENS = 12000
+
+
 class ReportGenerator:
     """日报/周报生成器。
 
@@ -1545,94 +1578,58 @@ class ReportGenerator:
         code, _ = resolve_project(hint)
         return code
 
-    @staticmethod
-    def _resolve_scope(
-        project_code: str | None, user_id: str | None
-    ) -> ReportScope:
-        """根据请求参数确定报告数据范围（决定提示词模板族）。"""
-        if project_code:
-            return ReportScope.SINGLE_PROJECT
-        if user_id:
-            return ReportScope.USER_PROJECTS
-        return ReportScope.GLOBAL
-
-    def _resolve_project_filter(
-        self, project_code: str | None, user_id: str | None
-    ) -> list[str] | None:
-        """解析项目过滤范围。
-
-        - project_code → 仅该项目
-        - 仅 user_id → 该用户关联的全部项目；无关联项目时用占位符保证
-          查出空数据，防止空列表退化为全局统计（数据越权）
-        - 均不传 → None（全局统计）
-        """
-        if project_code:
-            return [project_code]
-        if user_id:
-            project_ids = self._resolve_project_ids_by_user(user_id)
-            return project_ids or ["__no_project__"]
-        return None
-
     def collect_data(
         self,
         period: ReportPeriod,
         target_date: date,
-        project_code: str | None = None,
-        user_id: str | None = None,
+        project_code: str,
     ) -> CollectedData:
-        """按报告口径从 MySQL 采集分析数据。"""
+        """按报告口径从 MySQL 采集分析数据（仅限指定项目）。"""
         start, end, date_range_str = _resolve_period_range(period, target_date)
-        project_ids = self._resolve_project_filter(project_code, user_id)
 
-        collector = ReportDataCollector(project_ids=project_ids)
+        collector = ReportDataCollector(project_ids=[project_code])
         return collector.collect_all(start, end, date_range_str)
 
     async def generate(
         self,
         period: ReportPeriod,
         target_date: date,
-        project_code: str | None = None,
-        user_id: str | None = None,
+        project_code: str,
     ) -> ReportResult:
-        """生成日报或周报。
-
-        过滤逻辑：
-        - project_code 和 user_id 同时传 → 仅查 project_code 对应项目
-        - 仅 user_id → 查该用户在 user_project_roles 中的全部项目
-        - 均不传 → 全局统计
-        """
+        """生成指定项目的日报或周报（项目必选，统计范围仅限该项目）。"""
         # 1. 计算时间范围
         _, _, date_range_str = _resolve_period_range(period, target_date)
 
-        # 2. 确定数据范围与项目过滤
-        scope = self._resolve_scope(project_code, user_id)
-
-        # 3. 采集数据
+        # 2. 采集数据（仅指定项目）
         collected = self.collect_data(
             period=period,
             target_date=target_date,
             project_code=project_code,
-            user_id=user_id,
         )
 
-        # 4. 序列化为 JSON 文本
+        # 3. 序列化为 JSON 文本
         data_text = json.dumps(collected.model_dump(by_alias=True), ensure_ascii=False, indent=2, default=str)
 
-        # 5. 构建 prompt（系统提示词按 scope 选用单项目/多项目模板）
-        system_prompt = build_report_system_prompt(period, scope)
+        # 4. 构建 prompt（单项目模板）
+        system_prompt = build_report_system_prompt(period)
         user_prompt = build_report_user_prompt(
             data_text=data_text,
             date_range=date_range_str,
             period=period,
             project_code=project_code,
-            user_id=user_id,
         )
 
-        # 6. 调用 LLM
-        logger.info("开始生成%s date_range=%s scope=%s", period.value, date_range_str, scope.value)
-        raw_response, usage = await self._llm.chat(system_prompt, user_prompt)
+        # 5. 调用 LLM（报告为模板化写作：关闭思考模式，避免 reasoning 占满
+        #    max_tokens 预算导致正文为空/被截断，输出预算见 REPORT_MAX_TOKENS）
+        logger.info("开始生成%s date_range=%s project=%s", period.value, date_range_str, project_code)
+        raw_response, usage = await self._llm.chat(
+            system_prompt,
+            user_prompt,
+            max_tokens=REPORT_MAX_TOKENS,
+            thinking=False,
+        )
 
-        # 7. 解析结果
+        # 6. 解析结果
         sections = self._parse_sections(raw_response, collected)
         summary = self._extract_summary(raw_response)
 
@@ -1650,39 +1647,39 @@ class ReportGenerator:
         self,
         period: ReportPeriod,
         target_date: date,
-        project_code: str | None = None,
-        user_id: str | None = None,
+        project_code: str,
     ) -> AsyncIterator[str]:
-        """流式生成报告，逐 chunk 返回文本。"""
+        """流式生成指定项目的报告，逐 chunk 返回文本。"""
         # 1. 计算时间范围
         _, _, date_range_str = _resolve_period_range(period, target_date)
 
-        # 2. 确定数据范围与项目过滤
-        scope = self._resolve_scope(project_code, user_id)
-
-        # 3. 采集数据
+        # 2. 采集数据（仅指定项目）
         collected = self.collect_data(
             period=period,
             target_date=target_date,
             project_code=project_code,
-            user_id=user_id,
         )
 
-        # 4. 序列化
+        # 3. 序列化
         data_text = json.dumps(collected.model_dump(by_alias=True), ensure_ascii=False, indent=2, default=str)
 
-        # 5. 构建 prompt（系统提示词按 scope 选用单项目/多项目模板）
-        system_prompt = build_report_system_prompt(period, scope)
+        # 4. 构建 prompt（单项目模板）
+        system_prompt = build_report_system_prompt(period)
         user_prompt = build_report_user_prompt(
             data_text=data_text,
             date_range=date_range_str,
             period=period,
             project_code=project_code,
-            user_id=user_id,
         )
 
-        # 6. 流式调用 LLM
-        async for chunk in self._llm.chat_stream(system_prompt, user_prompt):
+        # 5. 流式调用 LLM（关闭思考模式：reasoning_content 不计入正文却占满
+        #    输出预算，曾导致正文为空、前端空白；预算见 REPORT_MAX_TOKENS）
+        async for chunk in self._llm.chat_stream(
+            system_prompt,
+            user_prompt,
+            max_tokens=REPORT_MAX_TOKENS,
+            thinking=False,
+        ):
             yield chunk
 
     # ── 结果解析 ──────────────────────────────────────────────
@@ -1759,7 +1756,6 @@ async def generate_report(
     period: str = "daily",
     date: str | None = None,
     project_code: str | None = None,
-    user_id: str | None = None,
 ) -> ReportResult:
     """顶层报告生成入口。
 
@@ -1769,12 +1765,17 @@ async def generate_report(
     Args:
         period: "daily" 或 "weekly"
         date: 目标日期 YYYY-MM-DD，默认今天
-        project_code: 项目代码过滤（可选，与 user_id 同时传时以 project_code 为准）
-        user_id: 用户ID，用于查询该用户关联的全部项目（可选）
+        project_code: 项目代码（必填，报告仅统计该项目）
 
     Returns:
         ReportResult 结构化报告结果
+
+    Raises:
+        ValueError: project_code 为空
     """
+    if not project_code:
+        raise ValueError("project_code 为必填参数：日报/周报仅统计指定单个项目")
+
     from .config import AnalysisConfig
 
     report_period = ReportPeriod(period)
@@ -1788,7 +1789,6 @@ async def generate_report(
         period=report_period,
         target_date=target,
         project_code=project_code,
-        user_id=user_id,
     )
 
 
@@ -1796,9 +1796,11 @@ async def generate_report_stream(
     period: str = "daily",
     date: str | None = None,
     project_code: str | None = None,
-    user_id: str | None = None,
 ) -> AsyncIterator[str]:
-    """顶层流式报告生成入口。"""
+    """顶层流式报告生成入口（项目必选）。"""
+    if not project_code:
+        raise ValueError("project_code 为必填参数：日报/周报仅统计指定单个项目")
+
     from .config import AnalysisConfig
 
     report_period = ReportPeriod(period)
@@ -1812,6 +1814,5 @@ async def generate_report_stream(
         period=report_period,
         target_date=target,
         project_code=project_code,
-        user_id=user_id,
     ):
         yield chunk

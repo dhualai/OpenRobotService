@@ -4658,6 +4658,32 @@ html, body, #root {
 }
 .mac-datebar__refresh:disabled { opacity: 0.5; cursor: default; }
 
+/* 日期条内嵌 antd DatePicker：透明融入淡蓝条（桌面下拉日历/移动端点选，双端可用） */
+.mac-datebar .ant-picker.mac-datebar__picker {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+.mac-datebar .ant-picker.mac-datebar__picker.ant-picker-focused { box-shadow: none; }
+.mac-datebar .ant-picker.mac-datebar__picker .ant-picker-input > input {
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--mac-blue-2);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.mac-datebar .ant-picker.mac-datebar__picker .ant-picker-input > input::placeholder {
+  color: var(--mac-blue-2);
+  opacity: 0.65;
+}
+.mac-datebar .ant-picker.mac-datebar__picker .ant-picker-suffix { color: var(--mac-blue-2); }
+
 /* 生成中脉冲标签（日报周报流式状态） */
 .mac-streaming {
   font-size: 11px;
@@ -4667,6 +4693,103 @@ html, body, #root {
 @keyframes mac-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
+}
+
+/* 日报周报卡片头部行（标题 + 操作按钮；编辑模式下 sticky 固定在顶部） */
+.mac-report-head {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+.mac-report-head__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mac-report-head__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--mac-fg);
+}
+/* 编辑模式：整行吸顶（top 48 = 避开 fixed Navbar 高度），保存/取消随行固定 */
+.mac-report-head.is-editing {
+  position: sticky;
+  top: 48px;
+  z-index: 10;
+  margin: -6px -16px 10px;
+  padding: 8px 16px;
+  background: #fff;
+  border-bottom: 1px solid var(--mac-border);
+}
+
+/* 富文本编辑工具栏（吸顶行内第二行） */
+.mac-report-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+}
+.mac-report-toolbar__btn {
+  border: 1px solid var(--mac-border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--mac-fg);
+  cursor: pointer;
+}
+.mac-report-toolbar__btn.is-bold { font-weight: 700; }
+.mac-report-toolbar__btn.is-italic { font-style: italic; }
+.mac-report-toolbar__btn:active { background: var(--mac-blue-soft); }
+
+/* 卡片头部操作按钮（编辑 / 导出 / 保存 / 取消） */
+.mac-report-actions { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.mac-report-action-btn {
+  border: 1px solid var(--mac-border);
+  border-radius: 13px;
+  background: #fff;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--mac-blue-2);
+  cursor: pointer;
+}
+.mac-report-action-btn--primary { background: var(--mac-blue-2); border-color: var(--mac-blue-2); color: #fff; }
+.mac-report-action-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* 富文本所见即所得编辑区：复用 markdown-body 排版，白底带边框可聚焦 */
+.mac-report-richtext {
+  min-height: 280px;
+  padding: 12px 14px;
+  border: 1px solid var(--mac-border);
+  border-radius: 13px;
+  background: #fff;
+  outline: none;
+}
+.mac-report-richtext:focus { border-color: var(--mac-blue-2); }
+.mac-report-richtext:empty::before {
+  content: attr(data-placeholder);
+  color: #b6bcc6;
+  pointer-events: none;
+}
+
+/* 表格列宽自适应 + 对齐（applyTableAlign 设置 colgroup 百分比定宽）：
+   全部表格 fixed 布局 100% 铺满容器、随页面尺寸自适应，不产生横向滚动条；
+   表头允许换行、长内容任意断词，避免列宽被压缩时内容溢出单元格 */
+.mac-report .markdown-body table { table-layout: fixed; }
+.mac-report .markdown-body table th { white-space: normal; }
+.mac-report .markdown-body table th,
+.mac-report .markdown-body table td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* 反馈条（导入成功/失败） */
@@ -6941,6 +7064,16 @@ html, body, #root {
 }
 .chat-press-menu__item:last-child { border-right: none; }
 .chat-press-menu__item:active { background: var(--muted); }
+
+/* 长按就地选择（0922 微信式）：选中气泡放开文本选择（容器默认禁选），
+   其余消息/界面仍禁选；手柄 = 竖线 + 圆点（起点圆点在上、终点在下） */
+.chat-bubble-wrap.chat-sel-active,
+.chat-bubble-wrap.chat-sel-active .chat-bubble,
+.chat-bubble-wrap.chat-sel-active * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
 
 /* 气泡删除按钮（仅自己消息，hover/长按显示） */
 .detail-chat-bubble__del {

@@ -640,6 +640,10 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
     memory.turns.append({
         "role": "assistant",
         "content": "工单已提交，已进入自动派单。有新问题随时告诉我。"})
+    # 0922 上下文切分：收尾轮之后即下一单的对话起点——草稿/描述生成从
+    # context_start 切片，上一单的对话不再进入下一单的提炼视野（修 872 实锤
+    # 「有历史对话的会话提炼跑偏」）。收集轮/看图的中间态照旧由各自逻辑管理。
+    agent_state.context_start = len(memory.turns)
     # 聊天记录附件的工单分割锚点：下次提单的附件只带此刻之后的对话。
     agent_state.last_ticket_submitted_at = int(time.time())
     _save_agent_state(memory, agent_state)
@@ -1844,6 +1848,10 @@ class AiDiagnosisPlatform:
                 f"即使不对应任何缺失字段，也要先**简短确认收到**（如「异响的情况记下了」），"
                 f"再继续问下一个缺失字段——这些背景会进入工单描述，"
                 f"🚫 严禁无视用户刚说的内容直接跳问别的。\n"
+                f"10. 向用户询问缺失字段时，问题末尾自然带一句**不限字段的开放邀请**："
+                f"欢迎补充其他任何有助于定位问题的信息（现象、发生时间、涉及设备、"
+                f"报错内容等，具体措辞由你组织）；用户补充的内容按规则 9 的方式确认"
+                f"收录——不锁死字段清单，用户主动给的信息往往比追问得更准。\n"
                 + _prev_ref_block +
                 f"⚠️ 已收集的字段不要再问。"
             )
@@ -4128,7 +4136,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}{_att_block}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 排查假设只能浓缩对话里 AI 真实说过的话——对话中 AI 没给过任何假设或结论时，描述只写用户报告的事实，禁止自行推测原因或编造排查建议；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「用户未提供：…」，只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 排查假设只能浓缩对话里 AI 真实说过的话——对话中 AI 没给过任何假设或结论时，描述只写用户报告的事实，禁止自行推测原因或编造排查建议；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「可补充：…」（如「可补充：故障发生时间」——中性提示该信息缺失、后续可向用户补充，禁止写成「用户未提供」这种暗示用户被问过未答的措辞），只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
             f'"priority":"紧急|高|中|低","contact":"用户方（报障侧）的联系人，不是指派的处理人；从对话提取，没有则为空（系统会自动兜底为用户注册姓名，不要编造）",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
@@ -4342,20 +4350,46 @@ class AiDiagnosisPlatform:
                             _i -= 1
                         rows.insert(_i, {"role": "user", "content": _msg, "created_at": _ts})
                     logger.info(f"[chat_markdown] 重建上传轮 {len(_batches)} 批插入 db 历史: session={sid}")
-                # 工单分割：只保留上一次提单成功之后的对话（created_at 严格大于
-                # 锚点，提单收尾话术归上一单）。锚点缺失（首次提单/老会话状态丢失）
-                # 保持全量，回退旧行为。
+                # 工单分割（0922 锚点去内存化）：分割点 = 本会话**上一张已提交工单**
+                # 的创建时间（tasks 表现成数据，跨重启/状态丢失稳定）——本单记录只保留
+                # 该时刻之后的消息，上一单收尾话术（草稿已生成/已提交）归上一单。
+                # 0920 实锤：旧锚点存内存 agent_state，提交后状态丢失即失效，上一单
+                # 收尾混进本单记录（工单872 实锤）。查不到（首单/查询失败）回退内存
+                # 锚点，再无则全量回退旧行为。
                 _state = _load_agent_state(memory.metadata)
-                _anchor = int(_state.last_ticket_submitted_at) if _state else 0
-                if _anchor > 0 and rows:
-                    # DB created_at 是 naive UTC（后端建消息用 utcnow），锚点
-                    # fromtimestamp 默认转本地时区——naive UTC vs naive 本地差 8h，
-                    # 所有消息恒小于锚点被全滤 → rows 空 → 回退 memory.turns
-                    # （无分割），上一单收尾轮漏进附件。两侧统一为 UTC。
-                    _anchor_dt = _dt.fromtimestamp(_anchor, tz=_tz.utc)
+                _anchor_dt = None
+                try:
+                    from ai.core.database import SessionLocal as _TaskSL
+
+                    def _q_prev_submit():
+                        s = _TaskSL()
+                        try:
+                            return s.execute(
+                                text("SELECT created_at FROM tasks "
+                                     "WHERE session_id = :sid "
+                                     "AND (:tid IS NULL OR id != :tid) "
+                                     "ORDER BY created_at DESC LIMIT 1"),
+                                {"sid": sid, "tid": ticket.get("db_id")},
+                            ).scalar()
+                        finally:
+                            s.close()
+
+                    _prev_created = await asyncio.to_thread(_q_prev_submit)
+                    if _prev_created is not None:
+                        _anchor_dt = (_prev_created.replace(tzinfo=_tz.utc)
+                                      if _prev_created.tzinfo is None else _prev_created)
+                except Exception as _e:
+                    logger.info(f"[chat_markdown] 上一张工单时间查询失败（回退内存锚点）: {_e}")
+                if _anchor_dt is None:
+                    _int_anchor = int(_state.last_ticket_submitted_at) if _state else 0
+                    if _int_anchor > 0:
+                        _anchor_dt = _dt.fromtimestamp(_int_anchor, tz=_tz.utc)
+                if _anchor_dt is not None and rows:
+                    # DB created_at 是 naive UTC（后端建消息用 utcnow），统一按 UTC 比较
+                    # （0825 实锤：naive vs 本地时区差 8h 会把消息全滤空）。
                     _total = len(rows)
                     rows = [r for r in rows if _ca(r.get("created_at", "")) > _anchor_dt]
-                    logger.info(f"[chat_markdown] 工单分割: 上次提单后消息 {len(rows)}/{_total}")
+                    logger.info(f"[chat_markdown] 工单分割: 上一单提交时刻后消息 {len(rows)}/{_total}")
                 if rows:
                     db_turns = [{"role": r["role"], "content": r["content"],
                                  "created_at": r.get("created_at", "")} for r in rows]

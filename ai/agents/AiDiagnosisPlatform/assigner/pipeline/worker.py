@@ -190,7 +190,6 @@ class AssignmentWorker:
             try:
                 task = db.query(Task).filter(
                     Task.id == task_id,
-                    Task.source == "ai",
                     Task.status == "new",
                 ).first()
                 if not task:
@@ -258,7 +257,6 @@ class AssignmentWorker:
                 rows = (
                     db.query(Task)
                     .filter(
-                        Task.source == "ai",
                         Task.status == "new",
                         (Task.assigned_to == None) | (Task.assigned_to == ""),
                     )

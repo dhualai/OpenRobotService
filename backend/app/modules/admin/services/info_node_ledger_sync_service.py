@@ -17,7 +17,12 @@ app/integrations/sources/wecom/adapter.py 的 map_wecom_record_to_project 同步
 但不依赖 AI 服务与企业微信凭据，整个比对都在本地库上完成。
 
 异常约定（接口层映射）：LookupError → 404（项目不存在）；ValueError → 400（还没有信息节点）。
+
+另有一个批量入口 import_all_projects（后台管理-项目管理页「一键导入所有项目节点内容」，
+仅管理员/超级管理员）：对全部项目逐个跑同一套比对并**直接落库**（不再逐条勾选），
+写的就是「将填写 + 将覆盖」两类，见文件末尾。
 """
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.modules.admin.services import info_node_import_service as import_service
@@ -375,4 +380,116 @@ def build_sync_preview(project_id: str) -> Dict[str, Any]:
         # 镜像的台账列总数：说明「台账还有多少列本项目没值」
         "mirror_field_total": len(PROJECT_LEDGER_FIELDS),
         **buckets,
+    }
+
+
+# ── 一键导入（全部项目）：后台管理-项目管理页的批量入口 ────────────────
+# 单项目「同步」是「预览 → 人工勾选 → 落库」；这里是它的批量版：对每个项目跑同一套比对，
+# **只落「将填写」与「将覆盖」两类**（用户口径：空的填上、与台账矛盾的就地覆盖），
+# 没有再让用户逐条点头的环节——所以除了按钮本身有管理员/超级管理员闸门，
+# 前端还必须在跑之前弹一次确认（写的是全部项目的数据，误点代价太大）。
+#
+# 「未匹配到节点」一律不建节点：与单项目同步的 allowFallbackRoot=false 同一口径——
+# 台账有、树里没有的列属于「该去详情模板里补字段」，不是「该就地造节点」，
+# 只把条数报给用户，落库交给模板那条路径。
+IMPORT_ALL_CHANGE_REASON = "一键导入（项目台账）"
+# 失败明细最多返回多少条（界面只用来提示「哪些项目没导上」；全量明细没有展示位置，
+# 也不该把响应撑大）。超出部分只体现在 project_failed 计数里。
+MAX_FAILURE_DETAILS = 20
+
+
+def import_all_projects(operator: Optional[str] = None,
+                        operator_name: Optional[str] = None) -> Dict[str, Any]:
+    """把台账镜像（本地 project 表）的内容批量写进全部项目的信息节点。
+
+    逐项目与 build_sync_preview 走同一套匹配，然后把 fill + overwrite 逐条落到
+    info_node_service.set_value（值 + 历史同一事务，来源记在 change_reason）——
+    与单项目同步、文件导入是同一条落库路径，节点定义一概不动（不建也不删）。
+
+    项目管理里一行都还没有值的情况（台账列全空、或值与节点现值全一致）不算失败，
+    计入 project_no_change；项目还没有信息节点这类业务性跳过记 project_skipped。
+    单个项目出错不中断整批：写完的项目照常保留（每个值各自提交），失败的记进 failures，
+    用户可以再点一次——第二次只会写还没对上/仍不一致的部分，天然幂等。
+
+    返回汇总（前端据此拼提示文案）：
+      project_total / project_written / project_no_change / project_skipped / project_failed
+      filled / overwritten / unmatched / failures / duration_ms
+    """
+    from app.modules.admin.models_das.models import Project
+    from app.modules.admin.services.info_node_service import SessionLocal, info_node_service
+
+    started = time.monotonic()
+    db = SessionLocal()
+    try:
+        rows = db.query(Project.id, Project.name).order_by(Project.id).all()
+    finally:
+        db.close()
+
+    filled = overwritten = unmatched = 0
+    written = no_change = skipped = 0
+    failures: List[Dict[str, str]] = []
+
+    for project_id, project_name in rows:
+        pid = str(project_id)
+        try:
+            preview = build_sync_preview(pid)
+        except ValueError:
+            # 项目还没有信息节点（单项目同步同样是 400）：跳过它，不算失败
+            skipped += 1
+            continue
+        except Exception as exc:  # noqa: BLE001 —— 单个项目的问题不该让整批停摆
+            failures.append({
+                "project_id": pid,
+                "project_name": project_name or "",
+                "reason": str(exc) or exc.__class__.__name__,
+            })
+            continue
+
+        unmatched += len(preview["unmatched"])
+        rows_to_write = list(preview["fill"]) + list(preview["overwrite"])
+        if not rows_to_write:
+            no_change += 1
+            continue
+
+        project_failed = False
+        for bucket in ("fill", "overwrite"):
+            for row in preview[bucket]:
+                try:
+                    info_node_service.set_value(
+                        pid, row["node_id"], row["value"],
+                        operator=operator, operator_name=operator_name,
+                        change_reason=IMPORT_ALL_CHANGE_REASON,
+                    )
+                except Exception as exc:  # noqa: BLE001 —— 记下这个项目，继续跑下一个
+                    project_failed = True
+                    failures.append({
+                        "project_id": pid,
+                        "project_name": project_name or "",
+                        "reason": f"{row.get('path') or row.get('title') or row['node_id']}："
+                                  f"{str(exc) or exc.__class__.__name__}",
+                    })
+                    break
+                if bucket == "fill":
+                    filled += 1
+                else:
+                    overwritten += 1
+            if project_failed:
+                break
+
+        if project_failed:
+            continue
+        written += 1
+
+    failed_projects = len({item["project_id"] for item in failures})
+    return {
+        "project_total": len(rows),
+        "project_written": written,
+        "project_no_change": no_change,
+        "project_skipped": skipped,
+        "project_failed": failed_projects,
+        "filled": filled,
+        "overwritten": overwritten,
+        "unmatched": unmatched,
+        "failures": failures[:MAX_FAILURE_DETAILS],
+        "duration_ms": int((time.monotonic() - started) * 1000),
     }

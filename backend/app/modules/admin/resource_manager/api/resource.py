@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, 
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
+from app.core.config import settings
 from app.core.database import get_async_db as get_db
 from app.modules.admin.resource_manager.schemas.resource import SyncBuildDeployRequest, ResourceResponse, ResourceUpdate, ResourceStats
 from app.modules.admin.resource_manager.services.resource_service import ResourceService
@@ -334,7 +335,7 @@ async def proxy_download_resource(
 @router.get("/{resource_id}/download-url")
 async def get_resource_download_url(
     resource_id: int,
-    expires_minutes: int = Query(3, ge=1, le=10080, description="URL有效期（分钟），默认3分钟，最大10080分钟（7天）"),
+    expires_minutes: int = Query(settings.RESOURCE_DOWNLOAD_URL_EXPIRES_MINUTES, ge=1, le=10080, description="URL有效期（分钟），默认读取 .env RESOURCE_DOWNLOAD_URL_EXPIRES_MINUTES，最大10080分钟（7天）"),
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):

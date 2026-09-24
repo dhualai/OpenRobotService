@@ -14,7 +14,7 @@ import enum
 
 from sqlalchemy import (
     Column, Integer, String, DateTime, Text, Enum as SQLEnum,
-    BigInteger, Boolean, JSON, ForeignKey, desc, UniqueConstraint,
+    BigInteger, Boolean, JSON, ForeignKey, desc, UniqueConstraint, text,
 )
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.sql import func
@@ -444,7 +444,11 @@ class SystemConfig(Base):
     config_key = Column(String(100), nullable=False, unique=True, index=True, comment="配置键")
     config_value = Column(String(500), nullable=False, comment="配置值（字符串，bool 用 0/1）")
     description = Column(String(255), nullable=True, comment="配置说明")
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(),
+    # 注意：默认值必须用 CURRENT_TIMESTAMP，不能用 func.now()。
+    # SQLAlchemy 检测到 MySQL >= 8.0.13 时会把 func.now() 渲染成带括号的表达式默认值
+    # DEFAULT (now())，而 MySQL 8.0.13 对含表达式默认值的表执行 ALTER（如 CREATE INDEX）
+    # 会报 1067 Invalid default value，导致 create_all 建表后建索引失败。
+    updated_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now(),
                         nullable=False, comment="更新时间")
 
     def __repr__(self):

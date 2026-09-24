@@ -5,11 +5,15 @@
 与单字值都不认）、分组指位（同名分组 / 台账列名是分组名去限定词）、
 未匹配条目的归属建议与备注（同名分组 / 同名但装不下 / 包含关系相近 / 相近的是分组 /
 都给不出），以及 build_sync_preview 的三组分桶与元信息（打桩本地上下文）。
+2026-09-22 起还覆盖「一键导入全部项目」（import_all_projects）：写入口径（只落将填写 +
+将覆盖）、跳过/失败的分桶与「单个项目失败不中断整批」。
 """
 import json
 from types import SimpleNamespace
 
 from app.modules.admin.services import info_node_ledger_sync_service as sync_service
+from app.modules.admin.services import info_node_service as node_service_module
+from app.modules.admin.services.info_node_service import info_node_service as node_service
 
 
 def _tree():
@@ -395,3 +399,146 @@ def test_build_sync_preview_rejects_project_without_nodes():
             raise AssertionError("空树项目应当报 ValueError（接口层 400）")
     finally:
         _restore(original)
+
+
+# —— 一键导入（全部项目）：只落「将填写 + 将覆盖」，不建节点 ——
+
+def _preview(fill=None, overwrite=None, unmatched=None):
+    return {"fill": fill or [], "overwrite": overwrite or [], "unmatched": unmatched or []}
+
+
+def _preview_row(node_id, title, value, content_type="text"):
+    return {"node_id": node_id, "path": f"基础信息 / {title}", "title": title,
+            "content_type": content_type, "current": "", "value": value}
+
+
+def _stub_projects(rows):
+    """把批量导入要用的 SessionLocal 换成假会话：只需要 query(...).order_by(...).all()。"""
+    class _Query:
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return rows
+
+    class _Session:
+        def query(self, *_args, **_kwargs):
+            return _Query()
+
+        def close(self):
+            pass
+
+    node_service_module.SessionLocal = lambda: _Session()
+
+
+def _stub_batch(previews, set_value):
+    """打桩 build_sync_preview（按项目号给预览或抛异常）与 info_node_service.set_value。"""
+    def fake_preview(project_id):
+        result = previews[project_id]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    sync_service.build_sync_preview = fake_preview
+    node_service.set_value = set_value
+
+
+def _restore_batch(original_preview, original_set_value, original_session):
+    sync_service.build_sync_preview = original_preview
+    node_service.set_value = original_set_value
+    node_service_module.SessionLocal = original_session
+
+
+def test_import_all_projects_writes_fill_and_overwrite_with_reason():
+    """两类都写：将填写在前、将覆盖在后；每个值都带 change_reason 与操作人。"""
+    calls = []
+    previews = {
+        "1": _preview(fill=[_preview_row("n1", "项目编号", "69")],
+                      overwrite=[_preview_row("n2", "实施", "赵六")],
+                      unmatched=[{"title": "项目类型"}, {"title": "总车数"}]),
+        "2": _preview(),                      # 台账值与节点现值全一致：跑过但不用写
+    }
+    originals = (sync_service.build_sync_preview, node_service.set_value, node_service_module.SessionLocal)
+    try:
+        _stub_projects([("1", "项目一"), ("2", "项目二")])
+        _stub_batch(previews, lambda project_id, node_id, value, operator=None,
+                    operator_name=None, change_reason=None:
+                    calls.append((project_id, node_id, value, change_reason, operator, operator_name)))
+        summary = sync_service.import_all_projects(operator="admin", operator_name="管理员")
+    finally:
+        _restore_batch(*originals)
+
+    assert calls == [
+        ("1", "n1", "69", sync_service.IMPORT_ALL_CHANGE_REASON, "admin", "管理员"),
+        ("1", "n2", "赵六", sync_service.IMPORT_ALL_CHANGE_REASON, "admin", "管理员"),
+    ]
+    assert summary["project_total"] == 2 and summary["project_written"] == 1
+    assert summary["project_no_change"] == 1 and summary["project_skipped"] == 0
+    assert (summary["filled"], summary["overwritten"]) == (1, 1)
+    # 未匹配只计数、不落库（要用户去详情模板补字段，而不是就地造节点）
+    assert summary["unmatched"] == 2
+    assert summary["project_failed"] == 0 and summary["failures"] == []
+
+
+def test_import_all_projects_skips_project_without_nodes():
+    """还没有信息节点的项目算「跳过」而不是失败（与单项目同步的 400 同一情形）。"""
+    originals = (sync_service.build_sync_preview, node_service.set_value, node_service_module.SessionLocal)
+    try:
+        _stub_projects([("1", "空树项目")])
+        _stub_batch({"1": ValueError("该项目还没有信息节点，请先在编辑页新建节点后再同步")},
+                    lambda *a, **k: (_ for _ in ()).throw(AssertionError("跳过就不该写值")))
+        summary = sync_service.import_all_projects()
+    finally:
+        _restore_batch(*originals)
+
+    assert summary["project_skipped"] == 1
+    assert summary["project_failed"] == 0 and summary["failures"] == []
+    assert summary["project_written"] == 0 and summary["filled"] == 0
+
+
+def test_import_all_projects_records_failure_and_keeps_going():
+    """单个项目写不进去不中断整批：失败记明细，后面的项目照写。"""
+    written = []
+    previews = {
+        "1": _preview(fill=[_preview_row("n1", "销售", "张三")]),
+        "2": _preview(fill=[_preview_row("n2", "销售", "李四")]),
+        "3": _preview(fill=[_preview_row("n3", "销售", "王五")]),
+    }
+
+    def fake_set_value(project_id, node_id, value, **_kwargs):
+        if project_id == "2":
+            raise PermissionError("该节点属于其它项目，不能写入本项目")
+        written.append((project_id, node_id))
+
+    originals = (sync_service.build_sync_preview, node_service.set_value, node_service_module.SessionLocal)
+    try:
+        _stub_projects([("1", "项目一"), ("2", "项目二"), ("3", "项目三")])
+        _stub_batch(previews, fake_set_value)
+        summary = sync_service.import_all_projects()
+    finally:
+        _restore_batch(*originals)
+
+    assert written == [("1", "n1"), ("3", "n3")]
+    assert summary["project_failed"] == 1
+    assert summary["project_written"] == 2        # 失败的那个不算「已写入」
+    assert summary["filled"] == 2
+    assert [item["project_id"] for item in summary["failures"]] == ["2"]
+    assert "基础信息 / 销售" in summary["failures"][0]["reason"]
+    assert "不能写入本项目" in summary["failures"][0]["reason"]
+
+
+def test_import_all_projects_records_project_level_failure():
+    """连预览都跑不了的项目（如项目行在、树读挂了）同样只记这一条，不影响别人。"""
+    originals = (sync_service.build_sync_preview, node_service.set_value, node_service_module.SessionLocal)
+    try:
+        _stub_projects([("1", "项目一"), ("2", "项目二")])
+        _stub_batch({"1": RuntimeError("数据库连接中断"),
+                     "2": _preview(fill=[_preview_row("n2", "销售", "李四")])},
+                    lambda *a, **k: None)
+        summary = sync_service.import_all_projects()
+    finally:
+        _restore_batch(*originals)
+
+    assert summary["project_failed"] == 1 and summary["project_written"] == 1
+    assert summary["failures"][0]["project_name"] == "项目一"
+    assert "数据库连接中断" in summary["failures"][0]["reason"]
