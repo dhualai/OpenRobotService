@@ -1,0 +1,560 @@
+name: Deploy (split build/deploy)
+
+# 分离式构建部署：把「构建」和「部署」拆到两类 runner 上。
+#
+#   build  job —— GitHub 托管 runner（ubuntu-latest）
+#                 只做「构建 + 打包组件 tar + 写 BUILD_META.json + 上传 artifact」，
+#                 不持有任何服务器凭据、不连接服务器。
+#   deploy job —— 服务器上的自托管 runner（runs-on: [self-hosted, ors-verify]）
+#                 下载 artifact → 本机展开 → 备份 / 覆盖 / 重启 / 健康检查 / 失败回滚。
+#
+# 为什么这样拆：
+#   1. 服务器到 github.com 的 git smart HTTP 实测不通，自托管 runner 跑不了
+#      actions/checkout，所以源码只能以「构建产物」形式经 artifact 过去；
+#   2. 托管 runner 出口是动态公网 IP，直连服务器会在 auth.log 留异地登录记录，
+#      改为自托管后服务器侧零入站连接、零异地登录。
+#
+# 部署脚本仍是同一份 deploy/deploy.py：build job 用 --build-artifacts 生产产物，
+# deploy job 用 --from-artifacts 消费产物，两侧共用同一套打包定义，不会漂移。
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "目标环境（prod 为生产，需填写确认词）"
+        type: choice
+        required: true
+        default: test
+        options: [test, prod]
+      action:
+        description: "deploy=部署；rollback=回滚到指定备份"
+        type: choice
+        required: true
+        default: deploy
+        options: [deploy, rollback]
+      components:
+        description: "部署组件"
+        type: choice
+        required: true
+        default: all
+        options: [all, frontend, backend, ai]
+      backup_id:
+        description: "回滚目标备份 id（action=rollback 时必填，可填 latest）"
+        type: string
+        required: false
+        default: ""
+      git_ref:
+        description: "代码分支（留空则 test→test、prod→dev）"
+        type: string
+        required: false
+        default: ""
+      skip_gate:
+        description: "紧急跳过测试门禁（会在日志中显著标注）"
+        type: boolean
+        required: true
+        default: false
+      confirm:
+        description: "生产确认词：environment=prod 时必须精确填写 DEPLOY-PROD"
+        type: string
+        required: false
+        default: ""
+  # 验证期：推送到该分支即触发一次完整流程（构建 → artifact → 自托管部署）。
+  # 刻意不含 pull_request，避免外部 PR 打到自托管 runner 上执行任意代码。
+  push:
+    branches: ["chore-cicd-split-deploy-verify"]
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - "ai/**"
+      - "deploy/**"
+      - ".github/workflows/deploy-split.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+# 同一环境串行执行且不自动取消，避免两次发布互相覆盖
+concurrency:
+  group: split-deploy-${{ inputs.environment || 'test' }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  # 服务器 /tmp 不可写，统一用家目录 ~/tmp 做暂存（自托管 runner 上展开为 $HOME/tmp）
+  DEPLOY_REMOTE_TMP: ${{ vars.DEPLOY_REMOTE_TMP || '~/tmp' }}
+  # 自托管 runner 上缓存的部署脚本（rollback 场景没有 artifact 可下载，用这份）
+  SELF_HOSTED_DIR: ${{ vars.DEPLOY_SELF_HOSTED_DIR || '~/ors-ci' }}
+
+jobs:
+  # ---------------- 输入校验与参数解析 ----------------
+  plan:
+    name: Resolve plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+      action: ${{ steps.resolve.outputs.action }}
+      components: ${{ steps.resolve.outputs.components }}
+      git_ref: ${{ steps.resolve.outputs.git_ref }}
+      git_sha: ${{ steps.resolve.outputs.git_sha }}
+      skip_gate: ${{ steps.resolve.outputs.skip_gate }}
+      health_urls: ${{ steps.resolve.outputs.health_urls }}
+      backup_keep: ${{ steps.resolve.outputs.backup_keep }}
+      artifact_name: ${{ steps.resolve.outputs.artifact_name }}
+      backup_id: ${{ steps.resolve.outputs.backup_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate and resolve
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_REF: ${{ github.ref_name }}
+          IN_ENV: ${{ inputs.environment }}
+          IN_ACTION: ${{ inputs.action }}
+          IN_COMPONENTS: ${{ inputs.components }}
+          IN_REF: ${{ inputs.git_ref }}
+          IN_CONFIRM: ${{ inputs.confirm }}
+          IN_SKIP_GATE: ${{ inputs.skip_gate }}
+          IN_BACKUP_ID: ${{ inputs.backup_id }}
+          # 验证迭代期可把该仓库变量置 true 临时跳过门禁（默认不跳过）
+          FAST_GATE_SKIP: ${{ vars.SPLIT_DEPLOY_FAST }}
+          HEALTH_TEST: ${{ vars.DEPLOY_TEST_HEALTH_URLS }}
+          HEALTH_PROD: ${{ vars.DEPLOY_PROD_HEALTH_URLS }}
+          BACKUP_KEEP: ${{ vars.DEPLOY_BACKUP_KEEP }}
+        run: |
+          set -euo pipefail
+
+          env_name="${IN_ENV:-test}"
+          action="${IN_ACTION:-deploy}"
+          components="${IN_COMPONENTS:-all}"
+
+          case "$env_name" in
+            test|prod) ;;
+            *) echo "::error::environment 只能是 test 或 prod（收到 '$env_name'）"; exit 1 ;;
+          esac
+          case "$action" in
+            deploy|rollback) ;;
+            *) echo "::error::action 只能是 deploy 或 rollback（收到 '$action'）"; exit 1 ;;
+          esac
+          case "$components" in
+            all|frontend|backend|ai) ;;
+            *) echo "::error::components 非法（收到 '$components'）"; exit 1 ;;
+          esac
+
+          # 生产二次确认：确认词不符直接拦在门禁之前
+          if [ "$env_name" = "prod" ] && [ "$IN_CONFIRM" != "DEPLOY-PROD" ]; then
+            echo "::error::生产部署需在 confirm 输入框精确填写 DEPLOY-PROD"
+            exit 1
+          fi
+
+          # 代码分支：推送事件用被推的分支，手动触发用输入值（留空则按环境取默认）
+          ref="$IN_REF"
+          if [ "$EVENT" = "push" ]; then
+            ref="$PUSH_REF"
+          elif [ -z "$ref" ]; then
+            if [ "$env_name" = "prod" ]; then ref="dev"; else ref="test"; fi
+          fi
+
+          # 安全：只允许部署「本仓库已存在的分支」，阻断 owner:branch 等跨仓库 ref，
+          # 否则触发者能把 fork 上的任意代码当作待部署代码。
+          case "$ref" in
+            *:*) echo "::error::git_ref 不允许包含 ':'（该形式指向其他仓库的分支）"; exit 1 ;;
+            [!A-Za-z0-9]*|*[!A-Za-z0-9._/-]*)
+              echo "::error::git_ref 含非法字符，仅允许字母/数字/. _ / -，且需以字母或数字开头"; exit 1 ;;
+          esac
+          if ! git ls-remote --exit-code --heads origin "$ref" >/dev/null 2>&1; then
+            echo "::error::git_ref=$ref 不是本仓库的既有分支，已拒绝部署本仓库之外的代码"
+            exit 1
+          fi
+          sha=$(git ls-remote origin "refs/heads/$ref" | cut -f1)
+          if [ -z "$sha" ]; then echo "::error::无法解析分支 $ref 的提交号"; exit 1; fi
+
+          # 回滚必须指定备份 id，否则 deploy.py 无从下手
+          backup_id="$IN_BACKUP_ID"
+          if [ "$action" = "rollback" ] && [ -z "$backup_id" ]; then
+            echo "::error::action=rollback 时必须填写 backup_id（可填 latest）"; exit 1
+          fi
+
+          # 测试门禁：手动触发看输入；推送事件默认跑，仅当仓库变量 SPLIT_DEPLOY_FAST=true 时跳过
+          skip_gate="false"
+          if [ "$EVENT" = "push" ]; then
+            if [ "$FAST_GATE_SKIP" = "true" ]; then skip_gate="true"; fi
+          elif [ "$IN_SKIP_GATE" = "true" ]; then
+            skip_gate="true"
+          fi
+
+          # 健康检查地址（由服务器本机 curl 探测）。
+          # test 算法服务是 9401；9411 属于另一个服务 controlled-ai-api，勿混用。
+          if [ "$env_name" = "test" ]; then
+            health="${HEALTH_TEST:-http://127.0.0.1:9400/api/health,http://127.0.0.1:9401/health,https://usp.ep-zl.com/t/app/}"
+          else
+            health="${HEALTH_PROD:-http://127.0.0.1:8400/api/health,http://127.0.0.1:8401/health,https://usp.ep-zl.com/p/app/}"
+          fi
+
+          {
+            echo "environment=$env_name"
+            echo "action=$action"
+            echo "components=$components"
+            echo "git_ref=$ref"
+            echo "git_sha=$sha"
+            echo "skip_gate=$skip_gate"
+            echo "health_urls=$health"
+            echo "backup_keep=${BACKUP_KEEP:-10}"
+            echo "artifact_name=split-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "backup_id=$backup_id"
+          } >> "$GITHUB_OUTPUT"
+
+          gate_label="启用"
+          if [ "$skip_gate" = "true" ]; then gate_label="**已跳过（紧急）**"; fi
+          {
+            echo "### 部署计划"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 环境 | \`$env_name\` |"
+            echo "| 动作 | \`$action\` |"
+            echo "| 组件 | \`$components\` |"
+            echo "| 分支 | \`$ref\` |"
+            echo "| 提交 | \`${sha:0:8}\` |"
+            echo "| 测试门禁 | $gate_label |"
+            if [ "$action" = "rollback" ]; then echo "| 回滚目标 | \`$backup_id\` |"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------- 测试门禁（托管 runner） ----------------
+  gate:
+    name: Test gate (pytest + vitest)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' && needs.plan.outputs.skip_gate != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_ref }}
+
+      # 分支尚未包含流水线改动时给出明确指引，避免出现难以理解的参数报错
+      - name: Verify deploy script supports CI flags
+        env:
+          GIT_REF: ${{ needs.plan.outputs.git_ref }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for flag in --yes --remote-tmp --backup-keep --health-urls --rollback \
+                      --list-backups --build-artifacts --from-artifacts; do
+            grep -q -- "$flag" deploy/deploy.py || missing="$missing $flag"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::分支 $GIT_REF 的 deploy/deploy.py 缺少流水线所需参数：$missing"
+            exit 1
+          fi
+          echo "deploy/deploy.py 参数就绪"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Backend tests (pytest)
+        if: ${{ needs.plan.outputs.components == 'all' || needs.plan.outputs.components == 'backend' }}
+        working-directory: backend
+        env:
+          CI: "true"
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-test.txt
+          pytest --ignore=tests/tasks -q
+
+      - name: Frontend tests (vitest)
+        if: ${{ needs.plan.outputs.components == 'all' || needs.plan.outputs.components == 'frontend' }}
+        env:
+          CI: "true"
+        run: |
+          set -euo pipefail
+          npm ci --prefix frontend
+          npm run test --prefix frontend
+
+      - name: AI component notice
+        if: ${{ needs.plan.outputs.components == 'ai' }}
+        run: echo "::notice::AI 组件无自动门禁（ai/tests 依赖外部服务），本次跳过测试，请确认已人工验证"
+
+  # ---------------- 构建 + 上传 artifact（托管 runner） ----------------
+  build:
+    name: Build artifacts (hosted)
+    needs: [plan, gate]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' && (needs.plan.outputs.skip_gate == 'true' || needs.gate.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        if: ${{ needs.plan.outputs.components == 'all' || needs.plan.outputs.components == 'frontend' }}
+        run: npm ci --prefix frontend
+
+      - name: Build components
+        env:
+          ENV_NAME: ${{ needs.plan.outputs.environment }}
+          COMPONENTS: ${{ needs.plan.outputs.components }}
+          GIT_REF: ${{ needs.plan.outputs.git_ref }}
+          GIT_SHA: ${{ needs.plan.outputs.git_sha }}
+        run: |
+          set -euo pipefail
+          python deploy/deploy.py --build-artifacts _artifacts \
+            -e "$ENV_NAME" -c "$COMPONENTS" \
+            --git-ref "$GIT_REF" --git-commit "$GIT_SHA"
+          # 部署脚本随产物一起过去：自托管 runner 无法 checkout 源码。
+          # 只带运行时真正需要的两个脚本——deploy/ 下的 OpenRobotDeploy.exe 是
+          # 12MB 的 Windows 打包二进制，带上只会白白拖慢 artifact 下载。
+          mkdir -p _artifacts/deploy
+          cp deploy/deploy.py deploy/notify.py _artifacts/deploy/
+          ls -lh _artifacts
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.artifact_name }}
+          path: _artifacts
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### 构建产物"
+            echo ""
+            echo "artifact：\`${{ needs.plan.outputs.artifact_name }}\`"
+            echo ""
+            echo '```json'
+            python -c "import json;print(json.dumps(json.load(open('_artifacts/BUILD_META.json')),ensure_ascii=False,indent=2))" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------- 下载 artifact + 本机部署（自托管 runner） ----------------
+  deploy:
+    name: Deploy (self-hosted)
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.action == 'deploy' }}
+    runs-on: [self-hosted, ors-verify]
+    timeout-minutes: 30
+    steps:
+      # 自托管 runner 的 workspace 不会在两次运行之间清空，download-artifact
+      # 也只覆盖同名文件。残留的上一次 tar 会被 --from-artifacts 一起展开，
+      # 等于把旧代码混进本次部署，必须先清干净。
+      - name: Clean stale artifacts
+        run: |
+          set -euo pipefail
+          rm -rf _artifacts
+          echo "已清空 _artifacts"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.artifact_name }}
+          path: _artifacts
+
+      # upload-artifact 对「单个目录」是否保留目录名在不同版本间有过差异，
+      # 这里统一归一化，避免 _artifacts/_artifacts/... 之类的嵌套导致后续路径找不到
+      - name: Normalize artifact layout
+        run: |
+          set -euo pipefail
+          if [ -f _artifacts/_artifacts/BUILD_META.json ]; then
+            mv _artifacts/_artifacts _artifacts.norm
+            rm -rf _artifacts
+            mv _artifacts.norm _artifacts
+          fi
+          test -f _artifacts/BUILD_META.json
+          ls -lh _artifacts
+
+      - name: Show BUILD_META
+        run: |
+          set -euo pipefail
+          cat _artifacts/BUILD_META.json
+
+      # 把部署脚本留一份在 runner 上：回滚时没有 artifact 可下载，用这份
+      - name: Cache deploy scripts on runner
+        run: |
+          set -euo pipefail
+          dest="${SELF_HOSTED_DIR/#\~/$HOME}"
+          mkdir -p "$dest"
+          rm -rf "$dest/deploy"
+          cp -r _artifacts/deploy "$dest/deploy"
+          echo "已缓存部署脚本：$dest/deploy"
+
+      - name: Apply deployment
+        env:
+          ENV_NAME: ${{ needs.plan.outputs.environment }}
+          COMPONENTS: ${{ needs.plan.outputs.components }}
+          GIT_SHA: ${{ needs.plan.outputs.git_sha }}
+          BACKUP_KEEP: ${{ needs.plan.outputs.backup_keep }}
+          HEALTH_URLS: ${{ needs.plan.outputs.health_urls }}
+        run: |
+          set -o pipefail
+          python3 _artifacts/deploy/deploy.py \
+            --from-artifacts _artifacts \
+            -e "$ENV_NAME" -c "$COMPONENTS" \
+            --remote-tmp "$DEPLOY_REMOTE_TMP" \
+            --yes --no-sudo \
+            --git-commit "$GIT_SHA" \
+            --backup-keep "$BACKUP_KEEP" \
+            --health-urls "$HEALTH_URLS" \
+            --health-retries 20 \
+            --health-interval 3 2>&1 | tee deploy.log
+          rc=$?
+          backup_id=$(grep -oE 'DEPLOY_BACKUP_ID=[0-9a-z-]+' deploy.log | tail -n1 | cut -d= -f2 || true)
+          auto_rollback="no"
+          if grep -q "已自动回滚" deploy.log; then auto_rollback="yes"; fi
+          {
+            echo "DEPLOY_BACKUP_ID=$backup_id"
+            echo "DEPLOY_AUTO_ROLLBACK=$auto_rollback"
+          } >> "$GITHUB_ENV"
+          exit "$rc"
+
+      - name: Summary
+        if: always()
+        env:
+          ENV_NAME: ${{ needs.plan.outputs.environment }}
+          COMPONENTS: ${{ needs.plan.outputs.components }}
+          GIT_REF: ${{ needs.plan.outputs.git_ref }}
+          COMMIT_SHA: ${{ needs.plan.outputs.git_sha }}
+          SKIP_GATE: ${{ needs.plan.outputs.skip_gate }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -uo pipefail
+          backup_id="${DEPLOY_BACKUP_ID:-（无）}"
+          auto_rollback="${DEPLOY_AUTO_ROLLBACK:-no}"
+          gate_label="已通过"
+          if [ "$SKIP_GATE" = "true" ]; then gate_label="**已跳过（紧急）**"; fi
+          rollback_label="否"
+          if [ "$auto_rollback" = "yes" ]; then rollback_label="**是（健康检查未通过，已回滚）**"; fi
+          {
+            echo "### 部署结果：$JOB_STATUS"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 执行主机 | \`$(hostname)\` |"
+            echo "| 环境 | \`$ENV_NAME\` |"
+            echo "| 组件 | \`$COMPONENTS\` |"
+            echo "| 分支 | \`$GIT_REF\` @ \`${COMMIT_SHA:0:8}\` |"
+            echo "| 测试门禁 | $gate_label |"
+            echo "| 部署前备份 | \`$backup_id\` |"
+            echo "| 自动回滚 | $rollback_label |"
+            echo ""
+            echo "需要回滚时：Actions → Deploy (split build/deploy) → action=rollback"
+            echo "（备份 id 填 \`${backup_id}\` 或 \`latest\`）"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 日志上传是辅助能力（走 GitHub 的 artifact 服务），失败不改变部署结论
+      - name: Upload deploy logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-log-${{ needs.plan.outputs.environment }}-${{ github.run_id }}
+          path: deploy.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Notify
+        if: always()
+        env:
+          NOTIFY_WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK }}
+          NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
+          NOTIFY_PROVIDER: ${{ vars.NOTIFY_PROVIDER || 'wecom' }}
+          NOTIFY_STATUS: ${{ job.status }}
+          NOTIFY_TITLE: 部署
+          ENV_NAME: ${{ needs.plan.outputs.environment }}
+          COMPONENTS: ${{ needs.plan.outputs.components }}
+          GIT_REF: ${{ needs.plan.outputs.git_ref }}
+          COMMIT_SHA: ${{ needs.plan.outputs.git_sha }}
+          SKIP_GATE: ${{ needs.plan.outputs.skip_gate }}
+          AUTO_ROLLBACK: ${{ env.DEPLOY_AUTO_ROLLBACK }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 _artifacts/deploy/notify.py
+
+  # ---------------- 回滚（自托管 runner，复用上次缓存的部署脚本） ----------------
+  rollback:
+    name: Rollback (self-hosted)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'rollback' }}
+    runs-on: [self-hosted, ors-verify]
+    timeout-minutes: 20
+    env:
+      ENV_NAME: ${{ needs.plan.outputs.environment }}
+      BACKUP_ID: ${{ needs.plan.outputs.backup_id }}
+      HEALTH_URLS: ${{ needs.plan.outputs.health_urls }}
+    steps:
+      - name: Locate cached deploy script
+        id: locate
+        run: |
+          set -euo pipefail
+          dest="${SELF_HOSTED_DIR/#\~/$HOME}"
+          if [ ! -f "$dest/deploy/deploy.py" ]; then
+            echo "::error::runner 上尚无部署脚本（$dest/deploy/deploy.py）：请先成功跑一次 deploy。"
+            exit 1
+          fi
+          echo "script=$dest/deploy/deploy.py" >> "$GITHUB_OUTPUT"
+
+      - name: Rollback to backup
+        run: |
+          set -o pipefail
+          python3 "${{ steps.locate.outputs.script }}" \
+            --rollback "$BACKUP_ID" \
+            -e "$ENV_NAME" \
+            --local \
+            --remote-tmp "$DEPLOY_REMOTE_TMP" \
+            --yes --no-sudo \
+            --health-urls "$HEALTH_URLS" \
+            --health-retries 20 \
+            --health-interval 3 2>&1 | tee rollback.log
+          rc=$?
+          exit "$rc"
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "### 回滚结果：$JOB_STATUS"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 执行主机 | \`$(hostname)\` |"
+            echo "| 环境 | \`$ENV_NAME\` |"
+            echo "| 回滚目标 | \`$BACKUP_ID\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload rollback logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-log-${{ needs.plan.outputs.environment }}-${{ github.run_id }}
+          path: rollback.log
+          if-no-files-found: ignore
+          retention-days: 30
+
