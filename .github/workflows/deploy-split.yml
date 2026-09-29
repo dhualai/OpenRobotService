@@ -98,6 +98,7 @@ jobs:
       components: ${{ steps.resolve.outputs.components }}
       git_ref: ${{ steps.resolve.outputs.git_ref }}
       git_sha: ${{ steps.resolve.outputs.git_sha }}
+      commit_msg: ${{ steps.resolve.outputs.commit_msg }}
       skip_gate: ${{ steps.resolve.outputs.skip_gate }}
       health_urls: ${{ steps.resolve.outputs.health_urls }}
       backup_keep: ${{ steps.resolve.outputs.backup_keep }}
@@ -173,6 +174,12 @@ jobs:
           sha=$(git ls-remote origin "refs/heads/$ref" | cut -f1)
           if [ -z "$sha" ]; then echo "::error::无法解析分支 $ref 的提交号"; exit 1; fi
 
+          # 提交标题随通知推送，群里一眼看出这次发了什么；拿不到不阻断部署
+          commit_msg=""
+          if git fetch --depth 1 -q origin "refs/heads/$ref" >/dev/null 2>&1; then
+            commit_msg=$(git log -1 --format=%s FETCH_HEAD 2>/dev/null || true)
+          fi
+
           # 回滚必须指定备份 id，否则 deploy.py 无从下手
           backup_id="$IN_BACKUP_ID"
           if [ "$action" = "rollback" ] && [ -z "$backup_id" ]; then
@@ -201,6 +208,7 @@ jobs:
             echo "components=$components"
             echo "git_ref=$ref"
             echo "git_sha=$sha"
+            echo "commit_msg=$commit_msg"
             echo "skip_gate=$skip_gate"
             echo "health_urls=$health"
             echo "backup_keep=${BACKUP_KEEP:-10}"
@@ -359,6 +367,7 @@ jobs:
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.action == 'deploy' }}
     runs-on: [self-hosted, ors-verify]
     timeout-minutes: 30
+    environment: ${{ needs.plan.outputs.environment }}
     steps:
       # 自托管 runner 的 workspace 不会在两次运行之间清空，download-artifact
       # 也只覆盖同名文件。残留的上一次 tar 会被 --from-artifacts 一起展开，
@@ -366,10 +375,63 @@ jobs:
       - name: Clean stale artifacts
         run: |
           set -euo pipefail
-          rm -rf _artifacts
+          rm -rf _artifacts _artifact.zip _artifact.part*
           echo "已清空 _artifacts"
 
-      - name: Download artifacts
+      # 多连接分片下载：服务器→artifact 存储（Azure blob）的国际链路单连接被 BDP
+      # 卡在 ~50KB/s，实测 8 连接可到 ~154KB/s（约 3 倍）。这里用 github.token 取
+      # artifact 的签名 URL，再 curl -r 并行分片拉回并解压。
+      # 失败不阻断部署：下一步用官方 action 兜底。
+      - name: Download artifacts (multi-connection)
+        id: mconn
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ needs.plan.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts"
+          body=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$api")
+          aid=$(printf '%s' "$body" | jq -r --arg n "$ARTIFACT_NAME" '.artifacts[] | select(.name==$n) | .id' | head -1)
+          size=$(printf '%s' "$body" | jq -r --arg n "$ARTIFACT_NAME" '.artifacts[] | select(.name==$n) | .size_in_bytes' | head -1)
+          case "$aid" in ''|null) echo "::error::找不到产物 $ARTIFACT_NAME"; exit 1;; esac
+          case "$size" in ''|null) echo "::error::取不到产物大小"; exit 1;; esac
+          url=$(curl -sS -o /dev/null -D - -H "Authorization: Bearer $GH_TOKEN" \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$aid/zip" \
+                | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')
+          test -n "$url" || { echo "::error::拿不到签名下载 URL"; exit 1; }
+          echo "artifact id=$aid size=${size}B"
+
+          N=8
+          chunk=$(( (size + N - 1) / N ))
+          t0=$(date +%s)
+          i=0
+          while [ "$i" -lt "$N" ]; do
+            from=$(( i * chunk ))
+            to=$(( from + chunk - 1 ))
+            [ "$to" -ge "$size" ] && to=$(( size - 1 ))
+            if [ "$from" -le "$to" ]; then
+              curl -fsS --retry 3 --retry-delay 2 -r "$from-$to" \
+                -o "_artifact.part$(printf '%02d' "$i")" "$url" &
+            fi
+            i=$(( i + 1 ))
+          done
+          wait
+          cat _artifact.part* > _artifact.zip
+          rm -f _artifact.part*
+          got=$(wc -c < _artifact.zip | tr -d ' ')
+          t1=$(date +%s)
+          echo "多连接下载完成：${got}B / ${size}B，用时 $((t1 - t0))s"
+          [ "$got" = "$size" ] || { echo "::error::分片下载字节数不符"; exit 1; }
+          rm -rf _artifacts
+          mkdir -p _artifacts
+          unzip -q -o _artifact.zip -d _artifacts
+          rm -f _artifact.zip
+          ls -lh _artifacts
+
+      # 兜底：多连接步骤失败（接口变动 / 网络抖动）时退回官方 action
+      - name: Download artifacts (fallback)
+        if: ${{ steps.mconn.outcome == 'failure' }}
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.plan.outputs.artifact_name }}
@@ -483,8 +545,13 @@ jobs:
           NOTIFY_WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK }}
           NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
           NOTIFY_PROVIDER: ${{ vars.NOTIFY_PROVIDER || 'wecom' }}
+          NOTIFY_STYLE: ${{ vars.NOTIFY_STYLE || 'card' }}
           NOTIFY_STATUS: ${{ job.status }}
           NOTIFY_TITLE: 部署
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_MSG: ${{ needs.plan.outputs.commit_msg }}
+          RUN_STARTED_AT: ${{ github.run_started_at }}
+          HEALTH_URLS: ${{ needs.plan.outputs.health_urls }}
           ENV_NAME: ${{ needs.plan.outputs.environment }}
           COMPONENTS: ${{ needs.plan.outputs.components }}
           GIT_REF: ${{ needs.plan.outputs.git_ref }}
@@ -502,6 +569,7 @@ jobs:
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'rollback' }}
     runs-on: [self-hosted, ors-verify]
     timeout-minutes: 20
+    environment: ${{ needs.plan.outputs.environment }}
     env:
       ENV_NAME: ${{ needs.plan.outputs.environment }}
       BACKUP_ID: ${{ needs.plan.outputs.backup_id }}
@@ -557,4 +625,25 @@ jobs:
           path: rollback.log
           if-no-files-found: ignore
           retention-days: 30
+
+      - name: Notify
+        if: always()
+        env:
+          NOTIFY_WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK }}
+          NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
+          NOTIFY_PROVIDER: ${{ vars.NOTIFY_PROVIDER || 'wecom' }}
+          NOTIFY_STYLE: ${{ vars.NOTIFY_STYLE || 'card' }}
+          NOTIFY_STATUS: ${{ job.status }}
+          NOTIFY_TITLE: 回滚
+          ENV_NAME: ${{ needs.plan.outputs.environment }}
+          GIT_REF: ${{ needs.plan.outputs.git_ref }}
+          COMMIT_SHA: ${{ needs.plan.outputs.git_sha }}
+          COMMIT_MSG: ${{ needs.plan.outputs.commit_msg }}
+          BACKUP_ID: ${{ needs.plan.outputs.backup_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_STARTED_AT: ${{ github.run_started_at }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # 回滚场景没有 artifact，用 runner 上缓存的 notify.py（与 deploy.py 同目录）
+        run: python3 "$(dirname '${{ steps.locate.outputs.script }}')/notify.py"
 
