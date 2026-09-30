@@ -5434,6 +5434,11 @@ class AiDiagnosisPlatform:
                 return None
             clean.append(s)
         if not (2 <= len(clean) <= 3) or len(set(clean)) != len(clean):
+            # 整批丢弃必须留痕：选项没了，用户只会看到一句没按钮的空问题，
+            # 事后翻日志是唯一线索（分叉树节点最多 7 个分支，条数最容易越界）。
+            logger.info(f"[vehicle_mode] 车辆选项校验未过(条数={len(clean)}"
+                        f"{'/去重后变少' if len(set(clean)) != len(clean) else ''})"
+                        f"，整批丢弃: {clean}")
             return None
         return clean
 
@@ -5725,6 +5730,17 @@ class AiDiagnosisPlatform:
             # 与草稿守卫同理：挂着就回落主循环。
             _pending_proj_ask = bool(getattr(state, "project_candidates", None))
 
+            # 车型会话（XQE 试点）必须走主循环。车辆选项引导规则
+            # （_vehicle_mode_block）和出选项的唯一出口（主循环 JSON 顶层
+            # vehicle_choices → _validate_vehicle_choices → _finalize_diagnosis
+            # → result.vehicle_choices）都只挂在主循环上；单轮分支和工具循环
+            # 分支是纯文本流式，既拿不到那条规则也没有能携带选项的字段。一旦
+            # 落进去，模型只能把分叉树整个摊平在正文里（0930 实锤：卸货/放货
+            # 异常整张 A~G 表直出，前端一个气泡都拿不到）。与 _has_draft /
+            # _pending_proj_ask 守卫同理：缺协议的分支不进。
+            _in_vehicle_mode = bool(
+                (memory.metadata.get("vehicle_mode") or {}).get("model"))
+
             if _intent == "ticket":
                 # 提单意图 → 不需要知识库检索。
                 reference_docs = "（提单轮跳过检索）"
@@ -5774,7 +5790,9 @@ class AiDiagnosisPlatform:
                     _prefetch_decide.add_done_callback(_swallow_prefetch)
                     logger.info(f"[stream] decide 预跑已启动(与主LLM并行): "
                                 f"session={request.session_id}")
-            elif _intent == "diagnosis" and os.getenv("AI_DIAGNOSIS_TOOL_LOOP", "") == "1":
+            elif (_intent == "diagnosis"
+                  and os.getenv("AI_DIAGNOSIS_TOOL_LOOP", "") == "1"
+                  and not _in_vehicle_mode):
                 # 诊断意图 → 走诊断工具循环（search_kb + submit_ticket）。
                 # LLM 自主决定：查不查知识库、查什么、查几次，再生成回答；
                 # 也可顺势提单（submit_ticket 也在工具列表里）。
@@ -5792,7 +5810,8 @@ class AiDiagnosisPlatform:
                 # 项目题挂着未答同理（见 _pending_proj_ask 注释）：序号/名称回答
                 # 需要主协议还原，单轮分支没有候选也没有协议。
                 _has_draft = bool(memory.metadata.get("ticket_draft"))
-                if not _needs_kb and not _has_draft and not _pending_proj_ask:
+                if (not _needs_kb and not _has_draft and not _pending_proj_ask
+                        and not _in_vehicle_mode):
                     # 诊断但无需知识库（续接轮/通用对话）：单轮分支自带最近 8 轮对话
                     # + 省略式追问承接规则，靠上文即可作答，省下 rerank 等检索尾延。
                     # plan-execute 开时以规划器为准：它判了工具就执行（判无工具 → 空，
@@ -5809,10 +5828,20 @@ class AiDiagnosisPlatform:
                     return
                 # 诊断单轮：等资料（plan-execute=执行规划工具；否则并发检索）
                 # → 小 prompt 1 次 LLM 直接回答（无工具往返）
-                reference_docs = await _get_reference_docs()
-                if _has_draft or _pending_proj_ask:
-                    logger.info(f"[stream] 草稿/项目题挂着，诊断意图回落主循环"
-                                f"（防序号回答掉进无候选无协议的单轮分支）: "
+                # 车型会话的 nokb 轮仍要回落主循环（出选项的协议只在那儿），但
+                # 沿用 nokb 的省检索纪律：续接语的检索词本身就是噪声，召回的无关
+                # 内容反而会污染选项；plan-execute 开时照旧执行规划工具
+                # （lookup_ticket 等要挂 state）。
+                if _in_vehicle_mode and not _needs_kb and _plan_task is None:
+                    reference_docs = ""
+                    _cancel_prefetch()
+                    logger.info(f"[stream] 车型会话 nokb 轮回落主循环（跳过检索）: "
+                                f"session={request.session_id}")
+                else:
+                    reference_docs = await _get_reference_docs()
+                if _has_draft or _pending_proj_ask or _in_vehicle_mode:
+                    logger.info(f"[stream] 草稿/项目题/车型会话挂着，诊断意图回落主循环"
+                                f"（防序号回答或车辆选项掉进无候选无协议的单轮分支）: "
                                 f"session={request.session_id}")
                 else:
                     logger.info(f"[stream] 诊断走单轮分支（服务端检索+1次LLM）: session={request.session_id}")
@@ -5826,9 +5855,13 @@ class AiDiagnosisPlatform:
                 # 「已取消草稿」而草稿根本没删。守卫：有待确认草稿时不走闲聊
                 # 分支，回落主循环（草稿轮铁律在那，取消/补充由 LLM 结构化判定）。
                 # 项目题挂着未答同理：答序号/「好的」要主协议还原或重新引导。
-                if memory.metadata.get("ticket_draft") or _pending_proj_ask:
-                    logger.info(f"[stream] 草稿/项目题挂着，闲聊意图回落主循环"
-                                f"（防取消话术/序号回答掉进无处理能力的单轮分支）: "
+                # 车型会话同理：短回复（选完选项后的「好的」「知道了」）常被判成
+                # 闲聊，落单轮分支就没有车辆块了，上一轮 last_choices 的承接规则
+                # 一并丢失，用户再追问一嘴分叉又得整张表直出。
+                if (memory.metadata.get("ticket_draft") or _pending_proj_ask
+                        or _in_vehicle_mode):
+                    logger.info(f"[stream] 草稿/项目题/车型会话挂着，闲聊意图回落主循环"
+                                f"（防取消话术/序号回答/车辆选项掉进无处理能力的单轮分支）: "
                                 f"session={request.session_id}")
                     reference_docs = await _get_reference_docs()
                 else:
@@ -5848,13 +5881,17 @@ class AiDiagnosisPlatform:
                         yield ev
                     return
             else:
-                # 兜底（意图识别失败按 diagnosis 处理）：等资料 → 单轮分支
+                # 兜底（意图识别失败按 diagnosis 处理）：等资料 → 单轮分支。
+                # 车型会话回落主循环（车辆选项协议只在那儿）。
                 reference_docs = await _get_reference_docs()
-                logger.info(f"[stream] 意图兜底走单轮分支: session={request.session_id}")
-                async for ev in self._diagnosis_oneshot_branch(
-                        request, state, memory, reference_docs, fill_problem_summary=True):
-                    yield ev
-                return
+                if _in_vehicle_mode:
+                    logger.info(f"[stream] 车型会话兜底回落主循环: session={request.session_id}")
+                else:
+                    logger.info(f"[stream] 意图兜底走单轮分支: session={request.session_id}")
+                    async for ev in self._diagnosis_oneshot_branch(
+                            request, state, memory, reference_docs, fill_problem_summary=True):
+                        yield ev
+                    return
 
         t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
         logger.info(f"[stream] 检索完成: {t_stream['retrieve']}ms, docs_len={len(reference_docs)}"
