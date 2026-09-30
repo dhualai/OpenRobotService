@@ -2,7 +2,7 @@
 //   扫码跳转链接 …/info-entry?scene=xxx 里的 scene 即 str(id)（项目id 就是行 id，
 //   不单独占列、不随表单提交、界面也不再显示）——能查到行 → 编辑那行；
 //   查不到行 → 按新录入处理；没带 scene → 管理端手动新建。
-//   该行已 published（录入+确认完成）→ 不停留本页，跳「我要摇人」(/call)，
+//   该行已 published（录入信息保存即发布）→ 不停留本页，跳「我要摇人」(/call)，
 //   scene/openid 原样带走；管理端不带 scene 的「编辑信息」链接不受影响。
 //   项目名称（表单第一位）：候选来自 project 表（include_pending=true，台账「待定」
 //   项目也能选；下拉模糊匹配），选中带出项目编号且编号锁定只读；直接敲出与表里完全
@@ -23,7 +23,6 @@ const mockFetchQrcode = vi.fn();
 const mockFetchQrcodeByScene = vi.fn();
 const mockCreateProjectInfo = vi.fn();
 const mockUpdateProjectInfo = vi.fn();
-const mockTransition = vi.fn();
 const mockGetProjects = vi.fn();
 const mockToast = vi.fn();
 
@@ -32,7 +31,6 @@ vi.mock('@/api/qrcode', () => ({
   fetchQrcodeByScene: (scene: string) => mockFetchQrcodeByScene(scene),
   createProjectInfo: (data: unknown) => mockCreateProjectInfo(data),
   updateProjectInfo: (id: number, data: unknown) => mockUpdateProjectInfo(id, data),
-  qrcodeTransition: (id: number, action: string) => mockTransition(id, action),
 }));
 
 // 项目名候选来自 project 表（GET /projects/），打桩避免触网
@@ -141,18 +139,30 @@ const renderInfoEntry = (entry: string) =>
 
 const valueOf = (el: HTMLElement) => (el as HTMLInputElement).value;
 
+const LOCATION_PLACEHOLDER = '请输入项目地点';
+const CUSTOMER_PLACEHOLDER = '请输入客户名称';
+const VEHICLE_PLACEHOLDER = '请输入车型';
+
+/** 项目地点/客户名称/车型：2026-09-30 起这三个字段也是必填（InfoEntry.handleSubmit
+ *  按界面顺序前置校验）。只填项目名称+项目编号就点保存会被 Toast 拦下、请求根本不发，
+ *  所以「保存」相关用例在提交前先补这三项。 */
+const fillRestRequired = () => {
+  fireEvent.change(screen.getByPlaceholderText(LOCATION_PLACEHOLDER), { target: { value: '现场' } });
+  fireEvent.change(screen.getByPlaceholderText(CUSTOMER_PLACEHOLDER), { target: { value: '客户' } });
+  fireEvent.change(screen.getByPlaceholderText(VEHICLE_PLACEHOLDER), { target: { value: 'XQE' } });
+};
+
 describe('InfoEntry 扫码带入项目id', () => {
   beforeEach(() => {
     mockFetchQrcode.mockReset();
     mockFetchQrcodeByScene.mockReset();
     mockCreateProjectInfo.mockReset().mockResolvedValue({});
     mockUpdateProjectInfo.mockReset().mockResolvedValue({});
-    mockTransition.mockReset().mockResolvedValue({ status: 'published' });
     mockGetProjects.mockReset().mockResolvedValue([]);
     mockToast.mockReset();
   });
 
-  it('scene 能查到行：编辑那行，字段回填；entering 时出「确认信息」并走 confirm', async () => {
+  it('scene 能查到行：编辑那行，字段回填', async () => {
     mockFetchQrcodeByScene.mockResolvedValue(infoRow);
     renderInfoEntry(`/admin/info-entry?scene=${SCENE}&openid=oXk4js`);
 
@@ -163,12 +173,6 @@ describe('InfoEntry 扫码带入项目id', () => {
     await waitFor(() => expect(valueOf(screen.getByPlaceholderText(CODE_PLACEHOLDER))).toBe('CODE-9'));
     expect(valueOf(screen.getByPlaceholderText(NAME_PLACEHOLDER))).toBe('项目九');
     expect(screen.queryByPlaceholderText('保存后自动生成')).not.toBeInTheDocument();
-
-    // entering → 「确认信息」按钮；点击走 confirm（后端：录入行确认即发布）
-    fireEvent.click(screen.getByText('确认信息'));
-    await waitFor(() => expect(mockTransition).toHaveBeenCalledWith(9, 'confirm'));
-    // 编辑已有行不发送 project_id（它就是行 id，不可改）
-    expect(mockUpdateProjectInfo).not.toHaveBeenCalled();
   });
 
   it('scene 查不到行：按新录入处理，空表单；保存不带 project_id', async () => {
@@ -182,11 +186,9 @@ describe('InfoEntry 扫码带入项目id', () => {
     expect(nameEl.compareDocumentPosition(codeEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // 新项目的编号手填，不锁定
     expect(codeEl).not.toBeDisabled();
-    // 新录入没有行可确认，不发「确认信息」按钮
-    expect(screen.queryByText('确认信息')).not.toBeInTheDocument();
-
     fireEvent.change(screen.getByPlaceholderText(CODE_PLACEHOLDER), { target: { value: 'CODE-1' } });
     fireEvent.change(screen.getByPlaceholderText(NAME_PLACEHOLDER), { target: { value: '项目一' } });
+    fillRestRequired();
     fireEvent.click(screen.getByText('保存'));
 
     await waitFor(() => expect(mockCreateProjectInfo).toHaveBeenCalled());
@@ -196,7 +198,7 @@ describe('InfoEntry 扫码带入项目id', () => {
     expect(mockUpdateProjectInfo).not.toHaveBeenCalled();
   });
 
-  it('没带 scene（管理端新建）：空表单；填编号+项目名即可保存，不带 project_id', async () => {
+  it('没带 scene（管理端新建）：空表单；填齐五个字段即可保存，不带 project_id', async () => {
     renderInfoEntry('/admin/info-entry');
 
     await waitFor(() => expect(screen.getByPlaceholderText(NAME_PLACEHOLDER)).toHaveValue(''));
@@ -204,6 +206,7 @@ describe('InfoEntry 扫码带入项目id', () => {
 
     fireEvent.change(screen.getByPlaceholderText(CODE_PLACEHOLDER), { target: { value: 'CODE-1' } });
     fireEvent.change(screen.getByPlaceholderText(NAME_PLACEHOLDER), { target: { value: '项目一' } });
+    fillRestRequired();
     fireEvent.click(screen.getByText('保存'));
 
     await waitFor(() => expect(mockCreateProjectInfo).toHaveBeenCalled());
@@ -297,6 +300,7 @@ describe('InfoEntry 扫码带入项目id', () => {
     expect(screen.queryByText('俄罗斯莫斯科IS单XCD试用项目')).not.toBeInTheDocument();
 
     // 点保存：提交的是同步过来的编号
+    fillRestRequired();
     fireEvent.click(screen.getByText('保存'));
     await waitFor(() => expect(mockCreateProjectInfo).toHaveBeenCalled());
     expect(mockCreateProjectInfo.mock.calls[0][0]).toMatchObject({
@@ -345,6 +349,7 @@ describe('InfoEntry 扫码带入项目id', () => {
     const codeInput = screen.getByPlaceholderText(CODE_PLACEHOLDER);
     expect(codeInput).not.toBeDisabled();
     fireEvent.change(codeInput, { target: { value: 'CODE-NEW' } });
+    fillRestRequired();
     fireEvent.click(screen.getByText('保存'));
 
     await waitFor(() => expect(mockCreateProjectInfo).toHaveBeenCalled());
@@ -355,16 +360,15 @@ describe('InfoEntry 扫码带入项目id', () => {
 
   it('扫码进入且该行已 published：不停留录入页，跳「我要摇人」并原样带上 scene/openid', async () => {
     // 真实扫码链接形如 …/info-entry/{id}?scene=…&openid=…（卡片生成于 entering 时期，
-    // 点击时已有人确认过 = 状态机 published）→ 应直达 CallView（/call）
+    // 点击时该行已录入过 = 保存即 published）→ 应直达 CallView（/call）
     mockFetchQrcodeByScene.mockResolvedValue({ ...infoRow, status: 'published' });
     renderInfoEntry(`/admin/info-entry/9?scene=${SCENE}&openid=oXk4js`);
 
     const probe = await screen.findByTestId('call-page');
     expect(probe.textContent).toContain(`scene=${SCENE}`);
     expect(probe.textContent).toContain('openid=oXk4js');
-    // 不停留录入页：表单没渲染、无「确认信息」
+    // 不停留录入页：表单没渲染
     expect(screen.queryByPlaceholderText(NAME_PLACEHOLDER)).not.toBeInTheDocument();
-    expect(screen.queryByText('确认信息')).not.toBeInTheDocument();
     // scene 命中走 by-scene（登录即可接口），跳走前不再按 id 查
     expect(mockFetchQrcodeByScene).toHaveBeenCalledWith(SCENE);
     expect(mockFetchQrcode).not.toHaveBeenCalled();
