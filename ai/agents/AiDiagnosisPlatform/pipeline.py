@@ -446,8 +446,11 @@ def _user_profile_block(state: "AgentState") -> str:
     return "\n".join(lines) + "\n"
 
 
-def _vehicle_mode_block(memory) -> str:
+def _vehicle_mode_block(memory, query: str = "") -> str:
     """【车辆】扫码定制模式块（XQE 试点，0929；0930 选项引导规则）。
+
+    query：本轮用户输入原文，用于判定「上一轮选项是否已被作答」——见 last_choices
+    段落。不传（默认空串）时按「尚未回答」处理，与旧行为一致。
 
     会话经模式确认接口（/mode/confirm）注册 metadata["vehicle_mode"] 后，
     三套 prompt（全量诊断/收集/快路径）均注入本块：车型信息已确认，
@@ -476,9 +479,21 @@ def _vehicle_mode_block(memory) -> str:
     ]
     last = vm.get("last_choices") or []
     if last:
-        lines.append(
-            "【车辆】上一轮你已给出选项（" + "／".join(last) + "）且用户尚未回答："
-            "不要重复给出选项；用户以选项原文回应时，按该选项的含义理解并继续处理。")
+        _q = (query or "").strip()
+        if _q and _q in [str(c).strip() for c in last]:
+            # 用户点了选项原文作答——前提「尚未回答」不再成立。此时若照旧注入
+            # 「不要重复给出选项」，模型会把**下一层**的新分叉一起压住（0930 实机：
+            # 点「报识别超时」后沿树继续下钻的方向被摊成正文段落，不出气泡）。
+            # 选项原文另有一层用途：气泡不进 message 正文，模型只能靠这里还原
+            # 「用户答的是哪一项」。
+            lines.append(
+                "【车辆】上一轮你给出的选项是（" + "／".join(last) + "），用户已选择「"
+                + _q + "」：按该选项的含义继续处理。若该方向下知识库仍有明确互斥的"
+                "分支、需再确认属于哪种才能继续，照常输出 vehicle_choices 出下一层选项。")
+        else:
+            lines.append(
+                "【车辆】上一轮你已给出选项（" + "／".join(last) + "）且用户尚未回答："
+                "不要重复给出选项；用户以选项原文回应时，按该选项的含义理解并继续处理。")
     lines.append(
         "【车辆】选项引导：当且仅当知识库检索内容对当前问题存在明确互斥的分支、"
         "需要确认用户属于哪种分支才能继续处理时，在输出 JSON 顶层增加 "
@@ -513,7 +528,7 @@ def _session_state_block(state: "AgentState", memory) -> str:
         lines.extend(_up.splitlines())
     # 车辆定制模式块（XQE 试点）：扫码绑定会话的车型事实，先于工单事实；
     # 常规会话空串零开销
-    _vm = _vehicle_mode_block(memory)
+    _vm = _vehicle_mode_block(memory, getattr(state, "original_query", "") or "")
     if _vm:
         lines.extend(_vm.splitlines())
     _lt = state.last_submitted_ticket or {}
@@ -1863,7 +1878,7 @@ class AiDiagnosisPlatform:
         _user_block = _user_profile_block(state)
         # 车辆定制模式块（XQE 试点）：收集/快路径 prompt 不走 _session_state_block，
         # 在此与【用户】块同位注入——三套 prompt 都知道车型已绑定
-        _vehicle_block = _vehicle_mode_block(memory)
+        _vehicle_block = _vehicle_mode_block(memory, getattr(state, "original_query", "") or "")
         # 工单填写模式（对话路径 ticket_collecting / 按钮路径 prepare not_ready）
         if state.ticket_collecting:
             fields = "、".join(state.ticket_collecting)

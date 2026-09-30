@@ -71,6 +71,65 @@ def test_vehicle_block_last_choices():
     assert "上一轮你已给出选项" not in _vehicle_mode_block(_memory(_VM))
 
 
+# ---- 选项已作答（0930 修 B：下一层分叉被「不要重复给出选项」压住）----
+# last_choices 是**上一轮结束时**写的，本轮构建 prompt 时它还在；文案却断言
+# 「用户尚未回答」。用户点了选项原文后该前提已不成立，而「不要重复给出选项」
+# 会连**下一层**的新分叉一起压住（实机：点「报识别超时」沿树下钻的方向被摊
+# 成正文段落、不出气泡）。判定依据＝本轮 query 是否为选项原文。
+
+def test_vehicle_block_answered_choice_drops_stale_rule():
+    vm = dict(_VM, last_choices=["报识别超时", "反复调整后任务失败"])
+    out = _vehicle_mode_block(_memory(vm), "报识别超时")
+    assert "用户已选择「报识别超时」" in out
+    assert "且用户尚未回答" not in out
+    assert "不要重复给出选项" not in out
+    # 必须放行下一层选项：多层的分叉（1.1 行驶途中停下 → 界面提示 → A~F）才走得下去
+    assert "出下一层选项" in out
+
+
+def test_vehicle_block_answered_choice_tolerates_whitespace():
+    vm = dict(_VM, last_choices=["报识别超时"])
+    assert "用户已选择「报识别超时」" in _vehicle_mode_block(_memory(vm), "  报识别超时 ")
+
+
+def test_vehicle_block_unanswered_keeps_stale_rule():
+    """用户这轮没答选项（问的是别的）→ 保持旧规则，防重复出题。"""
+    vm = dict(_VM, last_choices=["报识别超时", "反复调整后任务失败"])
+    out = _vehicle_mode_block(_memory(vm), "这台车现在在几号库位")
+    assert "尚未回答" in out
+    assert "不要重复给出选项" in out
+    assert "用户已选择" not in out
+
+
+def test_vehicle_block_no_query_backward_compatible():
+    """不传 query（旧调用形态）按尚未回答处理，行为零变化。"""
+    vm = dict(_VM, last_choices=["报识别超时"])
+    assert "尚未回答" in _vehicle_mode_block(_memory(vm))
+
+
+def test_session_state_passes_query_to_vehicle_block(make_state):
+    """集成：_session_state_block 是本轮 query 的透传口（主循环 prompt 的注入口）。"""
+    state = make_state(original_query="报识别超时")
+    mem = _memory(dict(_VM, last_choices=["报识别超时", "反复调整后任务失败"]))
+    out = _session_state_block(state, mem)
+    assert "用户已选择「报识别超时」" in out
+    assert "且用户尚未回答" not in out
+
+
+def test_collect_prompt_passes_query_to_vehicle_block():
+    """收集/快路径 prompt（另一注入点）同样透传——三套 prompt 必须一致，
+    否则收集轮里用户点了选项又会被当成新分叉压住。"""
+    from ai.agents.AiDiagnosisPlatform.pipeline import AgentState as _AS
+
+    p = AiDiagnosisPlatform()
+    mem = _memory(dict(_VM, last_choices=["报识别超时", "反复调整后任务失败"]))
+    state = _AS(session_id="s-vm", phase="idle",
+                original_query="报识别超时", problem_summary="报识别超时")
+    out = p._build_diagnosis_prompt(state, mem, "")
+    assert "用户已选择「报识别超时」" in out
+    assert "且用户尚未回答" not in out
+
+
 def test_vehicle_block_minimal_fields():
     out = _vehicle_mode_block(_memory({"model": "XQE", "domain": "xqe"}))
     assert "车型 XQE" in out
