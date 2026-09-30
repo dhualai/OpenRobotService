@@ -14,7 +14,7 @@ cls_all = {j["conversation_id"]: j["cls"] for j in
            (json.loads(l) for l in open(os.path.join(OUT, "conversations_classified.jsonl"), encoding="utf-8"))}
 man = json.load(open(r"C:/Users/PAJ26020/Downloads/manual_segmentation.json", encoding="utf-8"))
 bounds, labels = man.get("bounds") or {}, man.get("labels") or {}
-legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
 
 cross = Counter()
 mismatch = []
@@ -41,7 +41,7 @@ for cid_s, b in bounds.items():
             mismatch.append((grp, cid_s, s, (c["rounds"][s]["q"] or "")[:60]))
 
 print("== 人工标签 × LLM q 判定 ==")
-labs = ["直接提单", "建议转单", "直答正确", "未直答", "未覆盖", "未标"]
+labs = ["直接提单", "直答正确", "未直答", "未覆盖", "未标"]
 for grp in ("真实组", "测试组"):
     print(f"\n{grp}:")
     for lab in labs:

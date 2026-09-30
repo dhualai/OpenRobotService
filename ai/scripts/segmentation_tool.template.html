@@ -176,30 +176,32 @@ const RK = MODE === "bounds" ? "readB" : "read";  // 切题轮/标注轮的已�
 const LS_KEY = "seg_review_v1";
 // L2 标签（与 docs/直答率统计口径.md 对齐）：
 // 分子=直答正确；分母=+未直答；未覆盖/无法判定单列不摊入；
-// 建议转单/直接提单=非直答测量对象，分子分母均剔除（直接提单=用户明确目的来提单）
+// 直接提单=非直答测量对象，分子分母均剔除（用户明确目的来提单）
 // 注意：LEGACY_LABEL 必须在 store 迁移循环之前声明（const 暂时性死区，放后面会 ReferenceError 白屏）
 const LABELS = [
   ["直答正确", "#16a34a"], ["未直答", "#dc2626"], ["未覆盖", "#64748b"],
-  ["建议转单", "#7c3aed"], ["直接提单", "#b45309"], ["无法判定", "#94a3b8"],
+  ["直接提单", "#b45309"], ["无法判定", "#94a3b8"],
 ];
-const LEGACY_LABEL = {  // 旧标签名迁移（六类旧体系）
-  "直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单",
+const LEGACY_LABEL = {  // 旧标签名迁移（同名含义直接改名）
+  "直答错误": "未直答", "直答不完整": "未直答",
 };
+const RETIRED_LABEL = new Set(["转工单正确", "建议转单"]);  // 已退役类别：删标签重新标注
 // 标签定义（帮助卡片展示；与 docs/直答率统计口径.md 口径一致，抽象表述不带示例）
 const LABEL_DEF = {
   "直答正确": "问题被正面回答并解决，段末也没提工单",
   "未直答": "有回答但没解决问题（答非所问、半答、追问多次仍未解决）",
   "未覆盖": "知识库没有相关内容，助手给不出有用答案",
-  "建议转单": "助手口头建议提工单，用户没提",
   "直接提单": "用户来意就是为产品问题/需求提单（写成疑问句也算）",
   "无法判定": "从这段对话判断不出来",
 };
 const store = JSON.parse(localStorage.getItem(LS_KEY) || '{"bounds":{},"read":{}}');
 store.labels = store.labels || {};  // {convId: {段首回合索引: 标签名}}
 store[RK] = store[RK] || {};
-// 旧标签名迁移到现行体系
-for (const k in store.labels) for (const s in store.labels[k])
+// 旧标签名迁移到现行体系；退役类别删标签（变回待标注重新打）
+for (const k in store.labels) for (const s in store.labels[k]) {
+  if (RETIRED_LABEL.has(store.labels[k][s])) { delete store.labels[k][s]; continue; }
   if (LEGACY_LABEL[store.labels[k][s]]) store.labels[k][s] = LEGACY_LABEL[store.labels[k][s]];
+}
 const SEGC = ["s0", "s1", "s2", "s3"];
 const state = { fStatus: "unread", fGroup: "real", cur: null };
 

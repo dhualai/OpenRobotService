@@ -243,7 +243,7 @@ def _same_denominator_compare(judge_rows):
                   encoding="utf-8"))}
     man = json.load(open(MANUAL, encoding="utf-8"))
     labels, bounds = man.get("labels") or {}, man.get("bounds") or {}
-    legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+    legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
     n = l1 = l2 = l3 = 0
     for cid, lm in labels.items():
         c = convs.get(cid)
@@ -255,6 +255,12 @@ def _same_denominator_compare(judge_rows):
         # 工单时间窗/时段归属不再把标注后的新提问算进旧判定段
         manual = dar_segs.effective_starts(
             rounds, cid, bounds, labels, frozen_len=man.get("frozen_len") or {})
+        if manual is None:
+            # 0929 修复：漏斗走查改判只写 labels 不写 bounds——有标签无人工边界
+            # 的会话回退 topic 切分（与标注工具/漏斗 _seg_rows 同口径），否则
+            # enumerate(None) 崩掉整个 report
+            manual = [0] + [i for i in range(1, len(cl))
+                            if cl[i].get("topic", 0) != cl[i - 1].get("topic", 0)]
         tasks = [pts(t.get("at")) for t in c.get("tasks") or []]
         for tid, s0 in enumerate(manual):
             lab = legacy.get(lm.get(str(s0)), lm.get(str(s0)))
@@ -338,7 +344,7 @@ def _fail_items(j_rows):
         return []
     labs_man = {}
     if os.path.exists(MANUAL):
-        legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+        legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
         for cid, lm in (json.load(open(MANUAL, encoding="utf-8"))
                         .get("labels") or {}).items():
             labs_man[str(cid)] = {int(k): legacy.get(v, v) for k, v in lm.items()
@@ -613,7 +619,7 @@ def _overlay_manual_labels(rows):
     全部失真。凡吃 j_rows 的统计必须先过这一层。"""
     if not os.path.exists(MANUAL):
         return rows
-    legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+    legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
     labs_man = {}
     for cid, lm in (json.load(open(MANUAL, encoding="utf-8"))
                     .get("labels") or {}).items():

@@ -40,6 +40,7 @@
 """
 import asyncio
 import hashlib
+import glob
 import io
 import json
 import os
@@ -47,7 +48,7 @@ import re
 import sys
 import time
 from collections import Counter
-from datetime import datetime as _dt
+from datetime import datetime as _dt, timedelta as _td
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
 _PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -117,7 +118,7 @@ def build_exam(all_mode=False):
            else json.load(open(MANUAL, encoding="utf-8")))
     bounds, labels = man.get("bounds") or {}, man.get("labels") or {}
     frozen = man.get("frozen_len") or {}
-    legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+    legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
     exam = []
     for c in convs:
         cid = str(c["conversation_id"])
@@ -275,10 +276,24 @@ async def main():
 
     # 增量：jsonl（逐段追加，最新）+ json 快照（上次全量）双源收已判段，jsonl
     # 覆盖 json。不再「产物存在就整段跳过 LLM」——段根/模型变更后重跑即自动
-    # 补判差异段（旧行为必须手工删文件才重判，0909 两次踩坑）
+    # 补判差异段（旧行为必须手工删文件才重判，0909 两次踩坑）。
+    # 0929 跨天增量：另读最近 7 天历史产物（按日切文件曾让每周流程全量重判）。
+    # 复用硬校验：行级 model/kb/prompt_ver 与当前全同才认——换模型/换知识库/
+    # 改判据自动全量，混口径的旧预标不进周报。
     jpath = out_path[:-5] + ".jsonl"
+    pat = "l3_judge_all_*" if all_mode else "l3_judge_[0-9]*"
+    _cutoff = (_dt.now() - _td(days=7)).strftime("%Y%m%d")
+    hist = []
+    for p in sorted(glob.glob(os.path.join(OUT, pat + ".json*")), reverse=True):
+        if p in (out_path, jpath):
+            continue
+        m = re.search(r"l3_judge(?:_all)?_(\d{8})\.", p)
+        if m and _cutoff <= m.group(1) <= _dt.now().strftime("%Y%m%d"):
+            hist.append(p)
     done_keys = {}
-    for src in (out_path, jpath):
+    reexam_old = {}  # 缺口复查段旧行（KB 更新后重考；漏斗 pre 保历史，重考结果走 reexam_pre）
+    n_hist = 0
+    for src in (out_path, jpath, *hist):  # 当天优先，历史兜底
         if not os.path.exists(src):
             continue
         items = ([json.loads(l) for l in open(src, encoding="utf-8") if l.strip()]
@@ -286,20 +301,23 @@ async def main():
         for old in items:
             if old.get("intent") in (None, "error") or old.get("astart") is None:
                 continue  # error 不落，重跑自动补
+            if old.get("model") != llm.model or old.get("prompt_ver") != PROMPT_VER:
+                continue  # 模型/判据变了：老判定口径作废，全量重判
+            # 0929 口径（用户拍板）：KB 更新（指针变）→「通过过的不再考，没过的
+            # 重考一遍」——直接提单/直答正确保留（历史事实），未直答/未覆盖重判
+            # （缺口复查：补的知识有没有生效）。直答率上升只来自新段真实表现 +
+            # 老缺口真实补齐，不会被批量补充知识刷高。KB 没变（kb 同）→ 全复用。
+            if old.get("kb") != KB_TAG and old.get("pre") not in ("直接提单", "直答正确"):
+                reexam_old[(str(old["cid"]), int(old["astart"]))] = old
+                continue
+            if not done_keys.get((str(old["cid"]), int(old["astart"]))):
+                n_hist += src in hist
             done_keys[(str(old["cid"]), int(old["astart"]))] = old
     rows = list(done_keys.values())
     todo = [s for s in exam if (str(s["cid"]), int(s["astart"])) not in done_keys]
-    # 切模型/换知识库后旧判定仍按 cid+astart 复用（指标会混口径）——显式提示，不静默
-    n_other = sum(1 for r in rows if r.get("model") != llm.model)
-    n_kb = sum(1 for r in rows if r.get("kb") != KB_TAG)
-    n_pv = sum(1 for r in rows if r.get("prompt_ver") != PROMPT_VER)
-    print(f"增量：复用已判 {len(done_keys)} 段，补跑 {len(todo)} 段"
-          + (f"；其中 {n_other} 段未记/非当前模型（当前 {llm.model}）"
-             if n_other else "")
-          + (f"；{n_kb} 段未记/非当前检索源（当前 {KB_TAG}）" if n_kb else "")
-          + (f"；{n_pv} 段未记/非当前判据（当前 {PROMPT_VER}）" if n_pv else "")
-          + ("——要统一口径须删对应 .json/.jsonl 重跑"
-             if n_other or n_kb or n_pv else ""))
+    print(f"增量：复用已判 {len(done_keys)} 段（其中 {n_hist} 段来自 7 天内历史产物），"
+          f"补跑 {len(todo)} 段；校验口径 model={llm.model}｜kb={KB_TAG[:40]}｜判据={PROMPT_VER}"
+          + ("｜历史行签名不合的已自动重判" if n_hist != len(done_keys) else ""))
 
     if todo:
         # LLM 探活：模型名过期/网关不可用时快速失败，别把 419 段全烧成 error
@@ -370,6 +388,10 @@ async def main():
             r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
                  "grp": seg["grp"], "lab": seg["lab"], "model": llm.model,
                  "kb": KB_TAG, "prompt_ver": PROMPT_VER}
+            _rx = reexam_old.get((str(seg["cid"]), int(seg["astart"])))
+            if _rx:  # 缺口复查段：漏斗口径 pre 保历史值（组合段写入），重考走 reexam_pre
+                r["reexam"] = True
+                r["pre_hist"] = _rx.get("pre")
             try:
                 ctx = await retrieve_ctx(seg, q0)
                 # 资料给全：ctx 已是线上装配结果（每块 ≤1500 字、最多 8 块、整串不截断），
@@ -438,16 +460,31 @@ async def main():
                 rv[(str(r["cid"]), r.get("astart", r.get("seg")))] = r.get("verdict")
         else:
             print(f"（{RETRIEVAL} 不存在，consult+no 段统一保守预标未直答）")
+        n_flip = 0
         for r in rows:
+            # 缺口复查段（0929 用户定调）：漏斗口径的 pre 恒为历史判定，重考
+            # 结论写 reexam_pre——补的知识有没有把老问题救活，只进复查报表
+            rx = r.get("reexam")
+            new_pre = ""
             if r["intent"] == "ticket":
-                r["pre"] = "直接提单"
+                new_pre = "直接提单"
             elif r["intent"] == "consult" and r["resolved"] == "yes":
                 # 忠实性前置：resolved=yes 但回答无资料支撑（编造）→ 未直答，不得直答分
-                r["pre"] = "直答正确" if r.get("faithful") != "no" else "未直答"
+                new_pre = "直答正确" if r.get("faithful") != "no" else "未直答"
             elif rv.get((r["cid"], r["astart"])) == "no":
-                r["pre"] = "未覆盖"
+                new_pre = "未覆盖"
             else:
-                r["pre"] = "未直答"
+                new_pre = "未直答"
+            if rx:
+                r["pre"] = r.get("pre_hist") or "未直答"
+                r["pre_reexam"] = new_pre
+                if new_pre in ("直答正确", "直接提单") and r["pre"] not in ("直答正确", "直接提单"):
+                    n_flip += 1
+            else:
+                r["pre"] = new_pre
+        if reexam_old:
+            print(f"缺口复查 {len(reexam_old)} 段：{n_flip} 段重考后已可直答"
+                  f"（结果在 l3_judge_all 的 reexam 字段，不进直答率）")
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(rows, fh, ensure_ascii=False, indent=1)
         print(f"\n== 预标分布 ==")

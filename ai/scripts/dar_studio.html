@@ -259,7 +259,7 @@ label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--in
 .be-直答正确.badge-src-man{background:#dcfce7;color:#15803d}
 .be-未直答.badge-src-man{background:#fee2e2;color:#b91c1c}
 .be-未覆盖.badge-src-man{background:#fee2e2;color:#b91c1c}
-.be-直接提单.badge-src-man,.be-建议转单.badge-src-man{background:#ffedd5;color:#c2410c}
+.be-直接提单.badge-src-man{background:#ffedd5;color:#c2410c}
 .be-寒暄.badge-src-man{background:#f1f5f9;color:#64748b}
 .be-猜你想问.badge-src-man{background:#fef3c7;color:#b45309}
 .repbar .rep-body b{color:#ffd43b}
@@ -999,8 +999,11 @@ function renderWiz(){
         const w = window.open("", "_blank");  // 先占位：异步完成回调里 open 会被拦截
         runSteps(st.steps, d, rc=>{
           if(rc === 0){
-            if(w && !w.closed) w.location = `/label_tool?env=${activeEnv}`;
-            else if(!window.open(`/label_tool?env=${activeEnv}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err");
+            // 0929 修复：tool0 生成的是切题版（segmentation_tool_bounds.html），
+            // 此前硬编码 /label_tool 打开的是旧标注页（绿色界面，用户实锤）
+            const url = `/label_tool?env=${activeEnv}&kind=bounds`;
+            if(w && !w.closed) w.location = url;
+            else if(!window.open(url, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err");
           }else if(w && !w.closed){ w.close(); }
         });
       };
@@ -1166,10 +1169,16 @@ async function loadArts(){
   j.items.forEach(it=>{
     const row = document.createElement("div");
     row.className = "row";
+    // 0929 修复：两套工具分文件后，打开按钮各自指向对应版本（此前 bounds
+    // 文件没有打开入口、唯一的按钮永远开标注版）
     const isLabel = it.name === "segmentation_tool.html";
+    const isBounds = it.name === "segmentation_tool_bounds.html";
     row.innerHTML = `<span class="nm mono">${esc(it.name)}</span><span class="mt">${it.mtime}</span><span class="sz">${(it.size/1024).toFixed(0)} KB</span>`
-      + (isLabel ? `<button class="btn sm pri">打开标注</button>` : "");
-    row.onclick = isLabel ? ()=>window.open(`/label_tool?env=${activeEnv}`, "_blank") : ()=>preview(it.name);
+      + (isLabel ? `<button class="btn sm pri">打开标注</button>`
+                 : isBounds ? `<button class="btn sm pri">打开切题</button>` : "");
+    row.onclick = isLabel ? ()=>window.open(`/label_tool?env=${activeEnv}`, "_blank")
+                : isBounds ? ()=>window.open(`/label_tool?env=${activeEnv}&kind=bounds`, "_blank")
+                : ()=>preview(it.name);
     el.appendChild(row);
   });
 }
@@ -1914,7 +1923,7 @@ const FL = [
   {id:"undetermined", name:"未判定", kind:"gray", sub:1},
 ];
 const FLC = {main:"#3d76c4", cut:"#d97706", ok:"#2e9e5b", bad:"#d9534f", gray:"#98a2b3"};
-const LABELS = ["直答正确","未直答","未覆盖","直接提单","建议转单","寒暄","猜你想问"];
+const LABELS = ["直答正确","未直答","未覆盖","直接提单","寒暄","猜你想问"];  // 键盘 1-6；0929 建议转单退役（旧值落 undetermined 重走查）
 let fData = null, fCur = {layer:"", rows:[], idx:-1};
 
 function fImgBase(){
@@ -1967,11 +1976,29 @@ function imgFail(img){
 async function loadFunnel(){
   $("#fsum").textContent = "加载中…";
   try{
-    const j = await (await fetch("/api/funnel?env=prod")).json();
+    // 本轮起算日（滚动窗口锚点）：存 localStorage 默认 9/21（上次走查运行日），
+    // 用户随时改，改了即重拉
+    const anc = localStorage.getItem("wk_anchor") || "2026-09-21";
+    const j = await (await fetch(`/api/funnel?env=prod&anchor=${anc}`)).json();
     if(!j.found){ $("#fsum").textContent = "缺产物：" + (j.reason||""); $("#funnelbar").innerHTML = ""; return; }
     fData = j;
     renderFunnel();
   }catch(e){ $("#fsum").textContent = "加载失败：" + e.message; }
+}
+function initWkAnchor(){
+  const inp = $("#wkanchor");
+  if(!inp) return;
+  inp.value = localStorage.getItem("wk_anchor") || "2026-09-21";
+  inp.onchange = applyWkAnchor;
+  const b = $("#wkanchorbtn");
+  if(b) b.onclick = applyWkAnchor;
+}
+function applyWkAnchor(){
+  const v = $("#wkanchor")?.value;
+  if(!v) return;
+  localStorage.setItem("wk_anchor", v);
+  loadFunnel();
+  toast("本轮起算日：" + v);
 }
 
 function renderWeekCard(){
@@ -1985,12 +2012,19 @@ function renderWeekCard(){
   el.style.display = "";
   el.innerHTML = `
     <div class="wk-left">
-      <div class="wk-t">本周直答率 <span class="hint">· ${esc(w.monday.slice(5))} 起 · 标注即刷</span></div>
-      <div class="wk-rate">${w.rate ?? "—"}${w.rate == null ? "" : '<small>%</small>'}</div>
+      <div class="wk-t">本轮直答率
+        <input type="date" id="wkanchor" style="font-size:11.5px;padding:1px 6px;border:1px solid var(--line);border-radius:6px;vertical-align:middle" title="本轮起算日：统计这天之后的对话段">
+        <span class="hint">之后的段 · 标注即刷</span>
+        <button class="btn sm" id="wkanchorbtn" style="padding:1px 8px;font-size:11.5px">应用</button>
+      </div>
+      <div class="wk-rate">${w.rate ?? "—"}${w.rate == null ? "" : '<small>%</small>'}
+        <div style="font-size:11.5px;font-weight:400;color:var(--ink3);margin-top:4px;letter-spacing:0">
+          = 直答 ${w.answered} ÷ 真实咨询 ${w.judged} 段（含未判定 ${w.undetermined}·不含测试/寒暄/提单）</div>
+      </div>
     </div>
     <div class="wk-div"></div>
     <div class="wk-grid">
-      <div class="wk-item"><div class="n">${w.new_total}</div><div class="l">本周新增段</div></div>
+      <div class="wk-item"><div class="n">${w.new_total}</div><div class="l">本轮新增段（含测试·寒暄·提单）</div></div>
       <div class="wk-item"><div class="n">${w.judged}</div><div class="l">已判定</div></div>
       <div class="wk-item"><div class="n" style="color:var(--ok)">${w.answered}</div><div class="l">直答正确</div></div>
       <div class="wk-item"><div class="n" style="color:#d9534f">${w.unanswered}</div><div class="l">未直答</div></div>
@@ -1999,6 +2033,7 @@ function renderWeekCard(){
       <div class="wk-item"><div class="n">${w.sug_mix ?? 0}</div><div class="l">含推荐混合</div></div>
       <div class="wk-item"><div class="n">${prog}%</div><div class="l">走查进度（可标注段已判定占比）</div></div>
     </div>`;
+  initWkAnchor();
 }
 
 function renderFunnel(){
@@ -2027,7 +2062,7 @@ function renderFunnel(){
        <div class="fs-chip${kind?" "+kind:""}"><b>${n}</b>${esc(name)}</div></div>`;
   const unprocessedSide = (n) =>
     fData.unprocessed && fData.unprocessed.length
-      ? `<div class="fn-side is-unp" id="unpchip" title="点击查看未标注的 52 段">
+      ? `<div class="fn-side is-unp" id="unpchip" title="点击查看未标注的 ${n} 个会话">
          <span class="lnk"></span><span class="ah">▸</span>
          <div class="fs-chip warn"><b>${n}</b>未标注会话</div></div>` : "";
   const side3 = (parts) =>
@@ -2050,7 +2085,7 @@ function renderFunnel(){
                 ["undetermined","未判定",L.undetermined]])}
      </div>`,
     `<div class="fn-rate">直答率 <b>${L.direct_rate ?? "—"}%</b>
-      <span>= ${L.answered} ÷ ${L.qa}（真实咨询已判定，人工标签优先·AI预标兜底）</span></div>`,
+      <span>= ${L.answered} ÷ ${L.judged ?? (L.answered + L.unanswered + L.uncovered)}（真实咨询已判定，人工标签优先·AI预标兜底）</span></div>`,
   ].join("");
   $("#funnelbar").querySelectorAll("[data-l]").forEach(el=>{
     el.onclick = ()=> loadSegs(el.dataset.l);
@@ -2311,7 +2346,7 @@ function renderTickets(tickets, ticketIds){
   }).join("")}`;
 }
 
-// 键盘流：j/k 移动、1-5 打标签、空格展开
+// 键盘流：j/k 移动、1-6 打标签、空格展开
 document.addEventListener("keydown", e=>{
   if(!fCur.layer || $("#fsegs").style.display === "none") return;
   if(["INPUT","TEXTAREA","SELECT"].includes(document.activeElement?.tagName)) return;
@@ -2325,7 +2360,7 @@ document.addEventListener("keydown", e=>{
   };
   if(e.key === "j" || e.key === "ArrowDown"){ e.preventDefault(); move(1); }
   else if(e.key === "k" || e.key === "ArrowUp"){ e.preventDefault(); move(-1); }
-  else if(e.key >= "1" && e.key <= "5"){
+  else if(e.key >= "1" && e.key <= "6"){
     if((fCur.layer === "tester" || fCur.layer === "suggested" || fCur.layer === "") || fCur.idx < 0) return;
     const seg = rows[fCur.idx], row = fCur.rows[+seg.dataset.i];
     if(!row) return;
