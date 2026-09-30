@@ -1499,17 +1499,21 @@ export default function TaskDetailPage() {
           </div>
 
           {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
-          {redispatchTipDetail && (
-            <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
-          )}
+          {redispatchTipDetail && (() => {
+            const { isAssignee, isReporter } = getCurrentUserRoles();
+            const tipLabel = isAssignee && !isReporter ? '接单提醒' : '派单提醒';
+            return <DispatchFold label={tipLabel} text={redispatchTipDetail} variant="tip" />;
+          })()}
 
           {/* 派单原因：接单人 / 提单人 / 管理员 / 工单操作权限 可见。
-              有 tip（异常提醒）时 tip 已含说明，不再重复展示 reason。 */}
+              提单人侧有 tip 时 tip 常已含说明，不重复展示 reason；
+              接单人可同时看「接单提醒」与「派单原因」。 */}
           {(() => {
-            if (!dispatchReason || redispatchTipDetail) return null;
+            if (!dispatchReason) return null;
             const { isAssignee, isReporter } = getCurrentUserRoles();
             const canOperate = isAdmin || hasPermission('backend:tasks:operate');
             if (!isAssignee && !isReporter && !canOperate) return null;
+            if (redispatchTipDetail && isReporter) return null;
             return (
               <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />
             );

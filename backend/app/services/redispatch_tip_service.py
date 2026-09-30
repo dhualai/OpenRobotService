@@ -14,11 +14,23 @@ PROFILE_MISSING_LABEL = {
 }
 
 YAORENBA_FIELD_ENTRY_TIP = (
-    "这张单挂在摇人吧服务号上，内容写的是现场的车、地图或任务。"
-    "摇人吧和调度、车端的负责人是分开的，系统会按摇人吧这个项目收候选人。"
-    "这是提单时进错了入口，不是派单判错。"
-    "请改到正确的项目，或由接单人转给现场负责人。"
+    "工单目前挂在摇人吧服务号，但描述更像现场车辆、地图或任务问题。"
+    "建议之后提单改选真实对应的项目——平台与 AGV 现场的负责工程师不同，否则派单容易不准；"
+    "也可请当前接单人转派。"
 )
+
+# 接单人视角：说明候选池来自平台，现场问题容易派不准，建议转派
+YAORENBA_FIELD_ENTRY_ASSIGNEE_TIP = (
+    "本单内容更像现场车辆、地图或任务问题，并不属于摇人吧服务平台本身。"
+    "当前是按服务平台候选选出的接单人，容易不准确，建议转派给对应项目同事。"
+)
+
+
+def yaorenba_assignee_tip(prof: Optional[dict]) -> Optional[str]:
+    """接单人专用：摇人吧挂现场内容时的提醒。"""
+    if not isinstance(prof, dict) or not prof.get("yaorenba_field_entry"):
+        return None
+    return YAORENBA_FIELD_ENTRY_ASSIGNEE_TIP
 
 
 def clean_reasoning_for_display(reasoning_raw, log, user_map) -> str:
