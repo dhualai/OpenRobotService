@@ -46,7 +46,7 @@ import { Button, Form, FormItem, Loading, Toast } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { getProjects, type ProjectItem } from '@/api/projects';
 import {
-  createProjectInfo, fetchQrcode, fetchQrcodeByScene, updateProjectInfo,
+  createProjectInfo, fetchQrcode, fetchQrcodeByScene, qrcodeTransition, updateProjectInfo,
   type QrcodeItem,
 } from '@/api/qrcode';
 
@@ -82,6 +82,10 @@ export default function InfoEntry() {
   const [loading, setLoading] = useState(!!pathId || !!sceneCode);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(emptyForm);
+
+  // 行状态：entering 时页面底部出「确认信息」按钮（扫码确认流程，见后端 _send_scan_redirect_card）
+  const [status, setStatus] = useState('');
+  const [confirming, setConfirming] = useState(false);
 
   // 项目名称下拉候选（project 表）与开合；optionsLoaded 区分「没拉到」和「表里真没有」
   const [projectOptions, setProjectOptions] = useState<ProjectItem[]>([]);
@@ -179,6 +183,7 @@ export default function InfoEntry() {
       vehicle_model: row.vehicle_model || '',
     });
     setRowId(row.id);
+    setStatus(row.status || '');
   }, []);
 
   // 扫码进入（链接带 scene）且该行已 published：录入+确认都完成，不停留本页，
@@ -272,6 +277,22 @@ export default function InfoEntry() {
     }
   };
 
+  // 确认信息：扫码核对无误后确认即发布（录入信息行 entering → published，
+  // 2026-09-30 用户口径；后端 confirm 接口直接给 published）。按钮随状态变化消失。
+  const handleConfirm = async () => {
+    if (!rowId) return;
+    setConfirming(true);
+    try {
+      const updated = await qrcodeTransition(rowId, 'confirm');
+      setStatus(updated.status || 'published');
+      Toast({ message: '信息已确认，已发布', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `确认失败：${errMsg(err, '请稍后重试')}`, theme: 'error' });
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   if (loading) return <Loading text="加载中..." />;
 
   return (
@@ -360,6 +381,20 @@ export default function InfoEntry() {
           </Button>
         </FormItem>
       </Form>
+
+      {/* 扫码确认流程：状态机 entering 时（已生成 ticket、未确认）页面底部出「确认信息」，
+          点击 → published（录入信息行确认即发布，不经 confirming） */}
+      {rowId !== null && status === 'entering' && (
+        <Button
+          theme="primary"
+          block
+          loading={confirming}
+          onClick={handleConfirm}
+          style={{ marginTop: 12 }}
+        >
+          确认信息
+        </Button>
+      )}
     </div>
   );
 }
