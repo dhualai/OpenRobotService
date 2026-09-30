@@ -483,8 +483,9 @@ def _vehicle_mode_block(memory) -> str:
         "【车辆】选项引导：当且仅当知识库检索内容对当前问题存在明确互斥的分支、"
         "需要确认用户属于哪种分支才能继续处理时，在输出 JSON 顶层增加 "
         "vehicle_choices 字段（字符串数组），填 2~3 个分支的简短短语——选项必须"
-        "来自知识库检索内容，不得编造；此时 message 只写一句引导问题，不要在正文"
-        "里罗列选项或编号。以下情形一律不输出该字段：知识库内容没有明确分支、"
+        "来自知识库检索内容，不得编造；分支多于 3 个时只给常见程度最高的 3 个，"
+        "并按该顺序排列，其余分支由用户自行描述；此时 message 只写一句引导"
+        "问题，不要在正文里罗列选项或编号。以下情形一律不输出该字段：知识库内容没有明确分支、"
         "问题可以直接回答、需要用户开放描述、应当转工单、上一轮已给出选项尚未"
         "回答、当前在收集工单信息。用户问的是故障码时不出选项，引导其直接输入"
         "完整故障码即可。")
@@ -5416,10 +5417,13 @@ class AiDiagnosisPlatform:
 
     @staticmethod
     def _validate_vehicle_choices(parsed: dict) -> Optional[List[str]]:
-        """车型追问选项机械校验（0930）：整体丢弃制，不部分挽救。
+        """车型追问选项机械校验（0930）：超标截断，救不到下限才整批丢弃。
 
-        通过条件：2~3 个非空字符串、单条 ≤30 字、去重后不变少。
-        任何不满足 → None（当普通回复处理——正文从不含选项，前端零变化）。
+        清洗链：丢非字符串/空串/超 30 字/重复 → 不足 2 条整批丢弃 → 超 3 条截前 3。
+        截断而不整批丢弃：车辆块明令"不要在正文里罗列选项或编号"，丢弃时用户
+        既没按钮也没清单，等于彻底卡死；截断至少给出 3 条 + 输入框「其他」兜底，
+        正好落回分叉树「1/2/3/其他」的设计。截断取模型给的顺序（prompt 已要求
+        取最常见的 3 个），服务端不做语义判断，全是机械操作。
         submit（话术已被服务端接管）由调用侧先行丢弃。
         """
         vc = parsed.get("vehicle_choices")
@@ -5428,18 +5432,19 @@ class AiDiagnosisPlatform:
         clean = []
         for x in vc:
             if not isinstance(x, str):
-                return None
+                continue
             s = x.strip()
-            if not s or len(s) > 30:
-                return None
+            if not s or len(s) > 30 or s in clean:
+                continue
             clean.append(s)
-        if not (2 <= len(clean) <= 3) or len(set(clean)) != len(clean):
-            # 整批丢弃必须留痕：选项没了，用户只会看到一句没按钮的空问题，
-            # 事后翻日志是唯一线索（分叉树节点最多 7 个分支，条数最容易越界）。
-            logger.info(f"[vehicle_mode] 车辆选项校验未过(条数={len(clean)}"
-                        f"{'/去重后变少' if len(set(clean)) != len(clean) else ''})"
-                        f"，整批丢弃: {clean}")
+        if len(clean) < 2:
+            # 一条选项不成题，无可展示——此时只能整批丢弃（正文里本就没有列表）
+            logger.info(f"[vehicle_mode] 车辆选项清洗后不足 2 条，整批丢弃: {vc}")
             return None
+        if len(clean) > 3:
+            # 截断只少分支，丢弃是零可选——取模型排过序的前 3，其余走输入框
+            logger.info(f"[vehicle_mode] 车辆选项超上限({len(clean)}条)，截前 3: {clean}")
+            clean = clean[:3]
         return clean
 
     # ================================================================

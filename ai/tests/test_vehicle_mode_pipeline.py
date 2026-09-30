@@ -55,6 +55,9 @@ def test_vehicle_block_renders_fields():
     # 0930 选项引导规则
     assert "vehicle_choices" in out
     assert "不得编造" in out
+    # 超上限时只给最常见的 3 个（与 _validate_vehicle_choices 的截断配套：
+    # 截断取前 3，所以 prompt 必须要求模型自己排好序）
+    assert "常见程度最高的 3 个" in out
 
 
 def test_vehicle_block_last_choices():
@@ -223,17 +226,30 @@ def test_validate_vehicle_choices_ok():
     assert p._validate_vehicle_choices({"vehicle_choices": [" a ", "b"]}) == ["a", "b"]
 
 
+def test_validate_vehicle_choices_truncates():
+    """超上限截前 3 而不是整批丢弃：分叉树节点最多 7 个分支，全丢 = 用户零可选
+    （正文里明令不许列选项，连清单都没有），截断只少分支且输入框「其他」兜底。"""
+    p = AiDiagnosisPlatform()
+    got = p._validate_vehicle_choices(
+        {"vehicle_choices": ["识别超时", "反复调整后失败", "货物滑动倒塌", "空库位报有物料"]})
+    assert got == ["识别超时", "反复调整后失败", "货物滑动倒塌"]
+    assert len(p._validate_vehicle_choices(
+        {"vehicle_choices": [f"分支{i}" for i in range(7)]})) == 3
+    # 清洗 + 去重后仍够 2 条 → 照样可展示（截断取模型给的顺序）
+    assert p._validate_vehicle_choices(
+        {"vehicle_choices": ["a", "a", "b", "c", "d"]}) == ["a", "b", "c"]
+
+
 def test_validate_vehicle_choices_rejects():
-    # 整体丢弃制：任一不满足 → None（当普通回复处理）
+    """只有机械挽救后不足 2 条才整批丢弃——一条选项不成题，无从展示。"""
     p = AiDiagnosisPlatform()
     bad = [
         None, [],                       # 非法/空
         ["只有一项"],                    # <2
-        ["a", "b", "c", "d"],           # >3
-        ["a", 123],                     # 非字符串元素
-        ["a", "   "],                   # 空串
-        ["x" * 31, "y"],                # 单条超 30 字
-        ["同", "同"],                    # 去重变少
+        ["同", "同"],                    # 去重后只剩 1 条
+        ["a", 123],                     # 非字符串被清洗掉 → 1 条
+        ["a", "   "],                   # 空串被清洗掉 → 1 条
+        ["x" * 31, "y"],                # 超 30 字被清洗掉 → 1 条
     ]
     for vc in bad:
         assert p._validate_vehicle_choices({"vehicle_choices": vc}) is None, vc
@@ -471,3 +487,43 @@ async def test_vehicle_session_choices_reach_result_event(platform, monkeypatch)
     assert result.get("vehicle_choices") == _choices, "选项必须随 result 下发到前端"
     assert mem.metadata["vehicle_mode"]["last_choices"] == _choices, \
         "出题轮必须记 last_choices（下一轮不重复出题）"
+
+
+async def test_vehicle_session_over_limit_still_gets_buttons(platform, monkeypatch):
+    """端到端兜住最坏情形：模型照抄 4 个分支（分叉树常见）→ 截前 3 下发。
+    回归「用户看到一句没按钮的空问题」——那条路径上正文里没有列表，
+    选项一旦被整批丢掉，用户就彻底无从选择。"""
+    import json as _json
+    from ai.agents.AiDiagnosisPlatform.pipeline import AgentState
+
+    async def _dual(q, domain, top_k=8, query_filter=None):
+        return [], []
+
+    platform._retriever.retrieve_domain_dual = _dual
+    # ## 4. 堆叠/堆垛失败 的 A~D 四个分支，模型原样照抄
+    _branches = ["报识别超时", "反复调整后任务失败", "堆垛后货物滑动/倒塌", "空库位报识别到物料"]
+    platform._llm_client.complete = AsyncMock(side_effect=lambda *a, **k: (
+        '```json\n' + _json.dumps({
+            "thinking": "知识库有四个互斥分支",
+            "action": "answer",
+            "message": "具体是什么表现？",
+            "vehicle_choices": _branches,
+        }, ensure_ascii=False) + '\n```'))
+
+    sid = "vm-choices-over-limit"
+    mem = await platform._memory_manager.get_memory(sid)
+    mem.metadata["vehicle_mode"] = dict(_VM, opening_choices=list(_OPEN_CATS))
+    state = AgentState(session_id=sid, phase="idle",
+                       original_query="堆垛失败", problem_summary="堆垛失败")
+    request = type("R", (), {})()
+    request.session_id = sid
+    request.query = "堆垛失败"
+    request.skip_retrieval = False
+    request.created_by = "tester"
+    result = None
+    async for ev in platform._agent_think_stream(request, state, mem):
+        if ev["event"] == "result":
+            result = ev["data"]
+    assert result is not None
+    assert result.get("vehicle_choices") == _branches[:3], \
+        "超上限必须截前 3 下发，不得整批丢失（丢了用户就没按钮了）"
