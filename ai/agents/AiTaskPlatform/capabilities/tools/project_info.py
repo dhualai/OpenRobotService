@@ -328,6 +328,39 @@ def load_snapshot(project_id: str) -> tuple[list[dict], list[dict]]:
         db.close()
 
 
+# 日志子 Agent 固定带上的两组。不靠「调度」两个字触发，避免和调度日志缠在一起。
+_LOG_SITE_GROUPS = ("hardware", "dispatch_software")
+
+
+def render_log_site_facts(nodes: Iterable[dict], values: Iterable[dict]) -> str:
+    """只渲染车型与载具、调度软件。口令、地址、其他组不进入这段文字。"""
+    rows = [
+        row for row in _filled_rows(nodes, values)
+        if not str(row["node"].get("node_key") or "").startswith("custom.")
+    ]
+    parts = []
+    for key in _LOG_SITE_GROUPS:
+        body = _render_group(key, _GROUP_LABEL[key], rows)
+        if body:
+            parts.append(body)
+    text = "\n\n".join(parts).strip()
+    if len(text) > _MAX_CHARS:
+        text = text[:_MAX_CHARS] + "\n（其余字段本次未展开）"
+    return text
+
+
+def site_facts_for_log(project_id: str) -> str:
+    """日志分析自动带上的现场档案。读库失败返回空，不阻断分析。"""
+    if not (project_id or "").strip():
+        return ""
+    try:
+        nodes, values = load_snapshot(project_id.strip())
+    except Exception as exc:
+        logger.warning(f"[project_info] 日志现场档案读取失败: {type(exc).__name__}")
+        return ""
+    return render_log_site_facts(nodes, values)
+
+
 def safe_catalog(project_id: str) -> str:
     """讨论入口的目录行。读库失败时返回空，不阻断讨论。"""
     if not (project_id or "").strip():

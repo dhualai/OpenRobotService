@@ -1640,6 +1640,7 @@ class TaskDiscussRequest(BaseModel):
 class TaskDiscussInjectRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
     text: str = Field(default="", description="插入当前排查轮次的补充文字")
+    lane: str = Field(default="steer", description="steer=插入本轮；followup=结束后跟进，不进入当前排查")
 
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
 async def task_diagnose(body: TaskDiagnoseRequest, request: Request) -> dict:
@@ -1806,7 +1807,8 @@ async def task_discuss_inject(body: TaskDiscussInjectRequest, request: Request) 
         return {"code": 1, "message": "task_id 与 text 不能为空"}
     try:
         from ai.agents.AiTaskPlatform.runtime.inject_mailbox import put
-        await put(body.task_id, query)
+        lane = "followup" if (body.lane or "").strip() == "followup" else "steer"
+        await put(body.task_id, query, lane=lane)
         logger.info(f"[discuss.inject] task_id={body.task_id}, text={query[:60]}")
         return {"code": 0, "data": {"ok": True}}
     except Exception as e:

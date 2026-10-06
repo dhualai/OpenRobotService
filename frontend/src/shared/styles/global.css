@@ -7496,8 +7496,8 @@ html, body, #root {
 .detail-chat-ai-stream {
   margin-top: 8px;
   padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.72);
+  border-radius: 12px;
+  background: var(--muted);
   font-size: 14px;
   line-height: 1.55;
   color: var(--foreground);
@@ -7517,29 +7517,34 @@ html, body, #root {
   50% { opacity: 0; }
 }
 .detail-chat-ai-progress {
-  margin: 6px 0;
-  padding: 8px 12px;
-  background: var(--blue-soft);
-  border: 1px solid var(--blue-5);
-  border-radius: 12px;
+  margin: 8px 0;
+  padding: 10px 12px 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 .detail-chat-ai-progress__head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--primary);
-  margin-bottom: 6px;
+  color: var(--foreground);
+  margin-bottom: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
 }
 .detail-chat-ai-progress__abort {
   margin-left: auto;
-  border: 0;
-  background: transparent;
+  border: 1px solid var(--border);
+  background: var(--card);
   color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 500;
-  padding: 2px 6px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
   cursor: pointer;
 }
 .detail-chat-ai-progress__abort:hover {
@@ -7554,6 +7559,14 @@ html, body, #root {
   padding: 0;
   list-style: none;
 }
+.detail-chat-ai-progress__queue-note {
+  margin: 0;
+  padding: 6px 6px 0 30px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
 .detail-chat-ai-progress__queue-item {
   display: flex;
   align-items: center;
@@ -7562,7 +7575,7 @@ html, body, #root {
   font-weight: 400;
   color: var(--muted-foreground);
   line-height: 1.5;
-  padding: 2px 0 2px 22px;
+  padding: 4px 6px 4px 30px;
 }
 .detail-chat-ai-progress__queue-text {
   flex: 1;
@@ -7635,26 +7648,32 @@ html, body, #root {
 .detail-chat-ai-progress__item {
   display: flex;
   flex-direction: column;
-  padding: 3px 0;
+  padding: 1px 0;
   font-size: 13px;
-  color: var(--muted-foreground);
-  line-height: 1.4;
+  color: var(--foreground);
+  line-height: 1.45;
 }
 .detail-chat-ai-progress__row {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 8px;
+}
+.detail-chat-ai-progress__item.is-running:not(:has(> .detail-chat-ai-progress__children)) > .detail-chat-ai-progress__row {
+  background: color-mix(in oklab, var(--blue-soft) 80%, white);
 }
 .detail-chat-ai-progress__children {
   list-style: none;
-  margin: 2px 0 0 22px;
-  padding: 0;
+  margin: 0 0 2px 14px;
+  padding: 0 0 0 10px;
+  border-left: 1px solid color-mix(in oklab, var(--border) 85%, transparent);
 }
 .detail-chat-ai-progress__icon {
   flex-shrink: 0;
   width: 16px;
   height: 16px;
-  margin-top: 1px;
+  margin-top: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -7665,19 +7684,23 @@ html, body, #root {
   display: block;
 }
 .detail-chat-ai-progress__ic.done-icon {
-  color: var(--primary);
+  color: #15803d;
 }
 .detail-chat-ai-progress__ic.done-icon circle {
-  fill: oklch(0.93 0.05 228);
+  fill: #dcfce7;
   stroke: currentColor;
   stroke-width: 1.1;
 }
 .detail-chat-ai-progress__ic.done-icon path {
   stroke: currentColor;
-  stroke-width: 1.4;
+  stroke-width: 1.6;
 }
 .detail-chat-ai-progress__ic.running-icon {
   color: var(--primary);
+}
+.detail-chat-ai-progress__ic.running-icon circle {
+  stroke: color-mix(in oklab, var(--primary) 28%, white);
+  stroke-width: 1.6;
 }
 .detail-chat-ai-progress__ic.running-icon path {
   stroke: currentColor;
@@ -7687,12 +7710,12 @@ html, body, #root {
   animation: aiProgressSpin 0.9s linear infinite;
 }
 .detail-chat-ai-progress__ic.pending-icon {
-  color: var(--muted-foreground);
-  opacity: 0.6;
+  color: #c5cdd6;
+  opacity: 1;
 }
 .detail-chat-ai-progress__ic.pending-icon circle {
   stroke: currentColor;
-  stroke-width: 1.6;
+  stroke-width: 1.4;
 }
 @keyframes aiProgressSpin {
   to { transform: rotate(360deg); }
@@ -7703,10 +7726,14 @@ html, body, #root {
   word-break: break-word;
 }
 .detail-chat-ai-progress__item.is-running .detail-chat-ai-progress__text {
-  color: var(--primary);
+  color: var(--foreground);
+  font-weight: 500;
 }
 .detail-chat-ai-progress__item.is-done .detail-chat-ai-progress__text {
   color: var(--foreground);
+}
+.detail-chat-ai-progress__item.is-pending .detail-chat-ai-progress__text {
+  color: var(--muted-foreground);
 }
 
 /* ===== 用户选择器（升级对象） ===== */
@@ -8790,56 +8817,9 @@ html, body, #root {
   overflow: visible;
 }
 
-/* 讨论区 AI 执行过程（DiscussionPanel 使用） */
-.detail-chat-ai-progress {
-  margin: 6px 0;
-  padding: 8px 12px;
-  background: var(--blue-soft);
-  border: 1px solid var(--blue-5);
-  border-radius: 12px;
-}
-.detail-chat-ai-progress__head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--primary);
-  margin-bottom: 6px;
-}
-.detail-chat-ai-progress__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 220px;
-  overflow-y: auto;
-}
+/* 讨论区 AI 执行过程（DiscussionPanel 使用）——只补布局，不覆盖图标/徽章语义样式 */
 .detail-chat-ai-progress.is-finished .detail-chat-ai-progress__list {
   max-height: min(60vh, 480px);
-}
-.detail-chat-ai-progress__item {
-  display: flex;
-  flex-direction: column;
-  padding: 3px 0;
-  font-size: 13px;
-  color: var(--muted-foreground);
-  line-height: 1.4;
-}
-.detail-chat-ai-progress__icon {
-  flex-shrink: 0;
-  font-size: 13px;
-  line-height: 1.4;
-}
-.detail-chat-ai-progress__text {
-  flex: 1;
-  min-width: 0;
-  word-break: break-word;
-}
-.detail-chat-ai-progress__item.is-running .detail-chat-ai-progress__text {
-  color: var(--primary);
-}
-.detail-chat-ai-progress__item.is-done .detail-chat-ai-progress__text {
-  color: var(--foreground);
 }
 
 /* 历史工单 搜索图标（HistoryTickets 使用） */

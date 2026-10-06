@@ -106,3 +106,29 @@ def test_nest_progress_todos_groups_log_rounds():
     assert [x["id"] for x in out] == ["planning", 1, 2]
     kids = out[1]["children"]
     assert [c["id"] for c in kids] == ["log_index", "log_r1"]
+
+
+def test_nest_progress_todos_honors_parent_and_span_events():
+    from ai.agents.AiTaskPlatform.tracing import nest_progress_todos
+    items = [
+        {"id": "hist", "description": "查历史方案", "capability": "retrieve_history"},
+        {"id": "note", "description": "命中已验证方案", "capability": "retrieve_history", "parent_id": "hist"},
+        {"id": "log_r1", "description": "R1", "capability": "log_analyze"},
+        {"id": "logs", "description": "分析日志", "capability": "log_analyze"},
+    ]
+    tree = [{
+        "name": "retrieve_history",
+        "events": [
+            {"name": "retrieve", "ts": 1, "attributes": {"count": 2}},
+            {"name": "R1", "ts": 2, "attributes": {"id": "log_r1"}},
+        ],
+        "children": [],
+    }]
+    out = nest_progress_todos(items, span_tree=tree)
+    hist = next(x for x in out if x["id"] == "hist")
+    child_ids = [c["id"] for c in hist["children"]]
+    assert "note" in child_ids
+    assert any(c["description"] == "retrieve" for c in hist["children"])
+    assert "log_r1" not in child_ids
+    logs = next(x for x in out if x["id"] == "logs")
+    assert [c["id"] for c in logs["children"]] == ["log_r1"]

@@ -17,15 +17,16 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability, CapabilityResult
 
 logger = get_logger("TASK_AGENT")
 
-# 首文件弱结论时最多再试几份（含首份一共）
+# 首文件弱结论 / need_feed 换文件时最多再试几份（含首份一共）
 _MAX_LOG_TRIES = 3
 
 _WEAK_MARKERS = (
@@ -90,7 +91,11 @@ class LogAnalyzeCapability(BaseCapability):
             return CapabilityResult.failure(f"日志分析模块加载失败: {type(e).__name__}: {e}")
 
         current = kwargs.get("current_task") or {}
-        if isinstance(task_context, dict) and not task_context.get("task_id") and current.get("task_id"):
+        if not isinstance(task_context, dict):
+            task_context = {}
+        if not (task_context.get("title") or task_context.get("description") or task_context.get("discussion")):
+            task_context = self._default_context(query)
+        if not task_context.get("task_id") and isinstance(current, dict) and current.get("task_id"):
             task_context = {**task_context, "task_id": current.get("task_id")}
         bag = kwargs.get("round_supplements")
         if not isinstance(bag, list):
@@ -114,11 +119,40 @@ class LogAnalyzeCapability(BaseCapability):
             if orig_progress is not None:
                 orig_progress(payload)
 
+        from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import (
+            _detect_algo_log_module,
+            _is_specified_robot_dispatch,
+            match_log_path_for_need_feed,
+            tms_map_need_feed_needle,
+        )
+
         last_fail: Optional[CapabilityResult] = None
         tried_names: List[str] = []
+        tried_keys: Set[str] = set()
+        queue: List[str] = list(candidates)
+        attempt = 0
+        switch_reason = ""
+        max_tries = _MAX_LOG_TRIES
+        refeed_done = False
+        specified_dispatch = _is_specified_robot_dispatch(
+            query, task_context if isinstance(task_context, dict) else {}
+        )
+        usp_env_id = kwargs.get("usp_env_id")
+        try:
+            usp_env_id = int(usp_env_id) if usp_env_id is not None else None
+        except (TypeError, ValueError):
+            usp_env_id = None
 
-        for attempt, raw_path in enumerate(candidates[:_MAX_LOG_TRIES]):
+        while queue and attempt < max_tries:
+            raw_path = queue.pop(0)
+            key = os.path.normcase(os.path.abspath(raw_path))
+            if key in tried_keys:
+                continue
+            tried_keys.add(key)
+            attempt += 1
+
             name = Path(raw_path).name
+            module = _detect_algo_log_module(raw_path)
             tried_names.append(name)
             analyze_path = raw_path
             window_applied = False
@@ -151,24 +185,42 @@ class LogAnalyzeCapability(BaseCapability):
                 except Exception:
                     size_mb = 0
                 no_time_applied = True
+                win_log = f"全量（无发生时间，{size_mb:.0f}MB）"
                 logger.info(
                     f"[log_analyze] 无发生时间，全量分析 {name}（{size_mb:.0f}MB）"
                 )
 
-            if attempt > 0:
+            # 过程区必须显示「真实文件名 + 角色 + 时间窗」
+            _progress({
+                "id": f"log_file_{attempt}",
+                "description": (
+                    f"正在分析：{name} [{module}]"
+                    + (f"（时间窗 {win_log}）" if occurred_ts and not no_time_applied else f"（{win_log}）")
+                    + (f"；因{switch_reason}切入" if switch_reason else "")
+                ),
+                "status": "in_progress",
+                "capability": "log_analyze",
+                "phase": "running",
+            })
+
+            if attempt > 1:
                 logger.info(
-                    f"[log_analyze] 上一份结论偏弱，改试文件 {attempt + 1}/{_MAX_LOG_TRIES}: {name}"
+                    f"[log_analyze] 换文件 {attempt}/{_MAX_LOG_TRIES}: {name} "
+                    f"module={module} reason={switch_reason or 'queue'}"
                 )
                 _progress({
                     "id": f"log_retry_{attempt}",
-                    "description": f"换日志文件再分析：{name}",
+                    "description": (
+                        f"按角色切换日志：{name} [{module}]"
+                        + (f"（{switch_reason}）" if switch_reason else "")
+                    ),
                     "status": "in_progress",
                     "capability": "log_analyze",
                     "phase": "running",
                 })
 
             try:
-                sub = LogSubAgent(analyze_path)
+                sub = LogSubAgent(analyze_path, source_name=raw_path)
                 result = await sub.analyze(
                     task_context=task_context,
                     user_question=query,
@@ -176,6 +228,8 @@ class LogAnalyzeCapability(BaseCapability):
                     is_cancelled=kwargs.get("is_cancelled"),
                     task_id=str(current.get("task_id") or (task_context or {}).get("task_id") or ""),
                     supplements_bag=bag,
+                    live_probe=kwargs.get("usp_live_probe") or kwargs.get("live_probe"),
+                    available_log_paths=candidates,
                 )
             except Exception as e:
                 logger.error(f"LogAnalyzeCapability 执行失败 file={name}: {e}")
@@ -183,6 +237,7 @@ class LogAnalyzeCapability(BaseCapability):
                     f"日志分析失败({name}): {type(e).__name__}: {e}"
                 )
                 self._cleanup_tmp(tmp_path, analyze_path)
+                switch_reason = "上一份失败"
                 continue
 
             weak = self._is_weak_result(result)
@@ -199,13 +254,144 @@ class LogAnalyzeCapability(BaseCapability):
                     error="日志分析无明确结论",
                 )
                 self._cleanup_tmp(tmp_path, analyze_path)
+                switch_reason = "上一份无结论"
                 continue
 
-            if weak and attempt + 1 < min(len(candidates), _MAX_LOG_TRIES):
+            need_feed = (getattr(result, "need_feed", None) or "").strip()
+            if not need_feed:
+                # 结论正文里也可能带 need_feed
+                m_nf = re.search(
+                    r"(?:\*\*need_feed\*\*|need_feed|建议补充数据)\s*[:：]\s*(.+)",
+                    (result.conclusion or "") + "\n" + (result.to_prompt_text() or ""),
+                    re.I,
+                )
+                if m_nf:
+                    need_feed = m_nf.group(1).strip().split("\n")[0].strip()
+
+            # need_feed 命中未读文件 → 按角色切入，不只靠「弱结论」
+            next_by_feed = None
+            if need_feed and attempt < max_tries:
+                next_by_feed = match_log_path_for_need_feed(
+                    need_feed, candidates, exclude=tried_keys,
+                )
+            if next_by_feed:
+                logger.info(
+                    f"[log_analyze] {name} need_feed={need_feed!r} "
+                    f"→ 切换 {Path(next_by_feed).name}"
+                )
+                switch_reason = f"need_feed→{Path(next_by_feed).name}"
+                nk = os.path.normcase(os.path.abspath(next_by_feed))
+                queue = [next_by_feed] + [
+                    p for p in queue
+                    if os.path.normcase(os.path.abspath(p)) != nk
+                ]
+                self._cleanup_tmp(tmp_path, analyze_path)
+                continue
+
+            # 包里没有 TMS-MAP-{map_id}：非指定车直发则定向二次拉取；指定车禁止空跑
+            needle = tms_map_need_feed_needle(need_feed) if need_feed else None
+            if needle and not refeed_done:
+                refeed_done = True
+                if specified_dispatch:
+                    logger.info(
+                        f"[log_analyze] 指定车直发，禁止二次拉取 {needle}"
+                    )
+                    switch_reason = ""
+                    _progress({
+                        "id": "usp_refeed_skip",
+                        "description": (
+                            f"指定车直接下发：不二次拉取 {needle}（任务不必然进 TMS-MAP）"
+                        ),
+                        "status": "completed",
+                        "capability": "log_analyze",
+                        "phase": "done",
+                    })
+                elif usp_env_id:
+                    _progress({
+                        "id": "usp_refeed",
+                        "description": f"本包缺少 {needle}，正在向 USP 定向补拉",
+                        "status": "in_progress",
+                        "capability": "ssh_export_logs",
+                        "phase": "running",
+                    })
+                    extra_files: List[str] = []
+                    extra_tmps: List[str] = []
+                    try:
+                        from ai.agents.AiTaskPlatform.server_pull.usp_log_puller import (
+                            pull_usp_logs_matching,
+                        )
+                        extra_files, extra_tmps = await pull_usp_logs_matching(
+                            env_id=usp_env_id,
+                            name_contains=needle,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[log_analyze] 二次拉取失败: {e}")
+                    if extra_tmps:
+                        runtime_tmps = kwargs.get("_tmp_dirs")
+                        if isinstance(runtime_tmps, list):
+                            runtime_tmps.extend(extra_tmps)
+                    added = []
+                    for p in extra_files:
+                        pk = os.path.normcase(os.path.abspath(p))
+                        if pk in tried_keys:
+                            continue
+                        if not os.path.isfile(p):
+                            continue
+                        if pk not in {
+                            os.path.normcase(os.path.abspath(x)) for x in candidates
+                        }:
+                            candidates.append(p)
+                            added.append(p)
+                    if added:
+                        logger.info(
+                            f"[log_analyze] 二次拉取到 "
+                            f"{[Path(p).name for p in added]}"
+                        )
+                        _progress({
+                            "id": "usp_refeed",
+                            "description": (
+                                "已补拉 "
+                                + ", ".join(Path(p).name for p in added[:3])
+                            ),
+                            "status": "completed",
+                            "capability": "ssh_export_logs",
+                            "phase": "done",
+                        })
+                        nxt = match_log_path_for_need_feed(
+                            need_feed, added, exclude=tried_keys,
+                        ) or added[0]
+                        queue = [nxt] + queue
+                        max_tries = max(max_tries, attempt + 1)
+                        switch_reason = f"二次拉取→{Path(nxt).name}"
+                        self._cleanup_tmp(tmp_path, analyze_path)
+                        continue
+                    _progress({
+                        "id": "usp_refeed",
+                        "description": f"定向补拉未找到 {needle}，继续用当前结论",
+                        "status": "completed",
+                        "capability": "ssh_export_logs",
+                        "phase": "done",
+                    })
+                else:
+                    logger.info("[log_analyze] 无 usp_env_id，跳过 TMS-MAP 二次拉取")
+
+            if weak and attempt < _MAX_LOG_TRIES and (
+                queue or any(
+                    os.path.normcase(os.path.abspath(p)) not in tried_keys
+                    for p in candidates
+                )
+            ):
                 logger.info(
                     f"[log_analyze] {name} 结论偏弱(fallback="
                     f"{getattr(result, 'fallback_used', False)})，将试下一份"
                 )
+                # 队列空时把未试过的候选补进队尾
+                if not queue:
+                    for p in candidates:
+                        pk = os.path.normcase(os.path.abspath(p))
+                        if pk not in tried_keys:
+                            queue.append(p)
+                switch_reason = "结论偏弱"
                 self._cleanup_tmp(tmp_path, analyze_path)
                 continue
 
@@ -214,6 +400,8 @@ class LogAnalyzeCapability(BaseCapability):
                 "evidence": getattr(result, "evidence", [])[:10],
                 "queries": getattr(result, "queries_made", 0),
                 "fallback": getattr(result, "fallback_used", False),
+                "need_feed": need_feed,
+                "module": module,
                 "product": self._detect_product(raw_path),
                 "window_applied": window_applied,
                 "no_time_applied": no_time_applied,
@@ -240,13 +428,26 @@ class LogAnalyzeCapability(BaseCapability):
                     "\n\n（提示：若告知故障发生的大致时间，可用时间窗加速定位，速度更快。）"
                 )
             if len(tried_names) > 1:
-                text += f"\n\n（已依次分析：{' → '.join(tried_names)}）"
+                text += f"\n\n（已按角色依次分析：{' → '.join(tried_names)}）"
+            if need_feed:
+                if specified_dispatch and tms_map_need_feed_needle(need_feed):
+                    text += (
+                        f"\n\n（need_feed={need_feed}：指定车直发，已禁止二次拉取 TMS-MAP）"
+                    )
+                else:
+                    text += (
+                        f"\n\n（仍建议补充：{need_feed}；"
+                        "本包没有匹配文件"
+                        + ("，二次拉取也未找到" if refeed_done else "")
+                        + "）"
+                    )
             cap = CapabilityResult(text=text, meta=meta, ok=True)
             if bus is not None:
                 try:
                     bus.set_attribute("window_applied", window_applied)
                     bus.set_attribute("queries", meta.get("queries") or 0)
                     bus.set_attribute("log_file", name)
+                    bus.set_attribute("module", module)
                 except Exception:
                     pass
             self._cleanup_tmp(tmp_path, analyze_path)

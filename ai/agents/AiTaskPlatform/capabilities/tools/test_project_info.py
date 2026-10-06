@@ -2,6 +2,7 @@
 
 from ai.agents.AiTaskPlatform.capabilities.tools.project_info import (
     catalog_line,
+    render_log_site_facts,
     render_project_info,
     select_groups,
 )
@@ -120,6 +121,21 @@ def test_network_group_hides_address_and_password():
     assert _SECRET not in text
     assert _SSH_CODE not in text
     assert _IP not in text
+
+
+def test_log_site_facts_keep_vehicle_and_dispatch_only():
+    nodes, values = _sample()
+    nodes = nodes + [_node("d1", "dispatch_software.usp", "调度版本")]
+    values = values + [_value("d1", "USP 3.2.1")]
+    text = render_log_site_facts(nodes, values)
+    assert "XQE-6" in text
+    assert "USP 3.2.1" in text
+    assert "通力" not in text
+    assert "A-03" not in text
+    assert _SECRET not in text
+    assert _SSH_CODE not in text
+    assert _IP not in text
+    assert "13800001111" not in text
 
 
 def test_environment_attachment_hides_path():

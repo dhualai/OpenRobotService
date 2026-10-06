@@ -19,9 +19,11 @@ logger = get_logger("TASK_AGENT")
 _HTML_TAG = re.compile(r"<[^>]+>")
 
 
-def _plain_comment_text(raw: str, limit: int = 800) -> str:
+def _plain_comment_text(raw: str, limit: int | None = 800) -> str:
     text = _HTML_TAG.sub(" ", str(raw or ""))
     text = re.sub(r"\s+", " ", text).strip()
+    if limit is None:
+        return text
     return text[:limit]
 
 
@@ -60,14 +62,14 @@ def format_quoted_comment_block(context: dict) -> str:
         qc = load_quoted_comment(reply_to) if reply_to else {}
     if not isinstance(qc, dict):
         return ""
-    content = _plain_comment_text(qc.get("content") or "")
+    content = _plain_comment_text(qc.get("content") or "", limit=None)
     if not content:
         return ""
     author = qc.get("author") or qc.get("created_by_name") or qc.get("created_by") or "?"
     return f"## 用户本轮引用的评论\n[{author}] {content}\n"
 
 
-# 一张工单一条讨论史：单条留住上一轮分析，总量过长时保留开头和最近对话。
+# 显式传入 total 时才截断（单测与兜底）。讨论主路径未到窗口不走这里，见 history_compact。
 _THREAD_PER_COMMENT = 2000
 _THREAD_TOTAL = 16000
 
@@ -114,15 +116,32 @@ def format_discussion_thread(
     return "\n".join([head, *kept])
 
 
-def load_ticket_discussion(task_id: str) -> str:
-    """读取这张工单的全部讨论评论（从早到晚），作为每一轮的上下文。"""
+def render_comment_lines(comments: list, *, per_comment: int | None = None) -> list[str]:
+    """按时间把评论渲染成一行一条。per_comment 为空则保留正文，不预先截断。"""
+    lines: list[str] = []
+    for c in comments or []:
+        if not isinstance(c, dict):
+            continue
+        author = c.get("author") or c.get("created_by_name") or c.get("created_by") or "?"
+        content = _plain_comment_text(c.get("content") or "", limit=per_comment)
+        if not content:
+            continue
+        if str(author) == "U老师":
+            lines.append(f"[U老师] {content}")
+        else:
+            lines.append(f"[{author}] {content}")
+    return lines
+
+
+def load_ticket_comment_rows(task_id: str) -> list[dict]:
+    """读取这张工单的全部讨论评论（从早到晚），返回原文行，不做长度裁剪。"""
     from app.models.task import TaskComment
     from app.core.database import SessionLocal
 
     try:
         tid = int(task_id)
     except (TypeError, ValueError):
-        return ""
+        return []
     try:
         db = SessionLocal()
         try:
@@ -133,14 +152,19 @@ def load_ticket_discussion(task_id: str) -> str:
             db.close()
     except Exception as e:
         logger.warning(f"[discuss] 读取工单讨论史失败 task={task_id}: {e}")
-        return ""
+        return []
     rows = []
     for c in comments:
         rows.append({
             "author": getattr(c, "created_by_name", None) or getattr(c, "created_by", None) or "?",
             "content": getattr(c, "content", "") or "",
         })
-    return format_discussion_thread(rows)
+    return rows
+
+
+def load_ticket_discussion(task_id: str) -> str:
+    """读取这张工单的全部讨论评论（从早到晚）。未到窗口时调用方应使用这份原文。"""
+    return "\n".join(render_comment_lines(load_ticket_comment_rows(task_id)))
 
 
 def load_discussion(task_id: str, limit: int = 20) -> str:

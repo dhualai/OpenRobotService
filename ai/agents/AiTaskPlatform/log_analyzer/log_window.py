@@ -116,8 +116,15 @@ def extract_time_window(
         win_desc = f"前{span}m"
 
     try:
+        # 临时名带上原文件 stem，便于下游按 DYNAMIC_MAP / TMS / TASK-MANAGER 识别模块
+        # （原先一律 logwin_*.log → module=unknown，手册深挖与 seed 全失效）
+        stem = Path(log_path).stem
+        safe = re.sub(r"[^\w.\-]+", "_", stem)[:80] or "log"
         tmp = tempfile.NamedTemporaryFile(
-            prefix="logwin_", suffix=".log", delete=False, delete_on_close=False,
+            prefix=f"logwin_{safe}_",
+            suffix=".log",
+            delete=False,
+            delete_on_close=False,
         )
         tmp_path = tmp.name
         count = 0

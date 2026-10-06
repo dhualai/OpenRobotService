@@ -19,8 +19,8 @@ logger = get_logger("TASK_AGENT")
 _ARTIFACT_RE = re.compile(r"algo_log_\d{12}_\d+min\.(?:zip|tar\.gz|tgz)", re.I)
 
 _SERVICE_PRIORITY = (
-    "TMS-MAP-",
     "DYNAMIC_MAP",
+    "TMS-MAP-",
     "TMS-",
     "AI_map",
     "MapPreprocess",
@@ -30,9 +30,19 @@ _SERVICE_PRIORITY = (
 # 问题关键词 → 优先看的服务（命中则把对应服务提前）
 _QUERY_SERVICE_HINTS = (
     (
-        ("不可达", "可达", "topo", "路径", "规划", "求解", "导航", "reach", "path", "goal", "目标点"),
+        # 「路径规划中 / 不动」：手册 6.1 先 DYNAMIC_MAP（刷新+上轨），再 TMS
+        ("路径规划中", "规划中", "规划卡住", "一直规划", "没有路径下发",
+         "机器人不动", "车不动", "mapf", "下发路径", "路径下发"),
+        ("DYNAMIC_MAP", "TMS-MAP-", "TMS-", "TASK-MANAGER", "AI_map", "MapPreprocess"),
+    ),
+    (
+        ("不可达", "可达", "topo", "求解", "导航", "reach", "goal", "目标点", "无解"),
         # 地图专属 TMS（如 TMS-MAP-jingmen）常含该图求解；再 DYNAMIC_MAP / 通用 TMS
         ("TMS-MAP-", "DYNAMIC_MAP", "TMS-", "AI_map", "MapPreprocess", "TASK-MANAGER"),
+    ),
+    (
+        ("路径", "规划", "path", "plan"),
+        ("DYNAMIC_MAP", "TMS-MAP-", "TMS-", "AI_map", "MapPreprocess", "TASK-MANAGER"),
     ),
     (
         ("调度", "任务池", "充电", "休息点", "派车", "task-manager", "task_manager"),
@@ -65,8 +75,15 @@ def _pick_log_files(root: Path) -> List[str]:
     return [str(p) for p in logs]
 
 
-def select_log_for_query(log_files: List[str], query: str = "") -> List[str]:
-    """按用户问题重排日志文件；「不可达/路径/求解」优先 DYNAMIC_MAP/TMS，避免先读 TASK-MANAGER 心跳。"""
+def select_log_for_query(
+    log_files: List[str],
+    query: str = "",
+    prefer_map_id: str = "",
+) -> List[str]:
+    """按用户问题重排日志文件；「不可达/路径/求解」优先 DYNAMIC_MAP/TMS，避免先读 TASK-MANAGER 心跳。
+
+    prefer_map_id：现场探测拿到 map_id 时，把 TMS-MAP-{map_id} 提到对应优先级最前。
+    """
     if not log_files:
         return []
     q = (query or "").lower()
@@ -76,12 +93,27 @@ def select_log_for_query(log_files: List[str], query: str = "") -> List[str]:
             priority = list(order)
             break
 
+    map_needle = ""
+    mid = (prefer_map_id or "").strip()
+    if mid:
+        map_needle = f"TMS-MAP-{mid}".upper()
+
     def rank(path: str) -> tuple:
         name = Path(path).name
+        blob = path.replace("\\", "/").upper()
+        # 精确地图 Actor：目录名 TMS-MAP-{map_id} 也可命中（上传 zip 内常叫 debug_logs.log）
+        if map_needle and map_needle in blob:
+            for i, key in enumerate(priority):
+                ku = key.upper()
+                if ku == "TMS-MAP-" or ku.startswith("TMS-MAP"):
+                    return (i, -1, name)
+                if ku in blob:
+                    return (i, -1, name)
+            return (0, -1, name)
         for i, key in enumerate(priority):
-            if key in name:
-                return (i, name)
-        return (len(priority), name)
+            if key.upper() in blob:
+                return (i, 0, name)
+        return (len(priority), 0, name)
 
     return sorted(log_files, key=rank)
 
@@ -241,3 +273,139 @@ async def pull_recent_usp_logs(
         for d in tmp_dirs:
             shutil.rmtree(d, ignore_errors=True)
         raise
+
+
+def _safe_log_needle(s: str) -> str:
+    """只允许文件名检索用的安全片段。"""
+    out = re.sub(r"[^A-Za-z0-9_\-]", "", s or "")
+    return out[:80]
+
+
+async def pull_usp_logs_matching(
+    env_id: int,
+    name_contains: str,
+) -> Tuple[List[str], List[str]]:
+    """在 USP 机上按文件名片段定向拉日志（二次补拉 TMS-MAP-{map_id}）。
+
+    不重跑 export_logs.sh：首次拉包常只有通用 TMS。在 /usp_algorithm_logs 等目录
+    找匹配 .log，SFTP / docker cp 回来。找不到则返回空列表，不抛。
+    """
+    needle = _safe_log_needle(name_contains)
+    if not needle or "TMS-MAP" not in needle.upper():
+        return [], []
+
+    cfg = await fetch_usp_env_ssh_config(int(env_id))
+    if not cfg:
+        logger.warning(f"[usp_refeed] 无法获取 SSH 配置 env_id={env_id}")
+        return [], []
+
+    host = (cfg.get("ssh_host") or "").strip()
+    user = (cfg.get("ssh_user") or "").strip()
+    workdir = (cfg.get("export_workdir") or "").strip()
+    if not host or not user:
+        return [], []
+
+    auth_type = (cfg.get("ssh_auth_type") or "password").strip().lower()
+    key_path = (cfg.get("ssh_private_key_path") or "").strip() if auth_type == "key" else ""
+    password = (cfg.get("ssh_password") or "") if auth_type != "key" else ""
+    timeout = float(cfg.get("ssh_connect_timeout_s") or 8.0)
+    docker_container = (cfg.get("docker_container") or "").strip()
+    docker_sudo = bool(cfg.get("docker_sudo", False))
+    docker = "sudo docker" if docker_sudo else "docker"
+
+    find_roots = " ".join(
+        _sh_quote(p)
+        for p in (
+            "/usp_algorithm_logs",
+            workdir or "",
+            "/home/ubuntu/usp",
+            "/opt/usp",
+        )
+        if p
+    )
+    find_cmd = (
+        f"find {find_roots} -type f "
+        f"\\( -name '*.log' -o -name '*.log.*' -o -name 'debug_logs*' \\) "
+        f"2>/dev/null | grep -i {_sh_quote(needle)} | head -20"
+    )
+
+    tmp_root = Path(tempfile.mkdtemp(prefix="usp_refeed_"))
+    tmp_dirs = [str(tmp_root)]
+    found: List[str] = []
+    try:
+        with SshClient(
+            host=host,
+            port=int(cfg.get("ssh_port") or 22),
+            username=user,
+            password=password,
+            private_key_path=key_path,
+            connect_timeout=timeout,
+        ) as ssh:
+            logger.info(
+                f"[usp_refeed] env={env_id} needle={needle} "
+                f"docker={docker_container or '-'}"
+            )
+            code, out, err = ssh.run(find_cmd, timeout=30.0)
+            host_hits = [
+                ln.strip()
+                for ln in (out or "").splitlines()
+                if ln.strip().startswith("/") and "TMS-MAP" in ln.upper()
+            ]
+            for remote in host_hits[:8]:
+                local = tmp_root / Path(remote).name
+                if local.suffix.lower() != ".log":
+                    local = tmp_root / (Path(remote).name.replace("/", "_") + ".log")
+                try:
+                    ssh.download(remote, str(local))
+                    if local.is_file() and local.stat().st_size > 0:
+                        found.append(str(local))
+                except Exception as e:
+                    logger.info(f"[usp_refeed] 宿主机下载失败 {remote}: {e}")
+
+            if not found and docker_container:
+                inner = (
+                    "find /usp_algorithm_logs /var/log /logs "
+                    + (f"{_sh_quote(workdir)} " if workdir else "")
+                    + "-type f \\( -name '*.log' -o -name 'debug_logs*' \\) "
+                    f"2>/dev/null | grep -i {_sh_quote(needle)} | head -20"
+                )
+                dcmd = (
+                    f"{docker} exec {_sh_quote(docker_container)} "
+                    f"bash -lc {_sh_quote(inner)}"
+                )
+                dcode, dout, derr = ssh.run(dcmd, timeout=30.0)
+                c_hits = [
+                    ln.strip()
+                    for ln in (dout or "").splitlines()
+                    if ln.strip().startswith("/") and "TMS-MAP" in ln.upper()
+                ]
+                for remote in c_hits[:8]:
+                    staging = f"/tmp/_ors_refeed_{Path(remote).name}"
+                    cp = (
+                        f"{docker} cp {_sh_quote(docker_container + ':' + remote)} "
+                        f"{_sh_quote(staging)}"
+                    )
+                    ccode, _, cerr = ssh.run(cp, timeout=30.0)
+                    if ccode != 0:
+                        logger.info(f"[usp_refeed] docker cp 失败 {remote}: {cerr[:200]}")
+                        continue
+                    local = tmp_root / Path(remote).name
+                    try:
+                        ssh.download(staging, str(local))
+                        if local.is_file() and local.stat().st_size > 0:
+                            found.append(str(local))
+                    except Exception as e:
+                        logger.info(f"[usp_refeed] 容器文件下载失败 {remote}: {e}")
+
+        logger.info(
+            f"[usp_refeed] env={env_id} needle={needle} files={len(found)} "
+            f"names={[Path(p).name for p in found[:4]]}"
+        )
+        if not found:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return [], []
+        return found, tmp_dirs
+    except Exception as e:
+        logger.warning(f"[usp_refeed] env={env_id} 异常: {e}")
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        return [], []
