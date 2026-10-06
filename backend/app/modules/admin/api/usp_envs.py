@@ -31,6 +31,39 @@ _table_ready = False
 _ENC_PREFIX = "enc1:"
 
 
+def _normalize_ssh_host(raw: Optional[str]) -> str:
+    """SSH 主机只接受 IP/域名，去掉误填的 http(s)://、路径和端口。
+
+    例：http://10.10.10.202/ → 10.10.10.202；host:2222 → host（端口仍用 ssh_port）。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    lower = text.lower()
+    for prefix in ("https://", "http://", "ssh://"):
+        if lower.startswith(prefix):
+            text = text[len(prefix):]
+            lower = text.lower()
+            break
+    # 去掉 user@ 前缀（用户名走 ssh_user）
+    if "@" in text and not text.startswith("["):
+        text = text.rsplit("@", 1)[-1]
+    # 去掉路径
+    text = text.split("/", 1)[0].strip()
+    # IPv6 [addr]:port
+    if text.startswith("["):
+        end = text.find("]")
+        if end > 0:
+            return text[1:end].strip()
+        return text.strip("[]")
+    # host:port → 只留 host（除非是纯 IPv6 无括号，少见，不在此拆）
+    if text.count(":") == 1:
+        host_part, maybe_port = text.rsplit(":", 1)
+        if maybe_port.isdigit():
+            return host_part.strip()
+    return text.strip()
+
+
 def _aes_key() -> bytes:
     secret = (settings.SECRET_KEY or "").encode("utf-8")
     if len(secret) < 16:
@@ -198,7 +231,7 @@ def _ssh_dict(row: UspEnv) -> Dict[str, Any]:
         "name": row.name or "",
         "enabled": bool(row.enabled),
         "capabilities": _caps(row),
-        "ssh_host": row.ssh_host or "",
+        "ssh_host": _normalize_ssh_host(row.ssh_host),
         "ssh_port": int(row.ssh_port or 22),
         "ssh_user": row.ssh_user or "",
         "ssh_auth_type": row.ssh_auth_type or "password",
@@ -272,6 +305,9 @@ async def create_env(
     _ = current_user
     auth = _norm_auth(body.ssh_auth_type)
     _validate_ssh_ready(auth, body.ssh_private_key_path, body.ssh_password, require_secret=True)
+    host = _normalize_ssh_host(body.ssh_host)
+    if not host:
+        raise HTTPException(status_code=422, detail="SSH 主机无效（请填 IP 或域名，不要填 http://）")
     code = _blank(body.code)
     now = _utcnow()
     db = _open()
@@ -284,7 +320,7 @@ async def create_env(
             enabled=bool(body.enabled),
             notes=_blank(body.notes),
             project_id=_blank(body.project_id),
-            ssh_host=body.ssh_host.strip(),
+            ssh_host=host,
             ssh_port=int(body.ssh_port),
             ssh_user=body.ssh_user.strip(),
             ssh_auth_type=auth,
@@ -349,9 +385,14 @@ async def update_env(
             if code and _code_taken(db, code, except_id=env_id):
                 raise HTTPException(status_code=409, detail=f"code 已存在: {code}")
             row.code = code
-        for key in ("name", "ssh_host", "ssh_user", "export_script", "export_workdir"):
+        for key in ("name", "ssh_user", "export_script", "export_workdir"):
             if key in payload and isinstance(payload[key], str):
                 setattr(row, key, payload[key].strip())
+        if "ssh_host" in payload and isinstance(payload["ssh_host"], str):
+            host = _normalize_ssh_host(payload["ssh_host"])
+            if not host:
+                raise HTTPException(status_code=422, detail="SSH 主机无效（请填 IP 或域名，不要填 http://）")
+            row.ssh_host = host
         for key in ("notes", "project_id", "ssh_private_key_path", "docker_container"):
             if key in payload:
                 value = payload[key]
@@ -422,7 +463,9 @@ async def test_ssh(
     except ImportError as e:
         raise HTTPException(status_code=500, detail=f"后端未安装 paramiko: {e}") from e
 
-    host = cfg["ssh_host"]
+    host = _normalize_ssh_host(cfg["ssh_host"])
+    if not host:
+        raise HTTPException(status_code=422, detail="SSH 主机无效（请填 IP 或域名，不要填 http://）")
     port = int(cfg["ssh_port"] or 22)
     user = cfg["ssh_user"]
     timeout = float(cfg.get("ssh_connect_timeout_s") or 8.0)

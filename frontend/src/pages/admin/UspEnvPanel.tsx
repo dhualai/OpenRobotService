@@ -160,7 +160,7 @@ export default function UspEnvPanel() {
       enabled: form.enabled,
       notes: form.notes.trim() || null,
       project_id: form.project_id.trim() || null,
-      ssh_host: form.ssh_host.trim(),
+      ssh_host: form.ssh_host.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, ''),
       ssh_port: Number(form.ssh_port) || 22,
       ssh_user: form.ssh_user.trim(),
       ssh_auth_type: form.ssh_auth_type,
@@ -257,7 +257,7 @@ export default function UspEnvPanel() {
               启用（出现在讨论区选项）
             </label>
             <label className="usp-env-form__full">备注<textarea value={form.notes} onChange={(e) => setField('notes', e.target.value)} rows={2} /></label>
-            <label>SSH 主机*<input value={form.ssh_host} onChange={(e) => setField('ssh_host', e.target.value)} /></label>
+            <label>SSH 主机*<input value={form.ssh_host} onChange={(e) => setField('ssh_host', e.target.value)} placeholder="如 10.10.10.202（不要填 http://）" /></label>
             <label>端口<input value={form.ssh_port} onChange={(e) => setField('ssh_port', e.target.value)} /></label>
             <label>用户*<input value={form.ssh_user} onChange={(e) => setField('ssh_user', e.target.value)} /></label>
             <label>

@@ -21,7 +21,18 @@ class SshClient:
         private_key_path: str = "",
         connect_timeout: float = 8.0,
     ):
-        self.host = host
+        self.host = (host or "").strip()
+        for _pfx in ("https://", "http://", "ssh://"):
+            if self.host.lower().startswith(_pfx):
+                self.host = self.host[len(_pfx):]
+                break
+        if "@" in self.host and not self.host.startswith("["):
+            self.host = self.host.rsplit("@", 1)[-1]
+        self.host = self.host.split("/", 1)[0].strip()
+        if self.host.count(":") == 1:
+            _h, _p = self.host.rsplit(":", 1)
+            if _p.isdigit():
+                self.host = _h.strip()
         self.port = int(port or 22)
         self.username = username
         self.password = password or ""
