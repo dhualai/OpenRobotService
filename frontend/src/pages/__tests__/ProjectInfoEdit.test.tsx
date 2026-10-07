@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { Toast } from 'tdesign-mobile-react';
 import ProjectInfoEdit from '../admin/ProjectInfoEdit';
@@ -184,7 +184,7 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     renderEdit();
     fireEvent.click(await screen.findByLabelText('编辑基础信息'));
 
-    const input = document.querySelector('.mac-info-row__input') as HTMLInputElement;
+    const input = screen.getAllByTestId('info-row-input')[0] as HTMLInputElement;
     fireEvent.change(input, { target: { value: '基础信息2' } });
     fireEvent.blur(input);
 
@@ -208,7 +208,7 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     expect(screen.getByLabelText('长按拖动调整从属')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('编辑基础信息'));
-    const input = document.querySelector('.mac-info-row__input') as HTMLInputElement;
+    const input = screen.getAllByTestId('info-row-input')[0] as HTMLInputElement;
     fireEvent.change(input, { target: { value: '基础信息2' } });
     fireEvent.blur(input);
 
@@ -290,7 +290,7 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
       });
     });
     // 改名态要等建节点返回并入列后才渲染：单独 waitFor 拿 DOM，别跟上面的接口断言挤一个
-    await waitFor(() => expect(document.querySelector('.mac-info-row__input')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByTestId('info-row-input')[0]).toBeTruthy());
   });
 
   it('删除节点走 DELETE 接口（含子树提示）', async () => {
@@ -569,14 +569,14 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     // 渲染成文档而不是原样吐 md 源码：标题是 h1，节点分组是 h2（路径当小标题）
     const title = await screen.findByText('基础信息 · 修改记录');
     expect(title.tagName).toBe('H1');
-    expect(Array.from(document.querySelectorAll('.mac-history__md h2')).map((el) => el.textContent)).toEqual([
+    expect(Array.from(within(screen.getByTestId('history-md')).getAllByRole('heading', { level: 2 })).map((el) => el.textContent)).toEqual([
       '基础信息',
       '基础信息 / 客户信息',
       '已删除 · 旧地址',
     ]);
     expect(screen.getByText(/共 3 条记录 · 涉及 3 个节点/)).toBeTruthy();
     // 每条记录：时间 / 操作人 / 动作 / 变动
-    expect(Array.from(document.querySelectorAll('.mac-history__md li')).map((el) => el.textContent)).toEqual([
+    expect(Array.from(within(screen.getByTestId('history-md')).getAllByRole('listitem')).map((el) => el.textContent)).toEqual([
       '2026-09-14 11:00:00 张三 · 修改：把标题从「基础」改为「基础信息」',
       '2026-09-14 10:30:00 李四 · 修改：把内容从「空」改为「中力」',
       '2026-09-14 10:00:00 王五 · 删除：删除节点「旧地址」',
@@ -599,15 +599,15 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     renderEdit();
 
     const historyBtn = await screen.findByLabelText('查看基础信息的编辑历史');
-    await waitFor(() => expect(historyBtn.querySelector('.mac-info-row__op-dot')).toBeTruthy());
+    await waitFor(() => expect(historyBtn.getAttribute('title')).toBe('有新的编辑记录'));
     // 没有记录的节点不出红点
-    expect(screen.getByLabelText('查看客户信息的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
+    expect(screen.getByLabelText('查看客户信息的编辑历史').getAttribute('title')).toBe('编辑历史');
 
     fireEvent.click(historyBtn);
     expect(await screen.findByText(/张三 · 修改：把内容从「空」改为「中力」/)).toBeTruthy();
 
     await waitFor(() => {
-      expect(screen.getByLabelText('查看基础信息的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
+      expect(screen.getByLabelText('查看基础信息的编辑历史').getAttribute('title')).toBe('编辑历史');
     });
     // 已读水位 = 该节点最新记录 id，按「项目 + 登录用户」存，互不影响
     expect(JSON.parse(localStorage.getItem('project-info-tree:history-seen:P1:admin') ?? '{}')).toEqual({
@@ -625,7 +625,7 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
 
     const historyBtn = await screen.findByLabelText('查看基础信息的编辑历史');
     await waitFor(() => expect(fetchInfoNodeChangeSummaryApi).toHaveBeenCalled());
-    expect(historyBtn.querySelector('.mac-info-row__op-dot')).toBeNull();
+    expect(historyBtn.getAttribute('title')).toBe('编辑历史');
   });
 
   it('保存成功后立即重算历史：自己刚改的节点也带上小红点（没点开过就一直带）', async () => {
@@ -644,17 +644,17 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
 
     const historyBtn = await screen.findByLabelText('查看基础信息的编辑历史');
     await waitFor(() => expect(fetchInfoNodeChangeSummaryApi).toHaveBeenCalledTimes(1));
-    expect(historyBtn.querySelector('.mac-info-row__op-dot')).toBeNull();
+    expect(historyBtn.getAttribute('title')).toBe('编辑历史');
 
     // 改名保存成功 → 立即再拉一次各节点最新记录 → 小红点出现
     fireEvent.click(await screen.findByLabelText('编辑基础信息'));
-    const input = document.querySelector('.mac-info-row__input') as HTMLInputElement;
+    const input = screen.getAllByTestId('info-row-input')[0] as HTMLInputElement;
     fireEvent.change(input, { target: { value: '基础信息2' } });
     fireEvent.blur(input);
 
     await waitFor(() => expect(updateInfoNodeApi).toHaveBeenCalledWith('r1', { title: '基础信息2' }));
     await waitFor(() => {
-      expect(screen.getByLabelText('查看基础信息2的编辑历史').querySelector('.mac-info-row__op-dot')).toBeTruthy();
+      expect(screen.getByLabelText('查看基础信息2的编辑历史').getAttribute('title')).toBe('有新的编辑记录');
     });
     expect(fetchInfoNodeChangeSummaryApi).toHaveBeenCalledTimes(2); // 进页面 1 次 + 保存成功后 1 次
   });
@@ -666,8 +666,8 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
 
     const rootBtn = await screen.findByLabelText('查看基础信息的编辑历史');
     const childBtn = screen.getByLabelText('查看客户信息的编辑历史');
-    await waitFor(() => expect(childBtn.querySelector('.mac-info-row__op-dot')).toBeTruthy());
-    expect(rootBtn.querySelector('.mac-info-row__op-dot')).toBeTruthy();
+    await waitFor(() => expect(childBtn.getAttribute('title')).toBe('有新的编辑记录'));
+    expect(rootBtn.getAttribute('title')).toBe('有新的编辑记录');
   });
 
   it('点开子节点历史后，子节点与根节点的红点一起消失（根节点的点只汇总未读的变动）', async () => {
@@ -678,8 +678,8 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     renderEdit();
 
     const childBtn = await screen.findByLabelText('查看客户信息的编辑历史');
-    await waitFor(() => expect(childBtn.querySelector('.mac-info-row__op-dot')).toBeTruthy());
-    expect(screen.getByLabelText('查看基础信息的编辑历史').querySelector('.mac-info-row__op-dot')).toBeTruthy();
+    await waitFor(() => expect(childBtn.getAttribute('title')).toBe('有新的编辑记录'));
+    expect(screen.getByLabelText('查看基础信息的编辑历史').getAttribute('title')).toBe('有新的编辑记录');
 
     fireEvent.click(childBtn);
     // 子节点仍是「只看自己」的逐条列表，不带子树口径
@@ -687,8 +687,8 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     expect(await screen.findByText('把内容从「空」改为「中力」')).toBeTruthy();
 
     await waitFor(() => {
-      expect(screen.getByLabelText('查看客户信息的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
-      expect(screen.getByLabelText('查看基础信息的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
+      expect(screen.getByLabelText('查看客户信息的编辑历史').getAttribute('title')).toBe('编辑历史');
+      expect(screen.getByLabelText('查看基础信息的编辑历史').getAttribute('title')).toBe('编辑历史');
     });
   });
 
@@ -703,16 +703,16 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     renderEdit();
 
     const childBtn = await screen.findByLabelText('查看客户信息的编辑历史');
-    await waitFor(() => expect(childBtn.querySelector('.mac-info-row__op-dot')).toBeTruthy());
+    await waitFor(() => expect(childBtn.getAttribute('title')).toBe('有新的编辑记录'));
 
     fireEvent.click(childBtn);
     expect(await screen.findByText('改了子节点')).toBeTruthy();
 
     await waitFor(() => {
-      expect(screen.getByLabelText('查看客户信息的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
+      expect(screen.getByLabelText('查看客户信息的编辑历史').getAttribute('title')).toBe('编辑历史');
     });
     // 根节点自己的记录还没看过 → 红点还在
-    expect(screen.getByLabelText('查看基础信息的编辑历史').querySelector('.mac-info-row__op-dot')).toBeTruthy();
+    expect(screen.getByLabelText('查看基础信息的编辑历史').getAttribute('title')).toBe('有新的编辑记录');
   });
 
   it('深层节点（第 4 层）有新变动时，它的每一层上级都出小红点', async () => {
@@ -737,11 +737,11 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     renderEdit();
 
     const leafBtn = await screen.findByLabelText('查看数量的编辑历史');
-    await waitFor(() => expect(leafBtn.querySelector('.mac-info-row__op-dot')).toBeTruthy());
+    await waitFor(() => expect(leafBtn.getAttribute('title')).toBe('有新的编辑记录'));
     // 数量 → 车型1 → 车辆 → 硬件，一路都带点
-    expect(screen.getByLabelText('查看车型1的编辑历史').querySelector('.mac-info-row__op-dot')).toBeTruthy();
-    expect(screen.getByLabelText('查看车辆的编辑历史').querySelector('.mac-info-row__op-dot')).toBeTruthy();
-    expect(screen.getByLabelText('查看硬件的编辑历史').querySelector('.mac-info-row__op-dot')).toBeTruthy();
+    expect(screen.getByLabelText('查看车型1的编辑历史').getAttribute('title')).toBe('有新的编辑记录');
+    expect(screen.getByLabelText('查看车辆的编辑历史').getAttribute('title')).toBe('有新的编辑记录');
+    expect(screen.getByLabelText('查看硬件的编辑历史').getAttribute('title')).toBe('有新的编辑记录');
   });
 
   it('点开链上任意一处的历史，整条小红点一起消失（子树整体标记已读）', async () => {
@@ -769,17 +769,17 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     renderEdit();
 
     const carBtn = await screen.findByLabelText('查看车辆的编辑历史');
-    await waitFor(() => expect(carBtn.querySelector('.mac-info-row__op-dot')).toBeTruthy());
+    await waitFor(() => expect(carBtn.getAttribute('title')).toBe('有新的编辑记录'));
 
     // 点的是用户看得见的那个点（车辆），不是真正变动的叶子节点
     fireEvent.click(carBtn);
     expect(await screen.findByText('把内容从「2」改为「6」')).toBeTruthy();
 
     await waitFor(() => {
-      expect(screen.getByLabelText('查看车辆的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
-      expect(screen.getByLabelText('查看数量的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
-      expect(screen.getByLabelText('查看车型1的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
-      expect(screen.getByLabelText('查看硬件的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
+      expect(screen.getByLabelText('查看车辆的编辑历史').getAttribute('title')).toBe('编辑历史');
+      expect(screen.getByLabelText('查看数量的编辑历史').getAttribute('title')).toBe('编辑历史');
+      expect(screen.getByLabelText('查看车型1的编辑历史').getAttribute('title')).toBe('编辑历史');
+      expect(screen.getByLabelText('查看硬件的编辑历史').getAttribute('title')).toBe('编辑历史');
     });
   });
 
@@ -791,11 +791,11 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     renderEdit();
 
     const childBtn = await screen.findByLabelText('查看客户信息的编辑历史');
-    await waitFor(() => expect(childBtn.querySelector('.mac-info-row__op-dot')).toBeTruthy());
+    await waitFor(() => expect(childBtn.getAttribute('title')).toBe('有新的编辑记录'));
 
     fireEvent.click(childBtn);
     await waitFor(() => {
-      expect(screen.getByLabelText('查看基础信息的编辑历史').querySelector('.mac-info-row__op-dot')).toBeNull();
+      expect(screen.getByLabelText('查看基础信息的编辑历史').getAttribute('title')).toBe('编辑历史');
     });
   });
 });

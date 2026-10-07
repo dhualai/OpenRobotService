@@ -1,23 +1,9 @@
 import type { ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 
-const mockNavigate = vi.fn();
-const mockHasPermission = vi.fn((code?: string) => true);
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-  };
-});
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: (sel?: (s: { hasPermission: typeof mockHasPermission }) => unknown) => {
-    const state = { hasPermission: mockHasPermission };
-    return typeof sel === 'function' ? sel(state) : state;
-  },
-}));
+// 入口显隐走真 auth store 的 hasPermission；跳转走真路由，断言落在真实地址上
 
 // 用户统计区域依赖 Loading（加载态）与 ReactECharts（两个分组共四张图表），
 // jsdom 无 canvas，均以占位组件 mock
@@ -35,11 +21,21 @@ vi.mock('echarts-for-react', () => ({
 }));
 
 import AdminEntries from '../admin/AdminEntries';
+import { useAuthStore } from '@/stores/auth';
+
+/** 地址栏探针：入口点击落到真实 URL 上 */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="path">{location.pathname}</div>;
+}
 
 const renderView = () => {
   return render(
-    <MemoryRouter>
-      <AdminEntries />
+    <MemoryRouter initialEntries={['/admin']}>
+      <LocationProbe />
+      <Routes>
+        <Route path="*" element={<AdminEntries />} />
+      </Routes>
     </MemoryRouter>
   );
 };
@@ -47,20 +43,19 @@ const renderView = () => {
 describe('AdminEntries', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockNavigate.mockClear();
-    mockHasPermission.mockImplementation(() => true);
+    // admin 权限码直通（就是线上用后端派生权限码判定入口显隐的那条路径）
+    useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
   });
 
   it('shows developer mode only when permitted', () => {
     renderView();
-    expect(mockHasPermission).toHaveBeenCalledWith('frontend:admin:dispatch-dev:show');
     expect(screen.getByText('开发者模式')).toBeInTheDocument();
     fireEvent.click(screen.getByText('开发者模式'));
-    expect(mockNavigate).toHaveBeenCalledWith('/admin/dispatch-dev');
+    expect(screen.getByTestId('path').textContent).toBe('/admin/dispatch-dev');
   });
 
   it('hides developer mode without permission', () => {
-    mockHasPermission.mockImplementation((code?: string) => code !== 'frontend:admin:dispatch-dev:show');
+    useAuthStore.setState({ permissions: ['frontend:admin:roles:show'] });
     renderView();
     expect(screen.queryByText('开发者模式')).not.toBeInTheDocument();
     expect(screen.getByText('角色管理')).toBeInTheDocument();
@@ -81,7 +76,7 @@ describe('AdminEntries', () => {
   it('should navigate on entry card click', () => {
     renderView();
     fireEvent.click(screen.getByText('角色管理'));
-    expect(mockNavigate).toHaveBeenCalledWith('/admin/roles');
+    expect(screen.getByTestId('path').textContent).toBe('/admin/roles');
   });
 
   it('should render the two user stats groups and all four charts', () => {

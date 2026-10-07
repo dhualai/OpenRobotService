@@ -6,6 +6,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { Toast } from 'tdesign-mobile-react';
 import ProjectInfoTemplate from '../admin/ProjectInfoTemplate';
+import { useAuthStore } from '@/stores/auth';
 import { fetchInfoTemplateApi, saveInfoTemplateApi, type ApiInfoTemplate } from '@/api/infoNodes';
 
 vi.mock('@/api/infoNodes', () => ({
@@ -14,17 +15,7 @@ vi.mock('@/api/infoNodes', () => ({
 }));
 
 // 权限可切换：默认给到详情模板权限码（开发者/超级管理员或 admin 都长这样），
-// 无权限用户用 authState.canEditTemplate = false 覆盖。
-// hasPermission 只判这个码——与页面里的用法一致（后端按全局角色派生后随登录态下发）。
-const authState = vi.hoisted(() => ({ canEditTemplate: true }));
-vi.mock('@/stores/auth', () => ({
-  PERM_PROJECT_INFO_TEMPLATE: 'frontend:admin:project-info-template:show',
-  useAuthStore: (selector: (s: { username: string; hasPermission: (code: string) => boolean }) => unknown) =>
-    selector({
-      username: 'admin',
-      hasPermission: (code: string) => code === 'frontend:admin:project-info-template:show' && authState.canEditTemplate,
-    }),
-}));
+// 无权限用户改用别的权限码覆盖（用例里 setState 控制，走真 store 的判定）
 
 vi.mock('tdesign-mobile-react', () => {
   const Navbar = ({ title }: { title?: ReactNode }) => <div>{title}</div>;
@@ -66,13 +57,14 @@ const renderTemplate = () =>
     </MemoryRouter>
   );
 
+// 行标题按组件显式声明的 testid 取（非编辑态下标题即按钮），不认样式类名
 const rowTitles = () =>
-  Array.from(document.querySelectorAll('.mac-tpl-row__title')).map((el) => el.textContent);
+  screen.getAllByTestId('tpl-row-title').map((el) => el.textContent);
 
 describe('ProjectInfoTemplate（详情模板编辑页）', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    authState.canEditTemplate = true;
+    useAuthStore.setState({ username: 'admin', permissions: ['frontend:admin:project-info-template:show'] });
     vi.mocked(fetchInfoTemplateApi).mockResolvedValue(TEMPLATE);
   });
 
@@ -245,7 +237,7 @@ describe('ProjectInfoTemplate（详情模板编辑页）', () => {
   });
 
   it('没有权限码（非开发者/超级管理员）：提示不可编辑，且不请求模板接口', async () => {
-    authState.canEditTemplate = false;
+    useAuthStore.setState({ permissions: ['frontend:admin:project-detail:show'] });
     renderTemplate();
     expect(await screen.findByText(/仅「开发者 \/ 超级管理员」可编辑详情模板/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: '保存并同步' })).toBeNull();

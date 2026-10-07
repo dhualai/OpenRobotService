@@ -101,6 +101,8 @@ export default function TicketStatusDetail() {
               return (
                 <div
                   key={t.id}
+                  data-testid="ticket-card"
+                  data-suspended={suspended}
                   style={{
                     background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
                     boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
