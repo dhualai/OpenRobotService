@@ -106,6 +106,22 @@ const renderSetting = (onChange = vi.fn()) => {
   return { ...utils, onChange };
 };
 
+/**
+ * 等「标签池刚进 DOM」的那一瞬间就返回，不等 React 的 passive effect 跑完。
+ * 用来复现 CI 慢机器上的时序：RTL 的 findBy 靠 MutationObserver 触发，可能在
+ * 「标签已渲染、初始化勾选还没生效」的窗口里就返回了（deploy-split gate 就是这样偶发红的）。
+ */
+const waitFirstTagPoolRender = () =>
+  new Promise<void>((resolve) => {
+    const observer = new MutationObserver(() => {
+      if (screen.queryByRole('button', { name: '全选' })) {
+        observer.disconnect();
+        resolve();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+
 describe('问题共享文档设置（提单弹窗内）', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -178,6 +194,19 @@ describe('问题共享文档设置（提单弹窗内）', () => {
     expect(draft.content).toContain('## 问题描述');
     expect(draft.content).toContain('## 前因后果');
     expect(draft.content).toContain('## 涉及人员');
+  });
+
+  // CI 慢机器竞态回归（deploy-split gate 曾挂在这里）：在「标签刚进 DOM、初始化勾选还没生效」
+  // 的窗口里点「全选」，勾选不能被随后的初始化覆盖 —— 覆盖了就不再有 system 段、onChange 不再触发。
+  it('标签首帧刚进 DOM 就点「全选」，勾选不会被初始化覆盖', async () => {
+    const { onChange } = renderSetting();
+    await waitFirstTagPoolRender();
+    fireEvent.click(screen.getByRole('button', { name: '全选' }));
+
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    const draft = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(draft.content).toContain('### 车端软件');
+    expect(screen.getByRole('button', { name: /车端软件/ }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('「全部取消」清空勾选，写过的文档内容保留不被清掉', async () => {
