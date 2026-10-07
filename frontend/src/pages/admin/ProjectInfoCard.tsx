@@ -262,7 +262,7 @@ export default function ProjectInfoCard({ projectId, canEdit, onMarkChange }: {
               )}
             </div>
           ) : (
-            <article className="mac-doc">
+            <article className="mac-doc" data-testid="doc">
               {visibleRoots.map((root) => (
                 <DocSection
                   key={root.id}
@@ -314,8 +314,8 @@ function DocSection({ node, depth, byParent, marked, onToggleMark, valueCounts }
     isMedia ? 'mac-doc__row--media' : '',
   ].filter(Boolean).join(' ');
   return (
-    <section className={`mac-doc__section mac-doc__section--d${level}`}>
-      <div className={rowClass}>
+    <section className={`mac-doc__section mac-doc__section--d${level}`} data-depth={level}>
+      <div className={rowClass} data-node={node.title}>
         <span className="mac-doc__label">{node.title}</span>
         {showsValue && (
           <div className="mac-doc__value">

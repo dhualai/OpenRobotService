@@ -6,23 +6,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-const mockRequest = vi.fn();
+// 必须 hoisted：@/api/profile 在 import 期就会调一次 createRequest()，而 vi.mock 工厂
+// 会在那个时刻求值，普通顶层 const 还处在 TDZ
+const mockRequest = vi.hoisted(() => vi.fn());
 
-vi.mock('@/api/client', () => ({
+vi.mock('@/api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/client')>()),
   createRequest: () => mockRequest,
 }));
 
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ hasPermission: () => true }),
-}));
-
-vi.mock('@/config/api', () => ({
-  default: { ADMIN: { BASE_URL: '/api/admin' } },
-}));
-
-// 编辑弹层才用到的选项接口：用例不打开弹层，给最小桩
-vi.mock('@/api/profile', () => ({
-  avatarUrl: (id: number) => `/api/admin/resources/${id}/raw`,
+// 编辑弹层才用到的选项接口：用例不打开弹层，给最小桩（头像 URL 等真实实现照用）
+vi.mock('@/api/profile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/profile')>()),
   getProfileOptions: () => Promise.resolve({}),
 }));
 
@@ -37,12 +32,8 @@ vi.mock('tdesign-mobile-react', () => ({
   BackTop: () => null,
 }));
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useNavigate: () => vi.fn() };
-});
-
 import UserManage from '../admin/UserManage';
+import { useAuthStore } from '@/stores/auth';
 
 interface UserRow {
   id: string;
@@ -82,14 +73,16 @@ const setup = (users: UserRow[] = USERS) => {
   );
 };
 
-// 列表按 DOM 顺序取卡片标题（姓名）
+// 列表按 DOM 顺序取卡片标题（姓名）：按组件声明的 testid 取，不认样式类名
 const renderedNames = () =>
-  Array.from(document.querySelectorAll('.mac-user-card__title')).map((el) => el.textContent ?? '');
+  screen.getAllByTestId('user-card-title').map((el) => el.textContent ?? '');
 
 describe('用户管理列表排序', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    // 真 auth store：admin 权限码直通，判断逻辑与线上一致
+    useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
   });
 
   it('默认按关注时间倒序：最新关注在前，无关注时间的排最后', async () => {
@@ -97,7 +90,7 @@ describe('用户管理列表排序', () => {
     await waitFor(() => expect(renderedNames()).toEqual(['李四', '张三', '王五']));
 
     // 默认选中「关注时间」；有数据的卡片上带日期 chip（无数据的王五没有）
-    expect(screen.getByRole('button', { name: '关注时间' }).className).toContain('is-active');
+    expect(screen.getByRole('button', { name: '关注时间' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getAllByText(/^关注 \d{4}\/\d{2}\/\d{2}$/)).toHaveLength(2);
   });
 
@@ -108,7 +101,7 @@ describe('用户管理列表排序', () => {
     fireEvent.click(screen.getByRole('button', { name: '用户名' }));
     // li_si < wang_wu < zhang_san
     expect(renderedNames()).toEqual(['李四', '王五', '张三']);
-    expect(screen.getByRole('button', { name: '用户名' }).className).toContain('is-active');
+    expect(screen.getByRole('button', { name: '用户名' }).getAttribute('aria-pressed')).toBe('true');
     expect(localStorage.getItem('admin_user_manage_sort')).toBe('username');
   });
 
@@ -122,6 +115,6 @@ describe('用户管理列表排序', () => {
     // 回来时列表已重拉：王五改过姓名/部门（排序键 username 未变）→ 顺序不跳、仍按用户名排
     setup(USERS.map((u) => (u.id === 'u3' ? { ...u, name: '王小五', department: '交付部' } : u)));
     await waitFor(() => expect(renderedNames()).toEqual(['李四', '王小五', '张三']));
-    expect(screen.getByRole('button', { name: '用户名' }).className).toContain('is-active');
+    expect(screen.getByRole('button', { name: '用户名' }).getAttribute('aria-pressed')).toBe('true');
   });
 });
