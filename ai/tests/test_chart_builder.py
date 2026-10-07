@@ -10,6 +10,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 # 确保项目根目录在 sys.path 中
 _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root) not in sys.path:
@@ -42,6 +44,12 @@ def _load_platform_modules():
         spec.loader.exec_module(mod)
         loaded[mod_name.split(".")[-1]] = mod
     return loaded
+
+
+@pytest.fixture(scope="module")
+def mods():
+    """pytest 模式下的模块注入；脚本模式由 main() 直接调用 _load_platform_modules()。"""
+    return _load_platform_modules()
 
 
 def _sample_collected() -> dict:

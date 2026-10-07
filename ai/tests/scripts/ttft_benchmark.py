@@ -11,7 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_env_path = (_SCRIPT_DIR / ".." / ".env").resolve()
+_env_path = (_SCRIPT_DIR / ".." / ".." / ".env").resolve()
 print(f"  加载 .env: {_env_path} (exists={_env_path.exists()})")
 load_dotenv(_env_path)
 

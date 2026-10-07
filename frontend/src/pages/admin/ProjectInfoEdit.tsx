@@ -823,7 +823,7 @@ export default function ProjectInfoEdit({
             </div>
           ) : historyMarkdown ? (
             /* 一级标签：整棵子树的变动按节点分组，用 react-markdown 渲染（真解析，动态文本已在生成时转义） */
-            <div className="mac-history__md">
+            <div className="mac-history__md" data-testid="history-md">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{historyMarkdown}</ReactMarkdown>
             </div>
           ) : (
@@ -993,6 +993,7 @@ function InfoRow(props: InfoRowProps) {
           {(props.canEdit && props.editingId === node.id) ? (
             <input
               className="mac-info-row__input"
+              data-testid="info-row-input"
               autoFocus
               defaultValue={node.title}
               onBlur={(event) => {
