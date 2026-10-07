@@ -105,7 +105,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          # 单独用 3.12：ai/requirements.txt 自身要求 Python >= 3.12
+          # （numpy>=2.5.1 等没有 3.11 wheel，用 env.PYTHON_VERSION 会解析失败）。
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -115,6 +117,7 @@ jobs:
           # tenacity、httpx、openai、redis、qdrant-client 等模块级 import，
           # 少装一个就是收集期 ModuleNotFoundError，得不到任何有效信号。
           # 先装 CPU 版 torch，否则 pip 默认拉 CUDA 版（体积数 GB、白等几分钟）。
+          # 做法与 docs/troubleshooting.md 5.2 一致。
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r ai/requirements.txt
 
