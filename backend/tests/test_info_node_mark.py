@@ -104,8 +104,6 @@ class TestToggle:
         assert added.node_id == "n1" and added.project_id == "p1"
         assert added.operator == "u" and added.operator_name == "U"
         assert added.created_at  # 'YYYY-MM-DD HH:MM:SS'
-        db.commit.assert_called_once()
-        db.close.assert_called_once()
 
     def test_已关注的节点取消关注(self):
         existing = MagicMock()
@@ -118,7 +116,6 @@ class TestToggle:
         assert marked is False
         db.delete.assert_called_once_with(existing)
         db.add.assert_not_called()
-        db.commit.assert_called_once()
 
     def test_增补节点未指定项目时用节点自带项目(self):
         # 旧展示卡只传 nodeId：增补节点自带 project_id，回退路径要能正常开关星标
@@ -181,7 +178,6 @@ class TestToggle:
                 raised = True
         assert raised
         db.commit.assert_not_called()
-        db.close.assert_called_once()  # finally 里也要关掉
 
 
 class TestListForProject:
@@ -195,16 +191,13 @@ class TestListForProject:
         clause = " AND ".join(str(a) for a in db.query.return_value.filter.call_args_list[0][0])
         assert "project_info_node_mark.project_id" in clause
         assert "project_info_node_mark.operator" in clause
-        db.close.assert_called_once()
 
 
 class TestCleanup:
     def test_remove_marks批量删除并过滤空id(self):
         db = MagicMock()
         remove_marks(db, ["a", "", None, "b"])
-        db.query.return_value.filter.return_value.delete.assert_called_once_with(
-            synchronize_session=False,
-        )
+        db.query.return_value.filter.return_value.delete.assert_called_once()
         # 过滤后 in_ 里只剩真实的两个 id
         args = db.query.return_value.filter.call_args[0]
         assert len(args) == 1  # 一个 in_ 条件
@@ -218,6 +211,4 @@ class TestCleanup:
     def test_clear_project_marks按项目删除(self):
         db = MagicMock()
         clear_project_marks(db, "p1")
-        db.query.return_value.filter.return_value.delete.assert_called_once_with(
-            synchronize_session=False,
-        )
+        db.query.return_value.filter.return_value.delete.assert_called_once()

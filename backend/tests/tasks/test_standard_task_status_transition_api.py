@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from tests.test_utils import LoggingTestClient
+from tests.utils.logging_client import LoggingTestClient
 
 from app.modules.tasks.api.task import router, get_db
 from app.modules.tasks.services.ticket_service import TicketService

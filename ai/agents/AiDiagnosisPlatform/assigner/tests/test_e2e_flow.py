@@ -57,6 +57,7 @@ def _cfg(**kwargs):
         preferred_assignee_enabled=True,
         preferred_assignee_force_keep=True,
         department_routing={},
+        product_routing={},
         history_recall={},
         vague_strong_signals={"enabled": True},
     )
