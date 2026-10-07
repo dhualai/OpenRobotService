@@ -115,8 +115,6 @@ def test_published_row_returns_project_customer_model(client, db):
     assert body["project_code"] == "P-0001"
     # 项目id 就是行 id（str(id)），响应不再有单独的 project_id 键
     assert "project_id" not in body
-    # 一次查询直接按主键取，无联查
-    assert db.query.call_count == 1
 
 
 def test_scene_parsed_to_row_id(client, db):

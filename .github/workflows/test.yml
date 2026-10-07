@@ -94,6 +94,46 @@ jobs:
           name: allure-results-api
           path: automation/output/allure-results
 
+  test-ai:
+    name: AI unit tests (non-blocking)
+    runs-on: ubuntu-latest
+    # 非阻断门禁：目的是让 AI 侧单测的通过情况在 PR 上显性化（此前从不运行）。
+    # 它会拉起 qdrant-client / 数据库驱动等较重依赖，跑红也不挡合并，先观察一段时间再收紧。
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-test.txt
+          pip install qdrant-client
+
+      - name: Prepare AI env
+        run: |
+          if [ ! -f ai/.env ]; then
+            cp ai/.env.example ai/.env
+          fi
+
+      - name: Run AI unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AI_PLAN_EXECUTE: "1"
+          HF_HUB_OFFLINE: "1"
+        run: |
+          pytest ai/tests ai/agents/AiTaskPlatform ai/agents/AiDiagnosisPlatform/assigner/tests ai/core -q -p no:cacheprovider --junitxml=ai-junit.xml
+
+      - name: Upload AI test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-junit
+          path: ai-junit.xml
+
   test-real:
     name: Real backend smoke tests
     runs-on: ubuntu-latest

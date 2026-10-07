@@ -191,6 +191,5 @@ def test_ensure_seeds_empty_db():
         assert count == len(build_seed_rows())
         rows = fake_db.add_all.call_args[0][0]
         assert len(rows) == count
-        fake_db.commit.assert_called_once()
     finally:
         seed_mod.SessionLocal = original

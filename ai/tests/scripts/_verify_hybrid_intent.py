@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-_project_root = Path(__file__).resolve().parent.parent.parent
+_project_root = Path(__file__).resolve().parent.parent.parent.parent
 _dap_dir = _project_root / "ai" / "agents" / "AiDataAnalysisPlatform"
 
 
