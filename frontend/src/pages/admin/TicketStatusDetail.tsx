@@ -2,10 +2,10 @@
 //   仪表盘统计卡：/admin/dashboard/tickets/:status（全部工单 / 待处理 / 超时工单 + 单一状态）
 //   项目工单卡三格：/admin/project-detail/:id/tickets/:status（总工单 / 正在处理 / 超期工单）
 // 后端同一个 /dashboard/tickets 接口，带 project_ids 就只列这些项目。
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
-import { Navbar, Loading } from 'tdesign-mobile-react';
+import { Navbar, Loading, Button } from 'tdesign-mobile-react';
 import { fetchTicketsByStatus, type TicketListItem } from '@/api/dashboard';
 import { TICKET_STATUS_MAP } from '@/shared/constants/dashboard';
 import { macTone } from '@/shared/components/macaronBits';
@@ -43,6 +43,7 @@ const SUSPENDED_TAG_BG = `color-mix(in oklab, ${SUSPENDED_BAR} 18%, transparent)
 // 标签文字用浅底可读的深蓝（percentLabelColor 对浅色弧段用的是同一支），
 // 不用色条本身的 #46aede —— 11px 小字压在上面对比度不够。
 const SUSPENDED_TAG_FG = macTone('blue-1');
+const PAGE_SIZE = 20;
 
 export default function TicketStatusDetail() {
   // 两条入口共用一个页面：仪表盘 = /admin/dashboard/tickets/:status（可看全部的人看全部），
@@ -54,6 +55,9 @@ export default function TicketStatusDetail() {
   const [items, setItems] = useState<TicketListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState('');
+  const requestIdRef = useRef(0);
 
   const meta = TICKET_STATUS_MAP[status];
   // 统计卡下钻的特殊 scope（组合口径，非单一状态）：
@@ -62,32 +66,56 @@ export default function TicketStatusDetail() {
   const title = (scopedProjectId ? PROJECT_SCOPE_LABELS[status] : scopeLabel) ?? meta?.label ?? status;
   const backendReady = scopeLabel ? true : Boolean(meta?.backendReady);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (skip = 0) => {
+    const requestId = ++requestIdRef.current;
+    setError('');
+    if (skip === 0) {
+      setLoading(true);
+      setLoadingMore(false);
+      setItems([]);
+      setTotal(0);
+    } else {
+      setLoadingMore(true);
+    }
     // 带项目 id 时收窄成这一个项目（后端 project_ids 就是任务表 project_id 的 in 过滤，
     // 与卡片概览 get_ticket_summary(db, [project_id]) 同一口径，条数因此对得上）；
     // 否则沿用仪表盘原口径：能看全部的人不过滤，其余人限于自己关联的项目。
-    const res = await fetchTicketsByStatus(
-      status,
-      scopedProjectId ? [scopedProjectId] : (canViewAll ? undefined : projectIds),
-    );
-    setItems(res.items);
-    setTotal(res.total);
-    setLoading(false);
+    try {
+      const res = await fetchTicketsByStatus(
+        status,
+        scopedProjectId ? [scopedProjectId] : (canViewAll ? undefined : projectIds),
+        { skip, limit: PAGE_SIZE },
+      );
+      if (requestId !== requestIdRef.current) return;
+      setItems((previous) => skip === 0 ? res.items : [...previous, ...res.items]);
+      setTotal(res.total);
+    } catch {
+      if (requestId === requestIdRef.current) setError('工单列表加载失败，请重试');
+    } finally {
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    }
   }, [status, scopedProjectId, projectIds, canViewAll]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { requestIdRef.current += 1; };
+  }, [load]);
 
   return (
     <div>
       <Navbar title={`${title} · 工单明细`} leftArrow onLeftClick={() => navigate(-1)} fixed />
       <div style={{ padding: '16px', paddingTop: 64 }}>
-        <p style={{ fontSize: 13, color: '#999', marginBottom: 12 }}>共 {total} 条</p>
+        <p style={{ fontSize: 13, color: '#999', marginBottom: 12 }}>
+          共 {total} 条{items.length < total ? `，已加载 ${items.length} 条` : ''}
+        </p>
 
         {loading ? <Loading text="加载中..." /> : (
           items.length === 0 ? (
             <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
-              暂无数据
+              {error ? error : '暂无数据'}
               {!backendReady && (
                 <div style={{ marginTop: 8, fontSize: 12, color: '#bbb' }}>
                   该状态后端接口尚未接入，见 docs/工程文档.md
@@ -139,6 +167,19 @@ export default function TicketStatusDetail() {
               );
             })
           )
+        )}
+        {!loading && (items.length < total || error) && (
+          <div style={{ textAlign: 'center', marginTop: 16 }}>
+            {error && items.length > 0 && <p role="alert">{error}</p>}
+            <Button
+              block
+              variant="outline"
+              disabled={loadingMore}
+              onClick={() => { void load(items.length); }}
+            >
+              {loadingMore ? '加载中...' : error ? '重试' : '加载更多'}
+            </Button>
+          </div>
         )}
       </div>
     </div>

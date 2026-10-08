@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
 const mockNavigate = vi.fn();
@@ -14,9 +14,10 @@ vi.mock('@/api/dashboard', () => ({
   fetchTicketsByStatus: (...args: unknown[]) => mockFetchTickets(...args),
 }));
 
+const authState = vi.hoisted(() => ({ projectIds: [] as string[], canViewAll: true }));
 vi.mock('@/stores/auth', () => ({
   PERMISSION_VIEW_ALL: 'frontend:admin:dashboard:view-all',
-  useAuthStore: () => ({ projectIds: [], hasPermission: () => true }),
+  useAuthStore: () => ({ projectIds: authState.projectIds, hasPermission: () => authState.canViewAll }),
 }));
 
 vi.mock('@/shared/utils/wechatJsSdk', () => ({
@@ -26,6 +27,9 @@ vi.mock('@/shared/utils/wechatJsSdk', () => ({
 vi.mock('tdesign-mobile-react', () => ({
   Navbar: ({ title }: { title?: ReactNode }) => <nav>{title}</nav>,
   Loading: ({ text }: { text?: string }) => <div>{text}</div>,
+  Button: ({ children, disabled, onClick }: ButtonHTMLAttributes<HTMLButtonElement>) => (
+    <button disabled={disabled} onClick={onClick}>{children}</button>
+  ),
 }));
 
 import TicketStatusDetail from '../admin/TicketStatusDetail';
@@ -49,9 +53,9 @@ const ITEMS = [
 const cardOf = (title: string): HTMLElement =>
   screen.getByText(title).parentElement!.parentElement as HTMLElement;
 
-const renderView = () =>
+const renderView = (status = 'overdue') =>
   render(
-    <MemoryRouter initialEntries={['/admin/dashboard/tickets/overdue']}>
+    <MemoryRouter initialEntries={[`/admin/dashboard/tickets/${status}`]}>
       <Routes>
         <Route path="/admin/dashboard/tickets/:status" element={<TicketStatusDetail />} />
         <Route path="/admin/project-detail/:id/tickets/:status" element={<TicketStatusDetail />} />
@@ -72,6 +76,8 @@ const renderProjectView = (status = 'overdue') =>
 describe('TicketStatusDetail · 超时工单列表', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authState.projectIds = [];
+    authState.canViewAll = true;
     mockFetchTickets.mockResolvedValue({ items: ITEMS, total: ITEMS.length });
   });
 
@@ -124,7 +130,7 @@ describe('TicketStatusDetail · 超时工单列表', () => {
     renderProjectView('overdue');
     await screen.findByText('挂起-最久');
     // 即便这个用户能看全部（canViewAll=true），项目卡下钻也只列这一个项目
-    expect(mockFetchTickets).toHaveBeenCalledWith('overdue', ['P-001']);
+    expect(mockFetchTickets).toHaveBeenCalledWith('overdue', ['P-001'], { skip: 0, limit: 20 });
   });
 
   it('标题用项目卡自己的词（总工单/正在处理/超期工单），与点进来的格子对得上', async () => {
@@ -139,7 +145,72 @@ describe('TicketStatusDetail · 超时工单列表', () => {
   it('仪表盘入口不受影响：仍按「能看全部 = 不过滤」的原口径请求', async () => {
     renderView();
     await screen.findByText('挂起-最久');
-    expect(mockFetchTickets).toHaveBeenCalledWith('overdue', undefined);
+    expect(mockFetchTickets).toHaveBeenCalledWith('overdue', undefined, { skip: 0, limit: 20 });
     expect(screen.getByText('超时工单 · 工单明细')).toBeInTheDocument();
+  });
+
+  it.each(['all', 'pending', 'overdue'])('%s 超过20条时可以继续加载到统计总数', async (status) => {
+    const tickets = Array.from({ length: 25 }, (_, index) => ({
+      ...ITEMS[0], id: String(index + 1), title: `工单-${index + 1}`,
+    }));
+    mockFetchTickets
+      .mockResolvedValueOnce({ items: tickets.slice(0, 20), total: 25 })
+      .mockResolvedValueOnce({ items: tickets.slice(20), total: 25 });
+
+    renderView(status);
+    expect(await screen.findByText('共 25 条，已加载 20 条')).toBeInTheDocument();
+    expect(screen.queryByText('工单-21')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+
+    expect(await screen.findByText('工单-25')).toBeInTheDocument();
+    expect(screen.getByText('工单-1')).toBeInTheDocument();
+    expect(mockFetchTickets).toHaveBeenLastCalledWith(status, undefined, { skip: 20, limit: 20 });
+    expect(screen.getByText('共 25 条')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '加载更多' })).not.toBeInTheDocument();
+  });
+
+  it('项目范围在加载下一页时保持不变', async () => {
+    mockFetchTickets
+      .mockResolvedValueOnce({ items: ITEMS, total: 5 })
+      .mockResolvedValueOnce({ items: [{ ...ITEMS[0], id: '5', title: '项目最后一条' }], total: 5 });
+    renderProjectView('all');
+    fireEvent.click(await screen.findByRole('button', { name: '加载更多' }));
+    await waitFor(() => expect(mockFetchTickets).toHaveBeenLastCalledWith(
+      'all', ['P-001'], { skip: 4, limit: 20 },
+    ));
+    expect(await screen.findByText('项目最后一条')).toBeInTheDocument();
+  });
+
+  it('不能看全部的用户仅加载关联项目工单', async () => {
+    authState.canViewAll = false;
+    authState.projectIds = ['P-001', 'P-002'];
+    renderView('all');
+    await screen.findByText('挂起-最久');
+    expect(mockFetchTickets).toHaveBeenCalledWith('all', authState.projectIds, { skip: 0, limit: 20 });
+  });
+
+  it('加载更多失败时保留已有工单和总数，重试同一页', async () => {
+    mockFetchTickets
+      .mockResolvedValueOnce({ items: ITEMS, total: 5 })
+      .mockRejectedValueOnce(new Error('network error'))
+      .mockResolvedValueOnce({ items: [{ ...ITEMS[0], id: '5', title: '最后一条' }], total: 5 });
+
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: '加载更多' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('工单列表加载失败，请重试');
+    expect(screen.getByText('共 5 条，已加载 4 条')).toBeInTheDocument();
+    expect(screen.getByText('挂起-最久')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(await screen.findByText('最后一条')).toBeInTheDocument();
+    expect(mockFetchTickets).toHaveBeenLastCalledWith('overdue', undefined, { skip: 4, limit: 20 });
+  });
+
+  it('首次加载失败提示重试，而不是显示暂无数据', async () => {
+    mockFetchTickets.mockRejectedValueOnce(new Error('network error'));
+    renderView();
+    expect(await screen.findByText('工单列表加载失败，请重试')).toBeInTheDocument();
+    expect(screen.queryByText('暂无数据')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(await screen.findByText('挂起-最久')).toBeInTheDocument();
   });
 });
