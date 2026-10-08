@@ -222,7 +222,7 @@ async def batch_create_qrcodes(
     try:
         for i in range(count):
             q = WechatQrcode(
-                name=f"{name_prefix}{i + 1}" if name_prefix else "",
+                name=f"{name_prefix.rstrip('-').rstrip()}-{i + 1}" if name_prefix.strip() else "",
                 type=qrcode_type,
                 redirect_url=redirect_url,
                 batch_id=batch_id,

@@ -164,7 +164,7 @@ export default function QrcodeManage() {
           <div className="qr-row">
             <div className="qr-field-group">
               <label className="qr-field">名称前缀</label>
-              <input className="qr-input" value={namePrefix} onChange={(e) => setNamePrefix(e.target.value)} placeholder="智能体-" />
+              <input className="qr-input" value={namePrefix} onChange={(e) => setNamePrefix(e.target.value)} placeholder="如 test → test-1, test-2…" />
             </div>
             <div className="qr-field-group">
               <label className="qr-field">类型</label>

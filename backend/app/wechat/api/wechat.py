@@ -1101,14 +1101,33 @@ def _send_scan_redirect_card(openid: str, scene_str: str):
             redirect_url = f"{settings.FRONTEND_BASE_URL}/call?{urlencode({'scene': scene_str, 'openid': openid})}"
 
         # ── 3. 卡片标题/描述/图片 ──
-        title = qr_cfg.name if qr_cfg and qr_cfg.name else "点击继续"
-        if qr_cfg and qr_cfg.description:
-            description = qr_cfg.description
-        elif is_info_entering:
-            description = "请点击进入，核对并确认项目信息"
-        else:
-            description = "你扫了一个带参数的二维码，点击前往对应页面"
+        # 分支核心：先拦截 deprecated → 再按「是否录入项目信息」分流。
+        # 自动生成的码 name 形如 test-1、test-2 可读性差，未录入时直接用固定文案引导用户。
         picurl = qr_cfg.qrcode_image_url if qr_cfg and qr_cfg.qrcode_image_url else ''
+
+        if qr_cfg and qr_cfg.status == 'deprecated':
+            # 已弃用：扫码直接告知停用，不再引导跳转
+            title = "二维码已停用"
+            description = "此二维码已停止使用，请联系管理员"
+        elif qr_cfg and qr_cfg.project_code:
+            # 已录入：标题取「客户名称 - 车型」，描述放项目名 / 地点
+            title_parts = [p for p in [qr_cfg.customer_name, qr_cfg.vehicle_model] if p]
+            title = " - ".join(title_parts) if title_parts else (qr_cfg.project_name or "扫码跳转")
+            desc_parts = []
+            if qr_cfg.project_name:
+                desc_parts.append(f"项目：{qr_cfg.project_name}")
+            if qr_cfg.project_location:
+                desc_parts.append(f"地点：{qr_cfg.project_location}")
+            desc_parts.append("点击前往咨询页面")
+            description = "\n".join(desc_parts) or "项目信息已登记"
+        elif qr_cfg:
+            # 有 DB 记录但未录入信息（init / entering 空白码，自动 name 可读性差）
+            title = "请完成信息录入"
+            description = "请点击进入，完成项目名称、客户名称、车型等信息"
+        else:
+            # 无 DB 记录（老码或手动 EventKey）——兜底
+            title = "点击继续"
+            description = "你扫了一个带参数的二维码，点击前往对应页面"
 
         logger.info(f'推送扫码跳转卡片: openid={openid}, scene={scene_str}, url={redirect_url}')
 
