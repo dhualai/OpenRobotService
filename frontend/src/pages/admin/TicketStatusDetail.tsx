@@ -57,7 +57,9 @@ export default function TicketStatusDetail() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  const [nextSkip, setNextSkip] = useState(0);
   const requestIdRef = useRef(0);
+  const loadedIdsRef = useRef(new Set<string>());
 
   const meta = TICKET_STATUS_MAP[status];
   // 统计卡下钻的特殊 scope（组合口径，非单一状态）：
@@ -74,6 +76,8 @@ export default function TicketStatusDetail() {
       setLoadingMore(false);
       setItems([]);
       setTotal(0);
+      setNextSkip(0);
+      loadedIdsRef.current.clear();
     } else {
       setLoadingMore(true);
     }
@@ -87,8 +91,21 @@ export default function TicketStatusDetail() {
         { skip, limit: PAGE_SIZE },
       );
       if (requestId !== requestIdRef.current) return;
-      setItems((previous) => skip === 0 ? res.items : [...previous, ...res.items]);
+      const pageIds = new Set(loadedIdsRef.current);
+      const newItems = res.items.filter((ticket) => {
+        const ticketId = String(ticket.id);
+        if (pageIds.has(ticketId)) return false;
+        pageIds.add(ticketId);
+        return true;
+      });
+      if (skip > 0 && newItems.length === 0 && skip < res.total) {
+        setError('未获取到新的工单，请确认后端已更新并重启后重试');
+        return;
+      }
+      loadedIdsRef.current = pageIds;
+      setItems((previous) => skip === 0 ? newItems : [...previous, ...newItems]);
       setTotal(res.total);
+      setNextSkip(skip + res.items.length);
     } catch {
       if (requestId === requestIdRef.current) setError('工单列表加载失败，请重试');
     } finally {
@@ -175,7 +192,7 @@ export default function TicketStatusDetail() {
               block
               variant="outline"
               disabled={loadingMore}
-              onClick={() => { void load(items.length); }}
+              onClick={() => { void load(nextSkip); }}
             >
               {loadingMore ? '加载中...' : error ? '重试' : '加载更多'}
             </Button>

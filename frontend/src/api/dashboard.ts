@@ -181,6 +181,7 @@ export async function fetchTicketsByStatus(
   const query = appendProjectIdsQuery(baseQuery, projectIds);
   const res = await adminRequest<{ code: number; data: { items: TicketListItem[]; total: number } }>(
     `/dashboard/tickets${query}`,
+    { skipCache: true },
   );
   if (res.code === 0 && res.data) return res.data;
   throw new Error('工单列表加载失败');

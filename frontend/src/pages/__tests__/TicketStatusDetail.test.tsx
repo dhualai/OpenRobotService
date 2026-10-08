@@ -213,4 +213,53 @@ describe('TicketStatusDetail · 超时工单列表', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
     expect(await screen.findByText('挂起-最久')).toBeInTheDocument();
   });
+
+  it.each(['all', 'pending', 'overdue'])('%s 后端重复返回第一页时不追加重复工单', async (status) => {
+    const tickets = Array.from({ length: 25 }, (_, index) => ({
+      ...ITEMS[0], id: String(index + 1), title: `工单-${index + 1}`,
+    }));
+    mockFetchTickets
+      .mockResolvedValueOnce({ items: tickets.slice(0, 20), total: 25 })
+      .mockResolvedValueOnce({ items: tickets.slice(0, 20), total: 25 })
+      .mockResolvedValueOnce({ items: tickets.slice(20), total: 25 });
+
+    renderView(status);
+    fireEvent.click(await screen.findByRole('button', { name: '加载更多' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('请确认后端已更新并重启');
+    expect(screen.getAllByText('工单-1')).toHaveLength(1);
+    expect(screen.getByText('共 25 条，已加载 20 条')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(await screen.findByText('工单-25')).toBeInTheDocument();
+    expect(mockFetchTickets).toHaveBeenLastCalledWith(status, undefined, { skip: 20, limit: 20 });
+    expect(screen.getByText('共 25 条')).toBeInTheDocument();
+  });
+
+  it('分页部分重叠时按工单ID去重，下一页偏移量仍按原始返回条数推进', async () => {
+    const tickets = Array.from({ length: 24 }, (_, index) => ({
+      ...ITEMS[0], id: String(index + 1), title: `工单-${index + 1}`,
+    }));
+    mockFetchTickets
+      .mockResolvedValueOnce({ items: tickets.slice(0, 20), total: 24 })
+      .mockResolvedValueOnce({ items: tickets.slice(19, 22), total: 24 })
+      .mockResolvedValueOnce({ items: tickets.slice(22), total: 24 });
+
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: '加载更多' }));
+    expect(await screen.findByText('共 24 条，已加载 22 条')).toBeInTheDocument();
+    expect(screen.getAllByText('工单-20')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+    expect(await screen.findByText('工单-24')).toBeInTheDocument();
+    expect(mockFetchTickets).toHaveBeenLastCalledWith('overdue', undefined, { skip: 23, limit: 20 });
+  });
+
+  it('后端返回空页但仍有未加载工单时提示异常并允许重试原页', async () => {
+    mockFetchTickets
+      .mockResolvedValueOnce({ items: ITEMS, total: 5 })
+      .mockResolvedValueOnce({ items: [], total: 5 });
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: '加载更多' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('未获取到新的工单');
+    expect(screen.getByText('共 5 条，已加载 4 条')).toBeInTheDocument();
+    expect(mockFetchTickets).toHaveBeenLastCalledWith('overdue', undefined, { skip: 4, limit: 20 });
+  });
 });

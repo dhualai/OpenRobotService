@@ -13,19 +13,22 @@ describe('fetchTicketsByStatus', () => {
 
   it('默认请求第一页并保留真实总数', async () => {
     expect(await fetchTicketsByStatus('all')).toEqual({ items: [], total: 25 });
-    expect(mockRequest).toHaveBeenCalledWith('/dashboard/tickets?status=all&skip=0&limit=20');
+    expect(mockRequest).toHaveBeenCalledWith('/dashboard/tickets?status=all&skip=0&limit=20', { skipCache: true });
   });
 
   it('分页与项目筛选参数同时传入', async () => {
     await fetchTicketsByStatus('pending', ['P1', 'P2'], { skip: 20, limit: 20 });
     expect(mockRequest).toHaveBeenCalledWith(
       '/dashboard/tickets?status=pending&skip=20&limit=20&project_ids=P1%2CP2',
+      { skipCache: true },
     );
   });
 
   it('无关联项目时明确传空范围，不回退全量', async () => {
     await fetchTicketsByStatus('overdue', []);
-    expect(mockRequest).toHaveBeenCalledWith('/dashboard/tickets?status=overdue&skip=0&limit=20&project_ids=');
+    expect(mockRequest).toHaveBeenCalledWith(
+      '/dashboard/tickets?status=overdue&skip=0&limit=20&project_ids=', { skipCache: true },
+    );
   });
 
   it('请求失败不伪装成零条工单', async () => {
