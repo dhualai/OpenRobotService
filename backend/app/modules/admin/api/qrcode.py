@@ -10,8 +10,8 @@
 
 录入信息（「新建项目 → 录入信息」页）：项目名称/项目编号/项目地点/客户名称/车型
 五个字段一条信息落成本表一行（和行 id 同行存），见下方 project-info 两个接口。
-项目id 就是行 id（str(id)，2026-09-30 口径，不再单独存列）；项目编号的唯一性
-只在「录入信息行」（project_code 非空）范围内查重。
+项目id 就是行 id（str(id)，2026-09-30 口径，不再单独存列）；项目编号在 wechat_qrcodes
+表里不唯一——同一项目可录多张不同二维码（不同点位/场景）；project 表里项目编号仍唯一。
 
 项目名同步 project 表（2026-09-30 用户口径）：录入信息页的项目名可以从 project 表
 拉取选择、也可以直接手输——手输的新名字由 _ensure_project_row 用「项目编号」当新
@@ -370,14 +370,14 @@ async def update_qrcode(
         db.close()
 
 
-# ── 录入信息（其他项目登记） ──
+# 录入信息（「其他项目登记」） ──
 #
 # 「新建项目 → 录入信息」一条录入 = wechat_qrcodes 一行：项目名称/项目编号/项目地点/
 # 客户名称/车型五个字段和行 id 同行存（2026-09-29 用户口径），码记录名跟随项目名。
 # 项目id 不再单独存列：就是行 id（str(id)，2026-09-30 口径，扫码 scene 自动等于它），
-# 也不需要唯一性校验——主键天然唯一。项目编号「唯一可改」——唯一性只在「录入信息行」
-# （project_code 非空）范围内查重；普通码行这些列为 NULL。
-# 项目名同时同步 project 表，见 _ensure_project_row。
+# 也不需要唯一性校验——主键天然唯一。项目编号在 wechat_qrcodes 表里**不唯一**：
+# 同一项目可以录入多张不同的二维码（不同点位/场景），一张码 = wechat_qrcodes 一行。
+# 项目名同时同步 project 表（project 表仍然按项目编号唯一，见 _ensure_project_row）。
 
 _INFO_FIELD_MAX = {
     "project_code": 64, "project_name": 128,
@@ -475,8 +475,8 @@ async def create_project_info(
             raise HTTPException(status_code=400, detail="项目编号不能为空")
         if not name:
             raise HTTPException(status_code=400, detail="项目名称不能为空")
-        _check_info_unique(db, "project_code", code)
         # 项目名不在 project 表 → 用项目编号建一行（编号被占用则 400，见 _ensure_project_row）
+        # 注：wechat_qrcodes 表内 project_code 不唯一——同一项目可录多张码（2026-09-30 口径）
         _ensure_project_row(db, name, code)
 
         q = WechatQrcode(
@@ -521,7 +521,7 @@ async def update_project_info(
             code = _clean_info_value(project_code, "project_code")
             if not code:
                 raise HTTPException(status_code=400, detail="项目编号不能为空")
-            _check_info_unique(db, "project_code", code, exclude_id=q.id)
+            # 注：wechat_qrcodes 表内 project_code 不唯一——同一项目可录多张码
             q.project_code = code
 
         if project_name is not None:
