@@ -12,17 +12,18 @@
 //   - 场景值查不到行（码还没录入过）→ 按新录入处理（项目id 保存后自动生成，
 //     不需要、也无法预填）；
 //   - 链接没带 scene（管理端手动新建）→ 同样新录入。
-//   - 该行已是 published（录入+确认都完成）→ 不停留本页，直接跳「我要摇人」（2026-09-30
+//   - 该行已是 published（录入信息保存即发布，后端 create_project_info 直接落
+//     QrcodeStatus.PUBLISHED）→ 不停留本页，直接跳「我要摇人」（2026-09-30
 //     用户口径）：scene/openid 原样带过去，CallView 按 scene 弹车体信息确认；
 //     管理端「编辑信息」链接不带 scene，不受影响（那是修改数据的入口）。
-//   注：录入信息相关的四个接口（by-scene / 按 :id 查 / 保存 / 确认）都是「登录即可」——
-//   所有人扫码都能录入信息并确认（2026-09-30 用户口径）；管理端其余接口仍是 admin 权限。
+//   注：录入信息相关的三个接口（by-scene / 按 :id 查 / 保存）都是「登录即可」——
+//   所有人扫码都能录入信息（2026-09-30 用户口径）；管理端其余接口仍是 admin 权限。
 //
-// 扫码确认流程：该行 ticket 生成后状态是 entering，此时扫这张码会跳转到本页
-//   （后端 _send_scan_redirect_card 按状态分流），页面底部出现「确认信息」按钮，
-//   点击直接 entering → published（录入信息行「确认即发布」，2026-09-30 用户口径）。
-//   已 published 后再扫同一张码：后端对新卡片本就分流到 /app/call；若点的是生成于
-//   entering 时期的旧卡片、链接落回本页，则由上面的 published 判断兜底重定向。
+// 本页没有「确认信息」按钮（2026-09-30 用户口径）：扫码 → 录入 → 保存即发布，
+//   不再需要二次确认这一步。该行 ticket 生成后状态是 entering，此时扫这张码会跳转到
+//   本页（后端 _send_scan_redirect_card 按状态分流）；已 published 后再扫同一张码：
+//   后端对新卡片本就分流到 /app/call；若点的是生成于 entering 时期的旧卡片、链接落回
+//   本页，则由上面的 published 判断兜底重定向。
 //
 // 规则（界面不写注解，由交互体现）：
 // - 项目名称：必填，排在第一位。下拉候选来自 project 表（一次拉全量——含台账里
@@ -180,7 +181,7 @@ export default function InfoEntry() {
     setRowId(row.id);
   }, []);
 
-  // 扫码进入（链接带 scene）且该行已 published：录入+确认都完成，不停留本页，
+  // 扫码进入（链接带 scene）且该行已 published：录入信息已保存（保存即发布），不停留本页，
   // 直接去「我要摇人」——scene/openid 原样带过去，CallView 会按 scene 弹车体信息确认
   // （2026-09-30 用户口径）。管理端「编辑信息」链接不带 scene，走不到这里。
   const toCallIfPublished = useCallback((row: QrcodeItem): boolean => {

@@ -81,6 +81,30 @@ function buildSupplementDescription(
   ].join('\n');
 }
 
+/** 信息树的一级标签（根节点），按 sort_order 排好序 */
+function rootNodes(list: ProjectInfoNode[]): ProjectInfoNode[] {
+  return list
+    .filter((node) => node.parent_id === null)
+    .slice()
+    .sort((a, b) => a.sort_order - b.sort_order);
+}
+
+/**
+ * 首次拿到树时该勾哪些：按本机记住的恢复（只保留仍存在的标签，树可能改过）；
+ * 没记过 / 记忆失效 → 默认全不选。
+ *
+ * 必须在「拿到树」的同一步算好、和 setNodes 同批提交，不能放到后续 effect 里（见下方 useEffect 注释）。
+ */
+function initialSelectedTags(list: ProjectInfoNode[], projectId: string): Set<string> {
+  const stored = loadShareDocTags(projectId);
+  if (!stored.size) return new Set<string>();
+  return new Set(
+    rootNodes(list)
+      .filter((root) => stored.has(root.id))
+      .map((root) => root.id),
+  );
+}
+
 export default function TicketShareDocSetting({
   projectId,
   projectName = '',
@@ -114,12 +138,25 @@ export default function TicketShareDocSetting({
     }
     let cancelled = false;
     setLoading(true);
+    // 换项目：等新树到了再重新初始化一次勾选
+    initedRef.current = '';
     loadInfoNodes(projectId)
       .then((list) => {
-        if (!cancelled) setNodes(list);
+        if (cancelled) return;
+        // 一次性初始化（恢复记忆 / 默认全不选）必须和 setNodes 落在同一次提交里。
+        // 放到后续 effect 里会留出一个窗口：树已经渲染、用户（或 CI 用例）点了「全选」，
+        // 初始化 effect 才跑并把勾选重置成空 —— 勾选丢失、文档不再重算
+        // （CI 慢机器上这条竞态就是 test gate 偶发红的原因，deploy-split run #37595347855）。
+        initedRef.current = projectId;
+        setSelected(initialSelectedTags(list, projectId));
+        setNodes(list);
       })
       .catch(() => {
-        if (!cancelled) setNodes([]);
+        if (cancelled) return;
+        // 拉树失败也记成「初始化过」：避免抽屉里改树（handleTreeChange）后又被初始化清掉勾选
+        initedRef.current = projectId;
+        setSelected(new Set());
+        setNodes([]);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -129,24 +166,7 @@ export default function TicketShareDocSetting({
     };
   }, [projectId]);
 
-  const roots = useMemo(
-    () => nodes.filter((node) => node.parent_id === null).slice().sort((a, b) => a.sort_order - b.sort_order),
-    [nodes],
-  );
-
-  // 首次拿到树：按本机记住的勾选恢复；没记过则默认全不选（一次性，后续由用户控制）
-  useEffect(() => {
-    if (!roots.length || initedRef.current === projectId) return;
-    initedRef.current = projectId;
-    const stored = loadShareDocTags(projectId);
-    const valid = roots.map((root) => root.id);
-    if (stored.size) {
-      // 只恢复仍存在的标签（项目信息树可能改过）；记忆失效时按「没记过」处理 → 全不选
-      setSelected(new Set(valid.filter((id) => stored.has(id))));
-      return;
-    }
-    setSelected(new Set());
-  }, [roots, projectId]);
+  const roots = useMemo(() => rootNodes(nodes), [nodes]);
 
   const toggleTag = useCallback((id: string) => {
     setSelected((prev) => {

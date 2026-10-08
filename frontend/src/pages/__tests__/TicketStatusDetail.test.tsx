@@ -1,23 +1,11 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-
-const mockNavigate = vi.fn();
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useNavigate: () => mockNavigate };
-});
 
 const mockFetchTickets = vi.fn();
 vi.mock('@/api/dashboard', () => ({
   fetchTicketsByStatus: (...args: unknown[]) => mockFetchTickets(...args),
-}));
-
-const authState = vi.hoisted(() => ({ projectIds: [] as string[], canViewAll: true }));
-vi.mock('@/stores/auth', () => ({
-  PERMISSION_VIEW_ALL: 'frontend:admin:dashboard:view-all',
-  useAuthStore: () => ({ projectIds: authState.projectIds, hasPermission: () => authState.canViewAll }),
 }));
 
 vi.mock('@/shared/utils/wechatJsSdk', () => ({
@@ -33,6 +21,7 @@ vi.mock('tdesign-mobile-react', () => ({
 }));
 
 import TicketStatusDetail from '../admin/TicketStatusDetail';
+import { useAuthStore } from '@/stores/auth';
 
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
@@ -49,9 +38,9 @@ const ITEMS = [
   { id: '4', title: '处理中-较久', status: 'in_progress', priority: 'high', created_at: agoNaive(2 * DAY), deadline_at: agoNaive(2 * HOUR) },
 ];
 
-/** 由标题文字取整张卡片：span → 标题行 → 卡片 */
+/** 根据工单卡片的语义锚点按标题定位 */
 const cardOf = (title: string): HTMLElement =>
-  screen.getByText(title).parentElement!.parentElement as HTMLElement;
+  screen.getAllByTestId('ticket-card').find((card) => within(card).queryByText(title)) as HTMLElement;
 
 const renderView = (status = 'overdue') =>
   render(
@@ -76,8 +65,8 @@ const renderProjectView = (status = 'overdue') =>
 describe('TicketStatusDetail · 超时工单列表', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    authState.projectIds = [];
-    authState.canViewAll = true;
+    // 真 auth store：permissions 含 admin 即「能看全部」（与线上 hasPermission 同一套判定）
+    useAuthStore.setState({ projectIds: [], permissions: ['admin'] });
     mockFetchTickets.mockResolvedValue({ items: ITEMS, total: ITEMS.length });
   });
 
@@ -91,26 +80,22 @@ describe('TicketStatusDetail · 超时工单列表', () => {
     });
   });
 
-  it('挂起工单：左侧色条 + 状态标签，与普通工单区分', async () => {
+  it('挂起工单：标记为挂起 + 状态标签，与普通工单区分', async () => {
     renderView();
     await screen.findByText('挂起-最久');
 
-    const card = cardOf('挂起-最久');
-    // 色值含 var()，只有简写属性能原样读回，长写属性（borderLeftWidth 等）在 jsdom 下为空
-    expect(card.style.borderLeft).toBe('4px solid var(--mac-status-3)');
-    // 色条/底纹取设计系统的马卡龙蓝阶（暂停/挂起 = status-3），不是旧的橘黄 #e37318
-    expect(card.style.background).toContain('var(--mac-status-3)');
-    expect(card.getAttribute('style')).not.toContain('e37318');
+    // 挂起与否是语义（色条/色值属样式层，不在用例里断言）
+    expect(cardOf('挂起-最久').getAttribute('data-suspended')).toBe('true');
     // 颜色之外还有文字标签：颜色不是唯一信号
     expect(screen.getAllByText('暂停/挂起')).toHaveLength(2); // 两条挂起工单
   });
 
-  it('非挂起工单：无左侧色条、无挂起标签', async () => {
+  it('非挂起工单：不标记挂起、无挂起标签', async () => {
     renderView();
     await screen.findByText('处理中-最久');
 
-    expect(cardOf('处理中-最久').style.borderLeft).toBe('');
-    expect(cardOf('处理中-较久').style.borderLeft).toBe('');
+    expect(cardOf('处理中-最久').getAttribute('data-suspended')).toBe('false');
+    expect(cardOf('处理中-较久').getAttribute('data-suspended')).toBe('false');
   });
 
   it('标注已超时时长（超时最久的排在前面）', async () => {
@@ -182,11 +167,11 @@ describe('TicketStatusDetail · 超时工单列表', () => {
   });
 
   it('不能看全部的用户仅加载关联项目工单', async () => {
-    authState.canViewAll = false;
-    authState.projectIds = ['P-001', 'P-002'];
+    const projectIds = ['P-001', 'P-002'];
+    useAuthStore.setState({ projectIds, permissions: [] });
     renderView('all');
     await screen.findByText('挂起-最久');
-    expect(mockFetchTickets).toHaveBeenCalledWith('all', authState.projectIds, { skip: 0, limit: 20 });
+    expect(mockFetchTickets).toHaveBeenCalledWith('all', projectIds, { skip: 0, limit: 20 });
   });
 
   it('加载更多失败时保留已有工单和总数，重试同一页', async () => {

@@ -142,6 +142,7 @@ export default function Pagination({
             key={p}
             onClick={() => onChange(p)}
             style={btnStyle(p === current)}
+            aria-current={p === current ? 'page' : undefined}
           >
             {p}
           </button>

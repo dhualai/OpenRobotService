@@ -130,6 +130,7 @@ export default function SpecDocCard({ taskId, canEdit }: SpecDocCardProps) {
               scene="discussion"
               hasUserContent={hasUserContent}
               label="AI 汇总讨论内容"
+              triggerClassName="spec-card__btn spec-card__btn--primary"
               onApply={(md) => void applyDiscussionSummary(md)}
             />
             <button type="button" className="spec-card__btn" onClick={() => setEditing(true)}>
@@ -165,6 +166,7 @@ export default function SpecDocCard({ taskId, canEdit }: SpecDocCardProps) {
               scene="discussion"
               hasUserContent={hasUserContent}
               label="AI 汇总讨论内容"
+              triggerClassName="spec-card__btn spec-card__btn--primary"
               onApply={(md) => void applyDiscussionSummary(md)}
             />
             <button type="button" className="spec-card__btn" onClick={() => setEditing(true)}>

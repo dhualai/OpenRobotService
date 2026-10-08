@@ -1,73 +1,35 @@
 import type { ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
-const mockNavigate = vi.fn();
 const mockCreateRequest = vi.fn();
 const mockToast = vi.fn();
-const mockAiGet = vi.fn();
-// useParams 的 id 由用例控制：默认 'new'（新建模式），AI 摘要用例切到 'p1'
-const routeParams = vi.hoisted(() => ({ id: 'new' }));
 
-// 必须用 vi.hoisted：vi.mock 工厂会被提升到文件顶部，在普通顶层 class 之前执行，
-// 直接引用会报 "Cannot access 'MockApiError' before initialization"
-const MockApiError = vi.hoisted(() => class MockApiError extends Error {
-  statusCode: number;
-  constructor(message: string, statusCode: number) {
-    super(message);
-    this.name = 'ApiError';
-    this.statusCode = statusCode;
-  }
-});
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return {
-    ...actual,
-    useParams: () => ({ id: routeParams.id }),
-    useNavigate: () => mockNavigate,
-  };
-});
-
-vi.mock('@/api/client', () => ({
+// 网络边界：只换掉 client 的「请求工厂」，其余导出（真 ApiError 等）原样透传 ——
+// 组件/子组件多 import 一个名字时就不会报 "No export is defined on the mock"
+vi.mock('@/api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/client')>()),
   createRequest: () => mockCreateRequest,
-  ApiError: MockApiError,
-  clearCache: vi.fn(),
 }));
 
-vi.mock('@/api/ai', () => ({
-  aiGet: () => mockAiGet(),
-}));
+// AI 子请求挂载即打，保持挂起避免测试期触网
+vi.mock('@/api/ai', () => ({ aiGet: () => new Promise(() => {}) }));
 
 // 项目信息管理卡 / 项目动态卡挂载后会异步拉取：这里保持挂起（不 resolve），
 // 既不触发 act 警告，也不占用下面 mockCreateRequest 的请求桩与调用次数断言
-vi.mock('@/api/infoNodes', () => ({
+vi.mock('@/api/infoNodes', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/infoNodes')>()),
   fetchInfoTree: () => new Promise(() => {}),
-  createInfoNodeApi: vi.fn(),
-  updateInfoNodeApi: vi.fn(),
-  moveInfoNodeApi: vi.fn(),
-  deleteInfoNodeApi: vi.fn(),
-  importInfoTreeApi: vi.fn(),
-  importInfoTemplateApi: vi.fn(),
   fetchInfoNodeMarksApi: () => new Promise(() => {}),
-  toggleInfoNodeMarkApi: vi.fn(),
   fetchProjectActivityApi: () => new Promise(() => {}),
   fetchInfoNodeChangeSummaryApi: () => new Promise(() => {}),
 }));
 
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: (selector: (s: { username: string }) => unknown) => selector({ username: 'admin' }),
-}));
-
 // 项目工单卡同样挂载即拉取：保持挂起，避免占用下方 mockCreateRequest 的请求桩
-vi.mock('@/api/projectTickets', () => ({
+vi.mock('@/api/projectTickets', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/projectTickets')>()),
   fetchProjectTicketsOverviewApi: () => new Promise(() => {}),
-  configureBlockingWeightsApi: vi.fn(),
-}));
-
-vi.mock('@/config/api', () => ({
-  default: { ADMIN: { BASE_URL: '/api/admin' }, TASKS: { BASE_URL: '/api/tasks' } },
 }));
 
 vi.mock('tdesign-mobile-react', () => {
@@ -125,22 +87,24 @@ vi.mock('tdesign-mobile-react', () => {
 });
 
 import ProjectDetail from '../admin/ProjectDetail';
+import { ApiError } from '@/api/client';
+import { useAuthStore } from '@/stores/auth';
 
-const renderView = () =>
+/** 真路由进页面：id 来自地址（新建走 'new'），不替身 useParams —— 换路由参数来源时用例跟着真实行为走 */
+const renderView = (id = 'new') =>
   render(
-    <MemoryRouter>
-      <ProjectDetail />
+    <MemoryRouter initialEntries={[`/admin/project-detail/${id}`]}>
+      <Routes>
+        <Route path="/admin/project-detail/:id" element={<ProjectDetail />} />
+      </Routes>
     </MemoryRouter>
   );
 
 describe('ProjectDetail（USP 项目新建）', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    routeParams.id = 'new';
-    mockNavigate.mockClear();
-    mockToast.mockClear();
-    mockCreateRequest.mockClear();
-    mockAiGet.mockClear();
+    // 子卡（项目信息管理 / 项目工单）读真 auth store：admin 权限码直通
+    useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
   });
 
   it('新建模式展示必填标记（项目名称/项目编号/项目状态）', () => {
@@ -157,7 +121,7 @@ describe('ProjectDetail（USP 项目新建）', () => {
 
   it('项目编号重复（后端 409）→ 提示用户项目已存在请重新输入', async () => {
     mockCreateRequest.mockRejectedValueOnce(
-      new MockApiError('项目编号「CODE-1」已存在，请重新输入', 409)
+      new ApiError('项目编号「CODE-1」已存在，请重新输入', 409)
     );
     renderView();
 
@@ -167,8 +131,7 @@ describe('ProjectDetail（USP 项目新建）', () => {
     fireEvent.blur(screen.getByRole('textbox'));
 
     // 填写项目编号（项目概况卡「项目编号」行：点值进入编辑，标签自身不可点）
-    const codeRow = Array.from(document.querySelectorAll('.mac-meta-row'))
-      .find((row) => row.textContent?.startsWith('项目编号'));
+    const codeRow = screen.getAllByTestId('meta-row').find((row) => row.textContent?.startsWith('项目编号'));
     expect(codeRow).toBeTruthy();
     fireEvent.click(within(codeRow as HTMLElement).getByText('未填写'));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'CODE-1' } });
@@ -195,13 +158,13 @@ describe('ProjectDetail（卡片裁剪）', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    routeParams.id = 'p1';
+    useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
     mockCreateRequest.mockReset();
     mockCreateRequest.mockResolvedValue({ ...baseProject });
   });
 
   it('只保留项目概况 / 项目信息管理 / 项目工单 / 项目动态四张卡，其余卡片不再渲染', async () => {
-    renderView();
+    renderView('p1');
     expect(await screen.findByText('项目概况')).toBeTruthy();
     expect(screen.getByText('项目信息管理')).toBeTruthy();
     expect(screen.getByText('项目工单')).toBeTruthy();
@@ -216,8 +179,7 @@ describe('ProjectDetail（卡片裁剪）', () => {
   });
 
   it('新建模式不渲染「项目工单」与「项目动态」（项目尚未落库）', () => {
-    routeParams.id = 'new';
-    renderView();
+    renderView('new');
     expect(screen.getByText('项目概况')).toBeTruthy();
     expect(screen.queryByText('项目工单')).toBeNull();
     expect(screen.queryByText('项目动态')).toBeNull();
@@ -239,10 +201,7 @@ describe('ProjectDetail（AI 项目摘要）', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    routeParams.id = 'p1';
-    mockToast.mockClear();
-    mockCreateRequest.mockClear();
-    mockAiGet.mockClear();
+    useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
   });
 
   it('已有摘要：渲染 ext_info 里的 AI 摘要（纯文本旧数据也兼容），点「重新生成」用新摘要刷新', async () => {
@@ -250,7 +209,7 @@ describe('ProjectDetail（AI 项目摘要）', () => {
       .mockResolvedValueOnce({ ...baseProject, ext_info: { overview: { ai_summary: '旧的摘要内容' } } })
       .mockResolvedValueOnce({ summary: '全新的摘要内容', ext_info: { overview: { ai_summary: '全新的摘要内容' } } });
 
-    renderView();
+    renderView('p1');
     // 首次 GET 项目详情（含 include_risks 查询串），摘要来自 ext_info.overview.ai_summary
     expect(await screen.findByText('旧的摘要内容')).toBeTruthy();
     expect(mockCreateRequest).toHaveBeenCalledWith('/projects/p1?include_risks=true');
@@ -268,10 +227,9 @@ describe('ProjectDetail（AI 项目摘要）', () => {
       ext_info: { overview: { ai_summary: md } },
     });
 
-    renderView();
+    renderView('p1');
     // 页面上「项目概况」标题、类型标签等文案在其他区块也有，断言一律限定在摘要卡内
-    await waitFor(() => expect(document.querySelector('.mac-ai__md')).toBeTruthy());
-    const mdBox = document.querySelector('.mac-ai__md') as HTMLElement;
+    const mdBox = await screen.findByTestId('ai-summary-md');
     expect(within(mdBox).getByRole('heading', { name: '项目概况' })).toBeTruthy();
     expect(within(mdBox).getByText('项目类型')).toBeTruthy(); // **加粗**字段名
     expect(within(mdBox).getByText('车数：6 台')).toBeTruthy();
@@ -285,9 +243,9 @@ describe('ProjectDetail（AI 项目摘要）', () => {
       .mockResolvedValueOnce({ ...baseProject, ext_info: null })
       .mockImplementationOnce(() => new Promise((resolve) => { resolvePost = resolve; }));
 
-    renderView();
+    renderView('p1');
     const generateBtn = await screen.findByRole('button', { name: '点击生成' });
-    expect(document.querySelector('.mac-ai__body')?.textContent).toBe('暂无数据');
+    expect(screen.getByTestId('ai-summary-body').textContent).toBe('暂无数据');
 
     fireEvent.click(generateBtn);
     const pendingBtn = screen.getByRole('button', { name: '生成中...' }) as HTMLButtonElement;
