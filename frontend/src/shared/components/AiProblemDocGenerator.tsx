@@ -24,6 +24,8 @@ export interface AiProblemDocGeneratorProps {
   hasUserContent?: boolean;
   disabled?: boolean;
   label?: string;
+  /** 触发按钮类名，默认提单页 macaron 胶囊；工单详情卡片传 spec-card__btn spec-card__btn--primary */
+  triggerClassName?: string;
   onApply: (markdown: string) => void;
 }
 
@@ -34,6 +36,7 @@ export default function AiProblemDocGenerator({
   hasUserContent = false,
   disabled = false,
   label = 'AI 生成问题文档',
+  triggerClassName = 'share-doc__btn share-doc__btn--primary',
   onApply,
 }: AiProblemDocGeneratorProps) {
   const [generating, setGenerating] = useState(false);
@@ -78,7 +81,7 @@ export default function AiProblemDocGenerator({
     <>
       <button
         type="button"
-        className="share-doc__btn share-doc__btn--primary"
+        className={triggerClassName}
         disabled={!canGenerate}
         onClick={() => void generate()}
       >
