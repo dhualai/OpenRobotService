@@ -70,7 +70,7 @@ export async function fetchTicketSummary(projectIds?: string[]): Promise<TicketS
 
 export interface TicketSourceAnalysis {
   by_type: { key: string; count: number }[];   // 工单类型分布（key 为 task_type 枚举值，显示名见 TICKET_TYPE_DISPLAY_MAP）
-  by_role: { label: string; count: number }[]; // 提单人角色分布（角色名，含「未分配角色」「其他」）
+  by_role: { label: string; count: number }[]; // 提单人角色分布（count = 该角色提单人工单数，角色名含「未分配角色」「其他」）
 }
 
 const EMPTY_SOURCE_ANALYSIS: TicketSourceAnalysis = { by_type: [], by_role: [] };

@@ -146,6 +146,9 @@ async def get_ticket_source_analysis(
 ):
     """工单数据来源分析 —— 供仪表盘「工单数据来源分析」看板（类型分布 + 提单人角色分布）。
 
+    by_role 的 count 为工单数量：按提单人主角色归组累加其提单工单数
+    （见 task_dashboard_service.get_source_analysis），供「提单人角色分布」看板。
+
     响应结构：
     {
         "code": 0,

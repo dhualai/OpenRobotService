@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional, Set
 from datetime import datetime, timedelta
 from collections import Counter
 
-from sqlalchemy import select, func, and_, or_, case, distinct, text
+from sqlalchemy import select, func, and_, or_, case, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -213,8 +213,9 @@ class TaskDashboardService:
         - 类型分布：按 task_type（problem/feature/bug/support/other）分组计数，
           统计全部工单（含 new，不做状态过滤：来源分析不关心状态）。
         - 角色分布：对每个提单人取「主角色」（system 系统角色优先，否则取第一个
-          project 项目角色；无角色归入「未分配角色」），按角色名分组计数。
-          每个提单人只计入一个角色，避免一人多角色导致重复计数。
+          project 项目角色；无角色归入「未分配角色」），按角色名分组累加工单数量。
+          每个提单人的工单只归入一个角色，避免一人多角色导致重复计数；
+          提单人为空的工单不做角色归属，不参与该分布统计。
         """
         if project_ids is not None and len(project_ids) == 0:
             return {"by_type": [], "by_role": []}
@@ -226,12 +227,13 @@ class TaskDashboardService:
         type_rows = (await db.execute(type_query)).all()
         by_type = [{"key": k.value, "count": c} for k, c in type_rows]
 
-        # 2) 提单人角色分布
-        creator_query = select(distinct(Task.created_by))
+        # 2) 提单人角色分布：一条 GROUP BY 取「提单人 → 其提单工单数」
+        creator_query = select(Task.created_by, func.count(Task.id)).group_by(Task.created_by)
         if project_ids is not None:
             creator_query = creator_query.where(Task.project_id.in_(project_ids))
         creator_rows = (await db.execute(creator_query)).all()
-        creator_ids = [r[0] for r in creator_rows if r[0]]
+        tickets_by_creator = {uid: cnt for uid, cnt in creator_rows if uid}
+        creator_ids = list(tickets_by_creator)
 
         role_map: Dict[str, List[str]] = {}
         if creator_ids:
@@ -261,13 +263,13 @@ class TaskDashboardService:
                 role_map.setdefault(uid, []).append(rname)
 
         role_counter: Counter = Counter()
-        for uid in creator_ids:
+        for uid, ticket_count in tickets_by_creator.items():
             roles = role_map.get(uid, [])
             if not roles:
-                role_counter["未分配角色"] += 1
+                role_counter["未分配角色"] += ticket_count
                 continue
             # 主角色：system 优先，否则取第一个 project 角色
-            role_counter[roles[0]] += 1
+            role_counter[roles[0]] += ticket_count
 
         # 只展示 Top N，其余并入「其他」，避免饼图图例过长
         top = role_counter.most_common(TaskDashboardService.ROLE_DISPLAY_LIMIT - 1)

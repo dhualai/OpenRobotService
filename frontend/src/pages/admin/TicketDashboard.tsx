@@ -1,10 +1,11 @@
-// 工单数据看板 —— 工单相关的三张数据看板（2026-10-07 用户口径，从后台管理首页拆出）：
+// 工单数据看板 —— 工单相关的四张数据看板（2026-10-07 用户口径，从后台管理首页拆出）：
 //   ① 工单监测     —— 六种状态环图 + 图例（图例可点，下钻 /admin/dashboard/tickets/:key）
 //   ② 工单类型分布 —— 类型环图（百分比标在扇区上）+ 各类型平均完单耗时条形图 + 颜色图例
 //   ③ 接单人响应时间 —— 响应时间分桶环图（处理人第一次点开工单耗时 - 新建时间）
+//   ④ 提单人角色分布 —— 按提单人主角色归组的工单数量环图（范围 = 当前登录用户关联项目）
 // 入口：后台管理首页「工单数据看板」小节右侧「其他数据统计」→ /admin/ticket-dashboard。
 // 数据走 /dashboard/summary-all 聚合接口，与首页共用 dashboardCache
-// （先渲染上次快照、返回后覆盖刷新）；②③ 沿用原首页权限（frontend:admin:other:show），① 所有人可见。
+// （先渲染上次快照、返回后覆盖刷新）；②③④ 沿用原首页权限（frontend:admin:other:show），① 所有人可见。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navbar } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
@@ -38,6 +39,15 @@ const RESPONSE_TONE_MAP: Record<string, string> = {
   within_4h: 'blue-3',
   other: 'blue-4',
 };
+
+// 提单人角色分布 tone：角色按工单数排序循环取 status 蓝阶（与全页同族蓝、亮度和等距拉开），
+// 「其他/未分配角色」归灰色，与真实角色区分
+const ROLE_TONES = ['status-1', 'status-2', 'status-3', 'status-4', 'status-5', 'status-6'];
+function roleTone(label: string, index: number): string {
+  return label === '其他' || label === '未分配角色'
+    ? 'gray'
+    : ROLE_TONES[index % ROLE_TONES.length];
+}
 
 // 工单类型 → 固定色阶（环图扇区 / 条形图 / 下方颜色图例共用，同类颜色稳定）
 function typeTone(key: string): string {
@@ -272,6 +282,18 @@ export default function TicketDashboard() {
                   label: b.label,
                   value: b.count,
                   tone: RESPONSE_TONE_MAP[b.key] ?? 'gray',
+                }))}
+              />
+            </section>
+            {/* ============ ④ 提单人角色分布（按提单人主角色归组统计工单数量，
+                 范围与全页一致 = 当前登录用户关联项目，canViewAll 时为全部项目） ============ */}
+            <section className="mac-card mac-card--pad" style={{ marginTop: 12 }}>
+              <SourceDonut
+                title="提单人角色分布"
+                items={(sourceAnalysis?.by_role ?? []).map((r, i) => ({
+                  label: r.label,
+                  value: r.count,
+                  tone: roleTone(r.label, i),
                 }))}
               />
             </section>
