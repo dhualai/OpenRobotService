@@ -118,6 +118,8 @@ const TaskDetailPage = lazyImport(() => import('@/pages/tasks/TaskDetailPage'));
 const OperationLogsPage = lazyImport(() => import('@/pages/tasks/OperationLogsPage'));
 
 const Dashboard = lazyImport(() => import('@/pages/admin/Dashboard'));
+// 工单数据看板：工单监测/类型分布/接单人响应时间三张看板（首页「工单数据看板」小节的「其他数据统计」进入）
+const TicketDashboard = lazyImport(() => import('@/pages/admin/TicketDashboard'));
 const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
 const DispatchDev = lazyImport(() => import('@/pages/admin/DispatchDev'));
 const TaskPolicyPage = lazyImport(() => import('@/pages/admin/TaskPolicyPage'));
@@ -204,8 +206,10 @@ const router = createBrowserRouter([
             path: 'admin',
             element: <Outlet />,
             children: [
-              // 默认首页：上中下三段式仪表盘（工单状态 / 跨项目看板 / 待补）
+              // 默认首页：上中下三段式仪表盘（工单数据看板 / 跨项目看板 / 更多功能）
               { index: true, element: <Dashboard /> },
+              // 工单数据看板：工单监测/类型分布/接单人响应时间三张看板（首页「工单数据看板」小节右侧「其他数据统计」进入）
+              { path: 'ticket-dashboard', element: <TicketDashboard /> },
               // 仪表盘下钻明细：点击状态/分类标签后展示对应列表
               { path: 'dashboard/tickets/:status', element: <TicketStatusDetail /> },
               { path: 'dashboard/projects/:dimension/:key', element: <ProjectCategoryDetail /> },
