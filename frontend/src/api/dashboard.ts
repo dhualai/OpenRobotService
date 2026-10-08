@@ -70,7 +70,7 @@ export async function fetchTicketSummary(projectIds?: string[]): Promise<TicketS
 
 export interface TicketSourceAnalysis {
   by_type: { key: string; count: number }[];   // 工单类型分布（key 为 task_type 枚举值，显示名见 TICKET_TYPE_DISPLAY_MAP）
-  by_role: { label: string; count: number }[]; // 提单人角色分布（角色名，含「未分配角色」「其他」）
+  by_role: { label: string; count: number }[]; // 提单人角色分布（count = 该角色提单人工单数，角色名含「未分配角色」「其他」）
 }
 
 const EMPTY_SOURCE_ANALYSIS: TicketSourceAnalysis = { by_type: [], by_role: [] };
@@ -163,27 +163,28 @@ export interface TicketListItem {
 }
 
 /**
- * GET /api/admin/dashboard/tickets?status={key}&project_ids=id1,id2
+ * GET /api/admin/dashboard/tickets?status={key}&project_ids=id1,id2&skip=0&limit=20
  * 点击某个状态标签后展示该状态下的工单列表，响应：{ code: 0, data: { items: TicketListItem[], total: number } }
  * status 支持单一状态 key（new/in_progress/paused/resolved/closed/cancelled）及仪表盘统计卡下钻的组合 scope：
- *   all     全部工单（监控中的六种状态，含 new，与 summary.total 同口径）
+ *   all     全部工单（监控中的状态，含 new，与 summary.total 同口径）
  *   pending 待处理（处理中 + 暂停/挂起，与 summary.pending_count 同口径）
  *   overdue 超时工单（deadline_at < now 且未完成，与 summary.overdue_count 同口径）
  *     —— 排序由后端完成：挂起工单始终置顶，其余按超时最久在前（deadline_at 升序），前端不再重排
- * projectIds 传入后仅返回这些项目内的工单。
+ * projectIds 传入后仅返回这些项目内的工单；分页默认20条，total始终为该范围的完整工单数。
  */
-export async function fetchTicketsByStatus(status: string, projectIds?: string[]): Promise<{ items: TicketListItem[]; total: number }> {
-  try {
-    const baseQuery = `?status=${encodeURIComponent(status)}`;
-    const query = appendProjectIdsQuery(baseQuery, projectIds);
-    const res = await adminRequest<{ code: number; data: { items: TicketListItem[]; total: number } }>(
-      `/dashboard/tickets${query}`,
-    );
-    if (res.code === 0 && res.data) return res.data;
-    return { items: [], total: 0 };
-  } catch {
-    return { items: [], total: 0 };
-  }
+export async function fetchTicketsByStatus(
+  status: string,
+  projectIds?: string[],
+  pagination: { skip: number; limit: number } = { skip: 0, limit: 20 },
+): Promise<{ items: TicketListItem[]; total: number }> {
+  const baseQuery = `?status=${encodeURIComponent(status)}&skip=${pagination.skip}&limit=${pagination.limit}`;
+  const query = appendProjectIdsQuery(baseQuery, projectIds);
+  const res = await adminRequest<{ code: number; data: { items: TicketListItem[]; total: number } }>(
+    `/dashboard/tickets${query}`,
+    { skipCache: true },
+  );
+  if (res.code === 0 && res.data) return res.data;
+  throw new Error('工单列表加载失败');
 }
 
 // ============================================================
