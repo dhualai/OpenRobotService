@@ -182,16 +182,34 @@ export default function ProjectTicketsCard({ projectId }: { projectId: string })
             <>
               {/* ① 顶部三格汇总：总工单数 / 正在处理 / 超期工单数（口径见上方注释）；
                   三格都是入口，点进该口径的工单列表 */}
-              <div className="mac-tix__stats">
-                <button type="button" className="mac-tix__stat mac-tix__stat--total" onClick={() => openTickets('all')}>
+              <div className="mac-tix__stats" data-testid="ticket-stats">
+                <button
+                  type="button"
+                  className="mac-tix__stat mac-tix__stat--total"
+                  data-testid="ticket-stat"
+                  data-scope="all"
+                  onClick={() => openTickets('all')}
+                >
                   <span className="mac-tix__num">{overview.total}</span>
                   <span className="mac-tix__label">总工单数</span>
                 </button>
-                <button type="button" className="mac-tix__stat" onClick={() => openTickets('pending')}>
+                <button
+                  type="button"
+                  className="mac-tix__stat"
+                  data-testid="ticket-stat"
+                  data-scope="pending"
+                  onClick={() => openTickets('pending')}
+                >
                   <span className="mac-tix__num">{inProgressCount}</span>
                   <span className="mac-tix__label">正在处理</span>
                 </button>
-                <button type="button" className="mac-tix__stat" onClick={() => openTickets('overdue')}>
+                <button
+                  type="button"
+                  className="mac-tix__stat"
+                  data-testid="ticket-stat"
+                  data-scope="overdue"
+                  onClick={() => openTickets('overdue')}
+                >
                   <span className="mac-tix__num">{overdueCount}</span>
                   <span className="mac-tix__label">超期工单数</span>
                 </button>
@@ -231,6 +249,7 @@ export default function ProjectTicketsCard({ projectId }: { projectId: string })
                       <article
                         key={ticket.id}
                         className="mac-tix__ticket"
+                        data-testid="ticket-item"
                         onClick={() => navigateInWechat(navigate, `/tasks/${ticket.id}`)}
                       >
                         <div className="mac-tix__ticket-head">

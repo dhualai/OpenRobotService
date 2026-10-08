@@ -1,4 +1,4 @@
-// 项目管理（二级页面）—— 「项目导入」「项目授权」两部分
+// 项目管理（二级页面）—— 「新建项目」「项目授权」两部分
 // ProjectImport: 项目增删改查
 // 项目授权区：项目选择器 + ProjectAuth 授权记录 + ProjectPeople 人员关联
 // 样式参考 macaron projects.auth 页：surface-card 折叠区 + 嵌套折叠区 + 弹层项目选择。
@@ -129,8 +129,8 @@ export default function ProjectManage() {
 
   return (
     <div className="mac-page" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* 可折叠区域：项目导入 */}
-      <CollapsibleSection icon={<MacFolderClosed size={16} />} title="项目导入" open={sectionImportOpen} onToggle={() => setSectionImportOpen((v) => !v)}>
+      {/* 可折叠区域：新建项目 */}
+      <CollapsibleSection icon={<MacFolderClosed size={16} />} title="新建项目" open={sectionImportOpen} onToggle={() => setSectionImportOpen((v) => !v)}>
         <ProjectImport />
       </CollapsibleSection>
 

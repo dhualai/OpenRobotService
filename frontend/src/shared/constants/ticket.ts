@@ -2,6 +2,7 @@
 export const STATUS_DISPLAY_MAP: Record<string, string> = {
   new: '待处理',
   in_progress: '进行中',
+  pending_requested: '暂停请求中',
   pending: '已挂起',
   resolved: '已解决',
   canceled: '已取消',
@@ -11,6 +12,7 @@ export const STATUS_DISPLAY_MAP: Record<string, string> = {
 export const STATUS_VALUE_MAP: Record<string, string> = {
   '待处理': 'new',
   '进行中': 'in_progress',
+  '暂停请求中': 'pending_requested',
   '已挂起': 'pending',
   '已解决': 'resolved',
   '已取消': 'canceled',
@@ -93,8 +95,8 @@ export type TicketStatusLike = string | null | undefined;
 const REPORTABLE_STATUSES = new Set(['in_progress']);
 /** 终态（操作按钮整体不显示） */
 const TERMINAL_STATUSES = new Set(['resolved', 'canceled', 'cancelled', 'closed']);
-/** 撤回可用状态：待处理 / 待派单 / 已派单 / 已挂起 / 处理中 */
-const CANCELABLE_STATUSES = new Set(['new', 'pending_dispatch', 'dispatched', 'pending', 'in_progress']);
+/** 撤回可用状态：待处理 / 待派单 / 已派单 / 暂停请求中 / 已挂起 / 处理中 */
+const CANCELABLE_STATUSES = new Set(['new', 'pending_dispatch', 'dispatched', 'pending_requested', 'pending', 'in_progress']);
 
 const normalizeKey = (status: TicketStatusLike): string => (status || '').trim().toLowerCase();
 
@@ -154,6 +156,7 @@ export function canEditPriority(status: TicketStatusLike): boolean {
 export const STATUS_COLOR_MAP: Record<string, string> = {
   new: '#0052d9',
   in_progress: '#2ba471',
+  pending_requested: '#c25a99',
   pending: '#e37318',
   paused: '#e37318',
   resolved: '#00a870',

@@ -2,8 +2,11 @@
 
 from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import (
     aggregate_events,
+    build_dispatch_funnel,
+    build_funnel_weekly,
     build_ticket_lists,
     build_weekly_metrics,
+    classify_dispatch_branch,
     correction_pair,
     event_channel,
     parse_reason_comment,
@@ -78,14 +81,37 @@ class TestCorrectionPair:
             "remark": "再派一次",
         }, "重新派单") == ("u-a", "u-b", "再派一次")
 
-    def test_redispatch_pending_and_skipped_not_learned(self):
-        """边界：待审和测试不算不进学习。"""
-        pending = {
+    def test_redispatch_scheme_a_auto_learned(self):
+        """方案 A：默认重派（非×2）可学，不必再点审核。"""
+        assert correction_pair({
             "channel": "redispatch",
             "from_assignee": "u-a",
             "preferred_assignee": "u-b",
+            "kind_source": "scheme_a_auto",
+            "redispatch_verdict": "inaccurate",
+        }) == ("u-a", "u-b", "")
+
+    def test_redispatch_preferred_twice_not_learned(self):
+        """方案 A：倾向人×2 不进学习。"""
+        assert correction_pair({
+            "channel": "redispatch",
+            "from_assignee": "u-a",
+            "preferred_assignee": "u-a",
+            "preferred_twice_confirm": True,
+        }) is None
+
+    def test_redispatch_pending_and_skipped_not_learned(self):
+        """边界：无倾向人的 pending 不学；测试不算不学。"""
+        pending = {
+            "channel": "redispatch",
+            "from_assignee": "u-a",
         }
-        skipped = {**pending, "redispatch_verdict": "skipped"}
+        skipped = {
+            "channel": "redispatch",
+            "from_assignee": "u-a",
+            "preferred_assignee": "u-b",
+            "redispatch_verdict": "skipped",
+        }
         assert correction_pair(pending) is None
         assert correction_pair(skipped) is None
 
@@ -119,7 +145,7 @@ class TestAggregate:
         assert m["by_kind"]["other"] == 0
 
     def test_reviewed_redispatch_counts_inaccurate(self):
-        """正常流程：重新派单标成不准确后计入不准确，不进弹窗错派率分母。"""
+        """方案 A：有倾向人的重派默认不准确；测试不算 / ×2 除外。"""
         events = [
             {"kind": "misassign", "channel": "signal", "task_id": 1},
             {"kind": "", "channel": "redispatch", "task_id": 2,
@@ -130,17 +156,19 @@ class TestAggregate:
              "detail": {"preferred_assignee": "u", "redispatch_verdict": "skipped"}},
             {"kind": "", "channel": "redispatch", "task_id": 4,
              "detail": {"preferred_assignee": "u"}},
+            {"kind": "", "channel": "redispatch", "task_id": 5,
+             "detail": {"preferred_assignee": "u", "preferred_twice_confirm": True}},
         ]
         m = aggregate_events(events, ai_assign_total=10, ai_assign_tickets=8)
-        assert m["redispatch_total"] == 3
-        assert m["redispatch_inaccurate"] == 1
+        assert m["redispatch_total"] == 4
+        assert m["redispatch_inaccurate"] == 2  # task 2 + task 4 默认
         assert m["redispatch_skipped"] == 1
-        assert m["redispatch_pending"] == 1
+        assert m["redispatch_preferred_twice"] == 1
+        assert m["redispatch_pending"] == 0
         assert m["misassign_events"] == 1
-        assert m["inaccurate_events"] == 2
+        assert m["inaccurate_events"] == 3
         assert m["misassign_rate_of_signal"] == 1.0
-        assert m["redispatch_inaccurate_rate_of_reviewed"] == 0.5
-        assert m["inaccurate_rate_of_ai_assign"] == 0.2
+        assert m["inaccurate_rate_of_ai_assign"] == 0.3
 
 
 class TestTicketListsAndWeekly:
@@ -189,6 +217,135 @@ class TestTicketListsAndWeekly:
         assert weekly[1]["metrics"]["signal_total"] == 1
         assert weekly[1]["metrics"]["misassign_rate_of_signal"] == 1.0
         assert weekly[1]["metrics"]["ai_assign_total"] == 1
+
+
+class TestDispatchFunnel:
+    def test_classify_step0_and_preferred_twice(self):
+        """正常流程：Step0 / 倾向人×2 从派单日志字段区分。"""
+        assert classify_dispatch_branch(
+            matched_pref=True,
+            preferred_id="u1",
+            assigned_id="u1",
+            reasoning="提单人指定: 张三 → 张三",
+            profile={"specified_name": "张三"},
+        ) == "step0"
+        assert classify_dispatch_branch(
+            matched_pref=True,
+            preferred_id="u1",
+            assigned_id="u1",
+            reasoning="用户连续两次选择倾向处理人 张三，按指定无条件指派",
+            profile={},
+        ) == "preferred_twice"
+        assert classify_dispatch_branch(
+            matched_pref=True,
+            preferred_id="u1",
+            assigned_id="u1",
+            reasoning="综合画像与相似单决定派给张三",
+            profile={},
+        ) == ""
+
+    def test_funnel_excludes_step0_shows_overlap(self):
+        """正常流程：扣 Step0；倾向人仅曝光；两错派分支与重合分开。"""
+        tickets = [
+            {"task_id": 1, "title": "指定单", "created_at": "2026-09-15T10:00:00"},
+            {"task_id": 2, "title": "AI 单", "created_at": "2026-09-15T11:00:00"},
+            {"task_id": 3, "title": "重合单", "created_at": "2026-09-15T12:00:00"},
+            {"task_id": 4, "title": "人工单", "created_at": "2026-09-15T13:00:00"},
+            {"task_id": 5, "title": "倾向×2", "created_at": "2026-09-15T14:00:00"},
+        ]
+        flags = {
+            1: {"step0": True, "preferred_twice": False, "preferred_twice_attempts": 0},
+            2: {"step0": False, "preferred_twice": False, "preferred_twice_attempts": 0},
+            3: {"step0": False, "preferred_twice": False, "preferred_twice_attempts": 0},
+            4: {"step0": False, "preferred_twice": False, "preferred_twice_attempts": 0},
+            5: {"step0": False, "preferred_twice": True, "preferred_twice_attempts": 2},
+        }
+        ai_rows = [
+            {"task_id": 1, "created_at": "2026-09-15T10:05:00"},
+            {"task_id": 2, "created_at": "2026-09-15T11:05:00"},
+            {"task_id": 3, "created_at": "2026-09-15T12:05:00"},
+            {"task_id": 3, "created_at": "2026-09-15T12:10:00"},
+            {"task_id": 5, "created_at": "2026-09-15T14:05:00"},
+            {"task_id": 5, "created_at": "2026-09-15T14:10:00"},
+        ]
+        events = [
+            {"task_id": 2, "channel": "signal", "kind": "misassign", "detail": {"kind": "misassign"}},
+            {"task_id": 3, "channel": "signal", "kind": "misassign", "detail": {"kind": "misassign"}},
+            {
+                "task_id": 3, "channel": "redispatch", "kind": "",
+                "redispatch_verdict": "inaccurate",
+                "detail": {"preferred_assignee": "u", "redispatch_verdict": "inaccurate"},
+            },
+            # Step0 单上的错派不进 AI 池分子
+            {"task_id": 1, "channel": "signal", "kind": "misassign", "detail": {"kind": "misassign"}},
+        ]
+        funnel = build_dispatch_funnel(tickets, ai_rows, events, flags)
+        assert funnel["created_total"] == 5
+        assert funnel["drops"]["never_ai"]["count"] == 1
+        assert funnel["drops"]["never_ai"]["status"] == "deduct"
+        assert funnel["drops"]["never_ai"]["order"] == 1
+        assert funnel["drops"]["step0"]["count"] == 1
+        assert funnel["drops"]["step0"]["status"] == "deduct"
+        assert funnel["drops"]["step0"]["order"] == 2
+        assert funnel["drops"]["preferred_twice"]["count"] == 1
+        assert funnel["drops"]["preferred_twice"]["status"] == "expose"
+        assert funnel["drops"]["preferred_twice"]["attempts"] == 2
+        # 先扣从未 AI → 4；再扣 Step0 → AI 池 3（2,3,5）
+        assert funnel["ticket_funnel"]["after_never_ai"] == 4
+        assert funnel["ticket_funnel"]["after_step0"] == 3
+        assert funnel["ticket_funnel"]["ai_pool"] == 3
+        assert funnel["ticket_funnel"]["misassign_only"] == 1
+        assert funnel["ticket_funnel"]["redispatch_only"] == 0
+        assert funnel["ticket_funnel"]["both"] == 1
+        assert funnel["ticket_funnel"]["union"] == 2
+        assert funnel["attempt_funnel"]["never_ai_attempts"] == 1
+        assert funnel["attempt_funnel"]["created_attempts"] == 7  # 走过 AI 6 次 + 未走 AI 1 次
+        assert funnel["attempt_funnel"]["after_never_ai_attempts"] == 6
+        assert funnel["attempt_funnel"]["ai_assign_total"] == 5  # 2+2+1，不含 step0 的 1
+        assert funnel["attempt_funnel"]["step0_attempts"] == 1
+        assert funnel["attempt_funnel"]["misassign_events"] == 2
+        assert funnel["attempt_funnel"]["redispatch_inaccurate_events"] == 1
+        assert funnel["rates"]["ticket_union"] == round(2 / 3, 4)
+        assert funnel["rates"]["attempt_union"] == round(3 / 5, 4)
+
+    def test_weekly_attempts_follow_dispatch_time(self):
+        """正常流程：按次归到派单发生周，按单仍归工单创建周。"""
+        tickets = [
+            {"task_id": 1, "title": "上周一创建", "created_at": "2026-09-15T10:00:00"},
+            {"task_id": 2, "title": "本周未走 AI", "created_at": "2026-09-22T10:00:00"},
+            {"task_id": 3, "title": "Step0", "created_at": "2026-09-10T10:00:00"},
+        ]
+        flags = {
+            1: {"step0": False, "preferred_twice": False, "preferred_twice_attempts": 0},
+            2: {"step0": False, "preferred_twice": False, "preferred_twice_attempts": 0},
+            3: {"step0": True, "preferred_twice": False, "preferred_twice_attempts": 0},
+        }
+        ai_rows = [
+            {"task_id": 1, "created_at": "2026-09-15T11:00:00"},
+            {"task_id": 1, "created_at": "2026-09-22T11:00:00"},
+            {"task_id": 3, "created_at": "2026-09-22T12:00:00"},
+        ]
+        events = [
+            {
+                "task_id": 1, "channel": "signal", "kind": "misassign",
+                "created_at": "2026-09-22T13:00:00", "detail": {"kind": "misassign"},
+            },
+        ]
+        weeks = build_funnel_weekly(tickets, ai_rows, events, flags, keep=8)
+        by_start = {w["week_start"]: w["funnel"] for w in weeks}
+        born = by_start["2026-09-14"]
+        dispatched = by_start["2026-09-21"]
+        assert born["ticket_funnel"]["created"] == 1
+        assert born["ticket_funnel"]["union"] == 1
+        assert born["attempt_funnel"]["after_never_ai_attempts"] == 1
+        assert born["attempt_funnel"]["misassign_events"] == 0
+        assert dispatched["ticket_funnel"]["created"] == 1
+        assert dispatched["attempt_funnel"]["never_ai_attempts"] == 1
+        assert dispatched["attempt_funnel"]["after_never_ai_attempts"] == 2
+        assert dispatched["attempt_funnel"]["step0_attempts"] == 1
+        assert dispatched["attempt_funnel"]["denominator"] == 1
+        assert dispatched["attempt_funnel"]["created_attempts"] == 3
+        assert dispatched["attempt_funnel"]["misassign_events"] == 1
 
 
 class TestUnlabeledGroups:

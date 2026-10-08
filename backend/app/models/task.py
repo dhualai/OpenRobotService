@@ -27,6 +27,7 @@ from app.models.base import Base
 class TaskStatus(str, enum.Enum):
     NEW = "new"
     IN_PROGRESS = "in_progress"
+    PENDING_REQUESTED = "pending_requested"  # 处理人请求暂停 → 待提单人确认
     PENDING = "pending"
     RESOLVED = "resolved"
     CANCELED = "canceled"

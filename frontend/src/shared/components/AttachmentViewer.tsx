@@ -6,6 +6,10 @@ import remarkGfm from 'remark-gfm';
 import { appUrlTransform } from '@/shared/utils/markdown';
 import { readStored } from '@/stores/authStorage';
 import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
+import {
+  attachmentPreviewKind,
+  type AttachmentPreviewKind,
+} from '@/shared/utils/attachmentPreview';
 // pdf.js 体积大（主库 + worker 约 1.5MB），懒加载：仅在用户真正点开 PDF 附件时才下载，
 // 避免随 AttachmentViewer 被多路由静态引入而进入首屏 bundle。
 const PdfViewer = lazy(() => import('./PdfViewer'));
@@ -17,27 +21,21 @@ export interface AttachmentViewItem {
   previewUrl: string;
   /** 下载地址（可带鉴权 token），点击「下载」时打开 */
   downloadUrl: string;
+  /** 点击方已知类型时传入，避免文件名被截断后误判为不支持预览 */
+  previewKind?: AttachmentPreviewKind;
 }
 
-const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
-const VIDEO_EXTS = ['mp4', 'webm', 'ogg', 'mov', 'm4v'];
-const OFFICE_EXTS = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
+type Kind = AttachmentPreviewKind;
 
-function extOf(name: string): string {
-  const i = name.lastIndexOf('.');
-  return i >= 0 ? name.slice(i + 1).toLowerCase() : '';
+function kindOf(item: AttachmentViewItem): Kind {
+  if (item.previewKind && item.previewKind !== 'other') return item.previewKind;
+  return attachmentPreviewKind(item.filename, item.previewUrl);
 }
 
-type Kind = 'image' | 'video' | 'pdf' | 'office' | 'md' | 'other';
-
-function kindOf(name: string): Kind {
-  const ext = extOf(name);
-  if (IMAGE_EXTS.includes(ext)) return 'image';
-  if (VIDEO_EXTS.includes(ext)) return 'video';
-  if (ext === 'pdf') return 'pdf';
-  if (OFFICE_EXTS.includes(ext)) return 'office';
-  if (ext === 'md' || ext === 'markdown') return 'md';
-  return 'other';
+function viewerTitle(name: string): string {
+  const m = name.match(/^clipboard\((.+)\)\.txt$/i);
+  if (m) return `#clipboard(${m[1]})`;
+  return name;
 }
 
 function formatSize(bytes?: number): string {
@@ -99,14 +97,17 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
   const [mdLoading, setMdLoading] = useState(false);
   const [mdError, setMdError] = useState('');
 
-  const kind: Kind = item ? kindOf(item.filename) : 'other';
+  const kind: Kind = item ? kindOf(item) : 'other';
 
   const loadMd = useCallback(async (url: string) => {
     setMdLoading(true);
     setMdError('');
     setMdText('');
     try {
-      const res = await fetch(url, { credentials: 'include' });
+      const token = readStored('AUTH_TOKEN');
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(url, { credentials: 'include', headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setMdText(await res.text());
     } catch (e) {
@@ -117,7 +118,7 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
   }, []);
 
   useEffect(() => {
-    if (item && kind === 'md') loadMd(item.previewUrl);
+    if (item && (kind === 'md' || kind === 'text')) loadMd(item.previewUrl);
     else {
       setMdText('');
       setMdError('');
@@ -183,7 +184,7 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
         <div className="attachment-viewer__panel attachment-viewer__panel--video" onClick={(e) => e.stopPropagation()}>
           <div className="attachment-viewer__bar">
             <span className="attachment-viewer__name" title={item.filename}>
-              {item.filename}
+              {viewerTitle(item.filename)}
             </span>
             <div className="attachment-viewer__actions">
               <button
@@ -230,7 +231,7 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
       <div className="attachment-viewer__panel" onClick={(e) => e.stopPropagation()}>
         <div className="attachment-viewer__bar">
           <span className="attachment-viewer__name" title={item.filename}>
-            {item.filename}
+            {viewerTitle(item.filename)}
           </span>
           <div className="attachment-viewer__actions">
             <button
@@ -278,6 +279,14 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
                   {mdText}
                 </ReactMarkdown>
               </div>
+            ))}
+          {kind === 'text' &&
+            (mdLoading ? (
+              <div className="attachment-viewer__hint">加载中…</div>
+            ) : mdError ? (
+              <div className="attachment-viewer__hint attachment-viewer__hint--error">预览失败：{mdError}</div>
+            ) : (
+              <pre className="attachment-viewer__text">{mdText}</pre>
             ))}
           {(kind === 'other' || kind === 'office') && (
             <div className="attachment-viewer__hint">

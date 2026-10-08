@@ -31,6 +31,7 @@ export function toAppUrl(url: string): string {
  */
 export function appUrlTransform(url: string): string {
   if (url.startsWith('data:image/')) return url;
+  if (url.startsWith('clipboard:')) return url;
   const appUrl = toAppUrl(url);
   if (appUrl !== url) return appUrl;
   return defaultUrlTransform(url);

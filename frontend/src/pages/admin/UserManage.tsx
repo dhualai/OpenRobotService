@@ -15,8 +15,9 @@ import {
 import type { OrgOption, ProfileFieldOptions } from '@/api/profile';
 import FilterableSelect from '@/shared/components/FilterableSelect';
 import AvatarImg from '@/shared/components/AvatarImg';
+import { parseBackendDate } from '@/shared/utils/time';
 import {
-  MacSearch, MacCheck, MacBuilding2, MacClipboardList,
+  MacSearch, MacCheck, MacBuilding2, MacClipboardList, MacCalendarDays,
 } from '@/shared/components/macaronIcons';
 
 interface User {
@@ -36,6 +37,8 @@ interface User {
   projectPermissions?: Record<string, Record<string, string[]>>;
   external_credentials?: Record<string, Record<string, string>>;
   avatar_resource_id?: number | null;
+  /** 微信关注时间（Unix 秒，来自 user_info 快照按 openid 关联）；手工账号/未关注/无快照为 null */
+  subscribe_time?: number | null;
 }
 
 interface UserCreateData {
@@ -105,6 +108,36 @@ const STATUS_OPTIONS = [
   { label: '活跃', value: 'active' },
   { label: '未激活', value: 'inactive' },
 ];
+
+// ── 列表排序 ──
+// 两个排序键都取自不可变字段（关注时间 / 账号名），所以在后台编辑用户信息、列表重新
+// 拉取之后顺序不会跳；规则本身持久化到本机，切走再回来仍然生效，直到手动换一次。
+type SortKey = 'subscribe_time' | 'username';
+
+const SORT_OPTIONS: { key: SortKey; label: string; hint: string }[] = [
+  { key: 'subscribe_time', label: '关注时间', hint: '最新关注在前' },
+  { key: 'username', label: '用户名', hint: '账号名 A→Z' },
+];
+
+const SORT_STORAGE_KEY = 'admin_user_manage_sort';
+
+/** 读本机保存的排序规则；未存过/值非法/存储不可用时回退默认「关注时间倒序」 */
+const readStoredSort = (): SortKey => {
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    return SORT_OPTIONS.some((o) => o.key === raw) ? (raw as SortKey) : 'subscribe_time';
+  } catch {
+    return 'subscribe_time';
+  }
+};
+
+/** 微信关注时间（Unix 秒）→ 本地时区日期，卡片 chip 用 */
+const formatSubscribeDate = (ts?: number | null): string => {
+  const d = parseBackendDate(ts ?? null);
+  if (!d) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+};
 
 /** 单选项行（原型 users 弹层：18px 圆 + 白色对勾） */
 function ChoiceRow({ label, checked, onClick }: { label: string; checked: boolean; onClick: () => void }) {
@@ -245,6 +278,30 @@ export default function UserManage() {
         (u.department && u.department.toLowerCase().includes(kw))
     );
   }, [users, keyword]);
+
+  // 排序规则：默认「关注时间倒序」，选择持久化到本机（见上方 SORT_OPTIONS 注释）
+  const [sort, setSort] = useState<SortKey>(readStoredSort);
+
+  const handleSortChange = (key: SortKey) => {
+    setSort(key);
+    try {
+      localStorage.setItem(SORT_STORAGE_KEY, key);
+    } catch {
+      // localStorage 不可用（隐私模式等）时静默降级为仅本次会话生效
+    }
+  };
+
+  // 关注时间倒序：有微信关注时间的在前（最新的最前），无数据（手工账号/未关注/无快照）
+  // 稳定排在最后；用户名：按账号名 A→Z（忽略大小写）。Array#sort 稳定，同键保持后端原顺序。
+  const sortedUsers = useMemo(() => {
+    const list = [...filteredUsers];
+    if (sort === 'username') {
+      list.sort((a, b) => (a.username || '').localeCompare(b.username || '', 'en', { sensitivity: 'base' }));
+    } else {
+      list.sort((a, b) => (b.subscribe_time || 0) - (a.subscribe_time || 0));
+    }
+    return list;
+  }, [filteredUsers, sort]);
 
   const openCreate = () => {
     setEditingUsername(null);
@@ -618,6 +675,14 @@ export default function UserManage() {
         >
           责任模块树
         </button>
+        <button
+          type="button"
+          className="mac-btn mac-btn--outline"
+          style={{ fontWeight: 400 }}
+          onClick={() => navigate('/admin/dual-tree')}
+        >
+          双树试做
+        </button>
       </div>
 
       {/* 搜索框 + 计数胶囊 */}
@@ -634,13 +699,32 @@ export default function UserManage() {
         <span className="mac-count-pill">{filteredUsers.length} 人</span>
       </div>
 
+      {/* 排序（就地生效；规则持久化，切换页面/编辑用户后不变，直到手动改） */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11.5, color: 'var(--mac-muted-fg)', marginLeft: 2 }}>排序</span>
+        {SORT_OPTIONS.map((opt) => (
+          <button
+            key={opt.key}
+            type="button"
+            className={`mac-filter-chip${sort === opt.key ? ' is-active' : ''}`}
+            aria-pressed={sort === opt.key}
+            onClick={() => handleSortChange(opt.key)}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <span style={{ fontSize: 11.5, color: 'var(--mac-muted-fg)' }}>
+          {SORT_OPTIONS.find((o) => o.key === sort)?.hint}
+        </span>
+      </div>
+
       {/* 用户卡片列表 */}
-      {filteredUsers.length === 0 ? (
+      {sortedUsers.length === 0 ? (
         <div className="mac-empty" style={{ padding: '40px 0' }}>
           {keyword ? '未找到匹配的用户' : '暂无用户，请点击"新建用户"添加'}
         </div>
       ) : (
-        filteredUsers.map((user) => (
+        sortedUsers.map((user) => (
           <div
             key={user.id}
             className="mac-user-card"
@@ -661,8 +745,10 @@ export default function UserManage() {
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                    <span className="mac-user-card__title">{user.name || user.username}</span>
-                    {user.name && user.name !== user.username && (
+                    <span className="mac-user-card__title" data-testid="user-card-title">{user.name || user.username}</span>
+                    {/* @账号 标签：username 非空时不再显示（微信登录账号形如 wechat_xxxx，展示无意义）；
+                        username 为空的历史账号保持原有展示逻辑 */}
+                    {!user.username && user.name && user.name !== user.username && (
                       <span className="mac-user-card__account">@{user.username}</span>
                     )}
                     <span className={`mac-chip mac-chip--tag ${user.status === 'active' ? 'mac-chip--tag-blue' : 'mac-chip--tag-muted'}`}>
@@ -676,6 +762,12 @@ export default function UserManage() {
                       <span className="mac-chip mac-chip--dept">
                         <MacBuilding2 size={12} />
                         {user.department}
+                      </span>
+                    )}
+                    {!!user.subscribe_time && (
+                      <span className="mac-chip mac-chip--dept">
+                        <MacCalendarDays size={12} />
+                        关注 {formatSubscribeDate(user.subscribe_time)}
                       </span>
                     )}
                   </div>
@@ -940,7 +1032,8 @@ export default function UserManage() {
                 />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flex: 1, minWidth: 0 }}>
                   <span className="mac-detail-name">{detailUser.name || detailUser.username}</span>
-                  {detailUser.name && detailUser.name !== detailUser.username && (
+                  {/* 同用户卡片：username 非空时不显示 @账号 标签，为空时保持原逻辑 */}
+                  {!detailUser.username && detailUser.name && detailUser.name !== detailUser.username && (
                     <span className="mac-detail-account">@{detailUser.username}</span>
                   )}
                   <span className={`mac-chip mac-chip--tag ${detailUser.status === 'active' ? 'mac-chip--tag-blue' : 'mac-chip--tag-muted'}`}>

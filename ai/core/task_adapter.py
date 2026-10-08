@@ -19,6 +19,31 @@ from app.models.task import Task, TaskStatus, TaskPriority, TaskType, TaskOperat
 from app.core.database import db_manager
 
 
+def _normalize_task_attachments(items: list) -> list:
+    """工单附件可能是 object_path 字符串或 {object_path,filename} 残缺 dict。"""
+    try:
+        from ai.agents.AiTaskPlatform.attachments.utils import normalize_attachment
+    except Exception:
+        normalize_attachment = None
+    out = []
+    for it in items or []:
+        if normalize_attachment:
+            n = normalize_attachment(it)
+            if n:
+                out.append(n)
+            continue
+        if isinstance(it, dict):
+            out.append(it)
+        elif isinstance(it, str) and it.strip():
+            s = it.strip()
+            out.append({
+                "filename": s.rstrip("/").rsplit("/", 1)[-1],
+                "path": s,
+                "object_path": s,
+            })
+    return _dedup_attachments(out)
+
+
 def _dedup_attachments(items: list) -> list:
     """按 object_path + filename 去重，保留首次出现顺序。
     防止 agent_state.attachments 累加时引入重复条目透传到 tasks.attachments。"""
@@ -545,6 +570,7 @@ def load_task_context_dict(task_id) -> dict:
         if not task:
             return {}
         base = task_to_dict(task)
+        base["attachments"] = _normalize_task_attachments(base.get("attachments") or [])
         diag = base.get("diagnosis") or {}
         base["problem_summary"] = diag.get("problem_summary", "")
         base["hypotheses"] = diag.get("hypotheses") or []
@@ -571,7 +597,72 @@ def load_task_context_dict(task_id) -> dict:
 
 
 _COMMENT_ATTACHMENT_LIMIT = 50
-_COMMENT_SCAN_ROWS = 30
+# 讨论轮次很多时，最近几十条往往是空附件的 @U老师 / AI 回复。
+# 空列表 [] 在 SQL 里不是 NULL，会占满旧的 30 条窗口，把更早的日志评论挤掉。
+_COMMENT_SCAN_ROWS = 300
+
+
+def _raw_comment_attachment_items(attachments) -> list:
+    """抽出一条评论里真正有内容的附件，跳过 [] / None / 空白。"""
+    items = []
+    for att in attachments or []:
+        if isinstance(att, str) and att.strip():
+            s = att.strip()
+            # 发评论失败时可能把 temp_id UUID 写进 attachments，那不是对象路径
+            if "/" not in s:
+                continue
+            items.append(s)
+        elif isinstance(att, dict) and (
+            att.get("object_path") or att.get("path") or att.get("url") or att.get("filename")
+        ):
+            items.append(att)
+    return items
+
+
+def _normalize_comment_attachment_items(items: list, presign=True) -> list:
+    """把评论附件条目收成 AI 可用的 {filename, path, object_path}。"""
+    import logging
+    _log = logging.getLogger(__name__)
+    result: list = []
+    minio_client = None
+    if presign:
+        try:
+            from ai.core.minio_client import minio_client as _mc
+            minio_client = _mc
+        except Exception as e:
+            _log.warning(f"[task_adapter] 评论附件 MinIO 不可用: {e}")
+    try:
+        from ai.agents.AiTaskPlatform.attachments.utils import normalize_attachment
+    except Exception:
+        normalize_attachment = None
+    for item in items:
+        if normalize_attachment:
+            try:
+                norm = normalize_attachment(item)
+            except Exception:
+                norm = None
+        elif isinstance(item, dict):
+            norm = item
+        elif isinstance(item, str) and item.strip():
+            s = item.strip()
+            fname = s.rstrip("/").rsplit("/", 1)[-1]
+            norm = {"filename": fname, "path": s, "object_path": s}
+        else:
+            norm = None
+        if not norm:
+            continue
+        obj = norm.get("object_path") or ""
+        if presign and minio_client and obj and not str(norm.get("path") or "").startswith("http"):
+            try:
+                url = minio_client.get_presigned_url(obj, expires_minutes=10)
+                if url:
+                    norm["path"] = url
+            except Exception as e:
+                _log.debug(f"[task_adapter] 评论附件 presign 失败 {obj}: {e}")
+        result.append(norm)
+        if len(result) >= _COMMENT_ATTACHMENT_LIMIT:
+            break
+    return result
 
 
 def _collect_comment_attachments(db, task_id: int) -> list:
@@ -580,7 +671,7 @@ def _collect_comment_attachments(db, task_id: int) -> list:
     task_comments.attachments 为 {bucket}/{object} 字符串（讨论区上传的截图/日志），
     这里转成 {filename, path=MinIO 预签名 URL, object_path} 字典，
     供 parse_attachments / analyze_images / extract_log_paths 统一读取。
-    presign 失败时降级保留 bucket/object 原值（_read_bytes 的 MinIO 分支仍可直接读取）。
+    presign 失败时降级保留 bucket/object 原值（MinIO 直读仍可落地）。
     """
     import logging
     _log = logging.getLogger(__name__)
@@ -589,31 +680,31 @@ def _collect_comment_attachments(db, task_id: int) -> list:
         from app.models.task import TaskComment
         rows = (
             db.query(TaskComment)
-            .filter(TaskComment.task_id == task_id, TaskComment.attachments.isnot(None))
+            .filter(TaskComment.task_id == task_id)
             .order_by(TaskComment.created_at.desc())
             .limit(_COMMENT_SCAN_ROWS)
             .all()
         )
-        from ai.core.minio_client import minio_client
+        raw_items: list = []
+        comments_with_files = 0
         for c in rows:
-            for att in (c.attachments or []):
-                if not isinstance(att, str) or not att.strip():
-                    continue
-                att = att.strip()
-                obj = att.partition("/")[2] or att
-                fname = obj.split("/")[-1] or att
-                try:
-                    url = minio_client.get_presigned_url(att, expires_minutes=10)
-                except Exception as e:
-                    _log.debug(f"[task_adapter] 评论附件 presign 失败 {att}: {e}")
-                    url = att  # 降级：保留 bucket/object 原值，_read_bytes 的 MinIO 分支可读
-                result.append({"filename": fname, "path": url, "object_path": att})
-                if len(result) >= _COMMENT_ATTACHMENT_LIMIT:
-                    break
-            if len(result) >= _COMMENT_ATTACHMENT_LIMIT:
+            items = _raw_comment_attachment_items(getattr(c, "attachments", None))
+            if not items:
+                continue
+            comments_with_files += 1
+            raw_items.extend(items)
+            if len(raw_items) >= _COMMENT_ATTACHMENT_LIMIT:
                 break
+        result = _normalize_comment_attachment_items(raw_items[:_COMMENT_ATTACHMENT_LIMIT])
+        names = [
+            (n.get("filename") or n.get("object_path") or "") for n in result
+        ]
+        _log.info(
+            f"[task_adapter] 评论附件 task={task_id} scanned={len(rows)} "
+            f"with_files={comments_with_files} collected={len(result)} names={names[:8]}"
+        )
     except Exception as e:
-        _log.debug(f"[task_adapter] 收集评论附件失败: {e}")
+        _log.warning(f"[task_adapter] 收集评论附件失败 task={task_id}: {e}")
     return result
 
 

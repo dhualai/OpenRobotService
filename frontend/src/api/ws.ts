@@ -51,11 +51,12 @@ export type WsEvent =
 
 /** AI 执行过程单项（Supervisor 派发能力时逐项推送，Claude Code 式动态展示） */
 export interface AiProgressTodo {
-  id?: number;
+  id?: number | string;
   capability?: string;
   description?: string;
   status?: 'pending' | 'in_progress' | 'completed' | string;
   phase?: 'running' | 'done' | string;
+  children?: AiProgressTodo[];
 }
 
 export interface CommentPayload {

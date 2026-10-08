@@ -121,6 +121,7 @@ const Dashboard = lazyImport(() => import('@/pages/admin/Dashboard'));
 const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
 const DispatchDev = lazyImport(() => import('@/pages/admin/DispatchDev'));
 const TaskPolicyPage = lazyImport(() => import('@/pages/admin/TaskPolicyPage'));
+const QrcodeManage = lazyImport(() => import('@/pages/admin/QrcodeManage'));
 const AdminLayout = lazyImport(() => import('@/shared/components/AdminLayout'));
 
 // 仪表盘下钻明细
@@ -144,6 +145,8 @@ const OperationLogs = lazyImport(() => import('@/pages/admin/OperationLogs'));
 // const ProgressBoard = lazyImport(() => import('@/pages/admin/ProgressBoard'));   // 已并入 ProjectProgress
 // const PersonnelBoard = lazyImport(() => import('@/pages/admin/PersonnelBoard')); // 已从导航移除
 const ProjectEdit = lazyImport(() => import('@/pages/admin/ProjectEdit'));
+// 录入信息（项目信息登记）：新建项目下「录入信息」按钮进入，一条信息落成 wechat_qrcodes 一行
+const InfoEntry = lazyImport(() => import('@/pages/admin/InfoEntry'));
 // const ProjectHR = lazyImport(() => import('@/pages/admin/ProjectHR'));           // 已从导航移除
 // 项目管理二级页面：上（项目导入 ProjectImport）+ 下（项目授权 ProjectAuth）并列，
 // 两个子页面由 ProjectManage.tsx 内部静态引入，不再各自单独挂路由。
@@ -153,6 +156,7 @@ const RiskEdit = lazyImport(() => import('@/pages/admin/RiskEdit'));
 const ReportsAnalytics = lazyImport(() => import('@/pages/admin/ReportsAnalytics'));
 const UserManage = lazyImport(() => import('@/pages/admin/UserManage'));
 const ModuleTreeManage = lazyImport(() => import('@/pages/admin/ModuleTreeManage'));
+const DualTreeTrial = lazyImport(() => import('@/pages/admin/DualTreeTrial'));
 const OrgChart = lazyImport(() => import('@/pages/admin/OrgChart'));
 const RoleManage = lazyImport(() => import('@/pages/admin/RoleManage'));
 const AssignRole = lazyImport(() => import('@/pages/admin/AssignRole'));
@@ -233,9 +237,13 @@ const router = createBrowserRouter([
                   { path: 'operation-logs', element: <OperationLogs /> },
                   { path: 'dispatch-dev', element: <DispatchDev /> },
                   { path: 'task-policy', element: <TaskPolicyPage /> },
+                  { path: 'qrcode-manage', element: <QrcodeManage /> },
                   // { path: 'progress', element: <ProgressBoard /> },       // 已并入 ProjectProgress
                   // { path: 'personnel', element: <PersonnelBoard /> },     // 已从导航移除
                   { path: 'project-edit/:id?', element: <ProjectEdit /> },
+                  // 录入信息：项目管理「新建项目 → 录入信息」的登记页（新建 /admin/info-entry，
+                  // 编辑 /admin/info-entry/:id），六个字段落成 wechat_qrcodes 一行
+                  { path: 'info-entry/:id?', element: <InfoEntry /> },
                   // { path: 'project-hr', element: <ProjectHR /> },         // 已从导航移除
                   // 项目管理二级页面：内部并列展示项目导入 + 项目授权，见 ProjectManage.tsx
                   { path: 'project-manage', element: <ProjectManage /> },
@@ -244,6 +252,7 @@ const router = createBrowserRouter([
                   { path: 'reports', element: <ReportsAnalytics /> },
                   { path: 'users', element: <UserManage /> },
                   { path: 'module-tree', element: <ModuleTreeManage /> },
+                  { path: 'dual-tree', element: <DualTreeTrial /> },
                   { path: 'org-chart', element: <OrgChart /> },
                   { path: 'roles', element: <RoleManage /> },
                   { path: 'assign-role', element: <AssignRole /> },

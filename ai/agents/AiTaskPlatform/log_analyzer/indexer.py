@@ -9,7 +9,7 @@
 策略:
     1. 结构化提取: ts/robot/task/path/error/node/pos/index
     2. 索引: 流式扫描→时间/车辆/任务/路径索引，首次30秒，后续毫秒查询
-    3. 按查询条件读取候选行→人类可读摘要(≤200字/行)
+    3. 按查询条件读取候选行→人类可读摘要（超长行只取行头 + 关键词窗口，禁止整行正则）
 """
 
 import re, os, time as _time
@@ -45,95 +45,201 @@ _RE_WAIT_T = re.compile(r"WAIT-T:([\d.]+)")     # 等待耗时
 # 匹配如: last_node_index校验失败 / 当前位置与last_node_index不匹配 / 路径规划超时 ...
 _RE_ERR_PHRASE = re.compile(r"([\u4e00-\u9fa5A-Za-z_]{1,40}?(?:校验失败|失败|异常|不匹配|拒绝|超时|错误|为空|不存在|无法|失效))")
 
-# —— 非 INFO 行"真实错误/警告短语"归一化统计（自主发现信号，不预设关键词）——
-_RE_LVL_BODY = re.compile(r":\d{2}:\d{2},\d{3} - [A-Z]+ - (.*)$")
+# 级别标记只在行首附近；单行可达 6MB，禁止用 (.*)$ / 全行正则 / 全行 lower()。
+_RE_LVL_MARK = re.compile(r":\d{2}:\d{2},\d{3} - [A-Z]+ - ")
 _RE_AGV_ID = re.compile(r"agv-\d+", re.IGNORECASE)
 _RE_NUM = re.compile(r"\d+")
+_LVL_HEAD = 4096            # 时间戳+级别一定落在行头
+_FIELD_SCAN = 16384         # 建索引时结构化字段只扫行头
+_SIGNAL_SCAN = 262144       # 建索引时信号词探测上限（256KB）
+_MSG_HEAD = 180             # 正文开头（事件名通常在这）
+_MSG_LIMIT = 2000           # 回给 LLM 的单行正文上限（聚焦时间窗内仍需多看一段原文）
+_SUMMARY_LIMIT = 2400
+_WIN_BEFORE = 40
+_WIN_AFTER = 80
+# 锁区/回调/状态机/可达性等关键词常埋在数 MB 的 repr 尾部，必须用 find 定位
+_KEEP_WORDS = (
+    "锁区", "占用", "释放", "回调", "状态机", "强制完成", "取货", "送货",
+    "lock_zone", "lockzone", "occupy", "Occupy", "OCCUPY",
+    "release", "Release", "callback", "Callback",
+    "state_machine", "StateMachine", "ABORTED", "CANCELED", "MAPF",
+    # 可达性 / 路径求解（常埋在超长 UPDATE 之后）
+    "不可达", "可达", "无解", "求解", "拓扑", "topo", "TOPO",
+    "unreachable", "Unreachable", "UNREACHABLE",
+    "no solution", "NO_SOLUTION", "no_path", "NO_PATH", "NoSolutionFound",
+    "路径规划", "path plan", "PathPlan", "planning fail",
+    "DPP规划请求", "DPP规划结果", "路径规划开始", "路径规划结束",
+    "路径规划失败", "路径规划超时", "路径规划异常", "路径规划结果为空",
+    "LOCATE FAILED", "LOCATE ERROR", "LOCATE SUCCESS",
+    "目标点", "goal", "Goal", "mapId", "map_id", "地图层",
+    "不在当前所有地图层上", "前置点", "路径拒收", "DMAP已接收路径",
+    "新任务-----", "求解成功", "非强连通",
+)
+
+# 行头像「刷状态/更新」的 INFO 大行：体内常嵌历史 error_code，不能当 ERROR 行
+_BULK_UPDATE_MARKERS = (
+    "更新Robots", "Update Robots", "update robots", "UPDATE ROBOTS",
+    "更新休息点", "更新充电", "更新任务池", "更新车辆",
+    "更新 Robots", "sync robots", "Sync Robots",
+)
+
+
+def _norm_ts_bound(raw: Optional[str], *, end: bool = False) -> str:
+    """把查询时间界规范到与 ``_ts_idx`` 键（``YYYY-MM-DD HH:MM:SS``）可比较。
+
+    LLM 常给分钟精度 ``YYYY-MM-DD HH:MM``。若 end 直接用该串做 ``<=``，
+    会把同分钟内 ``:01``~``:59`` 的行全部排除（故障秒常在末尾），导致假 0 命中。
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if len(s) >= 19:
+        return s[:19]
+    if len(s) == 16 and s[10] == " ":
+        return s + (":59" if end else ":00")
+    return s
+
+
+def _clip(line: str, n: int) -> str:
+    return line if len(line) <= n else line[:n]
+
+
+def _body_start(line: str) -> int:
+    m = _RE_LVL_MARK.search(line[:_LVL_HEAD] if len(line) > _LVL_HEAD else line)
+    return m.end() if m else 0
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _split_level_body(line: str) -> str:
+    """取级别标记后的正文片段（调用方自行再截断）。"""
+    return line[_body_start(line):]
+
+
+def evidence_body(line: str, limit: int = _MSG_LIMIT) -> str:
+    """给 LLM 看的正文：保留原词原数字；超长行只切窗口，不压缩/不正则整行。
+
+    聚类用的数字→N 只允许出现在 normalize_msg_phrase。
+    """
+    start = _body_start(line)
+    n = len(line)
+    if n - start <= limit:
+        return _squash(line[start:n])
+    windows = [(start, min(start + _MSG_HEAD, n))]
+    for w in _KEEP_WORDS:
+        i = line.find(w, start)
+        if i < 0:
+            continue
+        windows.append((max(start, i - _WIN_BEFORE), min(n, i + len(w) + _WIN_AFTER)))
+    windows.sort()
+    merged = []
+    for a, b in windows:
+        if merged and a <= merged[-1][1] + 12:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    snippet = " … ".join(_squash(line[a:b]) for a, b in merged)
+    return snippet[:limit]
 
 
 def normalize_msg_phrase(line: str) -> str:
     """从 ERROR/WARNING 行提取可聚合的归一化短语，供 Discovery 自主发现高频错误。
 
-    - 取级别标记后的消息主体
-    - 归一化: agv-数字 → agv-N, 数字 → N, id='..' → id=*, 空白压缩
-    - 截断到 ~60 字符防止长 repr 噪音
+    仅用于聚类计数，不是给 LLM 看的证据。
     """
-    m = _RE_LVL_BODY.search(line)
-    body = m.group(1).strip() if m else line.strip()
-    # 去掉常见 token 值
+    start = _body_start(line)
+    body = line[start:start + 2000].strip()
     body = re.sub(r"id='[^']*'", "id=*", body)
     body = re.sub(r"id=\"[^\"]*\"", "id=*", body)
     body = re.sub(r"'agv-[\w\d-]*'", "agvN", body)
     body = _RE_AGV_ID.sub("agvN", body)
-    body = re.sub(r"[A-Z]+[-_]\d+[-_]+\d+[-_]+\d+[-_]+\d+", "pathN", body)  # path_id
+    body = re.sub(r"[A-Z]+[-_]\d+[-_]+\d+[-_]+\d+[-_]+\d+", "pathN", body)
     body = _RE_NUM.sub("N", body)
     body = re.sub(r"[:\s]{2,}", ":", body)
     body = re.sub(r"\s+", " ", body).strip()
-    body = body[:60]
-    return body
+    return body[:60]
+
+
+def _is_bulk_update_line(line: str) -> bool:
+    """行头是否像车辆/休息点状态刷屏（超长 UPDATE，体内常嵌历史 error_code）。"""
+    head = _clip(line, 480)
+    return any(m in head for m in _BULK_UPDATE_MARKERS)
 
 
 def extract_fields(line: str) -> Dict:
+    """结构化字段只扫行头。超长 repr 里的词留给 evidence_body 用 find 取窗口。"""
+    head = _clip(line, _FIELD_SCAN)
     fld = {}
-    m = _RE_TS.search(line)
+    m = _RE_TS.search(head)
     if m: fld["ts"] = m.group(1)
-    m = _RE_LVL.search(line)
+    m = _RE_LVL.search(head)
     if m: fld["level"] = m.group(1)
 
     robots = set()
-    for m in _RE_ROBOT.finditer(line): robots.add(m.group(1))
-    for m in _RE_ROBOT2.finditer(line): robots.add(m.group(1))
-    for m in _RE_ROBOT3.finditer(line): robots.add(m.group(1))
+    for m in _RE_ROBOT.finditer(head): robots.add(m.group(1))
+    for m in _RE_ROBOT2.finditer(head): robots.add(m.group(1))
+    for m in _RE_ROBOT3.finditer(head): robots.add(m.group(1))
+    for m in _RE_AGV_ID.finditer(head): robots.add(m.group(0))
     if robots: fld["robots"] = sorted(robots)
 
     tasks = set()
-    for m in _RE_TASK.finditer(line): tasks.add(m.group(1))
-    for m in _RE_TASK2.finditer(line): tasks.add(m.group(1))
-    for m in _RE_TASK3.finditer(line): tasks.add(m.group(1))
-    for m in _RE_TASK4.finditer(line): tasks.add(m.group(1))
+    for m in _RE_TASK.finditer(head): tasks.add(m.group(1))
+    for m in _RE_TASK2.finditer(head): tasks.add(m.group(1))
+    for m in _RE_TASK3.finditer(head): tasks.add(m.group(1))
+    for m in _RE_TASK4.finditer(head): tasks.add(m.group(1))
     if tasks: fld["tasks"] = sorted(tasks)
 
-    m = _RE_ERROR.search(line)
-    if m: fld["error"] = m.group(1)
+    # error_code 只认行头短窗口，避免 UPDATE 大包体内嵌历史 error_code 污染
+    early = _clip(line, 768)
+    m = _RE_ERROR.search(early)
+    if m and not _is_bulk_update_line(line):
+        fld["error"] = m.group(1)
 
     paths = set()
-    for m in _RE_PATH.finditer(line): paths.add(m.group(1))
+    for m in _RE_PATH.finditer(head): paths.add(m.group(1))
     if paths: fld["paths"] = sorted(paths)
 
     for k, p in [("node", _RE_NODE), ("pos", _RE_POS), ("idx", _RE_IDX),
                   ("numnodes", _RE_NUMNODES)]:
-        m = p.search(line)
+        m = p.search(head)
         if m: fld[k] = m.group(1)
 
-    m = _RE_DESC.search(line)
+    m = _RE_DESC.search(head)
     if m: fld["desc"] = m.group(1)[:100]
 
-    m = _RE_MAPF_T.search(line)
+    m = _RE_MAPF_T.search(head)
     if m: fld["mapf_t"] = float(m.group(1))
-    m = _RE_WAIT_T.search(line)
+    m = _RE_WAIT_T.search(head)
     if m: fld["wait_t"] = float(m.group(1))
-    # 执行预测一致性异常 → 路径截断 → 需要重新规划
-    if "一致性超过update阈值" in line:
-        fld["error"] = fld.get("error", "") + " 一致性超阈值-路径截断"
-    elif "一致性不满足" in line or "current Task一致性" in line:
-        fld["error"] = fld.get("error", "") + " 一致性校验失败"
-    # 对 ERROR/WARNING 行：附带消息主体，作为证据行"这一行报什么错"的关键描述
-    if fld.get("level") in ("ERROR", "WARN", "WARNING", "FATAL"):
-        _mb = _RE_LVL_BODY.search(line)
-        if _mb:
-            _msg = re.sub(r"\s+", " ", _mb.group(1)).strip()
-            # 归一化数字/车id 便于阅读
-            _msg = _RE_AGV_ID.sub("agv-N", _msg)
-            _msg = _RE_NUM.sub("N", _msg)
-            fld["msg"] = _msg[:100]
+    # 可达性/一致性信号：扫更深，但不因此把 INFO 更新行标成 ERROR
+    probe = _clip(line, _SIGNAL_SCAN)
+    reach_hits = []
+    for w in (
+        "不可达", "unreachable", "Unreachable", "无解", "NO_SOLUTION",
+        "no solution", "NoSolutionFound", "不在当前所有地图层上",
+        "前置点不可达", "求解失败", "路径规划失败", "路径规划超时",
+        "路径规划异常", "LOCATE FAILED", "LOCATE ERROR", "DPP规划",
+        "路径拒收", "非强连通",
+    ):
+        if w in probe:
+            reach_hits.append(w)
+    if reach_hits:
+        fld["reach_signal"] = ",".join(reach_hits[:4])
+    if not _is_bulk_update_line(line):
+        if "一致性超过update阈值" in probe:
+            fld["error"] = (fld.get("error") or "") + " 一致性超阈值-路径截断"
+        elif "一致性不满足" in probe or "current Task一致性" in probe:
+            fld["error"] = (fld.get("error") or "") + " 一致性校验失败"
     return fld
 
 
-def fields_summary(fld: Dict) -> str:
+def fields_summary(fld: Dict, line: str = "") -> str:
+    """人类可读摘要。line 传入时用原文证据片段，数字不被替换成 N。"""
     parts = []
     ts = fld.get("ts", "")
     if ts:
-        # 显示 HH:MM:SS,mmm（去掉日期部分）
         ts_short = ts[-12:] if len(ts) > 12 else ts
         parts.append("[{}]".format(ts_short))
     lv = fld.get("level", "")
@@ -143,18 +249,21 @@ def fields_summary(fld: Dict) -> str:
             for v in fld[k]:
                 parts.append("{}={}".format(pfx, v[-24:] if k=="paths" else v[-16:]))
     if "error" in fld: parts.append("ERR={}".format(fld["error"]))
+    if fld.get("reach_signal"):
+        parts.append("REACH={}".format(fld["reach_signal"]))
     extra = []
-    # ERROR/WARNING 行：附带消息主体（这行在报什么错的关键描述）
-    if "msg" in fld: extra.append("MSG={}".format(fld["msg"]))
+    body = evidence_body(line) if line else (fld.get("msg") or "")
+    if body:
+        extra.append("MSG={}".format(body))
     if "desc" in fld: extra.append(fld["desc"][:80])
-    if "node" in fld: extra.append("N={}".format(fld["node"]))
+    if "node" in fld: extra.append("node={}".format(fld["node"]))
     if "pos" in fld: extra.append("Pos=[{}]".format(fld["pos"]))
     if "idx" in fld: extra.append("#{}".format(fld["idx"]))
     if "numnodes" in fld: extra.append("(/{} nodes)".format(fld["numnodes"]))
     if "mapf_t" in fld: extra.append("MAPF-T={:.1f}s".format(fld["mapf_t"]))
     if "wait_t" in fld: extra.append("WAIT-T={:.1f}s".format(fld["wait_t"]))
     if extra: parts.append("| "+" ".join(extra))
-    return " ".join(parts)[:200]
+    return " ".join(parts)[:_SUMMARY_LIMIT]
 
 
 # ── 查询 + 索引 ──
@@ -215,13 +324,21 @@ class LogIndex:
                 for r in fld.get("robots", []): self._robot_idx.setdefault(r, []).append(n)
                 for t in fld.get("tasks", []): self._task_idx.setdefault(t, []).append(n)
                 for p in fld.get("paths", []): self._path_idx.setdefault(p, []).append(n)
-                is_err = fld.get("level") in ("ERROR","WARN","WARNING","FATAL") or "error" in fld
+                # 真实 ERROR/WARN 级别才进错误索引。
+                # 禁止：INFO「更新Robots」大包体内嵌历史 error_code → 假 5000+ 错误淹没求解信号。
+                lv_up = (lv or "").upper()
+                is_err = lv_up in ("ERROR", "WARN", "WARNING", "FATAL")
+                if fld.get("reach_signal"):
+                    self._signal_lines.append(n)
+                    if ts:
+                        minute = ts[:16]
+                        self._signal_minute[minute] = self._signal_minute.get(minute, 0) + 1
                 if is_err:
                     self._err_lines.append(n)
                     _lvl = fld.get("level", "")
                     _is_fatal = _lvl in ("ERROR", "FATAL")
                     # 展开 ERROR/FATAL 的 Traceback：读后续行找异常 message（如 TimeoutError: timed out）
-                    if _is_fatal and "Traceback" in line:
+                    if _is_fatal and "Traceback" in _clip(line, _FIELD_SCAN):
                         _tb_exc = ""
                         for _ in range(1, 40):
                             _bl = f.readline()
@@ -239,7 +356,7 @@ class LogIndex:
                         if _tb_exc:
                             fld["error"] = fld.get("error", "") + f" [Traceback] {_tb_exc}"
                     # 自主发现真实错误/警告短语（ERROR 与 WARNING 分开，ERROR 优先）
-                    if _is_fatal and "Traceback" in line:
+                    if _is_fatal and "Traceback" in _clip(line, _FIELD_SCAN):
                         # ERROR Traceback：用展开的异常作为短语键
                         _exc = (fld.get("error") or "").strip()
                         if _exc:
@@ -257,7 +374,7 @@ class LogIndex:
                         self._err_idx.setdefault(code, []).append(n)
                     else:
                         # 无 error_code= 时，从消息提取中文错误短语作归类键（如 "校验失败"/"不匹配"）
-                        _ph = _RE_ERR_PHRASE.search(line)
+                        _ph = _RE_ERR_PHRASE.search(_clip(line, _FIELD_SCAN))
                         if _ph:
                             ph = _ph.group(1).strip()
                             self._err_idx.setdefault(ph, []).append(n)
@@ -266,26 +383,33 @@ class LogIndex:
                         self._err_hour[hour] = self._err_hour.get(hour, 0) + 1
                         minute = ts[:16]
                         self._err_minute[minute] = self._err_minute.get(minute, 0) + 1
-                # 路径状态异常也是错误信号
-                if "ABORTED" in line or "CANCELED" in line:
-                    self._err_lines.append(n)
-                    if ts:
-                        minute = ts[:16]
-                        self._err_minute[minute] = self._err_minute.get(minute, 0) + 1
-                # 一致性校验失败 / 路径截断 / MAPF耗时
-                _SIGNAL_KW = ("一致性超过update阈值", "一致性不满足", "MAPF-T:", "WAIT-T:", "等待时间超限")
-                if any(kw in line for kw in _SIGNAL_KW):
-                    self._err_lines.append(n)
-                    self._signal_lines.append(n)
-                    if ts:
-                        minute = ts[:16]
-                        self._signal_minute[minute] = self._signal_minute.get(minute, 0) + 1
+                probe = _clip(line, _SIGNAL_SCAN)
+                # 路径状态异常也是错误信号（跳过 UPDATE 刷屏体内的历史状态串）
+                if not _is_bulk_update_line(line):
+                    if "ABORTED" in probe or "CANCELED" in probe:
+                        self._err_lines.append(n)
+                        if ts:
+                            minute = ts[:16]
+                            self._err_minute[minute] = self._err_minute.get(minute, 0) + 1
+                    # 一致性校验失败 / 路径截断 / MAPF耗时
+                    _SIGNAL_KW = ("一致性超过update阈值", "一致性不满足", "MAPF-T:", "WAIT-T:", "等待时间超限")
+                    if any(kw in probe for kw in _SIGNAL_KW):
+                        self._err_lines.append(n)
+                        self._signal_lines.append(n)
+                        if ts:
+                            minute = ts[:16]
+                            self._signal_minute[minute] = self._signal_minute.get(minute, 0) + 1
                 if n % 50000 == 0:
                     logger.info("{:,} lines indexed ({:.0f}s)".format(n, _time.perf_counter()-t0))
         elapsed = _time.perf_counter() - t0
-        logger.info("{:,} lines | {} ts | {} robots | {} tasks | {} errors ({:.0f}s)"
-              .format(self._total, len(self._ts_idx), len(self._robot_idx),
-                      len(self._task_idx), len(self._err_lines), elapsed))
+        logger.info(
+            "{:,} lines | {} ts | {} robots | {} tasks | {} errors | {} reach_signals ({:.0f}s)"
+            .format(
+                self._total, len(self._ts_idx), len(self._robot_idx),
+                len(self._task_idx), len(self._err_lines),
+                len(self._signal_lines), elapsed,
+            )
+        )
         self._built = True
         return self
 
@@ -331,6 +455,7 @@ class LogIndex:
         facts = {
             "lines": self._total,
             "errors": len(set(self._err_lines)),
+            "reach_signals": len(set(self._signal_lines)),
             "time_start": time_start,
             "time_end": time_end,
             "top_robots": _top(self._robot_idx),
@@ -371,9 +496,11 @@ class LogIndex:
         """统计时间窗口 [time_start, time_end] 内索引到的行数（用于太宽查询拦截）。"""
         if not (time_start and time_end):
             return 0
+        t0 = _norm_ts_bound(time_start, end=False)
+        t1 = _norm_ts_bound(time_end, end=True)
         cnt = 0
         for ts, lines in self._ts_idx.items():
-            if time_start <= ts <= time_end:
+            if t0 <= ts <= t1:
                 cnt += len(lines)
         return cnt
 
@@ -381,10 +508,12 @@ class LogIndex:
         if not self._built: self.build()
 
         filters = []
-        if q.time_start and q.time_end:
+        t0 = _norm_ts_bound(q.time_start, end=False)
+        t1 = _norm_ts_bound(q.time_end, end=True)
+        if t0 and t1:
             s = set()
             for ts, lines in self._ts_idx.items():
-                if q.time_start <= ts <= q.time_end:
+                if t0 <= ts <= t1:
                     s.update(lines)
             filters.append(s)
         for fval, idx in [(q.robot_filter, self._robot_idx),
@@ -392,11 +521,10 @@ class LogIndex:
                           (q.path_filter, self._path_idx)]:
             if fval:
                 s = set()
-                # 部分匹配：LLM 可能只传 "1098000" 而索引 key 是 "I|1098000"
                 for key, lines in idx.items():
                     if fval in key:
                         s.update(lines)
-                if s: filters.append(s)
+                filters.append(s)
         if q.error_only: filters.append(set(self._err_lines))
 
         if filters:
@@ -406,11 +534,25 @@ class LogIndex:
             cand = set(self._err_lines[:q.max_results])
 
         if not cand:
-            # 降级：把时间窗口行 + 错误行合并，给 LLM 一些数据
-            if q.time_start and q.time_end:
+            # 车号过滤器本身是否命中索引（与「车号∩任务∩错误∩时间」交集为空区分开）
+            robot_keys = []
+            if q.robot_filter:
+                robot_keys = [k for k in self._robot_idx if q.robot_filter in k]
+            if q.robot_filter and not robot_keys:
+                known = ",".join(list(self._robot_idx)[:8]) or "none"
+                return "(no match: robot={} 不在本日志; known={})".format(q.robot_filter, known)
+            # 交集为空：放宽为时间窗内该车（或全窗）行，避免假报「车不在日志」
+            if t0 and t1:
                 for ts, lines in self._ts_idx.items():
-                    if q.time_start <= ts <= q.time_end:
+                    if t0 <= ts <= t1:
                         cand.update(lines)
+                if robot_keys:
+                    rob_lines = set()
+                    for k in robot_keys:
+                        rob_lines.update(self._robot_idx.get(k) or [])
+                    narrowed = cand & rob_lines
+                    if narrowed:
+                        cand = narrowed
             if not cand:
                 cand = set(range(1, min(self._total + 1, 200)))
             if not cand:
@@ -462,7 +604,7 @@ class LogIndex:
                 cur += 1
                 if cur in targets:
                     fld = extract_fields(line)
-                    sm = fields_summary(fld)
+                    sm = fields_summary(fld, line)
                     pf = "* " if cur in cand else "  "
                     results.append("{}L{}| {}".format(pf, cur, sm))
                     if len(results) >= 200:

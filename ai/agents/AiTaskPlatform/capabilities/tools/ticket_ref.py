@@ -85,7 +85,11 @@ class TicketRefCapability(BaseCapability):
             if not query_text:
                 return CapabilityResult.failure("ticket_ref 无 ticket_id 且当前工单无检索文本，无法检索相似工单")
 
-            similar_ids = _search_similar_resolved_task_ids(query_text, limit=3)
+            similar_ids = await _search_similar_task_ids(
+                query_text,
+                exclude_id=str(cur.get("task_id") or ""),
+                limit=3,
+            )
             if not similar_ids:
                 return CapabilityResult(text="（未检索到相关的历史已解决工单）", meta={"count": 0}, ok=True)
             text = format_referenced_tickets(similar_ids)
@@ -101,11 +105,27 @@ class TicketRefCapability(BaseCapability):
             return CapabilityResult.failure(f"读取被引用工单失败: {type(e).__name__}: {e}")
 
 
-def _search_similar_resolved_task_ids(query_text: str, limit: int = 3) -> list:
-    """按当前工单文本检索相似【已解决】工单 id（AI 侧直查 DB，逻辑对齐后端 /api/tasks/similar）。
+async def _search_similar_task_ids(query_text: str, exclude_id: str = "", limit: int = 3) -> list:
+    """优先 Qdrant 向量检索相似工单；向量空或不可用时回退 SQL 关键词。"""
+    try:
+        from ai.core import get_retrieval_service
+        retriever = await get_retrieval_service()
+        items = await retriever.search_similar_tickets(
+            query_text, exclude_task_id=exclude_id, top_k=limit,
+        )
+        ids = [str(it["task_id"]) for it in items if it.get("task_id") is not None]
+        if ids:
+            return ids
+    except Exception as e:
+        logger.warning(f"[ticket_ref] 向量相似检索失败，回退 SQL: {e}")
+    return _search_similar_resolved_task_ids(query_text, limit=limit, exclude_id=exclude_id)
+
+
+def _search_similar_resolved_task_ids(query_text: str, limit: int = 3, exclude_id: str = "") -> list:
+    """按当前工单文本检索相似【已解决/已关闭】工单 id（SQL 关键词兜底）。
 
     关键词：2 字及以上中文 / 2 位以上字母数字；去掉停用词；标题命中 +3 / 描述命中 +1 打分。
-    跨项目、无权限过滤、只取已解决、排除自身（自身由调用方保证不在候选）。
+    跨项目、无权限过滤；排除自身。
     """
     import re as _re
     try:
@@ -132,11 +152,13 @@ def _search_similar_resolved_task_ids(query_text: str, limit: int = 3) -> list:
                 conditions.append(Task.description.ilike(pat))
             stmt = (
                 select(Task)
-                .where(Task.status == TaskStatus.RESOLVED)
+                .where(Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED]))
                 .where(or_(*conditions))
                 .order_by(Task.created_at.desc())
                 .limit(limit * 4)
             )
+            if str(exclude_id or "").isdigit():
+                stmt = stmt.where(Task.id != int(exclude_id))
             rows = (db.execute(stmt)).scalars().all()
         finally:
             db.close()

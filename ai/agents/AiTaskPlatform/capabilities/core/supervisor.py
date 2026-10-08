@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional, Protocol
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.capabilities.core.registry import CapabilityRegistry
 from ai.agents.AiTaskPlatform.capabilities.core.supervisor_todo import TodoList, TodoItem
+from ai.agents.AiTaskPlatform.tracing import TraceBus
 
 logger = get_logger("TASK_AGENT")
 
@@ -113,7 +114,7 @@ def _parse_decision(raw: str) -> Optional[SupervisorDecision]:
                 "goal": str(p.get("goal", "")),
                 "parallel": bool(p.get("parallel", False)),
             }
-            for extra_key in ("window_minutes", "occurred_at", "params"):
+            for extra_key in ("window_minutes", "before_minutes", "after_minutes", "occurred_at", "params"):
                 if extra_key in p and p[extra_key] is not None:
                     item[extra_key] = p[extra_key]
             clean_plan.append(item)
@@ -236,6 +237,16 @@ class Supervisor:
         self._build_plan_prompt = plan_prompt_builder or self._default_plan_prompt
         self._runtime_ctx: dict = {}  # 由 run() 设置；派能力时注入 kwargs
 
+    def _bus(self) -> TraceBus:
+        ctx = self._runtime_ctx or {}
+        bus = ctx.get("trace_bus")
+        if isinstance(bus, TraceBus):
+            return bus
+        bus = TraceBus()
+        ctx["trace_bus"] = bus
+        self._runtime_ctx = ctx
+        return bus
+
     # ── 默认调度 prompt（产品无关，仅描述"如何规划排查"）──
     @staticmethod
     def _default_plan_prompt(task_context: str, cap_names: list[str]) -> str:
@@ -255,6 +266,7 @@ class Supervisor:
             "- 多领域线索交叉 → complexity=complex，plan 含多项，parallel 合理设 true\n"
             "- capability 只能从可用能力清单里选，严禁凭空命名\n"
             "- 若派 log_analyze 且故障属缓慢累积/日志稀疏，可在 window_minutes 指定更长的前因窗口（默认15即可）\n"
+            "- retrieve_history 与 log_analyze 同时派时，程序会先跑历史方案；已验证命中则跳过日志分析\n"
             "- **若关键信息缺失（如故障发生时间/是否可复现/变更了什么/报错现场）导致无法可靠排查，"
             "且无能力/无充足依据可先派发硬性定位 → 设 ask_user=true，并在 questions 里列出"
             "需要向用户确认的具体问题（每一项都应是可直接回答的高价值问题，不要笼统）**；\n"
@@ -296,6 +308,9 @@ class Supervisor:
         t0 = _time.perf_counter()
         caps = available_caps or CapabilityRegistry.list_available()
         self._runtime_ctx = runtime_ctx or {}  # 供 _dispatch 注入给能力
+        self._runtime_ctx.setdefault("round_supplements", [])
+        if not isinstance(self._runtime_ctx.get("trace_bus"), TraceBus):
+            self._runtime_ctx["trace_bus"] = TraceBus()
         self._on_progress = on_progress  # 实时进度回调（逐项能力推送，供前端动态展示）
 
         def _emit(phase: str, td: dict) -> None:
@@ -306,43 +321,52 @@ class Supervisor:
             except Exception:
                 pass
 
-        # 1. 调度决策（LLM 建议）
-        decision = await self._plan(task_context, caps, max_sub_tasks)
+        bus = self._bus()
 
-        # 2. 建 todo（F7：plan 转 TodoList）
-        todo = TodoList()
-        for step in decision.plan:
-            todo.add(step.get("goal") or step.get("capability"), capability=step.get("capability", ""))
+        with bus.start_span("supervisor.run"):
+            # 1. 调度决策（LLM 建议）
+            with bus.start_span("plan"):
+                decision = await self._plan(task_context, caps, max_sub_tasks)
+                bus.set_attribute("complexity", decision.complexity)
+                bus.set_attribute("派生数", len(decision.plan or []))
 
-        # 3. simple → 0 派生，直接返回（无 plan）
-        if decision.is_simple() or not decision.plan:
+            # 2. 建 todo（F7：plan 转 TodoList）
+            todo = TodoList()
+            for step in decision.plan:
+                todo.add(step.get("goal") or step.get("capability"), capability=step.get("capability", ""))
+
+            # 3. simple → 0 派生，直接返回（无 plan）
+            if decision.is_simple() or not decision.plan:
+                return {
+                    "complexity": decision.complexity,
+                    "plan": decision.plan,
+                    "ask_user": decision.ask_user,
+                    "questions": decision.questions,
+                    "todo": todo.to_dict_list(),
+                    "results": {},
+                    "final_text": "",
+                    "elapsed_ms": round((_time.perf_counter() - t0) * 1000),
+                    "_decision": decision.__dict__,
+                    "spans": bus.tree(),
+                }
+
+            # 4. 执行 plan（派生子任务）
+            await self._consume_injects(todo, _emit)
+            results = await self._dispatch(decision.plan, todo, max_sub_tasks, _emit)
+
+            # 5. 汇总
             return {
                 "complexity": decision.complexity,
                 "plan": decision.plan,
                 "ask_user": decision.ask_user,
                 "questions": decision.questions,
                 "todo": todo.to_dict_list(),
-                "results": {},
-                "final_text": "",
+                "results": results,
+                "final_text": self._synthesize(results),
                 "elapsed_ms": round((_time.perf_counter() - t0) * 1000),
                 "_decision": decision.__dict__,
+                "spans": bus.tree(),
             }
-
-        # 4. 执行 plan（派生子任务）
-        results = await self._dispatch(decision.plan, todo, max_sub_tasks, _emit)
-
-        # 5. 汇总
-        return {
-            "complexity": decision.complexity,
-            "plan": decision.plan,
-            "ask_user": decision.ask_user,
-            "questions": decision.questions,
-            "todo": todo.to_dict_list(),
-            "results": results,
-            "final_text": self._synthesize(results),
-            "elapsed_ms": round((_time.perf_counter() - t0) * 1000),
-            "_decision": decision.__dict__,
-        }
 
     # ── 调度决策 ──
     async def _plan(self, task_context: str, caps: list[str], max_sub_tasks: int) -> SupervisorDecision:
@@ -395,8 +419,46 @@ class Supervisor:
         d.plan = kept[:max_sub_tasks]
         return d
 
-    # ── 派生子任务（支持并行/串行 + 并发上限）──
+    # ── 派生子任务（支持并行/串行 + 并发上限 + 早停）──
     async def _dispatch(self, plan: list[dict], todo: TodoList, max_sub_tasks: int, emit: Optional[Callable] = None) -> dict:
+        """log_analyze 放到第二波：历史方案已验证则跳过昂贵日志分析。
+
+        按原 plan 下标对齐 todo，避免 log_analyze 排在前面时跳错项。
+        """
+        early = [(i, s) for i, s in enumerate(plan) if s.get("capability") != "log_analyze"]
+        late = [(i, s) for i, s in enumerate(plan) if s.get("capability") == "log_analyze"]
+        results = {}
+        if early:
+            results.update(await self._dispatch_group(early, todo, emit))
+            if any(_result_terminated(r) for r in results.values()):
+                bus = self._bus()
+                for i, step in late:
+                    if i >= len(todo._items):
+                        continue
+                    item = todo._items[i]
+                    if item.status == "completed":
+                        continue
+                    with bus.start_span(step.get("capability") or "log_analyze"):
+                        bus.set_status("skipped", reason="历史方案已验证")
+                    todo.mark_done(item.id, result="已跳过：历史方案已验证（早停）")
+                    if emit is not None:
+                        emit("done", {
+                            "id": item.id,
+                            "description": item.description or step.get("capability") or "",
+                            "status": "completed",
+                            "capability": step.get("capability") or "",
+                        })
+                return results
+        if late:
+            results.update(await self._dispatch_group(late, todo, emit))
+        return results
+
+    async def _dispatch_group(
+        self,
+        indexed_plan: list[tuple[int, dict]],
+        todo: TodoList,
+        emit: Optional[Callable],
+    ) -> dict:
         sem = asyncio.Semaphore(_CONCURRENCY)
 
         async def _run_one(step: dict, todo_item: TodoItem):
@@ -410,51 +472,108 @@ class Supervisor:
                 emit("running", {"id": todo_item.id, "description": todo_item.description, "status": "in_progress", "capability": cap_name})
             try:
                 async with sem:
-                    # 把调度 LLM 定的 goal 与运行时上下文(runtime_ctx)一起传给能力
-                    # query=goal（语义）：goal 即"这个子任务要解决什么"，能力以 query 接收
                     kwargs = {"query": step.get("goal", "")}
-                    kwargs.update(self._runtime_ctx)  # 注入 log_path / robot_type 等
-                    # 透传 plan 里的能力专属参数（如 window_minutes / occurred_at）
-                    for extra_key in ("window_minutes", "occurred_at", "params"):
+                    extra = "\n".join(self._runtime_ctx.get("round_supplements") or [])
+                    if extra:
+                        kwargs["query"] = f"{kwargs['query']}\n\n工程师本轮补充:\n{extra}".strip()
+                    kwargs.update(self._runtime_ctx)
+                    for extra_key in ("window_minutes", "before_minutes", "after_minutes", "occurred_at", "params"):
                         if extra_key in step and step[extra_key] is not None:
                             kwargs[extra_key] = step[extra_key]
-                    result = await cap(**kwargs)      # 统一入口 __call__（含配额/异常兜底）
-            except Exception as e:  # 极外层保险
+                    bus = self._bus()
+                    with bus.start_span(cap_name):
+                        result = await cap(**kwargs)
+                        self._annotate_span(bus, result)
+            except Exception as e:
                 result = {"ok": False, "error": f"{type(e).__name__}: {e}", "text": ""}
-            # 归一化为 dict（cap 返回 CapabilityResult 或 dict）
             res_dict = result.to_dict() if hasattr(result, "to_dict") else (result if isinstance(result, dict) else {"text": str(result), "ok": True})
             todo.mark_done(todo_item.id, result=str(res_dict.get("text", ""))[:80])
             if emit is not None:
                 emit("done", {"id": todo_item.id, "description": todo_item.description, "status": "completed", "capability": cap_name})
+            await self._consume_injects(todo, emit)
             return cap_name, res_dict
 
-        # 按 parallel 分组：并行组用 gather，串行组顺序执行
-        if any(step.get("parallel") for step in plan):
-            # 简单实现：所有任务都进 gather（由 Semaphore 控并发），保证不超限
-            todo_items = todo._items[: len(plan)]
-            tasks = [_run_one(step, todo_items[i]) for i, step in enumerate(plan)]
+        if any(step.get("parallel") for _, step in indexed_plan) and len(indexed_plan) > 1:
+            tasks = [_run_one(step, todo._items[i]) for i, step in indexed_plan]
             done = await asyncio.gather(*tasks, return_exceptions=True)
             results = {}
-            for i, (cap_name, res) in enumerate(done):
-                if isinstance(res, BaseException):
-                    results[plan[i]["capability"]] = {"ok": False, "error": str(res)}
-                else:
-                    results[cap_name] = res
+            for n, item in enumerate(done):
+                cap_name = indexed_plan[n][1]["capability"]
+                if isinstance(item, BaseException):
+                    results[cap_name] = {"ok": False, "error": str(item)}
+                    continue
+                name, res = item
+                results[name] = res
+            await self._consume_injects(todo, emit)
             return results
-        else:
-            results = {}
-            todo_items = todo._items[: len(plan)]
-            for i, step in enumerate(plan):
-                cap_name, res = await _run_one(step, todo_items[i])
-                results[cap_name] = res
-            return results
+
+        results = {}
+        for i, step in indexed_plan:
+            cap_name, res = await _run_one(step, todo._items[i])
+            results[cap_name] = res
+            if _result_terminated(res):
+                break
+        return results
+
+    async def _consume_injects(self, todo: TodoList, emit: Optional[Callable] = None) -> None:
+        """能力边界读取「插入本轮」邮箱：不中断当前步骤，只纳入后续能力/最终答复。"""
+        ctx = self._runtime_ctx or {}
+        current = ctx.get("current_task") or {}
+        task_id = str(current.get("task_id") or ctx.get("task_id") or "")
+        if not task_id:
+            return
+        try:
+            from ai.agents.AiTaskPlatform.runtime.inject_mailbox import drain
+            texts = await drain(task_id)
+        except Exception as e:
+            logger.warning(f"[supervisor] inject drain 失败: {e}")
+            return
+        if not texts:
+            return
+        bag = ctx.setdefault("round_supplements", [])
+        bag.extend(texts)
+        preview = "；".join(t.replace("\n", " ")[:40] for t in texts)
+        item = todo.add(f"本轮补充：{preview[:60]}", capability="inject")
+        todo.mark_done(item.id, result="已纳入本轮")
+        if emit is not None:
+            emit("done", {
+                "id": item.id,
+                "description": item.description,
+                "status": "completed",
+                "capability": "inject",
+            })
+
+    @staticmethod
+    def _annotate_span(bus: TraceBus, result) -> None:
+        """把能力结果的关键字段写到当前 span。"""
+        res_dict = result.to_dict() if hasattr(result, "to_dict") else (
+            result if isinstance(result, dict) else {"ok": True}
+        )
+        if not res_dict.get("ok", True):
+            bus.set_status("error")
+        if res_dict.get("terminate"):
+            bus.set_attribute("terminate", True)
+        meta = res_dict.get("meta") or {}
+        if not isinstance(meta, dict):
+            return
+        for key, alias in (
+            ("count", "命中数"),
+            ("confirmed", "confirmed"),
+            ("verified", "verified"),
+            ("window_applied", "window_applied"),
+            ("queries", "queries"),
+        ):
+            if key in meta and meta[key] is not None:
+                bus.set_attribute(alias, meta[key])
 
     # ── 汇总 ──
     @staticmethod
     def _synthesize(results: dict) -> str:
         """把各子任务结果拼成最终文本（简单拼接，供上层 LLM 继续整理）。"""
         parts = []
-        for cap_name, res in results.items():
+        items = list(results.items())
+        items.sort(key=lambda kv: (not _result_terminated(kv[1]), kv[0]))
+        for cap_name, res in items:
             if isinstance(res, dict):
                 text = res.get("text", "")
                 ok = res.get("ok", True)
@@ -464,6 +583,15 @@ class Supervisor:
                 elif not ok:
                     parts.append(f"[{cap_name}] ⚠️ {res.get('error', '执行失败')}")
         return "\n\n".join(parts)
+
+
+def _result_terminated(res) -> bool:
+    if not isinstance(res, dict):
+        return bool(getattr(res, "terminate", False))
+    if res.get("terminate"):
+        return True
+    meta = res.get("meta") or {}
+    return bool(meta.get("terminate"))
 
 
 def _cap_desc(name: str) -> str:

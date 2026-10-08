@@ -22,7 +22,11 @@ IRON_RULES = (
     "4. [提单人] 可以接（职责最匹配时）。\n"
     "[倾向接单人] 是用户勾选：正常情况不要拒绝这一选择，应派给带该标签的人。\n"
     "[原用户不满意的接单人] 默认避免再派回，除非画像确实最匹配。\n"
-    "5. reasoning 给提单人看：一句话、用姓名、不要抄 users.id。\n"
+    "5. reasoning 给提单人看（一句话，用姓名，不要抄 users.id）：\n"
+    "必须点出「工单里哪句现象/需求」+「此人哪条责任模块/职责对口」；\n"
+    "禁止写总分、排名、#1、画像分、来源标签、精排原因等内部术语。\n"
+    "正例：车不动且日志报路径无解，张三责任模块含路径规划与锁区。\n"
+    "反例：精排总分最高 / 画像 0.9 / 来源命中相似工单。\n"
     f"{person_anti_hallucination()}"
 )
 
@@ -41,9 +45,6 @@ JUDGE_HINTS = (
     "有倾向人则正常采纳用户选择，派给带该标签的人。"
 )
 
-# 与 shared 同源，便于测试与 README 检索；运行时也由此拼进仲裁 prompt。
-FEATURE_ROLE_ROUTING = feature_role_routing_guidance()
-
 # 每个产品一份附录。范围与 Step1【产品归属】对齐，不按前端/后端/算法分层。
 PRODUCT_SCOPES = {
     "摇人吧服务号": (
@@ -54,16 +55,24 @@ PRODUCT_SCOPES = {
     "调度USP": (
         "地面侧：任务下发/阻塞、路径规划、锁区、地图路网。"
         "不是车上软件，也不是能拧的硬件。\n"
+        "现象对照（辅助认模块，不替代候选人卡片）：\n"
+        "  - 路径无解 / NO_SOLUTION / DPP失败 / 路径拒收 → 路径规划、锁区、动态地图\n"
+        "  - 任务分不出去 / 拍卖 / 任务池 → 任务管理\n"
+        "  - 不在地图层 / LOCATE FAILED / 非强连通 → 地图与上轨\n"
         "按界面/功能对照候选人卡片判断谁能接，不要硬套前端/后端。"
     ),
     "车端软件": (
         "车上跑的：定位/SLAM、雷达、控制器、车载通信。"
         "不是地面调度，也不是能拧的硬件。\n"
+        "现象对照：定位丢失、雷达异常、控制器报错、车载通信断 → 优先对口车端软件模块。\n"
+        "若同时出现路径无解/锁区/NO_SOLUTION，先核对是否地面调度主导。\n"
         "按界面/功能对照候选人卡片判断谁能接，不要硬套前端/后端。"
     ),
     "车端硬件": (
         "车体/电池/电机/轮子/货叉等能拧的、能换的。"
         "不是车上软件，也不是地面调度。\n"
+        "现象对照：硬件故障码、电机/电池/轮子实物损坏 → 硬件；"
+        "仅有软件报错或路径无解时不要判硬件。\n"
         "按界面/功能对照候选人卡片判断谁能接，不要硬套前端/后端。"
     ),
 }
@@ -96,8 +105,8 @@ OUTPUT_CONTRACT = (
     "输出 JSON。\n"
     "engineer_id 必须精确复制「ID:」后面的 users.id；engineer_name 复制「姓名:」。\n"
     "很难决策时只输出 can_decide:false，不要填一个凑数的人。\n"
-    '{"can_decide":true,"engineer_id":"<精确复制 ID:>","engineer_name":"<精确复制 姓名:>","confidence_score":0.85,"reasoning":"一句话简洁原因","decision_type":"auto"}\n'
+    "decision_type 可填 auto / recommend / fallback（系统会按 confidence_score 校正，可随意填合理值）。\n"
+    '{"can_decide":true,"engineer_id":"<精确复制 ID:>","engineer_name":"<精确复制 姓名:>","confidence_score":0.85,"reasoning":"一句话：现象+对口模块","decision_type":"auto"}\n'
     "或：\n"
-    '{"can_decide":false,"reasoning":"当前画像下难以判定合适接单人"}\n'
-    "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)"
+    '{"can_decide":false,"reasoning":"当前画像下难以判定合适接单人"}'
 )

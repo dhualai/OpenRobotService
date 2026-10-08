@@ -24,6 +24,7 @@ OpenRobotService 一键部署脚本（前端 + 后端 + 算法）。
 依赖：系统 PATH 中需有 tar、scp、ssh、npm。仅使用 Python 标准库（含 tkinter）。
 """
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -217,6 +218,7 @@ class SshConfig:
     dry_run: bool = False
     no_sudo: bool = False      # True 时 supervisorctl 不加 sudo（CI 走 supervisor 组权限）
     remote_tmp: str = "~/tmp"  # 远端暂存目录（避开 /tmp 的 sticky/root 权限限制；scp 展开 ~，bash 侧转 $HOME）
+    local: bool = False        # True 时"远端"操作全部改为本机 bash 执行（自托管 runner 分离式部署）
 
     def target(self):
         return f"{self.user}@{self.host}"
@@ -234,12 +236,24 @@ class SshConfig:
 
 
 def invoke_remote_cmd(cfg: SshConfig, command, *, sudo=False):
-    """通过 ssh 在远程执行命令。
+    """在目标机执行命令：默认走 ssh；cfg.local 时改为本机 bash 执行。
 
+    -Local: 自托管 runner 场景下"远端"就是本机，直接 `bash -lc` 执行同一条命令，
+            使部署、重启、备份、健康检查等既有逻辑零改动复用。
+            本机模式不处理 sudo，调用方应传 --no-sudo（supervisor 组 socket 权限）。
     -Sudo: 命令需要 sudo 权限。若配置了 SudoPassword，则将远程命令改写为
            sudo -S 从 stdin 读取密码（免交互，密码不经命令行暴露）；
            未配置则回退为 ssh -t 分配 TTY 交互式输入密码（仅 CLI 适用）。
     """
+    if cfg.local:
+        if cfg.dry_run:
+            write_info(f"[dryrun] bash -lc {shlex.quote(command)}")
+            return
+        rc = _run(["bash", "-lc", command])
+        if rc != 0:
+            raise RuntimeError(f"本机命令执行失败: {command}")
+        return
+
     use_stdin_pwd = sudo and cfg.sudo_password
     if use_stdin_pwd:
         # sudo supervisorctl ... -> sudo -S -p '' supervisorctl ...
@@ -284,10 +298,20 @@ def _run_capture(cmd, input_bytes=None, label=""):
 
 
 def run_remote_script(cfg: SshConfig, script, *, label="远程脚本"):
-    """把多行脚本经 stdin 送达远端 bash 执行（规避命令行引号转义问题）。
+    """把多行脚本经 stdin 送达 bash 执行（cfg.local 时直接在本机执行）。
 
-    返回远端 stdout 文本；同时流式打印到日志。失败抛 RuntimeError。
+    返回 stdout 文本；同时流式打印到日志。失败抛 RuntimeError。
+    经 stdin 传递脚本可规避命令行引号转义问题。
     """
+    if cfg.local:
+        if cfg.dry_run:
+            write_info("[dryrun] bash -s <<'EOS'")
+            for line in script.splitlines():
+                write_info(f"[dryrun] | {line}")
+            return ""
+        return _run_capture(["bash", "-s"],
+                            input_bytes=script.encode("utf-8"), label=label)
+
     ssh_args = cfg.ssh_args("ssh") + [cfg.target(), "bash -s"]
     if cfg.dry_run:
         write_info(f"[dryrun] ssh {' '.join(ssh_args)} <<'EOS'")
@@ -334,14 +358,27 @@ def to_bash_path(path):
 
 
 def send_tarball(cfg: SshConfig, local_tar, remote_name):
-    """将本地 tar 包 scp 到远端暂存目录，返回 bash 可用的远端 tar 路径。
+    """将 tar 包投递到暂存目录，返回 bash 可用的该 tar 路径。
 
     说明：
     - 暂存目录由 --remote-tmp 指定（默认 ~/tmp），避开 /tmp 或 /data/tmp 的
       sticky/root 所有权权限问题；
-    - scp 目标用 ~ 形式（scp 会展开），bash 命令用 $HOME 形式（双引号内 ~ 不展开）。
+    - scp 目标用 ~ 形式（scp 会展开），bash 命令用 $HOME 形式（双引号内 ~ 不展开）；
+    - cfg.local 时不做 scp（产物已在本机），只复制进同一暂存目录，使后续
+      「从暂存目录解压」的命令串保持完全一致。
     """
     scp_dir = validate_remote_path(cfg.remote_tmp, "远端暂存目录")
+
+    if cfg.local:
+        tmp_dir = os.path.expanduser(scp_dir)
+        os.makedirs(tmp_dir, exist_ok=True)
+        dest = os.path.join(tmp_dir, remote_name)
+        if cfg.dry_run:
+            write_info(f"[dryrun] cp {local_tar} {dest}")
+        elif os.path.abspath(str(local_tar)) != os.path.abspath(dest):
+            shutil.copy2(str(local_tar), dest)
+        return f"{to_bash_path(scp_dir)}/{remote_name}"
+
     bash_dir = to_bash_path(scp_dir)
     invoke_remote_cmd(cfg, f"mkdir -p {bash_dir}")
 
@@ -355,13 +392,44 @@ def send_tarball(cfg: SshConfig, local_tar, remote_name):
     return f"{bash_dir}/{remote_name}"
 
 
-def new_local_tar(source_dir, paths, excludes=None, dry_run=False):
-    """生成本地 tar.gz：-C 指定源目录，后续参数为要打包的内容。"""
+def send_file(cfg: SshConfig, local_path, rel_target):
+    """把单个文件投递到远端 HOME 下的相对路径；cfg.local 时直接复制到本机。
+
+    与 send_tarball 同源：本机/远端的路径分支集中在这里，避免各处裸调 scp 时
+    漏掉本机模式——分离式部署下「目标机」就是 runner 本机，根本没有 ssh 可用。
+    """
+    target = validate_remote_path(f"~/{rel_target.lstrip('/')}", "远端目标文件")
+    rel = target[2:] if target.startswith("~/") else target.lstrip("/")
+
+    if cfg.local:
+        dest = os.path.join(os.path.expanduser("~"), rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if cfg.dry_run:
+            write_info(f"[dryrun] cp {local_path} {dest}")
+        else:
+            shutil.copy2(str(local_path), dest)
+        return
+
+    # 远端仍用相对路径（相对远端 HOME），兼容新版 sftp 后端与旧版 scp
+    scp_args = cfg.ssh_args("scp") + [str(local_path), f"{cfg.target()}:{rel}"]
+    if cfg.dry_run:
+        write_info(f"[dryrun] scp {' '.join(scp_args)}")
+        return
+    if _run(["scp"] + scp_args) != 0:
+        raise RuntimeError(f"scp 上传失败: {local_path}")
+
+
+def new_local_tar(source_dir, paths, excludes=None, dry_run=False, out_path=None):
+    """生成本地 tar.gz：-C 指定源目录，后续参数为要打包的内容。
+
+    out_path 指定产物落盘位置（分离式部署要直接写进 artifact 目录）；
+    不指定时写系统临时目录，供「打好即上传」的直传流程使用。
+    """
     source_dir = str(source_dir)
     if not os.path.isdir(source_dir):
         raise RuntimeError(f"源目录不存在: {source_dir}")
-    tarball = os.path.join(tempfile.gettempdir(),
-                           f"ors_deploy_{random.randint(0, 1 << 30)}.tar.gz")
+    tarball = out_path or os.path.join(
+        tempfile.gettempdir(), f"ors_deploy_{random.randint(0, 1 << 30)}.tar.gz")
     tar_args = ["-czf", tarball, "-C", source_dir]
     for ex in (excludes or []):
         tar_args += ["--exclude", ex]
@@ -373,6 +441,165 @@ def new_local_tar(source_dir, paths, excludes=None, dry_run=False):
     if rc != 0:
         raise RuntimeError(f"tar 打包失败: {source_dir}")
     return tarball
+
+
+# ---------- 分离式部署：构建产物（build job）与部署侧共用同一份打包定义 ----------
+# 组件 -> (artifact 文件名, 展开后的 repo_root 相对路径)
+FRONTEND_TAR = "frontend_dist.tar.gz"
+BACKEND_TAR = "backend_app.tar.gz"
+AI_TAR = "ai_code.tar.gz"
+_ARTIFACT_LAYOUT = (
+    ("frontend", FRONTEND_TAR, "frontend/dist"),
+    ("backend", BACKEND_TAR, "backend"),
+    ("ai", AI_TAR, "ai"),
+)
+_ARTIFACT_TAR_NAME = {comp: tar_name for comp, tar_name, _ in _ARTIFACT_LAYOUT}
+
+# 打包排除项：构建侧（--build-artifacts）与部署侧（deploy_*）、备份侧同源，
+# 避免「备份/上传/产物」三处各写一套排除表而互相漂移。
+#
+# 注意：不要写裸名 "tools"。tar --exclude tools 会匹配任意路径段名为 tools 的目录，
+# 连带打掉 ai/agents/.../capabilities/tools/（含 memory_store 等运行时能力），
+# 生产曾因此 ModuleNotFoundError。顶层 ai/tools/ 只是本地脚本，体积小，允许打进包。
+_AI_EXCLUDES = [
+    "__pycache__", "*.pyc", "*.pyo",
+    ".venv", "venv", "env",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "kb", "embed_models", "docs", "tests", "uploads",
+    ".env", ".env.*", "*.log", "logs", "*.sqlite3", "*.db",
+    ".git", ".idea", ".vscode",
+]
+_BACKEND_EXCLUDES = ["__pycache__", "*.pyc", "*.pyo",
+                     ".pytest_cache", ".mypy_cache", ".ruff_cache"]
+
+
+def component_artifact(component, repo_root, out_path=None, dry_run=False):
+    """按组件打包，返回 (tar 路径, artifact 文件名)。
+
+    构建侧（--build-artifacts）与部署侧（deploy_frontend/backend/ai）共用本函数，
+    保证「随 artifact 中转的产物」与「原先 scp 直传的产物」内部结构完全一致。
+    """
+    if component == "frontend":
+        return new_local_tar(repo_root / "frontend" / "dist", ["."],
+                             out_path=out_path, dry_run=dry_run), FRONTEND_TAR
+    if component == "backend":
+        return new_local_tar(repo_root / "backend", ["app", "main.py"],
+                             excludes=_BACKEND_EXCLUDES,
+                             out_path=out_path, dry_run=dry_run), BACKEND_TAR
+    if component == "ai":
+        return new_local_tar(repo_root / "ai", ["."], excludes=_AI_EXCLUDES,
+                             out_path=out_path, dry_run=dry_run), AI_TAR
+    raise RuntimeError(f"未知组件: {component}")
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def build_artifacts(repo_root, components, environment, npm_script, out_dir,
+                    git_ref="", git_commit="", skip_build=False, dry_run=False):
+    """构建侧：只做「构建 + 打包 + 写元信息」，不接触任何服务器。
+
+    产出目录直接交给 actions/upload-artifact 上传，部署侧再用 --from-artifacts
+    展开部署；两侧共用 component_artifact，tar 结构不会漂移。
+    BUILD_META.json 记录环境与校验和，部署侧据此拦截「test 产物发到 prod」。
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if "frontend" in components and not skip_build:
+        frontend_dir = repo_root / "frontend"
+        if not (frontend_dir / "node_modules").exists():
+            write_info(f"未检测到 node_modules，先执行 npm install (在 {frontend_dir})")
+            if not dry_run and _run("npm install", cwd=str(frontend_dir)) != 0:
+                raise RuntimeError("npm install 失败")
+        write_info(f"执行 npm run {npm_script} (在 {frontend_dir})")
+        if not dry_run:
+            rc = _run(f"npm run {npm_script}", cwd=str(frontend_dir))
+            if rc != 0:
+                raise RuntimeError("前端构建失败")
+    elif "frontend" in components:
+        write_info("已跳过前端构建（--skip-build），将打包现有 dist")
+
+    artifacts = {}
+    for comp in components:
+        dest = out_dir / _ARTIFACT_TAR_NAME[comp]
+        component_artifact(comp, repo_root, out_path=str(dest), dry_run=dry_run)
+        if dry_run:
+            continue
+        artifacts[comp] = {"file": dest.name,
+                           "size": dest.stat().st_size,
+                           "sha256": _sha256_file(dest)}
+        write_ok(f"已打包 {comp} -> {dest.name} "
+                 f"({artifacts[comp]['size'] // 1024} KB)")
+
+    if dry_run:
+        return out_dir
+
+    meta = {
+        "environment": environment,
+        "components": list(components),
+        "git_ref": git_ref,
+        "git_sha": git_commit,
+        "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "artifacts": artifacts,
+    }
+    (out_dir / "BUILD_META.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_ok(f"构建产物就绪: {out_dir}（environment={environment}）")
+    return out_dir
+
+
+def stage_artifacts(artifact_dir, environment):
+    """把产物目录中的组件 tar 展开成 repo_root 结构，返回该暂存目录。
+
+    自托管 runner 上不 checkout 源码，产物由 build job 打好并随 artifact 下载到
+    本机；而 deploy_frontend/backend/ai 只认 repo_root 下的目录结构
+    （frontend/dist、backend/app+main.py、ai/）。因此这里只做「展开」，
+    解压覆盖、备份、重启、健康检查仍全部复用既有实现。
+
+    BUILD_META.json 存在时校验 environment，防止 test 构建的产物被部署到 prod。
+    """
+    artifact_dir = Path(artifact_dir)
+    if not artifact_dir.is_dir():
+        raise RuntimeError(f"产物目录不存在: {artifact_dir}")
+
+    meta_path = artifact_dir / "BUILD_META.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise RuntimeError(f"BUILD_META.json 解析失败: {e}")
+        got_env = str(meta.get("environment") or "").strip()
+        if got_env and got_env != environment:
+            raise RuntimeError(
+                f"产物环境不匹配：产物={got_env} 目标={environment}（已阻止部署）")
+        # 固定标记输出，供 CI 抓取写入 job summary
+        print(f"ARTIFACT_ENVIRONMENT={got_env}")
+        print(f"ARTIFACT_GIT_SHA={meta.get('git_sha') or ''}")
+        write_ok(f"产物元信息校验通过：environment={got_env or '(未标注)'} "
+                 f"sha={str(meta.get('git_sha') or '')[:8]}")
+    else:
+        write_info("未找到 BUILD_META.json，跳过产物环境一致性校验")
+
+    stage = Path(tempfile.mkdtemp(prefix="ors_artifacts_"))
+    for comp, tar_name, rel_dest in _ARTIFACT_LAYOUT:
+        tar_path = artifact_dir / tar_name
+        if not tar_path.is_file():
+            write_info(f"产物中缺少 {tar_name}，{comp} 组件将不参与本次部署")
+            continue
+        dest = stage / rel_dest
+        dest.mkdir(parents=True, exist_ok=True)
+        rc = _run(["tar", "-xzf", str(tar_path), "-C", str(dest),
+                   "-m", "--no-same-permissions", "--no-same-owner"])
+        if rc != 0:
+            raise RuntimeError(f"产物解压失败: {tar_path}")
+        write_ok(f"已展开 {tar_name} -> {dest}")
+    return stage
 
 
 # ---------- 环境配置 ----------
@@ -429,8 +656,8 @@ def deploy_frontend(cfg: SshConfig, repo_root: Path, env: dict, skip_build: bool
         raise RuntimeError(f"前端 dist 目录不存在: {dist_dir}（请先构建或去掉 --skip-build）")
     write_ok(f"前端产物目录: {dist_dir}")
 
-    tarball = new_local_tar(dist_dir, ["."], dry_run=cfg.dry_run)
-    remote_tar = send_tarball(cfg, tarball, "frontend_dist.tar.gz")
+    tarball, tar_name = component_artifact("frontend", repo_root, dry_run=cfg.dry_run)
+    remote_tar = send_tarball(cfg, tarball, tar_name)
 
     nginx_html = env["NginxHtml"]
     extract_cmd = (
@@ -457,10 +684,8 @@ def deploy_backend(cfg: SshConfig, repo_root: Path, env: dict, clean_remote: boo
     write_step("【后端】上传 app 与 main.py 并重启")
 
     backend_dir = repo_root / "backend"
-    excludes = ["__pycache__", "*.pyc", "*.pyo",
-                ".pytest_cache", ".mypy_cache", ".ruff_cache"]
-    tarball = new_local_tar(backend_dir, ["app", "main.py"], excludes=excludes, dry_run=cfg.dry_run)
-    remote_tar = send_tarball(cfg, tarball, "backend_app.tar.gz")
+    tarball, tar_name = component_artifact("backend", repo_root, dry_run=cfg.dry_run)
+    remote_tar = send_tarball(cfg, tarball, tar_name)
 
     backend_remote = env["BackendRemote"]
     clean_cmd = f'rm -rf "{backend_remote}/app" && ' if clean_remote else ""
@@ -490,18 +715,9 @@ def deploy_backend(cfg: SshConfig, repo_root: Path, env: dict, clean_remote: boo
 def deploy_ai(cfg: SshConfig, repo_root: Path, env: dict):
     write_step("【算法】上传 ai 代码并重启")
 
-    ai_dir = repo_root / "ai"
-    # 排除虚拟环境、向量库、模型、缓存、测试、本地数据等
-    excludes = [
-        "__pycache__", "*.pyc", "*.pyo",
-        ".venv", "venv", "env",
-        ".pytest_cache", ".mypy_cache", ".ruff_cache",
-        "kb", "embed_models", "docs", "tests", "tools", "uploads",
-        ".env", ".env.*", "*.log", "logs", "*.sqlite3", "*.db",
-        ".git", ".idea", ".vscode",
-    ]
-    tarball = new_local_tar(ai_dir, ["."], excludes=excludes, dry_run=cfg.dry_run)
-    remote_tar = send_tarball(cfg, tarball, "ai_code.tar.gz")
+    # 排除虚拟环境、向量库、模型、缓存、测试、本地数据等（见 _AI_EXCLUDES）
+    tarball, tar_name = component_artifact("ai", repo_root, dry_run=cfg.dry_run)
+    remote_tar = send_tarball(cfg, tarball, tar_name)
 
     ai_remote = env["AiRemote"]
     extract_cmd = (
@@ -551,18 +767,8 @@ BACKUP_ROOT = "deploy_backups"
 BACKUP_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 BACKUP_KEEP_DEFAULT = 10
 
-# 备份时排除的大目录/易变内容：与上传时的排除表同源，避免备份体积失控
-# （ai/kb、ai/embed_models、日志、虚拟环境等不属于「代码」，无需备份）
-_AI_EXCLUDES = [
-    "__pycache__", "*.pyc", "*.pyo",
-    ".venv", "venv", "env",
-    ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    "kb", "embed_models", "docs", "tests", "tools", "uploads",
-    ".env", ".env.*", "*.log", "logs", "*.sqlite3", "*.db",
-    ".git", ".idea", ".vscode",
-]
-_BACKEND_EXCLUDES = ["__pycache__", "*.pyc", "*.pyo",
-                     ".pytest_cache", ".mypy_cache", ".ruff_cache"]
+# 备份与上传共用同一份排除表（_AI_EXCLUDES / _BACKEND_EXCLUDES，见上），
+# 避免备份体积失控，也避免两处排除项互相漂移。
 
 
 def make_backup_id():
@@ -693,12 +899,12 @@ def create_backup(cfg: SshConfig, environment, env, components, *,
     with open(local_manifest, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
+    rel_manifest = f"{BACKUP_ROOT}/{environment}/{backup_id}/manifest.json"
     try:
-        # scp 远端用相对路径（相对远端 HOME），兼容新版 sftp 后端与旧版 scp
-        rel_target = f"{BACKUP_ROOT}/{environment}/{backup_id}/manifest.json"
-        scp_args = cfg.ssh_args("scp") + [local_manifest, f"{cfg.target()}:{rel_target}"]
-        if _run(["scp"] + scp_args) != 0:
-            raise RuntimeError("备份清单上传失败（已中止部署）")
+        try:
+            send_file(cfg, local_manifest, rel_manifest)
+        except RuntimeError as exc:
+            raise RuntimeError(f"备份清单上传失败（已中止部署）: {exc}") from exc
     finally:
         try:
             os.remove(local_manifest)
@@ -893,10 +1099,12 @@ def build_ssh_config(args) -> SshConfig:
                      identity=identity, sudo_password=sudo_password,
                      dry_run=args.dry_run,
                      no_sudo=getattr(args, "no_sudo", False),
+                     local=getattr(args, "local", False),
                      remote_tmp=getattr(args, "remote_tmp", None) or "~/tmp")
 
 
 def main_cli(args):
+    stage_dir = None
     try:
         cfg = build_ssh_config(args)
 
@@ -906,25 +1114,71 @@ def main_cli(args):
         else:
             proj = effective_defaults().get("project_path")
             repo_root = Path(proj) if proj else default_project_path()
-        if not repo_root.is_dir():
+
+        # ---------- 分离式部署 ----------
+        # 消费侧（--from-artifacts）：产物已随 artifact 落到本机，自托管 runner
+        #   不 checkout 源码，由组件 tar 展开出 repo_root，后续解压覆盖/备份/
+        #   重启/健康检查完全复用既有实现。
+        # 生产侧（--build-artifacts）：只构建 + 打包 + 写元信息，不接触服务器。
+        artifact_dir = getattr(args, "from_artifacts", None)
+        build_dir = getattr(args, "build_artifacts", None)
+        if artifact_dir:
+            cfg.local = True
+            args.skip_build = True
+        if build_dir:
+            cfg.local = True
+
+        # 仅查询备份 / 执行回滚时不构建前端，无需 npm；本机模式不需要 ssh/scp
+        query_only = bool(args.list_backups or args.rollback)
+
+        # 回滚与列备份不读源码树（自托管 runner 上脚本可能单独缓存），
+        # 其余模式要求项目路径存在
+        if (not query_only and not artifact_dir and not build_dir
+                and not repo_root.is_dir()):
             raise RuntimeError(f"项目路径不存在: {repo_root}")
+
+        components = parse_components(args.components)
 
         # ---------- 前置检查 ----------
         write_step("前置检查")
 
-        if not cfg.host:
+        if not cfg.local and not cfg.host:
             cfg.host = input("请输入远程服务器地址 (IP/域名): ").strip()
             if not cfg.host:
                 raise RuntimeError("必须提供远程服务器地址")
 
-        # 仅查询备份 / 执行回滚时不构建前端，无需 npm
-        query_only = bool(args.list_backups or args.rollback)
-        for tool in (["ssh"] if query_only else ["tar", "scp", "ssh", "npm"]):
+        # 仅查询备份 / 执行回滚时不构建前端，无需 npm；本机模式不需要 ssh/scp
+        if build_dir:
+            required_tools = ["tar"]
+            if "frontend" in components and not args.skip_build:
+                required_tools.append("npm")
+        elif cfg.local:
+            required_tools = ["tar"]
+        elif query_only:
+            required_tools = ["ssh"]
+        else:
+            required_tools = ["tar", "scp", "ssh", "npm"]
+        for tool in required_tools:
             if not test_command(tool):
                 raise RuntimeError(
                     f"未找到依赖工具: {tool}。请确保其已安装并在 PATH 中。")
 
         env = get_env_config(args.environment)
+
+        # 构建侧到此为止：产出 tar + BUILD_META.json，交由 CI 上传为 artifact
+        if build_dir:
+            write_step(f"构建 {args.environment} 环境产物")
+            build_artifacts(repo_root, components, args.environment, env["NpmScript"],
+                            build_dir,
+                            git_ref=getattr(args, "git_ref", "") or "",
+                            git_commit=args.git_commit or "",
+                            skip_build=args.skip_build, dry_run=args.dry_run)
+            write_step("构建产物生成完成")
+            return 0
+
+        if artifact_dir:
+            repo_root = stage_artifacts(artifact_dir, args.environment)
+            stage_dir = repo_root
 
         # ---------- 只读查询：列出可用备份（供 CI 摘要与人工选择） ----------
         if args.list_backups:
@@ -955,15 +1209,14 @@ def main_cli(args):
             write_step("全部完成")
             return 0
 
-        components = parse_components(args.components)
-
+        dest_desc = "本机" if cfg.local else f"{cfg.user}@{cfg.host}:{cfg.port}"
         if args.environment == "prod" and not args.dry_run and not args.yes:
-            confirm = input(f"即将部署到【生产环境】服务器 {cfg.host}，确认继续？输入 yes 继续: ").strip()
+            confirm = input(f"即将部署到【生产环境】服务器 {dest_desc}，确认继续？输入 yes 继续: ").strip()
             if confirm != "yes":
                 print("已取消。")
                 return 0
 
-        write_ok(f"环境: {args.environment} | 服务器: {cfg.user}@{cfg.host}:{cfg.port}")
+        write_ok(f"环境: {args.environment} | 目标: {dest_desc}")
         write_ok(f"组件: {', '.join(components)}")
         write_ok(f"远端基目录: {env['RemoteBase']}")
 
@@ -1010,6 +1263,9 @@ def main_cli(args):
     except KeyboardInterrupt:
         write_err("用户中断")
         return 130
+    finally:
+        if stage_dir:
+            shutil.rmtree(stage_dir, ignore_errors=True)
 
 
 # ====================== 图形界面入口 ======================
@@ -1330,6 +1586,17 @@ def build_parser():
     parser.set_defaults(clean_remote=True)
     parser.add_argument("--project-path", dest="project_path",
                         help="项目根目录（包含 frontend/backend/ai）。默认为脚本上一级目录。")
+    parser.add_argument("--from-artifacts", dest="from_artifacts", metavar="DIR",
+                        help="分离式部署：从 DIR 读取 build job 产出的组件 tar"
+                             "（frontend_dist.tar.gz / backend_app.tar.gz / ai_code.tar.gz）"
+                             "并在本机直接部署；隐含本机模式与 --skip-build，无需 ssh/scp/npm。"
+                             "供自托管 runner 不 checkout 源码时使用。")
+    parser.add_argument("--build-artifacts", dest="build_artifacts", metavar="DIR",
+                        help="分离式部署：构建 + 打包组件 tar 与 BUILD_META.json 到 DIR，"
+                             "不接触任何服务器（供 CI 的 build job 生成 artifact）。"
+                             "隐含本机模式，无需 ssh/scp。")
+    parser.add_argument("--git-ref", dest="git_ref", default="",
+                        help="写入 BUILD_META.json 的代码分支（CI 传入，便于追溯）。")
     parser.add_argument("--dry-run", action="store_true",
                         help="只打印将要执行的命令，不真正执行。")
     # ---------- 自动化（CI / 无人值守）相关参数 ----------
@@ -1337,6 +1604,9 @@ def build_parser():
                         help="跳过交互式确认（CI 非交互执行时必须指定）。")
     parser.add_argument("--no-sudo", dest="no_sudo", action="store_true",
                         help="supervisorctl 不加 sudo（服务器已给 supervisor 组 socket 权限时使用）。")
+    parser.add_argument("--local", dest="local", action="store_true",
+                        help="本机模式：目标机就是当前主机，全部操作用本机 bash 执行，"
+                             "不建立 ssh/scp 连接（自托管 runner 部署与回滚用）。")
     parser.add_argument("--remote-tmp", dest="remote_tmp", default="~/tmp",
                         help="远端暂存目录，默认 ~/tmp（scp 自动展开 ~，bash 侧自动转 $HOME）；"
                              "家目录亦不可写时可用绝对路径覆盖。")

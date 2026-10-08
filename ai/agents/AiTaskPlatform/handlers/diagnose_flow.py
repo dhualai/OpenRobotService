@@ -433,6 +433,18 @@ class DiagnoseFlow:
                                 "has_problem_summary": bool(context.problem_summary)},
                         elapsed_ms=round((time.perf_counter() - t1) * 1000))
 
+        memory_block = ""
+        try:
+            from ai.agents.AiTaskPlatform.memory import prepare_diagnose_memory
+            recall_q = " ".join(filter(None, [
+                context.title or "",
+                context.problem_summary or "",
+                (context.description or "")[:200],
+            ]))
+            memory_block = await prepare_diagnose_memory(recall_q)
+        except Exception as _m_e:
+            logger.warning(f"[diagnose] 长期记忆召回失败: {_m_e}")
+
         # 2. 附件分析（能力一：日志/非日志/图片 并行分析，改造点 B / G2）
         t2 = time.perf_counter()
         prog.add("attachment", "分析附件与日志", capability="log_analyze")
@@ -730,6 +742,8 @@ class DiagnoseFlow:
         # 注入用户画像到 system prompt（有画像时追加，无画像保持原样）
         if user_profile_block:
             system_prompt = f"{system_prompt}\n\n{user_profile_block}"
+        if memory_block:
+            prompt = f"{prompt}\n\n{memory_block}"
 
         raw = await self._llm_client.complete(
             prompt=prompt,

@@ -490,6 +490,7 @@ function TemplateRow(props: TemplateRowProps) {
             <button
               type="button"
               className="mac-tpl-row__title"
+              data-testid="tpl-row-title"
               onClick={() => props.onStartEdit(node.id)}
               aria-label={`编辑${node.title}`}
               title="点按改名"

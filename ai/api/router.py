@@ -87,6 +87,12 @@ async def _heartbeat_agen(agen, interval: float = _HEARTBEAT_SEC):
 # ============================================================
 qa_router = APIRouter(prefix="/api/ai/qa", tags=["AI诊断"])
 
+# 车型定制模式（扫码入口，XQE 试点）：/mode/confirm 路由挂载，逻辑全在
+# ai/api/vehicle_mode.py——常规链路零改动，定制模式以 session
+# metadata["vehicle_mode"] 存在为唯一开关（不调接口的会话不受任何影响）。
+from ai.api.vehicle_mode import register_vehicle_mode_routes
+register_vehicle_mode_routes(qa_router)
+
 
 class QAAskRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=128, description="会话 ID")
@@ -313,24 +319,31 @@ async def ask_question_stream(
                             acc = ""
                             last_persist = time.perf_counter()
                     elif ev_type == "result":
-                        # 项目选择题：候选持久化到消息 metadata_（前端切会话/刷新后
+                        # 选择题候选持久化到消息 metadata_（前端切会话/刷新后
                         # 仍可渲染按钮；md 对话记录渲染成编号列表文字）。
+                        # project_choices=项目题（0827）/ vehicle_choices=车型
+                        # 追问气泡（0930），同一会话互斥出现。
                         # fire-and-forget：不阻塞 result 事件转发，失败仅告警。
                         # 必须用独立 session：与 _do_persist 并发共享 db 会撞
                         # SQLAlchemy session 并发限制（commit() can't be called
                         # here / _prepare_impl already in progress），0911 测试环境
                         # 出题轮 metadata 全部写入失败即此因。
-                        choices = (event.get('data') or {}).get("project_choices")
-                        if persist_msg_id is not None and isinstance(choices, list) and choices:
+                        for _meta_key in ("project_choices", "vehicle_choices"):
+                            _meta_vals = (event.get('data') or {}).get(_meta_key)
+                            if persist_msg_id is None or not (isinstance(_meta_vals, list) and _meta_vals):
+                                continue
+                            _key = _meta_key
+                            _vals = _meta_vals
+
                             async def _persist_choices_meta():
                                 session = AsyncSessionLocal()
                                 try:
                                     await MessageService.update_message(
                                         session, persist_msg_id,
-                                        MessageUpdate(metadata_={"project_choices": choices}))
+                                        MessageUpdate(metadata_={_key: _vals}))
                                 except Exception as e:
                                     logger.warning(
-                                        f"[sse] 项目题候选落 metadata 失败 "
+                                        f"[sse] {_key} 落 metadata 失败 "
                                         f"sid={qa_req.session_id[:8]} msg_id={persist_msg_id}: {e}")
                                 finally:
                                     try:
@@ -1623,6 +1636,11 @@ class TaskDiscussRequest(BaseModel):
     context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments, quoted_comment, reply_to}")
     username: str = Field(default="", description="当前用户（后端从 token 解析，前端可不传）")
 
+
+class TaskDiscussInjectRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")
+    text: str = Field(default="", description="插入当前排查轮次的补充文字")
+
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
 async def task_diagnose(body: TaskDiagnoseRequest, request: Request) -> dict:
     """全能力诊断 → 即时返回报告（不存库）"""
@@ -1661,7 +1679,7 @@ async def task_discuss(body: TaskDiscussRequest, request: Request) -> dict:
     username, _ = _current_user(request)
     if not username:
         username = (body.username or "").strip()
-    logger.info(f"[discuss] 入口: task_id={body.task_id}, query={query_preview}, user={username}")
+        logger.info(f"[discuss] 入口: task_id={body.task_id}, query={query_preview}, user={username}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
@@ -1670,6 +1688,7 @@ async def task_discuss(body: TaskDiscussRequest, request: Request) -> dict:
             query=body.query,
             context=body.context,
             username=username,
+            is_cancelled=request.is_disconnected,
         )
         elapsed = (time.perf_counter() - t_start) * 1000
         reply_len = len(result.get("reply", ""))
@@ -1682,6 +1701,154 @@ async def task_discuss(body: TaskDiscussRequest, request: Request) -> dict:
         logger.exception(f"[discuss] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
                          f"query={query_preview}")
         return {"code": 1, "message": str(e)}
+
+
+@task_agent_router.post("/discuss/stream", summary="@U老师 讨论（流式）")
+async def task_discuss_stream(body: TaskDiscussRequest, request: Request):
+    """@U老师 讨论 SSE：先排查（过程区仍走 WS），再流式吐最终答复正文。
+
+    事件：
+      event: token   data: {"token": "..."}
+      event: rewrite data: {"reply": "完整改写正文"}
+      event: result  data: {"task_id","reply",...}  （评论已落库）
+      event: error   data: {"message": "..."}
+      event: done    data: {"total_ms": N}
+    """
+    import asyncio
+    import json
+    import logging
+    import time
+    from fastapi.responses import StreamingResponse
+
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = time.perf_counter()
+    query_preview = (body.query or "")[:60]
+    username, _ = _current_user(request)
+    if not username:
+        username = (body.username or "").strip()
+    logger.info(
+        f"[discuss.stream] 入口: task_id={body.task_id}, query={query_preview}, user={username}"
+    )
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_token(tok: str) -> None:
+        await queue.put(("token", tok))
+
+    async def on_rewrite(full: str) -> None:
+        await queue.put(("rewrite", full))
+
+    async def _run() -> None:
+        try:
+            from ai.agents.AiTaskPlatform import get_task_agent
+            agent = await get_task_agent()
+            result = await agent.discuss(
+                task_id=body.task_id,
+                query=body.query,
+                context=body.context,
+                username=username,
+                is_cancelled=request.is_disconnected,
+                on_token=on_token,
+                on_rewrite=on_rewrite,
+            )
+            await queue.put(("result", result if isinstance(result, dict) else {"reply": str(result)}))
+        except Exception as e:
+            logger.exception(
+                f"[discuss.stream] 失败: task_id={body.task_id}, query={query_preview}"
+            )
+            await queue.put(("error", str(e)))
+        finally:
+            await queue.put(("done", None))
+
+    async def sse():
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                kind, payload = await queue.get()
+                if kind == "token":
+                    yield f"event: token\ndata: {json.dumps({'token': payload}, ensure_ascii=False)}\n\n"
+                elif kind == "rewrite":
+                    yield f"event: rewrite\ndata: {json.dumps({'reply': payload}, ensure_ascii=False)}\n\n"
+                elif kind == "result":
+                    data = dict(payload or {})
+                    # 体量控制：reasoning_trace / _trace 不进 SSE
+                    data.pop("reasoning_trace", None)
+                    data.pop("_trace", None)
+                    yield f"event: result\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                elif kind == "error":
+                    yield f"event: error\ndata: {json.dumps({'message': payload}, ensure_ascii=False)}\n\n"
+                elif kind == "done":
+                    total_ms = round((time.perf_counter() - t_start) * 1000)
+                    logger.info(
+                        f"[discuss.stream] 完成: task_id={body.task_id}, elapsed={total_ms}ms"
+                    )
+                    yield f"event: done\ndata: {json.dumps({'total_ms': total_ms})}\n\n"
+                    break
+        except asyncio.CancelledError:
+            logger.info(f"[discuss.stream] 客户端断连 task_id={body.task_id}")
+            raise
+        finally:
+            if not task.done():
+                # 不断开后台 discuss：断连后仍写评论（与非流式一致）
+                pass
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@task_agent_router.post("/discuss/inject", summary="@U老师 插入本轮")
+async def task_discuss_inject(body: TaskDiscussInjectRequest, request: Request) -> dict:
+    """分析进行中把工程师补充写入当前排查邮箱，不新开一轮、不断开当前请求。"""
+    import logging
+    logger = logging.getLogger("TASK_AGENT")
+    raw = body.text or ""
+    query = raw.replace("@U老师", " ").strip()
+    if not body.task_id or not query:
+        return {"code": 1, "message": "task_id 与 text 不能为空"}
+    try:
+        from ai.agents.AiTaskPlatform.runtime.inject_mailbox import put
+        await put(body.task_id, query)
+        logger.info(f"[discuss.inject] task_id={body.task_id}, text={query[:60]}")
+        return {"code": 0, "data": {"ok": True}}
+    except Exception as e:
+        logger.exception(f"[discuss.inject] 失败: task_id={body.task_id}")
+        return {"code": 1, "message": str(e)}
+
+
+@task_agent_router.get("/tickets/similar", summary="@# 相似工单（向量）")
+async def task_tickets_similar(
+    task_id: str,
+    limit: int = 10,
+) -> dict:
+    """按当前工单标题/描述/故障码/车型做 Qdrant 语义检索，返回已沉淀的相似工单。
+
+    前端仍走后端 GET /api/tasks/{id}/similar；本接口给后端代理，Qdrant 不可用时后端再 SQL 兜底。
+    """
+    import logging
+    logger = logging.getLogger("TASK_AGENT")
+    tid = str(task_id or "").strip()
+    cap = max(1, min(int(limit or 10), 30))
+    if not tid:
+        return {"code": 1, "message": "task_id 不能为空"}
+    try:
+        from ai.core.task_adapter import load_task_context_dict
+        from ai.core import get_retrieval_service
+        cur = load_task_context_dict(tid) or {}
+        query_text = " ".join(filter(None, [
+            cur.get("problem_summary") or cur.get("title") or "",
+            cur.get("description") or "",
+            cur.get("fault_code") or "",
+            cur.get("robot_type") or "",
+        ])).strip()
+        if not query_text:
+            return {"code": 0, "data": {"task_id": tid, "similar": [], "source": "vector"}}
+        retriever = await get_retrieval_service()
+        similar = await retriever.search_similar_tickets(
+            query_text, exclude_task_id=tid, top_k=cap,
+        )
+        return {"code": 0, "data": {"task_id": tid, "similar": similar, "source": "vector"}}
+    except Exception:
+        logger.exception(f"[tickets.similar] 失败: task_id={tid}")
+        return {"code": 1, "message": "相似工单向量检索失败"}
 
 
 @task_agent_router.post("/summarize", summary="讨论摘要")
@@ -1704,6 +1871,36 @@ async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
         # logger.exception 自动打印完整 traceback（含异常类型与堆栈），便于定位根因
         logger.exception(f"[summarize] 失败: elapsed={elapsed:.0f}ms")
         return {"code": 1, "message": str(e)}
+
+
+class TaskMemoryUpdateRequest(BaseModel):
+    content: str = Field(..., description="改写后的记忆正文")
+
+
+@task_agent_router.get("/memory", summary="列出 U老师 长期记忆")
+async def task_memory_list() -> dict:
+    from ai.agents.AiTaskPlatform.memory.agent_memory_service import get_agent_memory_service
+    svc = get_agent_memory_service()
+    items = [svc.public_entry(r) for r in svc.list_entries(status="active")]
+    return {"code": 0, "data": {"items": items}}
+
+
+@task_agent_router.put("/memory/{mem_id}", summary="改写一条长期记忆")
+async def task_memory_update(mem_id: str, body: TaskMemoryUpdateRequest) -> dict:
+    from ai.agents.AiTaskPlatform.memory.agent_memory_service import get_agent_memory_service
+    updated = await get_agent_memory_service().update_content(mem_id, body.content)
+    if not updated:
+        raise HTTPException(status_code=404, detail="没有这条记忆，或正文为空")
+    return {"code": 0, "data": updated}
+
+
+@task_agent_router.delete("/memory/{mem_id}", summary="删除一条长期记忆")
+async def task_memory_delete(mem_id: str) -> dict:
+    from ai.agents.AiTaskPlatform.memory.agent_memory_service import get_agent_memory_service
+    removed = await get_agent_memory_service().delete(mem_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="没有这条记忆")
+    return {"code": 0, "data": {"id": mem_id}}
 
 
 @task_agent_router.get("/health", summary="健康检查")

@@ -58,6 +58,37 @@ class RetrievalResult:
     error_codes: List[str] = field(default_factory=list)
     # 人工审核闸门（0902）：pending=未审不可检索，approved=已放行
     review_status: str = ""
+    # ticket_resolutions 等工单沉淀点：payload.task_id，供 @# 相似工单回表
+    task_id: str = ""
+
+
+def rank_similar_tickets(
+    results: List[RetrievalResult],
+    exclude_task_id: str = "",
+    top_k: int = 8,
+) -> List[Dict[str, Any]]:
+    """把 ticket_resolutions 检索结果压成 @# 相似工单列表（去重、排除自身）。"""
+    exclude = str(exclude_task_id or "").strip()
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for r in results or []:
+        tid = str(getattr(r, "task_id", "") or "").strip()
+        if not tid or tid == exclude or tid in seen:
+            continue
+        seen.add(tid)
+        try:
+            task_id_out: Any = int(tid)
+        except (TypeError, ValueError):
+            task_id_out = tid
+        out.append({
+            "task_id": task_id_out,
+            "title": (r.title or "")[:80] or f"工单#{tid}",
+            "score": round(float(r.score or 0), 4),
+            "verified": getattr(r, "verified", "") or "unknown",
+        })
+        if len(out) >= int(top_k or 8):
+            break
+    return out
 
 
 # ============================================================
@@ -539,6 +570,7 @@ class RetrievalService:
             root_cause_type=pl.get("root_cause_type", "") or "",
             error_codes=pl.get("error_codes", []) or [],
             review_status=pl.get("review_status", "") or "",
+            task_id=str(pl.get("task_id") or pl.get("ticket_id") or "").strip(),
         )
 
     async def retrieve_domain_dual(
@@ -617,7 +649,7 @@ class RetrievalService:
                     "vector_score": 0.0, "sparse_score": 0.0,
                     "sub_domain": "", "domain": "",
                     "verified": "unknown", "root_cause_type": "", "error_codes": [],
-                    "review_status": "",
+                    "review_status": "", "task_id": "",
                 }
             doc_scores[doc_id]["dense"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["vector_score"] = point.score
@@ -631,6 +663,9 @@ class RetrievalService:
                 doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
                 doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
                 doc_scores[doc_id]["review_status"] = point.payload.get("review_status", "") or ""
+                doc_scores[doc_id]["task_id"] = str(
+                    point.payload.get("task_id") or point.payload.get("ticket_id") or ""
+                ).strip()
 
         for rank, point in enumerate(sparse_results):
             doc_id = str(point.id)
@@ -641,20 +676,25 @@ class RetrievalService:
                     "vector_score": 0.0, "sparse_score": 0.0,
                     "sub_domain": "", "domain": "",
                     "verified": "unknown", "root_cause_type": "", "error_codes": [],
-                    "review_status": "",
+                    "review_status": "", "task_id": "",
                 }
             doc_scores[doc_id]["sparse"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["sparse_score"] = point.score
-            if point.payload and not doc_scores[doc_id]["title"]:
-                doc_scores[doc_id]["title"] = point.payload.get("title", "")
-                doc_scores[doc_id]["content"] = point.payload.get("content", "")
-                doc_scores[doc_id]["images"] = point.payload.get("images", [])
-                doc_scores[doc_id]["sub_domain"] = point.payload.get("sub_domain", "")
-                doc_scores[doc_id]["domain"] = point.payload.get("domain", "")
-                doc_scores[doc_id]["verified"] = point.payload.get("verified", "unknown") or "unknown"
-                doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
-                doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
-                doc_scores[doc_id]["review_status"] = point.payload.get("review_status", "") or ""
+            if point.payload:
+                if not doc_scores[doc_id]["task_id"]:
+                    doc_scores[doc_id]["task_id"] = str(
+                        point.payload.get("task_id") or point.payload.get("ticket_id") or ""
+                    ).strip()
+                if not doc_scores[doc_id]["title"]:
+                    doc_scores[doc_id]["title"] = point.payload.get("title", "")
+                    doc_scores[doc_id]["content"] = point.payload.get("content", "")
+                    doc_scores[doc_id]["images"] = point.payload.get("images", [])
+                    doc_scores[doc_id]["sub_domain"] = point.payload.get("sub_domain", "")
+                    doc_scores[doc_id]["domain"] = point.payload.get("domain", "")
+                    doc_scores[doc_id]["verified"] = point.payload.get("verified", "unknown") or "unknown"
+                    doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
+                    doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
+                    doc_scores[doc_id]["review_status"] = point.payload.get("review_status", "") or ""
 
         rrf_scores = [
             (doc_id, scores["dense"] + scores["sparse"], scores)
@@ -678,6 +718,7 @@ class RetrievalService:
                 root_cause_type=scores.get("root_cause_type", "") or "",
                 error_codes=scores.get("error_codes", []) or [],
                 review_status=scores.get("review_status", "") or "",
+                task_id=str(scores.get("task_id") or "").strip(),
             ))
 
         return results
@@ -1334,6 +1375,19 @@ class RetrievalService:
                 r.score = r.score * w
         results.sort(key=lambda x: x.score, reverse=True)
         return results[: top_k or 3]
+
+    async def search_similar_tickets(
+        self,
+        query: str,
+        exclude_task_id: str = "",
+        top_k: int = 8,
+    ) -> List[Dict[str, Any]]:
+        """@# 相似工单：Qdrant ticket_resolutions 向量检索，按 task_id 去重。"""
+        q = (query or "").strip()
+        if not q:
+            return []
+        hits = await self.retrieve_task_resolutions(q, top_k=max(int(top_k or 8) * 3, 12))
+        return rank_similar_tickets(hits, exclude_task_id=exclude_task_id, top_k=top_k)
 
     async def ensure_task_resolutions_collection(self) -> str:
         """确保 project domain collection 存在，不存在则创建。

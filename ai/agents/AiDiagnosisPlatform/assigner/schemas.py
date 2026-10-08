@@ -94,6 +94,10 @@ class TicketContext(BaseModel):
     # === Feature 专属 ===
     scenario: Optional[str] = Field(None, description="需求场景 ↔ tasks.metadata_info.scenario")
     expected_effect: Optional[str] = Field(None, description="预期效果 ↔ tasks.metadata_info.expected_effect")
+    curr_step_name: Optional[str] = Field(
+        None,
+        description="提单时记下的当前阶段 ↔ tasks.curr_step_name（需求单用于产品/研发分流辅助）",
+    )
 
     # === Support 专属 ===
     support_type: Optional[str] = Field(None, description="支持类型 ↔ tasks.metadata_info.support_type")

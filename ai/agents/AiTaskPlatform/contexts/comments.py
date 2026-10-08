@@ -67,6 +67,82 @@ def format_quoted_comment_block(context: dict) -> str:
     return f"## 用户本轮引用的评论\n[{author}] {content}\n"
 
 
+# 一张工单一条讨论史：单条留住上一轮分析，总量过长时保留开头和最近对话。
+_THREAD_PER_COMMENT = 2000
+_THREAD_TOTAL = 16000
+
+
+def format_discussion_thread(
+    comments: list,
+    *,
+    per_comment: int = _THREAD_PER_COMMENT,
+    total: int = _THREAD_TOTAL,
+) -> str:
+    """把一张工单的评论按时间排成讨论史。
+
+    comments: [{author|created_by_name|created_by, content}, ...]，调用方保证从早到晚。
+    """
+    lines: list[str] = []
+    for c in comments or []:
+        if not isinstance(c, dict):
+            continue
+        author = c.get("author") or c.get("created_by_name") or c.get("created_by") or "?"
+        content = _plain_comment_text(c.get("content") or "", limit=per_comment)
+        if not content:
+            continue
+        if str(author) == "U老师":
+            lines.append(f"[U老师] {content}")
+        else:
+            lines.append(f"[{author}] {content}")
+    if not lines:
+        return ""
+    if sum(len(line) + 1 for line in lines) <= total:
+        return "\n".join(lines)
+    head = lines[0]
+    kept: list[str] = []
+    used = len(head) + 1
+    for line in reversed(lines[1:]):
+        extra = len(line) + 1
+        if used + extra > total:
+            break
+        kept.append(line)
+        used += extra
+    kept.reverse()
+    omitted = len(lines) - 1 - len(kept)
+    if omitted > 0:
+        return "\n".join([head, f"（中间省略 {omitted} 条，下面是最近的对话）", *kept])
+    return "\n".join([head, *kept])
+
+
+def load_ticket_discussion(task_id: str) -> str:
+    """读取这张工单的全部讨论评论（从早到晚），作为每一轮的上下文。"""
+    from app.models.task import TaskComment
+    from app.core.database import SessionLocal
+
+    try:
+        tid = int(task_id)
+    except (TypeError, ValueError):
+        return ""
+    try:
+        db = SessionLocal()
+        try:
+            comments = db.query(TaskComment).filter(
+                TaskComment.task_id == tid
+            ).order_by(TaskComment.created_at.asc()).all()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[discuss] 读取工单讨论史失败 task={task_id}: {e}")
+        return ""
+    rows = []
+    for c in comments:
+        rows.append({
+            "author": getattr(c, "created_by_name", None) or getattr(c, "created_by", None) or "?",
+            "content": getattr(c, "content", "") or "",
+        })
+    return format_discussion_thread(rows)
+
+
 def load_discussion(task_id: str, limit: int = 20) -> str:
     """读取工单讨论评论（含工程师与 U老师/AI 的历史分析），返回格式化文本。
 

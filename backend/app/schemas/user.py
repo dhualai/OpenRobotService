@@ -80,6 +80,9 @@ class User(UserBase):
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
     supervisor_id: Optional[str] = None
+    # 微信关注时间（user_info 快照里该 openid 的 subscribe_time，秒级 Unix 时间戳）。
+    # 仅用户管理列表（GET /admin/users/）填充；无微信关系/无快照的数据行为 None。
+    subscribe_time: Optional[int] = None
     # 用户在项目中的角色关系（含汇报人 report_to_id），用于前端构建汇报树
     project_role_relations: List[Dict[str, Any]] = []
     class Config:

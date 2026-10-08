@@ -26,6 +26,8 @@ let mockIsLoading = false;
 let mockIsAdmin = false;
 
 vi.mock('@/stores/auth', () => ({
+  // authGuard 兜底判断「本次会话是否已手动登出」，实现里会直接调用它
+  isManualLogout: () => false,
   useAuthStore: (selector?: (s: Record<string, unknown>) => unknown) => {
     const state = {
       isLoggedIn: mockIsLoggedIn,

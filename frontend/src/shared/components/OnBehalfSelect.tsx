@@ -122,8 +122,9 @@ const OnBehalfSelect = ({
         disabled={disabled}
       >
         {selected ? (
+          /* 回显只显示被代理人姓名：不加「代 … 提交」字样（语义已由字段标题「被代理人」表达） */
           <span className="user-select__trigger-text">
-            代 {selected.name || selected.username} 提交
+            {selected.name || selected.username}
           </span>
         ) : (
           <span className="user-select__trigger-placeholder">{placeholder}</span>

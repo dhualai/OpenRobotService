@@ -9,6 +9,7 @@ from app.modules.tasks.api.tasks import router as async_tasks_router
 from app.modules.tasks.api.users import router as assignable_users_router
 from app.modules.tasks.api.attachment import router as attachment_router
 from app.modules.tasks.api.spec_doc import router as spec_doc_router
+from app.modules.tasks.api.problem_doc import router as problem_doc_router
 from app.modules.tasks.api.ws import router as ws_router
 
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -18,6 +19,7 @@ tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 tasks_router.include_router(assignable_users_router)
 tasks_router.include_router(attachment_router)
 tasks_router.include_router(spec_doc_router)
+tasks_router.include_router(problem_doc_router)
 tasks_router.include_router(task_router)
 tasks_router.include_router(async_tasks_router)
 tasks_router.include_router(ws_router)

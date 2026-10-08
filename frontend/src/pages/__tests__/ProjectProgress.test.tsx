@@ -8,21 +8,13 @@ import { MemoryRouter } from 'react-router-dom';
 const mockRequest = vi.fn();
 const mockAiGet = vi.fn();
 
-vi.mock('@/api/client', () => ({
+vi.mock('@/api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/client')>()),
   createRequest: () => mockRequest,
 }));
 
 vi.mock('@/api/ai', () => ({
   aiGet: () => mockAiGet(),
-}));
-
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ hasPermission: () => true }),
-  PERMISSION_VIEW_ALL: 'backend:project:view-all',
-}));
-
-vi.mock('@/config/api', () => ({
-  default: { ADMIN: { BASE_URL: '/api/admin' } },
 }));
 
 // Popup 只在 visible 时渲染子树（与 tdesign 一致），Dialog 同理
@@ -35,12 +27,11 @@ vi.mock('tdesign-mobile-react', () => ({
     visible ? <div data-testid="dialog">{children}</div> : null,
 }));
 
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useNavigate: () => vi.fn() };
-});
-
 import ProjectProgress from '../admin/ProjectProgress';
+import { useAuthStore } from '@/stores/auth';
+
+// 真 auth store：permissions 含 admin 即「能看全部项目」，判定与线上同一套（用例不改权限）
+useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
 
 interface ProjectRow {
   id: string;

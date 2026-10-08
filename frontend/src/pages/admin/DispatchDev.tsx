@@ -8,8 +8,11 @@ import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
 import ReactECharts from '@/shared/components/ReactECharts';
 import UiAtlasPanel from '@/pages/admin/UiAtlasPanel';
+import UspEnvPanel from '@/pages/admin/UspEnvPanel';
+import MemoryPanel from '@/pages/admin/MemoryPanel';
+import { PERM_DISPATCH_DEV } from '@/shared/constants/dispatchDev';
 
-export const PERM_DISPATCH_DEV = 'frontend:admin:dispatch-dev:show';
+export { PERM_DISPATCH_DEV };
 
 function pct(v: number | null | undefined): string {
   if (v == null || Number.isNaN(Number(v))) return '—';
@@ -145,7 +148,73 @@ interface WeeklyBucket {
   week_start: string;
   metrics: ReassignMetrics;
 }
-type TicketListKey = 'misassign' | 'redispatch_inaccurate' | 'inaccurate' | 'signal';
+interface FunnelDrop {
+  count: number;
+  status: 'deduct' | 'expose';
+  label: string;
+  attempts?: number;
+  tickets?: TicketListItem[];
+}
+interface DispatchFunnel {
+  error?: string;
+  created_total: number;
+  after_never_ai?: number;
+  after_step0: number;
+  ai_pool_tickets: number;
+  drops: {
+    never_ai: FunnelDrop;
+    step0: FunnelDrop;
+    preferred_twice: FunnelDrop;
+  };
+  ticket_funnel: {
+    created: number;
+    after_never_ai?: number;
+    after_step0: number;
+    ai_pool: number;
+    misassign_only: number;
+    redispatch_only: number;
+    both: number;
+    union: number;
+  };
+  attempt_funnel: {
+    created_attempts?: number;
+    never_ai_attempts?: number;
+    ai_assign_total: number;
+    after_never_ai_attempts?: number;
+    step0_attempts?: number;
+    preferred_twice_attempts: number;
+    denominator: number;
+    misassign_events: number;
+    redispatch_inaccurate_events: number;
+    union_events: number;
+  };
+  rates: {
+    ticket_misassign: number | null;
+    ticket_redispatch: number | null;
+    ticket_both: number | null;
+    ticket_union: number | null;
+    attempt_misassign: number | null;
+    attempt_redispatch: number | null;
+    attempt_union: number | null;
+  };
+  ticket_lists: Record<string, TicketListItem[]>;
+}
+interface FunnelWeeklyBucket {
+  week: string;
+  label: string;
+  week_start: string;
+  funnel: DispatchFunnel;
+}
+type FunnelListKey =
+  | 'step0'
+  | 'preferred_twice'
+  | 'never_ai'
+  | 'ai_pool'
+  | 'misassign_only'
+  | 'redispatch_only'
+  | 'both'
+  | 'union';
+type TicketListKey = FunnelListKey | 'misassign' | 'redispatch_inaccurate' | 'inaccurate' | 'signal';
 interface UnlabeledHop {
   id: number;
   created_at: string;
@@ -186,6 +255,8 @@ interface RedispatchItem {
   operator_name: string;
   preferred_id: string;
   preferred_name: string;
+  metric_kind?: string;
+  preferred_twice_confirm?: boolean;
 }
 interface ReassignSnap {
   metrics?: ReassignMetrics;
@@ -195,6 +266,8 @@ interface ReassignSnap {
   samples?: ReassignSample[];
   ticket_lists?: Partial<Record<TicketListKey, TicketListItem[]>>;
   weekly?: WeeklyBucket[];
+  funnel?: DispatchFunnel | null;
+  funnel_weekly?: FunnelWeeklyBucket[];
   unlabeled_items?: UnlabeledItem[];
   unlabeled_groups?: UnlabeledGroup[];
   redispatch_items?: RedispatchItem[];
@@ -206,6 +279,17 @@ const KIND_LABEL: Record<string, string> = {
   misassign: '派错了',
   stage: '阶段转派',
   other: '其它',
+};
+
+const FUNNEL_LIST_LABEL: Record<FunnelListKey, string> = {
+  step0: 'Step0 命中（已扣除）',
+  preferred_twice: '倾向人×2（仅曝光）',
+  never_ai: '从未走过 AI',
+  ai_pool: 'AI 池工单',
+  misassign_only: '仅派错了',
+  redispatch_only: '仅重派不准确',
+  both: '两者都有（重合）',
+  union: '错派并集',
 };
 
 function hopKindLabel(hop: UnlabeledHop): string {
@@ -224,6 +308,91 @@ function formatHopTime(iso: string): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${m}月${day}日 ${hh}:${mm}`;
+}
+
+/** 层宽相对本漏斗顶层真实数量。0 仍画一条细缝，避免层块消失。 */
+function funnelWidthPct(value: number, base: number): number {
+  if (!base || base <= 0) return 100;
+  const raw = (Math.max(0, value) / base) * 100;
+  if (value <= 0) return 8;
+  return Math.min(100, raw);
+}
+
+/** 漏斗层间：一行说明扣除与剩余，可点开对应工单。 */
+function FunnelBridge(props: {
+  deductLabel: string;
+  deduct: number;
+  remainLabel?: string;
+  remain: number;
+  unit?: string;
+  expose?: boolean;
+  onDeductClick?: () => void;
+  deductActive?: boolean;
+  fromPct: number;
+  toPct: number;
+}) {
+  const unit = props.unit || '张';
+  const text = (
+    <>
+      {props.expose ? '仅曝光' : '扣除'} {props.deductLabel} −{props.deduct}{unit}
+      <span> → {props.remainLabel || '剩余'} {props.remain}{unit}</span>
+    </>
+  );
+  const cls = `dispatch-dev__funnel-link${props.expose ? ' is-expose' : ''}${props.deductActive ? ' is-active' : ''}`;
+  return (
+    <div className="dispatch-dev__funnel-bridge">
+      {props.onDeductClick ? (
+        <button type="button" className={cls} onClick={props.onDeductClick}>{text}</button>
+      ) : (
+        <span className={cls}>{text}</span>
+      )}
+    </div>
+  );
+}
+
+/** 漏斗一层：圆角条按真实比例居中，名称和错派率放在条下方，窄屏也能读全。 */
+function FunnelStepRow(props: {
+  widthPct: number;
+  title: string;
+  countLabel: string;
+  rate: number | null;
+  rateHint: string;
+  tone?: 'neutral' | 'mid' | 'warn';
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const stepClass = [
+    'dispatch-dev__funnel-step',
+    props.tone === 'mid' ? 'is-mid' : '',
+    props.tone === 'warn' ? 'is-warn' : '',
+    props.active ? 'is-active' : '',
+  ].filter(Boolean).join(' ');
+  const bar = props.onClick ? (
+    <button type="button" className={stepClass} style={{ width: `${props.widthPct}%` }} onClick={props.onClick}>
+      <strong>{props.countLabel}</strong>
+    </button>
+  ) : (
+    <div className={stepClass} style={{ width: `${props.widthPct}%` }}>
+      <strong>{props.countLabel}</strong>
+    </div>
+  );
+  return (
+    <div className="dispatch-dev__funnel-row">
+      {bar}
+      <div className="dispatch-dev__funnel-meta">
+        <span>{props.title}</span>
+        <em title={props.rateHint}>
+          错派 {pct(props.rate)}
+          <i>{props.rateHint}</i>
+        </em>
+      </div>
+    </div>
+  );
+}
+
+function rateOf(num: number, den: number): number | null {
+  if (!den) return null;
+  return num / den;
 }
 
 function unlabeledGroupsFromSnap(reassign: ReassignSnap | null): UnlabeledGroup[] {
@@ -839,8 +1008,10 @@ export default function DispatchDev() {
   const [minSizeInput, setMinSizeInput] = useState('');
   const [savingParams, setSavingParams] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [listKey, setListKey] = useState<TicketListKey | null>(null);
-  const [mainTab, setMainTab] = useState<'metrics' | 'atlas' | 'test'>('metrics');
+  const [redispatchNormalOpen, setRedispatchNormalOpen] = useState(false);
+  const [listKey, setListKey] = useState<FunnelListKey | null>(null);
+  const [funnelWeek, setFunnelWeek] = useState<string>('latest');
+  const [mainTab, setMainTab] = useState<'metrics' | 'atlas' | 'test' | 'usp-envs' | 'memory'>('metrics');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1013,11 +1184,16 @@ export default function DispatchDev() {
   }, [clusters]);
 
   const weeklyOption = useMemo(() => {
-    const weeks = reassign?.weekly || [];
+    const weeks = reassign?.funnel_weekly || [];
     const labels = weeks.map((w) => w.label);
-    const aiCounts = weeks.map((w) => Number(w.metrics?.ai_assign_total ?? 0));
+    const aiCounts = weeks.map((w) => Number(w.funnel?.attempt_funnel?.after_never_ai_attempts ?? 0));
+    const denCounts = weeks.map((w) => Number(w.funnel?.attempt_funnel?.denominator ?? 0));
     const countLabels = aiCounts.map((n) => `${n}次`);
-    const seriesOf = (getter: (m: ReassignMetrics) => number | null | undefined, name: string, color: string) => ({
+    const seriesOf = (
+      getter: (f: DispatchFunnel) => number | null | undefined,
+      name: string,
+      color: string,
+    ) => ({
       name,
       type: 'line' as const,
       xAxisIndex: 0,
@@ -1027,19 +1203,20 @@ export default function DispatchDev() {
       lineStyle: { width: 2, color },
       itemStyle: { color },
       data: weeks.map((w) => {
-        const v = getter(w.metrics);
+        const v = getter(w.funnel);
         return v == null ? null : Number((Number(v) * 100).toFixed(2));
       }),
     });
     return {
-      color: ['#227197', '#e37318', '#2ba471'],
+      color: ['#227197', '#e37318', '#2ba471', '#c4554d'],
       tooltip: {
         trigger: 'axis',
         formatter: (
           params: Array<{ dataIndex?: number; marker?: string; seriesName?: string; value?: number | null }>,
         ) => {
           const idx = params?.[0]?.dataIndex ?? 0;
-          const head = `${weeks[idx]?.label || ''}<br/>AI 派单 ${aiCounts[idx] ?? 0} 次`;
+          const f = weeks[idx]?.funnel;
+          const head = `${weeks[idx]?.label || ''}<br/>新建 ${f?.created_total ?? 0} 张 · AI 派单 ${aiCounts[idx] ?? 0} 次 · 计入错派率 ${denCounts[idx] ?? 0} 次`;
           const rows = (params || [])
             .filter((p) => p.seriesName)
             .map((p) => (
@@ -1053,7 +1230,7 @@ export default function DispatchDev() {
         itemWidth: 10,
         itemHeight: 10,
         textStyle: { color: '#888d8f', fontSize: 11 },
-        data: ['错派率', '重派不准确率', '不准确率'],
+        data: ['按单·并集', '按单·派错了', '按次·合计', '按次·派错了'],
       },
       grid: { left: 36, right: 12, top: 36, bottom: 58, containLabel: false },
       xAxis: [
@@ -1081,9 +1258,10 @@ export default function DispatchDev() {
         splitLine: { lineStyle: { color: '#f1f4f4' } },
       },
       series: [
-        seriesOf((m) => m.misassign_rate_of_signal ?? m.misassign_rate_of_reassign, '错派率', '#227197'),
-        seriesOf((m) => m.redispatch_inaccurate_rate_of_reviewed, '重派不准确率', '#e37318'),
-        seriesOf((m) => m.inaccurate_rate_of_ai_assign, '不准确率', '#2ba471'),
+        seriesOf((f) => f?.rates?.ticket_union, '按单·并集', '#227197'),
+        seriesOf((f) => f?.rates?.ticket_misassign, '按单·派错了', '#e37318'),
+        seriesOf((f) => f?.rates?.attempt_union, '按次·合计', '#2ba471'),
+        seriesOf((f) => f?.rates?.attempt_misassign, '按次·派错了', '#c4554d'),
         {
           type: 'bar' as const,
           xAxisIndex: 1,
@@ -1097,7 +1275,7 @@ export default function DispatchDev() {
         },
       ],
     };
-  }, [reassign?.weekly]);
+  }, [reassign?.funnel_weekly]);
 
   if (!allowed) return null;
 
@@ -1108,6 +1286,81 @@ export default function DispatchDev() {
     0,
   );
   const hasScatter = (clusters?.points || []).length > 0;
+  const funnelWeeks = reassign?.funnel_weekly || [];
+  const activeFunnel: DispatchFunnel | null = (() => {
+    if (funnelWeek === 'all') return (reassign?.funnel as DispatchFunnel) || null;
+    if (funnelWeek !== 'latest' && funnelWeek) {
+      const hit = funnelWeeks.find((w) => w.week === funnelWeek);
+      if (hit?.funnel) return hit.funnel;
+    }
+    if (funnelWeeks.length) return funnelWeeks[funnelWeeks.length - 1].funnel;
+    return (reassign?.funnel as DispatchFunnel) || null;
+  })();
+  const funnelLists = activeFunnel?.ticket_lists || {};
+  const tf = activeFunnel?.ticket_funnel;
+  const af = activeFunnel?.attempt_funnel;
+  const fr = activeFunnel?.rates;
+  const drops = activeFunnel?.drops;
+  const redispatchItems = reassign?.redispatch_items || [];
+  const redispatchNormal = redispatchItems.filter(
+    (item) => item.metric_kind === 'inaccurate' && !item.preferred_twice_confirm,
+  );
+  const redispatchNotable = redispatchItems.filter(
+    (item) => item.metric_kind !== 'inaccurate' || item.preferred_twice_confirm,
+  );
+  const renderRedispatch = (item: RedispatchItem) => (
+    <li key={item.id} className="dispatch-dev__review">
+      <strong><TicketLink taskId={item.task_id} title={item.title || '（无标题）'} /></strong>
+      <em>
+        {item.operator_name} → 倾向 {item.preferred_name}
+        {item.preferred_twice_confirm ? ' · 倾向人×2（未计不准确）' : ''}
+        {item.metric_kind === 'inaccurate' ? ' · 已计不准确' : ''}
+      </em>
+      <span>{item.description || ''}</span>
+      {item.reason ? (
+        <p className="dispatch-dev__hop-reason">备注：{item.reason}</p>
+      ) : (
+        <p className="dispatch-dev__hop-reason dispatch-dev__hop-reason--empty">（无备注）</p>
+      )}
+      <div className="dispatch-dev__review-btns">
+        {!item.preferred_twice_confirm && item.metric_kind !== 'inaccurate' ? (
+          <button
+            type="button"
+            className="dispatch-dev__btn"
+            disabled={reviewingId === item.id}
+            onClick={() => reviewItem(item.id, 'inaccurate')}
+          >
+            算不准确
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="dispatch-dev__btn dispatch-dev__btn--ghost"
+          disabled={reviewingId === item.id}
+          onClick={() => reviewItem(item.id, 'skipped')}
+        >
+          测试不算
+        </button>
+      </div>
+    </li>
+  );
+  const createdN = tf?.created ?? 0;
+  const afterNeverN = tf?.after_never_ai ?? 0;
+  const aiPoolN = tf?.ai_pool ?? 0;
+  const unionN = tf?.union ?? 0;
+  const wACreated = funnelWidthPct(createdN, createdN);
+  const wAAfterNever = funnelWidthPct(afterNeverN, createdN);
+  const wAPool = funnelWidthPct(aiPoolN, createdN);
+  const wAUnion = funnelWidthPct(unionN, createdN);
+  const attBase = af?.after_never_ai_attempts ?? af?.ai_assign_total ?? 0;
+  const attNever = af?.never_ai_attempts ?? drops?.never_ai?.count ?? 0;
+  const attCreated = af?.created_attempts ?? (attBase + attNever);
+  const attDen = af?.denominator ?? 0;
+  const attUnion = af?.union_events ?? 0;
+  const wBCreated = funnelWidthPct(attCreated, attCreated);
+  const wBBase = funnelWidthPct(attBase, attCreated);
+  const wBDen = funnelWidthPct(attDen, attCreated);
+  const wBUnion = funnelWidthPct(attUnion, attCreated);
 
   return (
     <div className="dispatch-dev">
@@ -1133,9 +1386,27 @@ export default function DispatchDev() {
         >
           界面图鉴
         </button>
+        <button
+          type="button"
+          className={`dispatch-dev__tab${mainTab === 'usp-envs' ? ' is-active' : ''}`}
+          onClick={() => setMainTab('usp-envs')}
+        >
+          可达环境
+        </button>
+        <button
+          type="button"
+          className={`dispatch-dev__tab${mainTab === 'memory' ? ' is-active' : ''}`}
+          onClick={() => setMainTab('memory')}
+        >
+          长期记忆
+        </button>
       </div>
       {mainTab === 'atlas' ? (
         <UiAtlasPanel />
+      ) : mainTab === 'memory' ? (
+        <MemoryPanel />
+      ) : mainTab === 'usp-envs' ? (
+        <UspEnvPanel />
       ) : mainTab === 'test' ? (
         <DispatchTestPanel />
       ) : loading ? (
@@ -1146,114 +1417,305 @@ export default function DispatchDev() {
         <>
           <section className="dispatch-dev__card">
             <div className="dispatch-dev__head">
-              <span className="dispatch-dev__title">转派指标</span>
+              <span className="dispatch-dev__title">派单漏斗指标</span>
             </div>
             <p className="dispatch-dev__hint">
-              转派弹窗三个类型单独计错派率。重新派单（提单人 / 处理人 / 管理员让 AI 再派）测试期要人工审核：算不准确计入不准确率并进入派单学习（原处理人 ×0.7），测试操作点「测试不算」。
-              点下面的比率可看对应工单清单；工单号可新标签打开详情。
+              按单按工单创建时间归周。按次按派单发生时间归周：ai_assign 记在日志那一周，没走过 AI 的建单指派记在创建周，每张 1 次。
+              层宽按本漏斗顶层真实数量缩放。按次从「本周派单次」起算，再扣从未走过 AI。
+              错派率写在层块内（按单=并集错派/本层张数，按次=错派事件/本层次数）。倾向人×2 仅曝光暂不扣。下方审核区口径不变。
             </p>
             {reassign?.error ? (
               <p className="dispatch-dev__hint">{reassign.error}</p>
+            ) : activeFunnel?.error ? (
+              <p className="dispatch-dev__hint">{activeFunnel.error}</p>
             ) : (
               <>
-                <div className="dispatch-dev__stats">
+                <div className="dispatch-dev__week-pills">
                   <button
                     type="button"
-                    className={`dispatch-dev__stat-btn${listKey === 'signal' ? ' is-active' : ''}`}
-                    onClick={() => setListKey((k) => (k === 'signal' ? null : 'signal'))}
+                    className={`dispatch-dev__pill${funnelWeek === 'latest' ? ' is-on' : ''}`}
+                    onClick={() => { setFunnelWeek('latest'); setListKey(null); }}
                   >
-                    有类型转派 {reassign?.metrics?.signal_total ?? reassign?.metrics?.reassign_total ?? 0} 次 / {reassign?.metrics?.signal_tickets ?? 0} 张
+                    最近一周
                   </button>
-                  <span>AI 派单 {reassign?.metrics?.ai_assign_total ?? 0} 次</span>
-                  <button
-                    type="button"
-                    className={`dispatch-dev__stat-btn${listKey === 'misassign' ? ' is-active' : ''}`}
-                    onClick={() => setListKey((k) => (k === 'misassign' ? null : 'misassign'))}
-                  >
-                    弹窗派错了 {reassign?.metrics?.misassign_events ?? 0} 次 / {reassign?.metrics?.misassign_tickets ?? 0} 张
-                  </button>
-                  <span>未标类型 {reassign?.metrics?.unlabeled_total ?? reassign?.unlabeled ?? 0}</span>
-                </div>
-                <div className="dispatch-dev__stats">
-                  <span>重新派单 {reassign?.metrics?.redispatch_total ?? 0} 次 / {reassign?.metrics?.redispatch_tickets ?? 0} 张</span>
-                  <span>待审 {reassign?.metrics?.redispatch_pending ?? 0}</span>
-                  <button
-                    type="button"
-                    className={`dispatch-dev__stat-btn${listKey === 'redispatch_inaccurate' ? ' is-active' : ''}`}
-                    onClick={() => setListKey((k) => (k === 'redispatch_inaccurate' ? null : 'redispatch_inaccurate'))}
-                  >
-                    不准确 {reassign?.metrics?.redispatch_inaccurate ?? 0}
-                  </button>
-                  <span>测试不算 {reassign?.metrics?.redispatch_skipped ?? 0}</span>
-                </div>
-                <div className="dispatch-dev__rates">
-                  <button
-                    type="button"
-                    className={`dispatch-dev__rate-btn${listKey === 'misassign' ? ' is-active' : ''}`}
-                    onClick={() => setListKey((k) => (k === 'misassign' ? null : 'misassign'))}
-                  >
-                    <strong>{pct(reassign?.metrics?.misassign_rate_of_signal ?? reassign?.metrics?.misassign_rate_of_reassign)}</strong>
-                    <span>错派率（/有类型转派）</span>
-                    <em>点开看工单</em>
-                  </button>
-                  <button
-                    type="button"
-                    className={`dispatch-dev__rate-btn${listKey === 'redispatch_inaccurate' ? ' is-active' : ''}`}
-                    onClick={() => setListKey((k) => (k === 'redispatch_inaccurate' ? null : 'redispatch_inaccurate'))}
-                  >
-                    <strong>{pct(reassign?.metrics?.redispatch_inaccurate_rate_of_reviewed)}</strong>
-                    <span>重派不准确率（/已审核）</span>
-                    <em>点开看工单</em>
-                  </button>
-                  <button
-                    type="button"
-                    className={`dispatch-dev__rate-btn${listKey === 'inaccurate' ? ' is-active' : ''}`}
-                    onClick={() => setListKey((k) => (k === 'inaccurate' ? null : 'inaccurate'))}
-                  >
-                    <strong>{pct(reassign?.metrics?.inaccurate_rate_of_ai_assign)}</strong>
-                    <span>不准确率（派错了+重派不准确 / AI 派单）</span>
-                    <em>点开看工单</em>
-                  </button>
-                </div>
-                <div className="dispatch-dev__stats">
-                  {(['misassign', 'stage', 'other'] as const).map((k) => (
-                    <span key={k}>{KIND_LABEL[k]} {reassign?.metrics?.by_kind?.[k] ?? 0}</span>
+                  {[...funnelWeeks].reverse().map((w) => (
+                    <button
+                      key={w.week}
+                      type="button"
+                      className={`dispatch-dev__pill${funnelWeek === w.week ? ' is-on' : ''}`}
+                      onClick={() => { setFunnelWeek(w.week); setListKey(null); }}
+                    >
+                      {w.label}
+                    </button>
                   ))}
+                  <button
+                    type="button"
+                    className={`dispatch-dev__pill${funnelWeek === 'all' ? ' is-on' : ''}`}
+                    onClick={() => { setFunnelWeek('all'); setListKey(null); }}
+                  >
+                    近 {funnelWeeks.length || 16} 周合计
+                  </button>
                 </div>
+
+                <div className="dispatch-dev__funnels">
+                  <div className="dispatch-dev__funnel">
+                    <div className="dispatch-dev__funnel-head">
+                      <strong>漏斗 A · 按单</strong>
+                      <em>层宽 = 本层张数 / 本周新建</em>
+                    </div>
+                    <FunnelStepRow
+                      widthPct={wACreated}
+                      title="本周新建"
+                      countLabel={`${createdN} 张`}
+                      rate={rateOf(unionN, createdN)}
+                      rateHint={`${unionN}/${createdN} 张`}
+                    />
+                    <FunnelBridge
+                      deductLabel="从未走过 AI"
+                      deduct={drops?.never_ai?.count ?? 0}
+                      remain={afterNeverN}
+                      remainLabel="走过 AI"
+                      fromPct={wACreated}
+                      toPct={wAAfterNever}
+                      onDeductClick={() => setListKey((k) => (k === 'never_ai' ? null : 'never_ai'))}
+                      deductActive={listKey === 'never_ai'}
+                    />
+                    <FunnelStepRow
+                      widthPct={wAAfterNever}
+                      title="走过至少一次 AI"
+                      countLabel={`${afterNeverN} 张`}
+                      rate={rateOf(unionN, afterNeverN)}
+                      rateHint={`${unionN}/${afterNeverN} 张`}
+                      tone="mid"
+                    />
+                    <FunnelBridge
+                      deductLabel="Step0 命中"
+                      deduct={drops?.step0?.count ?? 0}
+                      remain={tf?.after_step0 ?? aiPoolN}
+                      remainLabel="进入 AI 池"
+                      fromPct={wAAfterNever}
+                      toPct={wAPool}
+                      onDeductClick={() => setListKey((k) => (k === 'step0' ? null : 'step0'))}
+                      deductActive={listKey === 'step0'}
+                    />
+                    <FunnelStepRow
+                      widthPct={wAPool}
+                      title="AI 池（≥1 次 ai_assign，非 Step0）"
+                      countLabel={`${aiPoolN} 张`}
+                      rate={rateOf(unionN, aiPoolN)}
+                      rateHint={`${unionN}/${aiPoolN} 张`}
+                      tone="mid"
+                      active={listKey === 'ai_pool'}
+                      onClick={() => setListKey((k) => (k === 'ai_pool' ? null : 'ai_pool'))}
+                    />
+                    <FunnelBridge
+                      deductLabel="倾向人×2"
+                      deduct={drops?.preferred_twice?.count ?? 0}
+                      remain={aiPoolN}
+                      remainLabel="仍计 AI 池"
+                      fromPct={wAPool}
+                      toPct={wAPool}
+                      expose
+                      onDeductClick={() => setListKey((k) => (k === 'preferred_twice' ? null : 'preferred_twice'))}
+                      deductActive={listKey === 'preferred_twice'}
+                    />
+                    <div className="dispatch-dev__funnel-arrow">
+                      ↓ 仅派错了 {tf?.misassign_only ?? 0} · 仅重派不准确 {tf?.redispatch_only ?? 0} · 两者都有 {tf?.both ?? 0}
+                    </div>
+                    <FunnelStepRow
+                      widthPct={wAUnion}
+                      title="错派并集"
+                      countLabel={`${unionN} 张`}
+                      rate={rateOf(unionN, aiPoolN)}
+                      rateHint={`相对 AI 池 ${unionN}/${aiPoolN}`}
+                      tone="warn"
+                      active={listKey === 'union'}
+                      onClick={() => setListKey((k) => (k === 'union' ? null : 'union'))}
+                    />
+                  </div>
+
+                  <div className="dispatch-dev__funnel">
+                    <div className="dispatch-dev__funnel-head">
+                      <strong>漏斗 B · 按次</strong>
+                      <em>按派单时间 · 层宽 = 本层次数 / 本周派单次</em>
+                    </div>
+                    <FunnelStepRow
+                      widthPct={wBCreated}
+                      title="本周派单次"
+                      countLabel={`${attCreated} 次`}
+                      rate={rateOf(attUnion, attCreated)}
+                      rateHint={`${attUnion}/${attCreated} 次`}
+                    />
+                    <FunnelBridge
+                      deductLabel="从未走过 AI"
+                      deduct={attNever}
+                      remain={attBase}
+                      remainLabel="走过 AI"
+                      unit="次"
+                      fromPct={wBCreated}
+                      toPct={wBBase}
+                      onDeductClick={() => setListKey((k) => (k === 'never_ai' ? null : 'never_ai'))}
+                      deductActive={listKey === 'never_ai'}
+                    />
+                    <FunnelStepRow
+                      widthPct={wBBase}
+                      title="走过 AI 的派单次"
+                      countLabel={`${attBase} 次`}
+                      rate={rateOf(attUnion, attBase)}
+                      rateHint={`${attUnion}/${attBase} 次`}
+                      tone="mid"
+                    />
+                    <FunnelBridge
+                      deductLabel="Step0 命中"
+                      deduct={af?.step0_attempts ?? 0}
+                      remain={attDen}
+                      remainLabel="计入分母"
+                      unit="次"
+                      fromPct={wBBase}
+                      toPct={wBDen}
+                      onDeductClick={() => setListKey((k) => (k === 'step0' ? null : 'step0'))}
+                      deductActive={listKey === 'step0'}
+                    />
+                    <FunnelStepRow
+                      widthPct={wBDen}
+                      title="计入错派率的 AI 次"
+                      countLabel={`${attDen} 次`}
+                      rate={rateOf(attUnion, attDen)}
+                      rateHint={`${attUnion}/${attDen} 次`}
+                      tone="mid"
+                    />
+                    <FunnelBridge
+                      deductLabel="倾向人×2"
+                      deduct={af?.preferred_twice_attempts ?? 0}
+                      remain={attDen}
+                      remainLabel="仍计分母"
+                      unit="次"
+                      fromPct={wBDen}
+                      toPct={wBDen}
+                      expose
+                      onDeductClick={() => setListKey((k) => (k === 'preferred_twice' ? null : 'preferred_twice'))}
+                      deductActive={listKey === 'preferred_twice'}
+                    />
+                    <div className="dispatch-dev__funnel-arrow">
+                      ↓ 派错了 {af?.misassign_events ?? 0} 次 · 重派不准确 {af?.redispatch_inaccurate_events ?? 0} 次
+                    </div>
+                    <FunnelStepRow
+                      widthPct={wBUnion}
+                      title="错派事件合计"
+                      countLabel={`${attUnion} 次`}
+                      rate={rateOf(attUnion, attDen)}
+                      rateHint={`相对计入分母 ${attUnion}/${attDen}`}
+                      tone="warn"
+                    />
+                  </div>
+                </div>
+
+                <div className="dispatch-dev__drops">
+                  <button
+                    type="button"
+                    className={`dispatch-dev__drop${listKey === 'never_ai' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'never_ai' ? null : 'never_ai'))}
+                  >
+                    <span>1. 从未走过 AI <em>扣除</em></span>
+                    <strong>−{drops?.never_ai?.count ?? 0} 张 / {attNever} 次</strong>
+                  </button>
+                  <button
+                    type="button"
+                    className={`dispatch-dev__drop${listKey === 'step0' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'step0' ? null : 'step0'))}
+                  >
+                    <span>2. Step0 命中 <em>扣除</em></span>
+                    <strong>−{drops?.step0?.count ?? 0} 张</strong>
+                  </button>
+                  <button
+                    type="button"
+                    className={`dispatch-dev__drop${listKey === 'preferred_twice' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'preferred_twice' ? null : 'preferred_twice'))}
+                  >
+                    <span>3. 倾向人×2 <em className="is-expose">仅曝光</em></span>
+                    <strong>−{drops?.preferred_twice?.count ?? 0} 张 / {drops?.preferred_twice?.attempts ?? 0} 次</strong>
+                  </button>
+                </div>
+
+                <div className="dispatch-dev__rate-panels">
+                  <div className="dispatch-dev__rate-panel">
+                    <div className="dispatch-dev__funnel-head">
+                      <strong>按单比率</strong>
+                      <em>分母 {tf?.ai_pool ?? 0} 张</em>
+                    </div>
+                    <button type="button" className={`dispatch-dev__rate-row${listKey === 'misassign_only' ? ' is-active' : ''}`} onClick={() => setListKey((k) => (k === 'misassign_only' ? null : 'misassign_only'))}>
+                      <span>派错了（含重合）</span>
+                      <strong>{pct(fr?.ticket_misassign)}</strong>
+                    </button>
+                    <button type="button" className={`dispatch-dev__rate-row${listKey === 'redispatch_only' ? ' is-active' : ''}`} onClick={() => setListKey((k) => (k === 'redispatch_only' ? null : 'redispatch_only'))}>
+                      <span>重派不准确（含重合）</span>
+                      <strong>{pct(fr?.ticket_redispatch)}</strong>
+                    </button>
+                    <button type="button" className={`dispatch-dev__rate-row${listKey === 'both' ? ' is-active' : ''}`} onClick={() => setListKey((k) => (k === 'both' ? null : 'both'))}>
+                      <span>两者都有</span>
+                      <strong>{pct(fr?.ticket_both)}</strong>
+                    </button>
+                    <button type="button" className={`dispatch-dev__rate-row is-total${listKey === 'union' ? ' is-active' : ''}`} onClick={() => setListKey((k) => (k === 'union' ? null : 'union'))}>
+                      <span>并集错派率</span>
+                      <strong>{pct(fr?.ticket_union)}</strong>
+                    </button>
+                  </div>
+                  <div className="dispatch-dev__rate-panel">
+                    <div className="dispatch-dev__funnel-head">
+                      <strong>按次比率</strong>
+                      <em>分母 {af?.denominator ?? 0} 次</em>
+                    </div>
+                    <div className="dispatch-dev__rate-row">
+                      <span>派错了</span>
+                      <strong>{pct(fr?.attempt_misassign)}</strong>
+                    </div>
+                    <div className="dispatch-dev__rate-row">
+                      <span>重派不准确</span>
+                      <strong>{pct(fr?.attempt_redispatch)}</strong>
+                    </div>
+                    <div className="dispatch-dev__rate-row">
+                      <span>重合</span>
+                      <strong className="is-muted">见按单「两者都有」</strong>
+                    </div>
+                    <div className="dispatch-dev__rate-row is-total">
+                      <span>事件合计率</span>
+                      <strong>{pct(fr?.attempt_union)}</strong>
+                    </div>
+                  </div>
+                </div>
+
                 {listKey ? (
                   <div className="dispatch-dev__drill">
                     <div className="dispatch-dev__drill-head">
                       <span>
-                        {{
-                          misassign: '错派工单',
-                          redispatch_inaccurate: '重派不准确工单',
-                          inaccurate: '不准确工单（派错了 + 重派不准确）',
-                          signal: '有类型转派工单',
-                        }[listKey]}
+                        {FUNNEL_LIST_LABEL[listKey]}
                         {' · '}
-                        {reassign?.ticket_lists?.[listKey]?.length ?? 0} 张
+                        {funnelLists[listKey]?.length ?? 0} 张
                       </span>
                       <button type="button" className="dispatch-dev__btn dispatch-dev__btn--ghost" onClick={() => setListKey(null)}>收起</button>
                     </div>
-                    {(reassign?.ticket_lists?.[listKey] || []).length === 0 ? (
+                    {(funnelLists[listKey] || []).length === 0 ? (
                       <div className="dispatch-dev__empty-row">这一类暂时没有工单</div>
                     ) : (
                       <ul className="dispatch-dev__list">
-                        {(reassign?.ticket_lists?.[listKey] || []).map((t) => (
+                        {(funnelLists[listKey] || []).map((t) => (
                           <li key={`${listKey}-${t.task_id}`}>
                             <TicketLink taskId={t.task_id} title={t.title || '（无标题）'} />
-                            <em>{t.tag || KIND_LABEL[t.kind || ''] || t.kind || t.channel || '—'}</em>
-                            <span>{formatHopTime(t.created_at || '')}{t.reason ? ` · ${t.reason}` : ''}</span>
+                            <em>{t.tag || FUNNEL_LIST_LABEL[listKey]}</em>
+                            <span>{formatHopTime(t.created_at || '')}</span>
                           </li>
                         ))}
                       </ul>
                     )}
                   </div>
                 ) : null}
+
                 <div className="dispatch-dev__chart">
-                  <span className="dispatch-dev__sub">按周趋势（最近 {reassign?.weekly?.length ?? 0} 周；折线为比率 %，横轴下方为当周 AI 派单次数）</span>
-                  {(reassign?.weekly || []).length === 0 ? (
-                    <div className="dispatch-dev__empty-row">还没有带时间的转派 / 派单记录，趋势图暂时为空</div>
+                  <span className="dispatch-dev__sub">
+                    最近 {funnelWeeks.length} 周。按单比率按创建周，按次比率按派单周；横轴下方是当周 ai_assign 次数（含 Step0）
+                  </span>
+                  {funnelWeeks.length === 0 ? (
+                    <div className="dispatch-dev__empty-row">还没有带创建时间的工单，漏斗趋势暂时为空</div>
                   ) : (
                     <ReactECharts option={weeklyOption} style={{ height: 320 }} notMerge />
                   )}
@@ -1264,50 +1726,43 @@ export default function DispatchDev() {
 
           <section className="dispatch-dev__card">
             <div className="dispatch-dev__head">
-              <span className="dispatch-dev__title">重新派单审核</span>
+              <span className="dispatch-dev__title">重新派单 · 测试剔除</span>
               <span className="dispatch-dev__hint" style={{ margin: 0 }}>
-                剩 {reassign?.redispatch_items?.length ?? reassign?.metrics?.redispatch_pending ?? 0} 条
+                {redispatchItems.length} 条可剔除
               </span>
             </div>
             <p className="dispatch-dev__hint">
-              提单人、处理人、管理员点「重新派单」都会出现在这里。线上这通常表示对原派单不满意；测试操作点「测试不算」。
-              标成不准确计入指标，并进入派单学习（相似单上的原处理人总分 ×0.7，不从候选人剔除）。测试不算不学。测试期结束后可以改成一点重新派单就自动算不准确。
+              方案 A：重新派单默认已算不准确并进学习（压上一任 AI 派人 ×0.7）。倾向人×2（连续同倾向确认直派）不算不准确。
+              已计不准确的正常记录默认收起。压测 / 演示 / 误点展开后点「测试不算」，从指标与学习中剔除。
             </p>
-            {(reassign?.redispatch_items || []).length === 0 ? (
-              <div className="dispatch-dev__empty-row">没有待审核的重新派单</div>
+            {redispatchItems.length === 0 ? (
+              <div className="dispatch-dev__empty-row">没有可剔除的重新派单</div>
             ) : (
-              <ul className="dispatch-dev__list">
-                {(reassign?.redispatch_items || []).map((item) => (
-                  <li key={item.id} className="dispatch-dev__review">
-                    <strong><TicketLink taskId={item.task_id} title={item.title || '（无标题）'} /></strong>
-                    <em>{item.operator_name} → 倾向 {item.preferred_name}</em>
-                    <span>{item.description || ''}</span>
-                    {item.reason ? (
-                      <p className="dispatch-dev__hop-reason">备注：{item.reason}</p>
-                    ) : (
-                      <p className="dispatch-dev__hop-reason dispatch-dev__hop-reason--empty">（无备注）</p>
-                    )}
-                    <div className="dispatch-dev__review-btns">
-                      <button
-                        type="button"
-                        className="dispatch-dev__btn"
-                        disabled={reviewingId === item.id}
-                        onClick={() => reviewItem(item.id, 'inaccurate')}
-                      >
-                        算不准确
-                      </button>
-                      <button
-                        type="button"
-                        className="dispatch-dev__btn dispatch-dev__btn--ghost"
-                        disabled={reviewingId === item.id}
-                        onClick={() => reviewItem(item.id, 'skipped')}
-                      >
-                        测试不算
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+              <>
+                {redispatchNotable.length > 0 ? (
+                  <ul className="dispatch-dev__list">
+                    {redispatchNotable.map(renderRedispatch)}
+                  </ul>
+                ) : null}
+                {redispatchNormal.length > 0 ? (
+                  <div className="dispatch-dev__fold">
+                    <button
+                      type="button"
+                      className="dispatch-dev__btn dispatch-dev__btn--ghost"
+                      onClick={() => setRedispatchNormalOpen((v) => !v)}
+                    >
+                      {redispatchNormalOpen
+                        ? '收起正常记录'
+                        : `正常 ${redispatchNormal.length} 条已折叠，点击展开`}
+                    </button>
+                    {redispatchNormalOpen ? (
+                      <ul className="dispatch-dev__list">
+                        {redispatchNormal.map(renderRedispatch)}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
             )}
           </section>
 

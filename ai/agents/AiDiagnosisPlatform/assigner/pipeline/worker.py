@@ -281,6 +281,7 @@ class AssignmentWorker:
                         "dispatch_hint": (r.metadata_info or {}).get("dispatch_hint", "") if r.metadata_info else "",
                         "project_name": r.project_name or "",
                         "project_id": r.project_id or "",
+                        "curr_step_name": r.curr_step_name or "",
                     }
                     for r in rows
                 ]
@@ -344,6 +345,7 @@ class AssignmentWorker:
             diagnosis_problem_summary=ticket.get("diagnosis_problem_summary"),
             diagnosis_rounds=ticket.get("diagnosis_rounds"),
             dispatch_hint=ticket.get("dispatch_hint") or None,
+            curr_step_name=ticket.get("curr_step_name") or None,
         )
 
         # 派单结果写回数据库
@@ -595,7 +597,7 @@ class AssignmentWorker:
             return None
 
     def _load_recent_misassigns(self, since: datetime) -> list:
-        """窗口内可学习纠错：弹窗「派错了」+ 审核为不准确的重新派单。阶段/其它不进。"""
+        """窗口内可学习纠错：弹窗「派错了」+ 方案A下默认不准确的重新派单（×2/测试不算除外）。"""
         try:
             from sqlalchemy import func, or_
             from app.models.task import Task, TaskOperationLog, OperationType

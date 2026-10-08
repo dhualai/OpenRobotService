@@ -14,7 +14,9 @@ from ai.agents.AiTaskPlatform.contexts.contexts import (
     build_img_ctx,
 )
 from ai.agents.AiTaskPlatform.contexts.comments import (
+    format_discussion_thread,
     load_discussion,
+    load_ticket_discussion,
     load_quoted_comment,
     format_quoted_comment_block,
     add_diagnosis_comment,
@@ -31,7 +33,8 @@ __all__ = [
     "format_referenced_tickets",
     "is_platform_ticket", "build_query",
     "build_task_ctx", "build_img_ctx",
-    "load_discussion", "load_quoted_comment", "format_quoted_comment_block",
+    "format_discussion_thread", "load_discussion", "load_ticket_discussion",
+    "load_quoted_comment", "format_quoted_comment_block",
     "add_diagnosis_comment",
     "add_diagnosis_comment_short", "notify_backend_comment_broadcast",
     "notify_backend_ai_progress", "notify_backend_ai_progress_await",

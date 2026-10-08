@@ -46,6 +46,12 @@ class DeptRouter:
         self._audit: DeptAuditSignal = DeptAuditSignal(config=self._config)             # 独立 LLM 单轮复核"部门派得对不对
         
     @staticmethod
+    def _path_planning_status(ticket: TicketContext) -> bool:
+        """调度界面上的「路径规划中」是任务状态，不是车端故障结论。"""
+        text = f"{getattr(ticket, 'title', '') or ''}\n{getattr(ticket, 'problem_description', '') or ''}"
+        return "路径规划中" in text
+
+    @staticmethod
     def _filter_by_dept(engineers: List[EngineerProfile], dept: str,) -> List[EngineerProfile]:
         if not dept:
             return list(engineers)
@@ -160,6 +166,21 @@ class DeptRouter:
             result.reasoning = "未命中部门路由"
             logger.info(f"{ltag} Layer1-部门 未命中 → no_filter")
 
+        # 界面状态「路径规划中」归调度。诊断写进描述的排查方向不能把部门改到车端。
+        if self._path_planning_status(ticket):
+            if primary != "智能规划研究院":
+                logger.info(
+                    f"{ltag} 现象为路径规划中，部门固定为智能规划研究院"
+                    f"（不采纳 {primary or '空'}）"
+                )
+            primary = "智能规划研究院"
+            result.primary_dept = primary
+            result.confidence = max(float(result.confidence or 0), 0.85)
+            result.margin = max(float(result.margin or 0), 0.45)
+            result.mode = "hard_filter"
+            result.reasoning = "路径规划中 → 智能规划研究院"
+            result.signals["path_planning_hold"] = True
+
         # ── 部门派发审查（post-validator）：独立 LLM 单轮复核"部门派得对不对" ──
         #   - 审查通过 → 维持；
         #   - 审查高置信纠正 → 采纳纠正部门（确定性归属 → hard）；
@@ -174,7 +195,9 @@ class DeptRouter:
             result.signals["audit"] = audit
             audit_min_conf = float(self._audit_cfg.get("min_confidence", 0.7))
             if audit.audit_failed:
-                if result.mode == "hard_filter":
+                if result.signals.get("path_planning_hold"):
+                    logger.info(f"{ltag} 路径规划中审查失败，仍维持 {primary}")
+                elif result.mode == "hard_filter":
                     logger.warning(
                         f"{ltag} 部门审查失败，hard_filter 降级 soft_prior"
                         f"（与打回异常一致：不硬踢，保留主部门倾向）"
@@ -182,6 +205,11 @@ class DeptRouter:
                     result.mode = "soft_prior"
             elif audit.ok:
                 logger.info(f"{ltag} 部门审查通过 → 维持 {primary}")
+            elif result.signals.get("path_planning_hold"):
+                logger.info(
+                    f"{ltag} 路径规划中不接受审查改部门 → 维持 {primary}"
+                    f"（审查想改 {audit.correct_dept or '重判'}）"
+                )
             elif audit.correct_dept and audit.confidence >= audit_min_conf:
                 # 审查高置信给出纠正部门且合法 → 采纳
                 logger.info(

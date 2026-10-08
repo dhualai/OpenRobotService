@@ -60,7 +60,7 @@ from app.utils.notification_utils import NotificationUtils, _format_shanghai
 from app.integrations.api import verify_sync_api_key, verify_robot_alarm_api_key
 from app.services.identity_service import IdentityService
 from app.core.config import settings
-from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
+from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys, same_identity
 from app.services.redispatch_tip_service import (  # 派单说明：列表/气泡/详情同一出口
     build_redispatch_tip,
     clean_reasoning_for_display,
@@ -76,6 +76,7 @@ logger_task = logging.getLogger(__name__)
 STATUS_LABEL = {
     "new": "待处理",
     "in_progress": "处理中",
+    "pending_requested": "暂停请求中",
     "pending": "已挂起",
     "resolved": "已解决",
     "canceled": "已取消",
@@ -130,6 +131,111 @@ def _get_attachment_label(attachments) -> Optional[str]:
 
 
 
+
+
+_REDISPATCH_CONTACT_TAG = "项目对接人"
+
+
+def _resolve_project_contact(ticket) -> tuple:
+    """查工单所属项目的对接人 (contact_person_id, contact_person_name)；没有则 (None, None)。
+
+    只用 with_entities 取对接人两列，避免 Project 全量 ORM 因本地库缺 ext_info 等列而炸。
+    """
+    key_id = (getattr(ticket, "project_id", None) or "").strip()
+    key_name = (getattr(ticket, "project_name", None) or "").strip()
+    if not key_id and not key_name:
+        return None, None
+    try:
+        from app.models.delivery import Project
+        from app.core.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            q = db.query(Project.contact_person_id, Project.contact_person)
+            row = None
+            if key_id:
+                row = q.filter((Project.code == key_id) | (Project.id == key_id)).first()
+            if not row and key_name:
+                row = q.filter(Project.name == key_name).first()
+            if not row:
+                return None, None
+            cid = (row[0] or "").strip() if row[0] is not None else ""
+            if not cid:
+                return None, None
+            cname = (row[1] or "").strip() or None
+            return cid, cname
+        finally:
+            db.close()
+    except Exception as e:
+        logger_task.warning(f"查询项目对接人失败: {e}")
+        return None, None
+
+
+def _enrich_candidates_pin_contact(candidates: Optional[List[Dict]], ticket) -> List[Dict]:
+    """临时：重派候选里把项目对接人打标并置顶；没有对接人则原样返回。"""
+    base = [dict(c) for c in (candidates or []) if isinstance(c, dict)]
+    cid, cname = _resolve_project_contact(ticket)
+    if not cid:
+        return base
+
+    idx = next(
+        (i for i, c in enumerate(base) if str(c.get("engineer_id") or "").strip() == cid),
+        None,
+    )
+    if idx is not None:
+        entry = base.pop(idx)
+    else:
+        entry = None
+        try:
+            from app.services.user_service import UserService
+
+            users = UserService.get_user_list(limit=999999999) or []
+            u = next((x for x in users if str(x.get("id") or "") == cid), None)
+        except Exception as e:
+            logger_task.warning(f"补全项目对接人候选失败 contact_id={cid}: {e}")
+            u = None
+        if u:
+            rm = u.get("responsibility_modules") or {}
+            if isinstance(rm, dict):
+                modules = [k for k, v in rm.items() if v]
+            elif isinstance(rm, list):
+                modules = list(rm)
+            else:
+                modules = []
+            entry = {
+                "rank": 0,
+                "engineer_id": cid,
+                "name": str(u.get("name") or u.get("username") or cname or cid),
+                "department": u.get("department"),
+                "job_level": u.get("job_level"),
+                "modules": modules or [],
+                "duty": u.get("duty_text"),
+                "missing": [],
+                "scores": {"llm": 0, "semantic": 0, "history": 0, "total": 0},
+                "tags": [],
+            }
+        elif cname:
+            entry = {
+                "rank": 0,
+                "engineer_id": cid,
+                "name": cname,
+                "department": None,
+                "job_level": None,
+                "modules": [],
+                "duty": None,
+                "missing": ["department", "responsibility_modules"],
+                "scores": {"llm": 0, "semantic": 0, "history": 0, "total": 0},
+                "tags": [],
+            }
+        else:
+            return base
+
+    tags = [t for t in (entry.get("tags") or []) if t and t != _REDISPATCH_CONTACT_TAG]
+    entry["tags"] = [_REDISPATCH_CONTACT_TAG] + tags
+    base.insert(0, entry)
+    for i, c in enumerate(base, 1):
+        c["rank"] = i
+    return base
 
 
 def _fallback_redispatch_candidates() -> List[Dict]:
@@ -816,12 +922,13 @@ async def get_task(
             from app.models.task_dispatch_log import TaskDispatchLog
             from sqlalchemy import select as _sel
             # 权限控制：派单理由相关属较敏感信息，按下述身份矩阵返回，避免无关查看者拿到：
-            #   - result.reasoning（"为什么派给他"）→ 仅「接单人(assigned_to) 或 管理员」可见
-            #   - result.tip_detail（重派高情商话术）→ 仅「提单人(created_by) 或 管理员」可见
+            #   - result.reasoning（"为什么派给他"）→ 「接单人 / 提单人 / 管理员 / 有 operate 权限」可见
+            #   - result.tip_detail（异常场景提醒，如未派到倾向人）→ 「提单人 / 管理员 / operate」可见
             # （接单人身份依据 _log.assigned_id（本轮真正被派单对象）判定，见下 `_viewer_assignee`）
             _viewer_user = None
             _viewer_creator = False
             _viewer_admin = False
+            _viewer_operate = False
             try:
                 from app.core.database import get_user_with_roles
                 from app.core.user_identity import user_matches, is_admin_user
@@ -834,10 +941,15 @@ async def get_task(
                         if _viewer_user:
                             _viewer_creator = user_matches(_viewer_user, getattr(ticket, "created_by", None))
                             _viewer_admin = is_admin_user(_viewer_user)
+                            _perms = _viewer_user.get("permissions") or []
+                            _viewer_operate = (
+                                _viewer_admin or "backend:tasks:operate" in _perms
+                            )
             except Exception:
                 _viewer_user = None
                 _viewer_creator = False
                 _viewer_admin = False
+                _viewer_operate = False
             _log = (await db.execute(
                 _sel(TaskDispatchLog)
                 .where(TaskDispatchLog.task_id == task_id)
@@ -852,13 +964,17 @@ async def get_task(
                 # 接单人身份：当前登录者 == 本轮真正被派单对象（_log.assigned_id）时可看「派单理由」
                 _viewer_assignee = bool(_viewer_user and user_matches(_viewer_user, _log.assigned_id))
                 # 面向用户展示的派单理由：把 reasoning 里可能残留的 users.id 替换为姓名
-                # （供 tip_detail 话术与接单人/管理员的「派单理由」共用）
+                # （供 tip_detail 话术与接单人/提单人/管理员的「派单原因」共用）
                 reasoning_display = clean_reasoning_for_display(_log.reasoning, _log, user_map)
                 # 列表 / 气泡 / 详情同一出口（未派到倾向人走详情模板，Step0 走短句）
                 tip_detail = build_redispatch_tip(_log, user_map)
                 # 二次派单感知增强（M2 兜底）：候选快照为空（老工单 Step0/精排不足 → 空落库）时，
                 # 拉全部启用工程师作兜底候选，保证重派弹窗有可选项；重派落地后由流水线覆盖。
-                _cands = _log.candidates if _log.candidates else _fallback_redispatch_candidates()
+                # 临时：项目对接人打标置顶（无对接人则不改序）。
+                _cands = _enrich_candidates_pin_contact(
+                    _log.candidates if _log.candidates else _fallback_redispatch_candidates(),
+                    ticket,
+                )
                 setattr(ticket, "redispatch", {
                     "dispatch_round": _log.dispatch_round,
                     "candidates": _cands,
@@ -869,9 +985,10 @@ async def get_task(
                         "preferred_name": pref_name,
                         "confidence": _log.confidence,
                         "decision_type": _log.decision_type,
-                        # 派单理由（为什么派给他）仅对「接单人」或「管理员」可见；其余查看者不返回
-                        # （前端据此展示给被派单工程师；提单人看 tip_detail 已含原因，无需重复）
-                        "reasoning": reasoning_display if (_viewer_assignee or _viewer_admin) else None,
+                        # 派单理由：接单人 / 提单人 / 管理员 / 工单操作权限 可见；普通第三方不返回
+                        "reasoning": reasoning_display if (
+                            _viewer_assignee or _viewer_creator or _viewer_operate
+                        ) else None,
                         "profile": {
                             "dept": prof.get("dept"),
                             "job_level": prof.get("job_level"),
@@ -883,20 +1000,31 @@ async def get_task(
                         "matched_pref": _log.matched_pref,
                         "name_collision": _log.name_collision,
                         "pinyin_match": _log.pinyin_match,
-                        # 派单原因仅对提单人/管理员可见；其他查看者不返回（前端不渲染派单说明）
-                        "tip_detail": tip_detail if (_viewer_creator or _viewer_admin) else None,
+                        # 异常派单提醒：提单人 / 管理员 / 工单操作权限 可见
+                        "tip_detail": tip_detail if (_viewer_creator or _viewer_operate) else None,
                     },
                 })
             else:
                 # 无派单日志（老工单/未派过单）：重派弹窗没有候选会形成「无法选人→无法重派→无新日志」死锁，
                 # 故仍给兜底候选（拉全部启用工程师，有画像优先），保证弹窗有可选项。重派落地后由流水线覆盖。
+                # 临时：项目对接人打标置顶（无对接人则不改序）。
                 setattr(ticket, "redispatch", {
                     "dispatch_round": 0,
-                    "candidates": _fallback_redispatch_candidates(),
+                    "candidates": _enrich_candidates_pin_contact(
+                        _fallback_redispatch_candidates(), ticket,
+                    ),
                     "result": None,
                 })
         except Exception as redisp_err:
             logger.warning(f"组装 redispatch 失败 task_id={task_id}: {redisp_err}")
+
+        # 临时：详情页「重新指派」选人置顶用（无对接人则为空）
+        try:
+            _cid, _cname = _resolve_project_contact(ticket)
+            setattr(ticket, "project_contact_person_id", _cid)
+            setattr(ticket, "project_contact_person_name", _cname)
+        except Exception as contact_err:
+            logger.warning(f"回填项目对接人失败 task_id={task_id}: {contact_err}")
 
         return ticket
     except HTTPException:
@@ -906,79 +1034,133 @@ async def get_task(
         raise HTTPException(status_code=500, detail=f"获取任务详情失败: {str(e)}")
 
 
+def _similar_item_from_task(t) -> dict:
+    return {
+        "task_id": t.id,
+        "title": (t.title or "")[:80] or f"工单#{t.id}",
+        "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+        "project_name": getattr(t, "project_name", "") or "",
+    }
+
+
+async def _hydrate_similar_from_db(db: AsyncSession, items: list, exclude_id: int, limit: int) -> list:
+    """按向量检索顺序把 task_id 回表，只保留已解决/已关闭。"""
+    from app.modules.tasks.models.ticket import Task, TaskStatus
+    ids = []
+    seen = set()
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        raw = it.get("task_id")
+        try:
+            tid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if tid == exclude_id or tid in seen:
+            continue
+        seen.add(tid)
+        ids.append(tid)
+    if not ids:
+        return []
+    stmt = select(Task).where(Task.id.in_(ids), Task.id != exclude_id)
+    rows = (await db.execute(stmt)).scalars().all()
+    by_id = {t.id: t for t in rows}
+    done = {TaskStatus.RESOLVED, TaskStatus.CLOSED}
+    out = []
+    for tid in ids:
+        t = by_id.get(tid)
+        if not t or t.status not in done:
+            continue
+        out.append(_similar_item_from_task(t))
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _similar_by_keywords(db: AsyncSession, task_id: int, query_text: str, limit: int) -> list:
+    """Qdrant 不可用或尚未沉淀时的 SQL 关键词兜底。"""
+    import re as _re
+    from sqlalchemy import or_
+    from app.modules.tasks.models.ticket import Task, TaskStatus
+
+    kws = set(_re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9]{2,}", query_text or ""))
+    kws.discard("问题")
+    kws.discard("解决")
+    if not kws:
+        return []
+
+    conditions = []
+    for kw in kws:
+        pat = f"%{kw}%"
+        conditions.append(Task.title.ilike(pat))
+        conditions.append(Task.description.ilike(pat))
+    stmt = (
+        select(Task)
+        .where(Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED]))
+        .where(Task.id != task_id)
+        .where(or_(*conditions))
+        .order_by(Task.created_at.desc())
+        .limit(limit * 3)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    scored = []
+    for t in rows:
+        title = t.title or ""
+        desc = t.description or ""
+        score = 0
+        for kw in kws:
+            if kw in title:
+                score += 3
+            if kw in desc:
+                score += 1
+        scored.append((score, t))
+    scored.sort(key=lambda x: (-x[0], (x[1].created_at or datetime.min)))
+    similar = []
+    for score, t in scored[:limit]:
+        if score <= 0:
+            continue
+        similar.append(_similar_item_from_task(t))
+    return similar
+
+
 @router.get("/{task_id}/similar", response_model=dict)
 async def get_similar_tasks(
     task_id: int,
     limit: int = Query(10, description="返回相似工单条数上限"),
     db: AsyncSession = Depends(get_db),
 ):
-    """@# 相似工单检索：按当前工单标题+描述做关键词相似，返回已解决的同款历史工单（含进行中? 否，限定 resolved）。
+    """@# 相似工单：优先 Qdrant 向量（已沉淀方案），失败或空结果回退 SQL 关键词。
 
-    仅用于 @# 引用"找相似"的弹列表（Q2d-①）。返回 [{task_id, title, status, project_name}]。
-    跨项目、无权限过滤（工单可分享）；排除自身。
+    仅用于 @# 引用「找相似」弹列表。返回 [{task_id, title, status, project_name}]。
+    跨项目、无权限过滤（工单可分享）；排除自身；只含已解决/已关闭。
     """
     import logging
-    from app.modules.tasks.models.ticket import Task, TaskStatus
+    import httpx
+    from app.modules.tasks.models.ticket import Task
     logger = logging.getLogger(__name__)
     try:
-        # 读取当前工单文本作为查询基准
         cur = await db.get(Task, task_id)
         if not cur:
             raise HTTPException(status_code=404, detail="任务未找到")
         query_text = " ".join(filter(None, [cur.title or "", cur.description or ""]))
+        cap = max(1, min(int(limit or 10), 30))
 
-        # 关键词：过滤掉停用词/无意义单字，保留 2 字及以上 token
-        import re as _re
-        kws = set(_re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9]{2,}", query_text))
-        kws.discard("问题")
-        kws.discard("解决")
-        if not kws:
-            return {"task_id": task_id, "similar": []}
+        try:
+            url = f"{settings.AI_SERVICE_URL.rstrip('/')}/api/ai/task/tickets/similar"
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                resp = await client.get(url, params={"task_id": task_id, "limit": cap})
+            if resp.status_code == 200:
+                payload = resp.json() if resp.content else {}
+                if int(payload.get("code") or 0) == 0:
+                    data = payload.get("data") or {}
+                    items = data.get("similar") or []
+                    hydrated = await _hydrate_similar_from_db(db, items, task_id, cap)
+                    if hydrated:
+                        return {"task_id": task_id, "similar": hydrated}
+        except Exception as e:
+            logger.warning(f"相似工单向量检索不可用，回退 SQL: task_id={task_id}, error={e}")
 
-        # 限定已解决，排除自身；按标题+描述匹配关键词打分（命中数加权）
-        from sqlalchemy import or_, select
-
-        # 简单打分：标题命中权重高于描述，用关键词出现次数近似
-        conditions = []
-        for kw in kws:
-            pat = f"%{kw}%"
-            conditions.append(Task.title.ilike(pat))
-            conditions.append(Task.description.ilike(pat))
-        # distinct 去重并按创建时间倒序取前 N（打分近似：先取含任一关键词的候选，再按更新排序）
-        stmt = (
-            select(Task)
-            .where(Task.status == TaskStatus.RESOLVED)
-            .where(Task.id != task_id)
-            .where(or_(*conditions))
-            .order_by(Task.created_at.desc())
-            .limit(limit * 3)  # 多取一些用于打分
-        )
-        rows = (await db.execute(stmt)).scalars().all()
-
-        # 打分：标题命中 +3/词，描述命中 +1/词
-        scored = []
-        for t in rows:
-            title = t.title or ""
-            desc = t.description or ""
-            score = 0
-            for kw in kws:
-                if kw in title:
-                    score += 3
-                if kw in desc:
-                    score += 1
-            scored.append((score, t))
-
-        scored.sort(key=lambda x: (-x[0], (x[1].created_at or datetime.min)))
-        similar = []
-        for score, t in scored[:limit]:
-            if score <= 0:
-                continue
-            similar.append({
-                "task_id": t.id,
-                "title": (t.title or "")[:80] or f"工单#{t.id}",
-                "status": t.status.value if hasattr(t.status, "value") else str(t.status),
-                "project_name": getattr(t, "project_name", "") or "",
-            })
+        similar = await _similar_by_keywords(db, task_id, query_text, cap)
         return {"task_id": task_id, "similar": similar}
     except HTTPException:
         raise
@@ -1089,7 +1271,8 @@ def _proxy_relation_response(relation, roles) -> ProxyRelationResponse:
         is_principal=roles.is_principal or roles.is_pending_principal,
         is_assignee=roles.is_assignee,
         agent_name=user_map.get(agent_id) or getattr(relation, "agent_username", None) or agent_id,
-        principal_name=user_map.get(principal_id) or getattr(relation, "principal_username", None) or principal_id,
+        # 未注册 / 未实名的 wechat id 不下发裸 id，前端缺省「代未知用户提交」
+        principal_name=user_map.get(principal_id),
         notified_at=relation.notified_at,
         acked_at=relation.acked_at,
         declined_at=relation.declined_at,
@@ -1209,7 +1392,7 @@ async def get_task_project_members(
 ):
     """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。
 
-    all=false：仅返回提单人/处理人 + 项目成员（默认候选池）。
+    all=false：仅返回处理人/提单人/代提单人 + 项目成员（默认候选池）。
     all=true：在前者基础上再追加全部 active 在职用户（已去重），
              使讨论区输入 @关键字 时可过滤到项目外的人。
     """
@@ -1226,7 +1409,7 @@ async def get_task_project_members(
 
         project_id = getattr(ticket, "project_id", None)
 
-        # ── 1. 提单人和被指派人始终排在最前面 ──
+        # ── 1. 处理人 / 提单人 / 代提单人始终排在最前面 ──
         key_users = []
         assigned_to = getattr(ticket, "assigned_to", None)
         created_by = getattr(ticket, "created_by", None)
@@ -1234,6 +1417,19 @@ async def get_task_project_members(
             key_users.append((assigned_to, "处理人"))
         if created_by and created_by != assigned_to:
             key_users.append((created_by, "提单人"))
+
+        # 代他人提单：被代理人一并置顶，角色标为「代提单人」（与提单人、处理人并列）
+        try:
+            proxy = await ProxyRelationService.get_task_relation(db, task_id)
+        except Exception:
+            logger.warning("读取代提关系失败，@ 列表不置顶代提单人: task_id=%s", task_id, exc_info=True)
+            proxy = None
+        if proxy:
+            principal_key = (getattr(proxy, "principal_username", None) or "").strip() or (
+                getattr(proxy, "principal_id", None) or ""
+            ).strip()
+            if principal_key and not any(same_identity(principal_key, existing) for existing, _ in key_users):
+                key_users.append((principal_key, "代提单人"))
 
         if key_users:
             from app.core.db import SessionLocal
@@ -1257,8 +1453,8 @@ async def get_task_project_members(
             finally:
                 sync_db.close()
 
-        # ── 2. 提单人/处理人 + 项目成员 ──
-        # 即使没有项目也能 @ 提单人和处理人
+        # ── 2. 处理人/提单人/代提单人 + 项目成员 ──
+        # 即使没有项目也能 @ 处理人、提单人和代提单人
         if project_id:
             members = db_manager.get_project_members(project_id, include_usp=False)
             for m in members:
@@ -1335,7 +1531,7 @@ async def update_task(
         if ticket_update.status:
             if ticket.status == TicketStatus.NEW and not roles.is_creator:
                 raise HTTPException(status_code=400, detail="只允许创建者开始任务！")
-            if ticket.status in [TicketStatus.PENDING, TicketStatus.IN_PROGRESS] and not roles.is_assignee:
+            if ticket.status in [TicketStatus.PENDING, TicketStatus.IN_PROGRESS, TicketStatus.PENDING_REQUESTED] and not roles.is_assignee:
                 raise HTTPException(status_code=400, detail="只允许处理人更新任务！")
             # 关单（resolved →）：决策 6 —— 由 created_by（代理人）+ 已确认被代理人 + 管理员判定，
             # customer 收敛为纯展示「联系人」，不再参与权限（修掉「新单 customer 为空导致非 admin 关不掉单」）
@@ -1656,8 +1852,8 @@ def _maybe_notify_mentions(
             try:
                 # 取工单真实状态的中文名
                 status_text_map = {
-                    "new": "待处理", "in_progress": "处理中", "pending": "已挂起",
-                    "resolved": "已解决", "closed": "已关闭", "canceled": "已取消",
+                    "new": "待处理", "in_progress": "处理中", "pending_requested": "暂停请求中",
+                    "pending": "已挂起", "resolved": "已解决", "closed": "已关闭", "canceled": "已取消",
                 }
                 raw_status = (ticket.status.value if hasattr(ticket.status, 'value')
                               else str(ticket.status or "")).lower()
@@ -1900,14 +2096,37 @@ async def update_task_status(
         if status_enum == TicketStatus.CANCELED and not is_admin and not user_matches(current_user, ticket.created_by):
             raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
 
+        # ── 请求暂停（→ pending_requested）权限收窄：仅**处理人**可发起，提单人/管理员不能替处理人请求暂停 ──
+        if status_enum == TicketStatus.PENDING_REQUESTED:
+            if ticket.status != TicketStatus.IN_PROGRESS:
+                raise HTTPException(status_code=400, detail="仅处理中的工单可发起暂停请求")
+            if not _roles.is_assignee and not is_admin:
+                # 管理员可临时代处理人发起（运维兜底）
+                raise HTTPException(status_code=403, detail="仅处理人可请求暂停工单")
+
+        # ── 暂停请求后续操作权限收窄：必须由**提单人侧**（creator / principal / admin）来决定 ──
+        # pending_requested → pending  = 提单人确认暂停
+        # pending_requested → in_progress = 提单人驳回（继续处理）
+        if ticket.status == TicketStatus.PENDING_REQUESTED:
+            if not (_roles.is_creator or _roles.is_principal or is_admin):
+                raise HTTPException(status_code=403, detail="仅提单人/被代理人/管理员可处理暂停请求")
+            if status_enum not in (TicketStatus.PENDING, TicketStatus.IN_PROGRESS):
+                raise HTTPException(status_code=400, detail="暂停请求中仅可「确认暂停」或「驳回」")
+
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
         resolution_summary = None
+        pause_reason = None
+        reject_reason = None
         try:
             if request:
                 body = await request.json()
                 resolution_summary = (body or {}).get("resolution_summary")
+                pause_reason = (body or {}).get("pause_reason")
+                reject_reason = (body or {}).get("reject_reason")
         except Exception:
             resolution_summary = None
+            pause_reason = None
+            reject_reason = None
 
         if status_enum == TicketStatus.RESOLVED:
             # 必填校验：去空白后非空（占位提示由前端 placeholder 控制，不入值）
@@ -1915,6 +2134,20 @@ async def update_task_status(
             if not rs:
                 raise HTTPException(status_code=400, detail="结束工单必须填写解决方式")
             resolution_summary = rs
+
+        if status_enum == TicketStatus.PENDING_REQUESTED:
+            # 请求暂停必填理由
+            pr = (pause_reason or "").strip()
+            if not pr:
+                raise HTTPException(status_code=400, detail="请求暂停必须填写理由")
+            pause_reason = pr
+
+        # 驳回暂停（pending_requested → in_progress）必填驳回理由
+        if ticket.status == TicketStatus.PENDING_REQUESTED and status_enum == TicketStatus.IN_PROGRESS:
+            rr = (reject_reason or "").strip()
+            if not rr:
+                raise HTTPException(status_code=400, detail="驳回暂停必须填写理由")
+            reject_reason = rr
 
         # ── 预加载工单关联策略（阻塞检查 + 重复同步共用一次读取） ──
         try:
@@ -1935,7 +2168,15 @@ async def update_task_status(
             )
 
         old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
-        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username, resolution_summary=resolution_summary)
+
+        # ── 回合累加：仅「驳回暂停」时 bump +1 ──
+        # 语义：驳回 = 双方没达成共识 → 算一次额外交涉
+        # 确认暂停（→ pending）= 达成共识，不加；请求暂停本身只是提案，等驳回再算
+        # 注意：连续多次驳回都要 +1，不检查操作方是否切换（可能始终是同一方在重复驳回）
+        if old_status.upper() == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
+            ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
+
+        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username, resolution_summary=resolution_summary, pause_reason=pause_reason, reject_reason=reject_reason)
         # ── WS 实时广播：工单状态变更 ──
         try:
             await ws_broadcast_task_updated(task_id, updated_ticket)
@@ -1945,6 +2186,26 @@ async def update_task_status(
         # ── 记录状态变更操作日志 ──
         user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
         _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+
+        # 暂停请求三态转换的定制描述（语义比通用的"状态变更为"更明确）
+        old_status_upper = old_status.upper()
+        pending_special_desc = None
+        if old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING_REQUESTED:
+            reason_suffix = f"\n理由：{pause_reason}" if pause_reason else ""
+            pending_special_desc = f"请求暂停工单，状态变更为「暂停请求中」{reason_suffix}"
+        elif old_status_upper == 'PENDING_REQUESTED' and status_enum == TicketStatus.PENDING:
+            pending_special_desc = f"确认暂停工单请求，工单状态变更为「已挂起」"
+        elif old_status_upper == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
+            reason_suffix = f"\n驳回理由：{reject_reason}" if reject_reason else ""
+            pending_special_desc = f"驳回了暂停工单请求，工单状态变更为「处理中」{reason_suffix}"
+
+        if pending_special_desc:
+            op_log_desc = f"{_role}{user_name} {pending_special_desc}" if _role else f"{user_name} {pending_special_desc}"
+            sys_comment_text = f"{user_name} {pending_special_desc}"
+        else:
+            op_log_desc = f"{_role}{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」" if _role else f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」"
+            sys_comment_text = f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」"
+
         await OperationLogService.log(
             db=db,
             task_id=task_id,
@@ -1953,13 +2214,13 @@ async def update_task_status(
             operator_name=user_name,
             to_status=status,
             detail={"from": old_status, "to": status},
-            description=f"{_role}{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」" if _role else f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」",
+            description=op_log_desc,
         )
 
         # ── 向讨论区添加系统评论 ──
         await _add_system_comment(
             db, task_id,
-            f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」",
+            sys_comment_text,
             username, token,
         )
 
@@ -3004,13 +3265,44 @@ async def re_dispatch_task(
     comment_text = f"{user_name} {base}"
     if remark:
         comment_text += f"（备注：{remark}）"
+    # 方案 A：默认重派算不准确；若上一轮 preferred 与本次相同 → 倾向人×2，不算不准确
+    prev_pref = ""
+    try:
+        from app.models.task_dispatch_log import TaskDispatchLog
+        last_log = (
+            await db.execute(
+                select(TaskDispatchLog)
+                .where(TaskDispatchLog.task_id == int(task_id))
+                .order_by(TaskDispatchLog.dispatch_round.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if last_log is not None:
+            prev_pref = str(getattr(last_log, "preferred_id", None) or "").strip()
+    except Exception as e:
+        logger_task.warning(f"读取上一轮 preferred_id 失败 task_id={task_id}: {e}")
+    twice = bool(preferred and prev_pref and preferred == prev_pref)
+    redispatch_detail = {
+        "preferred_assignee": preferred,
+        "remark": remark or None,
+        "channel": "redispatch",
+        "from_assignee": (old_assigned_to or "").strip() or None,
+        "preferred_twice_confirm": twice,
+    }
+    if twice:
+        redispatch_detail["kind_source"] = "preferred_twice"
+    else:
+        redispatch_detail["redispatch_verdict"] = "inaccurate"
+        redispatch_detail["kind_source"] = "scheme_a_auto"
+        redispatch_detail["learn_at"] = datetime.utcnow().isoformat() + "Z"
+
     await OperationLogService.log(
         db=db,
         task_id=task_id,
         op_type=OperationType.REASSIGN,
         operator=username,
         operator_name=user_name,
-        detail={"preferred_assignee": preferred, "remark": remark or None, "channel": "redispatch", "from_assignee": (old_assigned_to or "").strip() or None},
+        detail=redispatch_detail,
         description=desc,
     )
     await _add_system_comment(db, task_id, comment_text, username, token)

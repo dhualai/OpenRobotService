@@ -414,26 +414,15 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                 <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`} aria-label={`发起人：${t.created_by_name || t.created_by || '-'}`}>
                   <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
-                  {/* 代他人提单（代理提单）：谁代谁提交。
-                      视角标记由后端按 token 判定（is_proxy_agent / is_principal），
-                      姓名对非参与人不下发，此处自然不渲染。 */}
-                  {t.is_proxy_agent && t.proxy_principal_name && (
-                    <span className="proxy-card-pill proxy-card-pill--mini" title={`代 ${t.proxy_principal_name} 提交`}>
-                      代 {t.proxy_principal_name}
-                    </span>
-                  )}
-                  {t.is_principal && t.proxy_agent_name && (
-                    <span className="proxy-card-pill proxy-card-pill--mini" title={`${t.proxy_agent_name} 代你提交`}>
-                      {t.proxy_agent_name} 代提
-                    </span>
-                  )}
-                  {/* 接单人视角：处理人也能看到「谁代谁提单」，便于判断该找谁对接（只读信息） */}
-                  {t.is_proxy_assignee && t.proxy_agent_name && t.proxy_principal_name && (
+                  {/* 代他人提单（代理提单）：所有视角统一「代 X」（X=被代提人；
+                      未注册/未实名缺省未知用户）。列表卡片空间窄，不加「提交」二字
+                      （详情页横幅仍为「代 X 提交」）。视角标记作闸门防脱敏泄漏。 */}
+                  {(t.is_proxy_agent || t.is_principal || t.is_proxy_assignee) && t.proxy_relation_status && (
                     <span
                       className="proxy-card-pill proxy-card-pill--mini"
-                      title={`${t.proxy_agent_name} 代 ${t.proxy_principal_name} 提交`}
+                      title={`代 ${t.proxy_principal_name || '未知用户'}`}
                     >
-                      {t.proxy_agent_name} 代 {t.proxy_principal_name}
+                      {t.proxy_principal_name ? `代 ${t.proxy_principal_name}` : '代未知用户'}
                     </span>
                   )}
                 </div>

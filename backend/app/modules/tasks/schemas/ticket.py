@@ -156,6 +156,9 @@ class TicketResponse(TicketBase):
     id: int
     status: TicketStatus
     redispatch: Optional[TicketRedispatch] = Field(None, description="最新一轮派单评估（无记录为 None）")
+    # 临时：详情页「重新指派」选人置顶用；无对接人则为 None
+    project_contact_person_id: Optional[str] = Field(None, description="所属项目对接人 users.id")
+    project_contact_person_name: Optional[str] = Field(None, description="所属项目对接人姓名")
     created_by: str
     created_by_name: Optional[str] = None
     assigned_to: Optional[str]

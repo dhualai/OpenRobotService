@@ -1,10 +1,10 @@
 // 二次派单感知增强（M2）：重派弹窗候选列表
 // 数据源：详情 redispatch.candidates（精排 Top 快照，含 department/modules/duty）
-// 排序规则（分四层）：
-//   ① 精排推荐：精排分数前 5（保留原顺序）
-//   ② 同部门：与工单当前接单人部门（refDept）相同的候选择
-//   ③ 其他部门：有画像但非同部门的候选
-//   ④ 待补充：无职责画像的候选（department/modules/duty 全空）——排最后
+// 排序规则：
+//   ⓪ 项目对接人：有则置顶并标「项目对接人」（临时，方便现场认人；无对接人不展示本组）
+//   ① 精排推荐：精排分数前 5
+//   ② 全部用户：有画像的候选 + 全量可指派用户
+//   ③ 待补充：无职责画像的候选——排最后
 // 交互：单选（可取消），选中项以品牌浅底 + ✓ 表示。
 // 配色：一律使用全局设计 token（蒂芙尼蓝 --primary / --blue-*），与
 //       UserSelect / chip-dropdown 等既有选中态保持一致，禁止硬编码色值。
@@ -27,7 +27,13 @@ interface Props {
 let allUsersCache: UserItem[] | null = null;
 let allUsersCacheTs = 0;
 
-type GroupKey = 'top' | 'same' | 'other' | 'noprofile' | 'all';
+const CONTACT_TAG = '项目对接人';
+
+type GroupKey = 'contact' | 'top' | 'same' | 'other' | 'noprofile' | 'all';
+
+function hasContactTag(c: RedispatchCandidate): boolean {
+  return (c.tags || []).includes(CONTACT_TAG);
+}
 
 /** 是否"有职责画像"：以责任模块/职责文本为准——只要有 modules 或 duty 就算有画像。
  *  department/job_level 缺失不算"整张画像缺失"（那只是组织归属信息）；仅当 modules/duty 都空才视为待补画像。 */
@@ -141,6 +147,9 @@ export default function RedispatchCandidateList({
 
   // 搜索模式：展示所有匹配用户，用户可任选其一作为倾向处理人
   if (searching) {
+    const contactIdsInList = new Set(
+      (candidates ?? []).filter(hasContactTag).map((c) => c.engineer_id),
+    );
     const picked = (c: RedispatchCandidate) => {
       onChange?.(value === c.engineer_id ? null : c);
     };
@@ -154,6 +163,7 @@ export default function RedispatchCandidateList({
         ) : (
           searchResults.map((c) => {
             const selected = value === c.engineer_id;
+            const isContact = contactIdsInList.has(c.engineer_id);
             return (
               <div
                 key={`search-${c.engineer_id}`}
@@ -170,8 +180,22 @@ export default function RedispatchCandidateList({
                   {(c.name || '?').slice(0, 1)}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--foreground)' }}>{c.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--muted-foreground)', marginTop: 2 }}>全部用户</div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--foreground)' }}>{c.name}</span>
+                    {isContact && (
+                      <span
+                        style={{
+                          fontSize: 10, lineHeight: '16px', padding: '0 6px', borderRadius: 3,
+                          color: 'var(--blue-2)', background: 'var(--blue-soft)', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {CONTACT_TAG}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--muted-foreground)', marginTop: 2 }}>
+                    {isContact ? CONTACT_TAG : '全部用户'}
+                  </div>
                 </div>
                 <div style={{ color: selected ? 'var(--primary)' : 'var(--gray-light)', fontWeight: 700 }}>{selected ? '✓' : '○'}</div>
               </div>
@@ -183,20 +207,31 @@ export default function RedispatchCandidateList({
   }
 
   // 分组：
+  // - 「项目对接人」= 后端打标置顶的对接人（临时）；没有则不展示本组。
   // - 「精排推荐」= 真正有精排分数（scores.total>0）的候选，按分数降序取前 5
   //   （避免把「无精排分、仅兜底补齐」的人误标为精排推荐）。
   // - 「全部用户」= 默认主体：候选里有职责画像的 + 全量可指派用户里有画像的，合并去重。
-  //   让重派默认就展示全部有画像的人，而不是被一堆"同部门/待补"分组切碎。
   // - 「待补充画像」= 真无职责画像（modules/duty 都空）的候选，仅少量。
   // list 为空（无精排候选快照）时，仍展示「全部用户」分组与搜索框，保证有可选项。
+  const contactPinned = list.filter(hasContactTag).map((c) => {
+    const tags = c.tags || [];
+    return tags.includes(CONTACT_TAG) ? c : { ...c, tags: [CONTACT_TAG, ...tags] };
+  });
+  const contactIds = new Set(contactPinned.map((c) => c.engineer_id));
+
   const hasRank = (c: RedispatchCandidate) => (c.scores?.total ?? 0) > 0;
-  const ranked = list.filter(hasRank).sort((a, b) => (b.scores?.total ?? 0) - (a.scores?.total ?? 0));
+  const ranked = list
+    .filter((c) => hasRank(c) && !contactIds.has(c.engineer_id))
+    .sort((a, b) => (b.scores?.total ?? 0) - (a.scores?.total ?? 0));
   const top = ranked.slice(0, 5);
 
-  // 全部用户：候选中有画像的 + 全部可指派用户中有画像的，合并去重
-  const candWithProfile = list.filter(hasProfile);
+  // 全部用户：候选中有画像的 + 全部可指派用户中有画像的，合并去重（对接人已置顶组，这里剔除）
+  const candWithProfile = list.filter((c) => hasProfile(c) && !contactIds.has(c.engineer_id));
   const allGroupData: RedispatchCandidate[] = [...candWithProfile];
-  const allSeen = new Set<string>(allGroupData.map((c) => c.engineer_id));
+  const allSeen = new Set<string>([
+    ...allGroupData.map((c) => c.engineer_id),
+    ...contactIds,
+  ]);
   for (const u of allUsers) {
     if (!u.has_profile || allSeen.has(u.id)) continue;
     const cand = toCandidate(u);
@@ -204,10 +239,11 @@ export default function RedispatchCandidateList({
     allGroupData.push(cand);
   }
 
-  // 待补充画像：候选里既无职责画像、又不在「全部用户」里的（modules/duty 都空）
-  const noProfile = list.filter((c) => !hasProfile(c));
+  // 待补充画像：候选里既无职责画像、又不在置顶/全部用户里的
+  const noProfile = list.filter((c) => !hasProfile(c) && !contactIds.has(c.engineer_id));
 
   const groups: Array<{ key: GroupKey; label: string; data: RedispatchCandidate[] }> = [
+    { key: 'contact', label: '项目对接人', data: contactPinned },
     { key: 'top', label: '精排推荐', data: top },
     { key: 'all', label: '全部用户', data: allGroupData },
     { key: 'noprofile', label: '待补充画像', data: noProfile },

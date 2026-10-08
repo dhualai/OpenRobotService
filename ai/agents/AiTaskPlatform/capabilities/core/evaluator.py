@@ -79,7 +79,8 @@ class Evaluator:
     def _build_rewrite_prompt(draft: str, issues: list, evidence: str, context: str) -> str:
         issues_text = "\n".join(f"- {i}" for i in issues) or "（无具体问题）"
         return (
-            "请修正以下 AI 回答，解决评审指出的问题。保持准确的表述，不要编造。\n\n"
+            "请修正以下 AI 回答，解决评审指出的问题。保持准确的表述，不要编造。\n"
+            "篇幅约束：讨论区默认只要重点 1～2 句话；修正时不要变长文，非必要不展开。\n\n"
             f"## 评审问题\n{issues_text}\n\n"
             f"## 上下文\n{context}\n\n"
             f"## 引用的证据\n{evidence}\n\n"

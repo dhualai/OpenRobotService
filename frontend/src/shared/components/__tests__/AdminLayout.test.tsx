@@ -71,55 +71,11 @@ describe('AdminLayout', () => {
     expect(mockNavigate).toHaveBeenCalledWith(-1);
   });
 
-  it('should render hamburger menu button', () => {
-    renderLayout();
-    expect(screen.getByTestId('btn-text-small')).toBeInTheDocument();
-    expect(screen.getByTestId('btn-text-small')).toHaveTextContent('☰');
-  });
-
-  it('should show menu drawer when hamburger is clicked', () => {
-    renderLayout();
-    // Click hamburger
-    fireEvent.click(screen.getByTestId('btn-text-small'));
-
-    // Should show menu header
-    expect(screen.getByText('⚙️ 后台管理')).toBeInTheDocument();
-  });
-
-  it('should show all admin menu items in drawer', () => {
-    renderLayout();
-    fireEvent.click(screen.getByTestId('btn-text-small'));
-
-    // Key menu items should be visible (use getAllByText since navbar title duplicates)
-    const dashboardItems = screen.getAllByText('仪表盘');
-    expect(dashboardItems.length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('项目管理')).toBeInTheDocument();
-    expect(screen.getByText('项目进度管理')).toBeInTheDocument();
-    expect(screen.getByText('风险管理')).toBeInTheDocument();
-    expect(screen.getByText('用户管理')).toBeInTheDocument();
-    expect(screen.getByText('角色管理')).toBeInTheDocument();
-    expect(screen.getByText('权限管理')).toBeInTheDocument();
-  });
-
-  it('should close menu when clicking overlay', () => {
-    renderLayout();
-    fireEvent.click(screen.getByTestId('btn-text-small'));
-    expect(screen.getByText('⚙️ 后台管理')).toBeInTheDocument();
-
-    // Click overlay - find by background color style
-    const overlay = document.querySelector('[style*="rgba(0, 0, 0, 0.5)"]');
-    if (overlay) {
-      fireEvent.click(overlay);
-    }
-  });
-
-  it('should navigate when clicking a menu item', () => {
-    renderLayout();
-    fireEvent.click(screen.getByTestId('btn-text-small'));
-    fireEvent.click(screen.getByText('风险管理'));
-
-    expect(mockNavigate).toHaveBeenCalledWith('/admin/risks');
-  });
+  // 原先这里 5 条用例钉的是「Navbar 右侧汉堡按钮 + 抽屉菜单」那套 UI：
+  // AdminLayout.tsx 已改为 right={<UserAvatarMenu />}（头像面板），
+  // 汉堡按钮与抽屉都不再渲染，旧用例全部失效（找不到 btn-text-small）。
+  // 按「用例不测已下线的 UI」删除；管理入口导航如今不在本组件里，
+  // 需要覆盖时应在承载它的组件上另写用例，不要恢复这里的旧断言。
 
   it('should render Outlet for child routes', () => {
     renderLayout();

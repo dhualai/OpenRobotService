@@ -18,6 +18,7 @@ from app.services.hmac_utils import generate_password, chinese_to_pinyin
 from app.models.task import Task, TaskType, TaskPriority
 from app.models.identity import user_project_roles
 from app.models.organization import Company, Department
+from app.models.user_info import UserInfo
 from app.modules.tasks.schemas.ticket import TicketCreate
 from app.modules.tasks.services.ticket_service import TicketService
 from app.services.identity_service import _notify_ai_personnel_reload
@@ -87,6 +88,25 @@ async def get_users(
             departments = db.query(Department).filter(Department.id.in_(all_department_ids)).all()
             department_name_map = {d.id: d.name for d in departments}
 
+        # 微信关注时间（用户管理列表按「关注时间倒序」排序用）：取最新一条 user_info
+        # 整点快照，按 openid 关联（微信注册用户 users.id 即 openid；虚拟号 user_*、
+        # 手工账号、已取关用户没有该数据）。快照缺失/异常时整体降级为 None，
+        # 不影响用户列表本身。
+        subscribe_time_map: Dict[str, int] = {}
+        try:
+            latest_snapshot = db.query(UserInfo).order_by(
+                UserInfo.created_time.desc(), UserInfo.id.desc(),
+            ).first()
+            snapshot_payload = latest_snapshot.user_info if latest_snapshot else None
+            if isinstance(snapshot_payload, dict):
+                for item in snapshot_payload.get('user_info_list') or []:
+                    openid = item.get('openid')
+                    subscribe_time = item.get('subscribe_time')
+                    if openid and subscribe_time:
+                        subscribe_time_map[openid] = int(subscribe_time)
+        except Exception as e:
+            print(f"读取用户关注时间快照失败（降级为空）: {e}")
+
         for user_record in paginated_user_records:
             user_roles = all_users_roles.get(user_record.id, {})
 
@@ -131,6 +151,7 @@ async def get_users(
                 responsibility_modules=rm,
                 job_level=getattr(user_record, 'job_level', 1) or 1,
                 duty_text=getattr(user_record, 'duty_text', None),
+                subscribe_time=subscribe_time_map.get(user_record.id),
             )
 
             result.append(user_response)

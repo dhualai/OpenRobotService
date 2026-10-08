@@ -31,13 +31,21 @@ class CapabilityResult:
     - error: 失败原因（ok=False 时，对外只暴露轻量原因，不泄漏内部堆栈）
     """
 
-    __slots__ = ("text", "meta", "ok", "error")
+    __slots__ = ("text", "meta", "ok", "error", "terminate")
 
-    def __init__(self, text: str = "", meta: Optional[dict] = None, ok: bool = True, error: Optional[str] = None):
+    def __init__(
+        self,
+        text: str = "",
+        meta: Optional[dict] = None,
+        ok: bool = True,
+        error: Optional[str] = None,
+        terminate: bool = False,
+    ):
         self.text = text
         self.meta = meta or {}
         self.ok = ok
         self.error = error
+        self.terminate = bool(terminate)
 
     @classmethod
     def failure(cls, message: str) -> "CapabilityResult":
@@ -46,7 +54,13 @@ class CapabilityResult:
 
     def to_dict(self) -> dict:
         """转 dict（供 Supervisor/tracing 展示）。"""
-        return {"text": self.text, "meta": self.meta, "ok": self.ok, "error": self.error}
+        return {
+            "text": self.text,
+            "meta": self.meta,
+            "ok": self.ok,
+            "error": self.error,
+            "terminate": self.terminate,
+        }
 
 
 class BaseCapability(ABC):
@@ -98,12 +112,20 @@ class BaseCapability(ABC):
         self._usage_count += 1
         return True
 
+    async def before_run(self, **kwargs: Any) -> Optional[CapabilityResult]:
+        """执行前钩子。返回 CapabilityResult 则短路（不跑 run）；默认 None 继续。"""
+        return None
+
+    async def after_run(self, result: CapabilityResult, **kwargs: Any) -> CapabilityResult:
+        """执行后钩子：可改写/盖章结果；默认原样返回。异常由调用方忽略后处理。"""
+        return result
+
     # ── 统一执行入口（带配额 + 异常兜底）──
     async def __call__(self, **kwargs: Any) -> CapabilityResult:
         """带配额控制 + 异常兜底的统一执行入口。
 
         调用方统一用 `await capability(**kwargs)`（或 `capability.run(...)`），
-        这里负责：配额检查 → run() → 异常转错误态。
+        这里负责：配额检查 → before_run → run → after_run → 异常转错误态。
         """
         # 配额检查
         if not self._claim_usage():
@@ -119,12 +141,30 @@ class BaseCapability(ABC):
                 kwargs = dict(self.input_schema(**kwargs))  # Pydantic 校验+转换
             except Exception as e:
                 return CapabilityResult.failure(f"能力 {self.name} 输入校验失败: {e}")
+        # 执行前钩子（可短路）
+        try:
+            early = await self.before_run(**kwargs)
+            if early is not None:
+                return early
+        except Exception as e:
+            return CapabilityResult.failure(
+                f"能力 {self.name} before_run 失败: {type(e).__name__}: {e}"
+            )
         # 执行
         try:
-            return await self.run(**kwargs)
+            result = await self.run(**kwargs)
         except Exception as e:
             # 只暴露异常类型/轻量消息，不泄漏内部堆栈
             return CapabilityResult.failure(f"能力 {self.name} 执行失败: {type(e).__name__}: {e}")
+        # 执行后钩子（失败不吞掉主结果）
+        try:
+            return await self.after_run(result, **kwargs)
+        except Exception as e:
+            from ai.core.logging import get_logger
+            get_logger("TASK_AGENT").warning(
+                f"能力 {self.name} after_run 失败（保留原结果）: {type(e).__name__}: {e}"
+            )
+            return result
 
     # ── 自动注册 ──
     def __init_subclass__(cls, **kwargs: Any) -> None:

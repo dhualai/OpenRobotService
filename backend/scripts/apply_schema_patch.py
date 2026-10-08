@@ -3,7 +3,8 @@
 背景：本项目的 alembic 迁移链与存量库状态不一致（部分列由 create_all/手工
 补上、链上仍记录为未应用），`alembic upgrade head` 会因 Duplicate column 报错
 中断（如 users.company_id）。本命令绕过 alembic，按代码模型定义直接补齐缺失的
-列/索引，效果等同对应的迁移脚本，适用于本机与部署服务器。
+列/索引（PATCHES），并删除模型已移除的废弃列（DROPS，删前做必要的数据收尾），
+效果等同对应的迁移脚本，适用于本机与部署服务器。
 
 用法（在 backend/ 目录下，用项目 venv）：
     .venv/Scripts/python.exe scripts/apply_schema_patch.py
@@ -70,10 +71,73 @@ PATCHES = {
         ("ended_at", "DATETIME NULL COMMENT '查看结束时间（仅 VIEW 有值）'", None),
         ("duration_seconds", "INT NULL COMMENT '查看时长（秒，仅 VIEW 有值）'", None),
     ],
+    # 二维码管理：录入信息相关列（2026-09-29）。
+    # 表整体由启动 create_all 负责（模型已带这些列）；只有「先跑过旧代码、
+    # wechat_qrcodes 表已建出来」的库才需要这里补列。
+    # 注：project_id 与 scene_str 两列均已废弃（2026-09-30 口径：项目id 就是行 id
+    # str(id)，scene 由 str(id) 自动生成、不再落列），不在这里补，
+    # 存量库由下方 DROPS 负责删除（删前有 WARN 统计）。
+    "wechat_qrcodes": [
+        # 录入信息（其他项目登记）：一条信息一行，六个字段和行 id 同行存
+        ("project_code", "VARCHAR(64) NULL COMMENT '项目编号（录入信息行；唯一由接口层查重）'", "ix_wechat_qrcodes_project_code"),
+        ("project_name", "VARCHAR(128) NULL COMMENT '项目名（录入信息行自带）'", None),
+        ("project_location", "VARCHAR(128) NULL COMMENT '项目地点（录入信息行）'", None),
+        ("customer_name", "VARCHAR(128) NULL COMMENT '客户名（录入信息行）'", None),
+        ("vehicle_model", "VARCHAR(128) NULL COMMENT '车型（录入信息行）'", None),
+    ],
     # 注：project_info_node 不再需要补列兜底。2026-09 项目信息结构改造
     # （alembic 7c1e9a4b2d38）把该表整体重建为「节点定义 + 项目值」两表结构，
     # 旧列 template_node_id 已废弃，建表与索引一律由迁移负责。
 }
+
+
+def _warn_qrcode_project_id(cur) -> None:
+    """wechat_qrcodes.project_id 删除前的提示（2026-09-30：项目id 就是行 id，不再单独占列）。
+
+    旧列是「扫码关联 USP 项目」的业务键（企微表格同步过来），该用法随列移除；
+    录入信息行的项目id 现在是行 id（str(id)），与本列无关，无需数据搬迁。
+    只统计带值行数供部署时人工确认。
+    """
+    cur.execute(
+        "SELECT COUNT(*) FROM wechat_qrcodes WHERE project_id IS NOT NULL AND project_id <> ''"
+    )
+    n = cur.fetchone()[0]
+    if n:
+        print(f"[WARN] wechat_qrcodes.project_id 有值的行 {n} 条：该关联随列删除（项目id 现为行 id）")
+
+
+def _warn_qrcode_scene_str(cur) -> None:
+    """wechat_qrcodes.scene_str 删除前的提示（2026-09-30：scene 改 str(id) 自动生成、不落列）。
+
+    扫码/跳转一律用 str(id)。需注意已生成 ticket 且 scene_str ≠ str(id) 的行：
+    微信侧那张码绑定的还是旧 scene，扫码 EventKey 解析出的不是行 id、会失配，
+    统计出来供部署时人工确认这些码是否需重印。
+    """
+    cur.execute("SELECT id, scene_str, ticket FROM wechat_qrcodes")
+    rows = cur.fetchall()
+    mismatch = [(rid, s) for rid, s, t in rows if t and s and s != str(rid)]
+    if mismatch:
+        sample = ", ".join(f"{rid}(scene={s})" for rid, s in mismatch[:10])
+        print(f"[WARN] 已生成 ticket 且 scene_str≠str(id) 的行 {len(mismatch)} 条（扫码会失配，需人工确认是否重印）：{sample}")
+
+
+# 待删除的废弃列：{表: [(列名, 删前提示/收尾函数或 None)]}
+# 列不存在时跳过（幂等）；函数只在列存在时执行一次，跑完再 DROP。
+DROPS = {
+    "wechat_qrcodes": [
+        ("project_id", _warn_qrcode_project_id),
+        ("scene_str", _warn_qrcode_scene_str),
+    ],
+}
+
+
+def _table_exists(cur, database: str, table: str) -> bool:
+    cur.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_schema = %s AND table_name = %s",
+        (database, table),
+    )
+    return bool(cur.fetchone()[0])
 
 
 def main() -> int:
@@ -86,6 +150,11 @@ def main() -> int:
     changed = False
     try:
         for table, patches in PATCHES.items():
+            # 表还不存在（比 PATCHES 清单晚引入的表，如 wechat_qrcodes）：
+            # 跳过而非报错——应用启动 create_all 会按模型整表新建，自带新列
+            if not _table_exists(cur, cfg["database"], table):
+                print(f"[SKIP] 表 {table} 不存在（启动 create_all 时会按模型新建，含新列）")
+                continue
             cur.execute(f"SHOW COLUMNS FROM `{table}`")
             existing_cols = {row[0] for row in cur.fetchall()}
             cur.execute(f"SHOW INDEX FROM `{table}`")
@@ -101,10 +170,29 @@ def main() -> int:
                     cur.execute(f"CREATE INDEX `{index}` ON `{table}` (`{col}`)")
                     print(f"[ADD] 索引 {index} on {table}({col})")
                     changed = True
+
+        # ── 删除模型已移除的废弃列（删前先跑收尾函数） ──
+        for table, cols in DROPS.items():
+            if not _table_exists(cur, cfg["database"], table):
+                print(f"[SKIP] 表 {table} 不存在（无需删列）")
+                continue
+            cur.execute(f"SHOW COLUMNS FROM `{table}`")
+            existing_cols = {row[0] for row in cur.fetchall()}
+            for col, before in cols:
+                if col not in existing_cols:
+                    print(f"[SKIP] {table}.{col} 不存在（无需删除）")
+                    continue
+                if before is not None:
+                    before(cur)
+                # 单列索引随列一起删除（MySQL DROP COLUMN 自动清理）
+                cur.execute(f"ALTER TABLE `{table}` DROP COLUMN `{col}`")
+                print(f"[DROP] {table}.{col}")
+                changed = True
+
         conn.commit()
     finally:
         conn.close()
-    print("完成：数据库结构已与代码模型对齐" if changed else "完成：无缺失，无需改动")
+    print("完成：数据库结构已与代码模型对齐" if changed else "完成：无需改动（无缺失、无废弃列）")
     return 0
 
 

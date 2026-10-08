@@ -13,6 +13,7 @@ from app.core.database import init_users_db
 from app.core.auth_routes import router as auth_router
 from app.wechat import wechat_api_router
 from app.modules.admin import admin_router
+from app.modules.admin.api.usp_envs import public_router as usp_envs_public_router
 from app.modules.tasks import tasks_router
 from app.modules.call import call_router
 from app.modules.dataqa import dataqa_router
@@ -102,6 +103,7 @@ app.add_middleware(
 
 app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["认证"])
 app.include_router(admin_router, prefix=f"{settings.API_V1_STR}")
+app.include_router(usp_envs_public_router, prefix=f"{settings.API_V1_STR}")
 # integrations 任务源路由须在 tasks_router 之前注册：避免 GET /tasks/sources 被
 # tasks 模块的 GET /tasks/{task_id}（贪婪路径参数）抢先吞掉
 app.include_router(integrations_sources_router, prefix=f"{settings.API_V1_STR}")

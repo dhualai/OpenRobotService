@@ -2,7 +2,7 @@
 // 数据来源：ai/agents/AiDataAnalysisPlatform/report_generator.py 实时采集 MySQL 中的
 // 项目/风险/工单/任务数据并调用 LLM 生成报告文本。
 // 样式参考 macaron reports 页：卡片内分段切换 + surface-card 项目选择 + 淡蓝日期条。
-import { memo, useState, useEffect, useCallback, useRef, type RefObject, type ClipboardEvent as ReactClipboardEvent } from 'react';
+import { memo, useState, useEffect, useCallback, useRef, useMemo, type RefObject, type ClipboardEvent as ReactClipboardEvent } from 'react';
 import { Loading, Toast } from 'tdesign-mobile-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
@@ -198,6 +198,8 @@ const ReportStreamCard = memo(function ReportStreamCard({
 export default function DailySummaryAgent() {
   const [period, setPeriod] = useState<ReportPeriod>('daily');
   const [date, setDate] = useState<string>(todayStr());
+  // 稳定 DatePicker 受控 value 引用（内联 dayjs 每次渲染生成新实例会触发 rc-picker 受控同步，重置面板视图）
+  const datePickerValue = useMemo(() => dayjs(date), [date]);
   const [projectCode, setProjectCode] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string | null>(null);
   // 用户关联项目：日报/周报只允许选择当前用户关联的项目（user_project_roles）
@@ -471,7 +473,7 @@ export default function DailySummaryAgent() {
         <span className="mac-datebar__icon"><MacCalendarDays size={16} /></span>
         <DatePicker
           className="mac-datebar__picker"
-          value={dayjs(date)}
+          value={datePickerValue}
           format="YYYY-MM-DD"
           allowClear={false}
           placeholder="选择日期"

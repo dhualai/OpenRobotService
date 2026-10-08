@@ -24,6 +24,18 @@ export interface ChatContext {
   description?: string;
 }
 
+/** 车体扫码确认后的车辆上下文（CallView 写入 → ChatPanel 消费后置空） */
+export interface VehicleContext {
+  /** 本次扫码的场景值（scene_str），仅作追溯用 */
+  scene: string;
+  /** 项目名称（缺值传空串，UI 层显示占位符） */
+  projectName: string;
+  /** 客户名称（同上） */
+  customerName: string;
+  /** 车型信息（同时作为车型定制模式注册的 model） */
+  vehicleModel: string;
+}
+
 export interface WorkbenchState {
   /** 当前激活的视图 */
   activeTab: WorkbenchTab;
@@ -31,6 +43,8 @@ export interface WorkbenchState {
   ticketDraft: TicketDraft | null;
   /** 待注入对话的工单上下文，CallView 消费后置空 */
   chatContext: ChatContext | null;
+  /** 待注入对话的车辆上下文（扫码确认后写入），ChatPanel 消费后置空 */
+  vehicleContext: VehicleContext | null;
   /** 工单列表刷新触发器，+1 即触发 TasksView 重新拉取 */
   tasksRefreshKey: number;
   /** 联动选中的工单 id，建单/跳转后自动展开详情 */
@@ -45,8 +59,10 @@ export interface WorkbenchState {
 
   consumeTicketDraft: () => TicketDraft | null;
   consumeChatContext: () => ChatContext | null;
+  consumeVehicleContext: () => VehicleContext | null;
   setTicketDraft: (draft: TicketDraft | null) => void;
   setChatContext: (ctx: ChatContext | null) => void;
+  setVehicleContext: (ctx: VehicleContext | null) => void;
   setSelectedTicketId: (id: string | null) => void;
   refreshTasks: () => void;
 
@@ -71,6 +87,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   activeTab: 'call',
   ticketDraft: null,
   chatContext: null,
+  vehicleContext: null,
   tasksRefreshKey: 0,
   selectedTicketId: null,
 
@@ -98,8 +115,15 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     return ctx;
   },
 
+  consumeVehicleContext: () => {
+    const ctx = get().vehicleContext;
+    if (ctx) set({ vehicleContext: null });
+    return ctx;
+  },
+
   setTicketDraft: (draft) => set({ ticketDraft: draft }),
   setChatContext: (ctx) => set({ chatContext: ctx }),
+  setVehicleContext: (ctx) => set({ vehicleContext: ctx }),
   setSelectedTicketId: (id) => set({ selectedTicketId: id }),
   refreshTasks: () => set((s) => ({ tasksRefreshKey: s.tasksRefreshKey + 1 })),
 

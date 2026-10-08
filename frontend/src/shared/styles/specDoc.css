@@ -211,37 +211,92 @@
   overflow: hidden;
 }
 
+/* 头部布局：第一行「标题 + 操作区」（按钮右对齐、按内容自适应宽度、不折行），
+   元信息独占第二行做副标题——三种信息挤在一行时长文案必然压扁标题、折行按钮，
+   换行后既保证按钮尺寸稳定，窄屏（320px）依旧单行放得下，极窄时才让按钮整体下移。 */
 .spec-card__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px 8px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border, #eee);
 }
 
 .spec-card__title {
+  order: 1;
+  flex: 0 0 auto;
   font-size: 15px;
   font-weight: 600;
+  white-space: nowrap;
   color: var(--foreground, #222);
 }
 
 .spec-card__meta {
+  order: 3;
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   color: var(--muted-foreground, #999);
 }
 
-.spec-card__actions {
-  display: flex;
-  gap: 8px;
+/* 无更新人/修订号时不渲染（避免空行多出 6px 间距） */
+.spec-card__meta:empty {
+  display: none;
 }
 
+.spec-card__actions {
+  order: 2;
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 头部操作按钮：与全局按钮口径统一（主操作 = 品牌蓝实心胶囊，次操作 = 品牌蓝描边胶囊），
+   尺寸对齐详情页其他卡片操作（AppButton size="small"：12px 字号 / 胶囊 / 28px 高，
+   内边距随文字宽度自适应，不折行） */
 .spec-card__btn {
-  padding: 5px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border, #d1d5db);
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--blue-4);
+  border-radius: 999px;
   background: var(--card, #fff);
-  color: var(--primary);
-  font-size: 13px;
+  color: var(--blue-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.spec-card__btn:not(:disabled):active {
+  background: var(--blue-5);
+}
+
+.spec-card__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.spec-card__btn--primary {
+  border-color: transparent;
+  background: var(--blue-3);
+  color: #fff;
+}
+
+.spec-card__btn--primary:not(:disabled):active {
+  background: var(--blue-2);
 }
 
 .spec-card__body {

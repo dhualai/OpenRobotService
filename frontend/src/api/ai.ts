@@ -95,6 +95,95 @@ export const qaAskStream = (body: QAAskRequest): Promise<Response> =>
     body: JSON.stringify(body),
   });
 
+/** @U老师 讨论流式请求体 */
+export interface TaskDiscussStreamBody {
+  task_id: string;
+  query: string;
+  context?: Record<string, unknown>;
+}
+
+export interface TaskDiscussStreamHandlers {
+  /** 正文增量 token */
+  onToken?: (token: string) => void;
+  /** Evaluator/附录改写后的完整正文（替换草稿） */
+  onRewrite?: (reply: string) => void;
+  /** 评论已落库后的结果 */
+  onResult?: (data: { task_id?: string; reply?: string; [k: string]: unknown }) => void;
+  onDone?: (data: { total_ms?: number }) => void;
+  onError?: (message: string) => void;
+}
+
+/**
+ * POST /task/discuss/stream —— @U老师 讨论 SSE。
+ * 事件：token / rewrite / result / error / done（与后端 router 对齐）。
+ */
+export async function taskDiscussStream(
+  body: TaskDiscussStreamBody,
+  handlers: TaskDiscussStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetchWithAuth(`${BASE}/task/discuss/stream`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal,
+    headers: { Accept: 'text/event-stream' },
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const j = await res.json();
+      detail = typeof j?.message === 'string' ? j.message : (typeof j?.detail === 'string' ? j.detail : '');
+    } catch { /* ignore */ }
+    throw new Error(detail || `服务异常（HTTP ${res.status}）`);
+  }
+  if (!res.body) throw new Error('流式响应无 body');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep = buffer.indexOf('\n\n');
+      while (sep !== -1) {
+        const rawEvent = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        sep = buffer.indexOf('\n\n');
+        const lines = rawEvent.split('\n');
+        const evLine = lines.find((l) => l.startsWith('event:'));
+        const dataLine = lines.find((l) => l.startsWith('data:'));
+        if (!dataLine) continue;
+        const ev = (evLine ? evLine.slice('event:'.length).trim() : 'message') || 'message';
+        const dataStr = dataLine.slice('data:'.length).trim();
+        if (!dataStr) continue;
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(dataStr) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (ev === 'token') {
+          handlers.onToken?.(String(obj.token ?? ''));
+        } else if (ev === 'rewrite') {
+          handlers.onRewrite?.(String(obj.reply ?? ''));
+        } else if (ev === 'result') {
+          handlers.onResult?.(obj as { task_id?: string; reply?: string });
+        } else if (ev === 'error') {
+          const msg = String(obj.message ?? obj.error ?? 'AI 回复失败');
+          handlers.onError?.(msg);
+          throw new Error(msg);
+        } else if (ev === 'done') {
+          handlers.onDone?.(obj as { total_ms?: number });
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 /** 提交工单（显式传 username，token 失效时后端兜底绑定真实用户） */
 export const qaSubmit = (sessionId: string) =>
   aiPost<{ code: number; [key: string]: unknown }>('/qa/submit', { session_id: sessionId, username: useAuthStore.getState().username });
@@ -318,6 +407,48 @@ export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispat
     dispatch_id: dispatchId,
     status,
   });
+
+
+// ---------------------------------------------------------------------------
+// 车型定制模式（扫码进入链路：把问答式会话切为选项式引导流）
+// 对应后端 ai/api/vehicle_mode.py 的 POST /api/ai/qa/mode/confirm
+// ---------------------------------------------------------------------------
+
+export interface VehicleModeConfirmPayload {
+  /** 会话 ID：先有会话再绑模式；同一 session 重复调用=覆盖重注册（幂等） */
+  session_id: string;
+  /** 车型（如 XQE），取 wechat_qrcodes 录入信息行的 vehicle_model */
+  model: string;
+  project_name?: string;
+  customer_name?: string;
+  /** 唯一车号：扫码链路只有 scene（proj_ 随机串）不是车号，故留空，走后端 model + project_name 匹配 */
+  vehicle_code?: string;
+}
+
+/**
+ * 车型定制模式确认：把当前会话注册为车型定制模式（该车型的 SOP / 故障分叉树引导）。
+ *
+ * code=0 注册成功，data 带回该车型的手册文档清单；code=1 表示车型未建档或不在服务范围，
+ * message 面向用户（实验阶段明确不降级为常规模式，前端提示后由用户确认扫码信息）。
+ */
+export const qaModeConfirm = (payload: VehicleModeConfirmPayload) =>
+  aiPost<{
+    code: number;
+    message?: string;
+    data?: {
+      confirmed: boolean;
+      model: string;
+      domain: string;
+      manual_docs: Array<{ title: string; path: string; url: string }>;
+      /** 开场大方向引导题（0930）：服务端直出（分叉树顶层随机 5 + 故障码保底），
+       *  无分叉树知识库时为 null（退化为纯输入框）。 */
+      opening?: {
+        question: string;
+        choices: Array<string>;
+        hint: string;
+      } | null;
+    };
+  }>('/qa/mode/confirm', payload);
 
 
 // ---------------------------------------------------------------------------

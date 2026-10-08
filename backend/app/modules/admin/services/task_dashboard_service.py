@@ -23,18 +23,19 @@ logger = logging.getLogger(__name__)
 FRONTEND_STATUS_MAP: Dict[str, TaskStatus] = {
     "new": TaskStatus.NEW,
     "in_progress": TaskStatus.IN_PROGRESS,
+    "pending_requested": TaskStatus.PENDING_REQUESTED,
     "paused": TaskStatus.PENDING,
     "resolved": TaskStatus.RESOLVED,
     "closed": TaskStatus.CLOSED,
     "cancelled": TaskStatus.CANCELED,
 }
 
-# 仪表盘「工单状态监测」监控的六种状态（含 new：待处理工单计入工单总数与解决率分母，
+# 仪表盘「工单状态监测」监控的状态（含 new：待处理工单计入工单总数与解决率分母，
 # 与前端 TICKET_STATUS_LIST 保持一致；超时/待处理口径不含 new，见 OPEN_STATUSES）
-MONITORED_STATUS_KEYS = ["new", "in_progress", "paused", "resolved", "closed", "cancelled"]
+MONITORED_STATUS_KEYS = ["new", "in_progress", "pending_requested", "paused", "resolved", "closed", "cancelled"]
 
 # 超时工单统计的口径：未完成且已进入处理流程的状态（new 尚未开始处理，不计入）
-OPEN_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
+OPEN_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING_REQUESTED, TaskStatus.PENDING]
 
 
 class TaskDashboardService:

@@ -94,6 +94,54 @@ jobs:
           name: allure-results-api
           path: automation/output/allure-results
 
+  test-ai:
+    name: AI unit tests (non-blocking)
+    runs-on: ubuntu-latest
+    # 非阻断门禁：目的是让 AI 侧单测的通过情况在 PR 上显性化（此前从不运行）。
+    # 它会拉起 qdrant-client / 数据库驱动等较重依赖，跑红也不挡合并，先观察一段时间再收紧。
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 单独用 3.12：ai/requirements.txt 自身要求 Python >= 3.12
+          # （numpy>=2.5.1 等没有 3.11 wheel，用 env.PYTHON_VERSION 会解析失败）。
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-test.txt
+          # AI 侧依赖必须整套装上：用例 import 的 ai.core / ai.agents 链上就有
+          # tenacity、httpx、openai、redis、qdrant-client 等模块级 import，
+          # 少装一个就是收集期 ModuleNotFoundError，得不到任何有效信号。
+          # 先装 CPU 版 torch，否则 pip 默认拉 CUDA 版（体积数 GB、白等几分钟）。
+          # 做法与 docs/troubleshooting.md 5.2 一致。
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r ai/requirements.txt
+
+      - name: Prepare AI env
+        run: |
+          if [ ! -f ai/.env ]; then
+            cp ai/.env.example ai/.env
+          fi
+
+      - name: Run AI unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AI_PLAN_EXECUTE: "1"
+          HF_HUB_OFFLINE: "1"
+        run: |
+          pytest ai/tests ai/agents/AiTaskPlatform ai/agents/AiDiagnosisPlatform/assigner/tests ai/core -q -p no:cacheprovider --junitxml=ai-junit.xml
+
+      - name: Upload AI test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-junit
+          path: ai-junit.xml
+
   test-real:
     name: Real backend smoke tests
     runs-on: ubuntu-latest

@@ -25,6 +25,7 @@ node_key / node_name / node_type 是写入时的快照——节点被改名或�
   这是产品经理明确拍板的决定，接入字段级加密时以本表为改造点——见 SKILL 第 14 节。
 """
 import time
+import threading
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
@@ -66,15 +67,32 @@ def _now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+# 上一枚 id 的整数形式，配合 _id_lock 保证同毫秒内严格递增（见 _new_id）
+_last_id_value = 0
+_id_lock = threading.Lock()
+
+
 def _new_id() -> str:
     """时间有序的 UUID（v7）：changed_at 只精确到秒，同一秒内的先后靠 id 兜底排序，
-    「各节点最新记录 id」也直接取 max(id) 即可，不必按时间比。"""
-    uuid7 = getattr(uuid, "uuid7", None)
-    if uuid7 is not None:
-        return str(uuid7())
+    「各节点最新记录 id」也直接取 max(id) 即可，不必按时间比。
+
+    **同一毫秒内必须严格递增**：id 既要给历史列表排序（order_by id desc），又要用来
+    取「最新一条」（max(id)），而随机低位会让同毫秒写入的先后随机化——一次
+    reset_to_template 或批量导入会在同一毫秒落多条历史，顺序一乱「最新」就取错。
+    因此新值不比上一枚大时，直接取上一枚 + 1（进位只发生在时间戳之后的低位，
+    跨毫秒排序不受影响）。
+
+    这里不走标准库的 uuid7()：它同毫秒内是随机的，不满足上面的递增要求，
+    会在 Python 3.14+ 上把这里的行为改回不递增。
+    """
+    global _last_id_value
     ms = int(time.time() * 1000)
-    rand = uuid.uuid4().int & ((1 << 74) - 1)
-    return str(uuid.UUID(int=(ms << 80) | (0x7 << 76) | rand))
+    value = (ms << 80) | (0x7 << 76) | (uuid.uuid4().int & ((1 << 74) - 1))
+    with _id_lock:
+        if value <= _last_id_value:
+            value = _last_id_value + 1
+        _last_id_value = value
+    return str(uuid.UUID(int=value))
 
 
 def _short(text: str, limit: int = MAX_VALUE_DISPLAY) -> str:

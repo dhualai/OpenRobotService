@@ -1,6 +1,7 @@
-// 代他人提单：工单详情页关系横幅的视角渲染。
-// 口径：视角标记（is_agent / is_principal）由后端按 token 判定后下发，
-// 前端只按标记渲染，不自行拼身份判定；非参与人后端不下发姓名 → 不渲染。
+// 代他人提单：工单详情页关系横幅的统一文案渲染。
+// 口径：所有视角统一「代 X 提交」（X=被代提人姓名，未注册/未实名缺省「未知用户」）；
+// 视角标记（is_agent / is_principal）由后端按 token 判定后下发，前端只按标记渲染，
+// 不自行拼身份判定；非参与人（无任何视角标记）→ 不渲染。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -50,14 +51,15 @@ describe('ProxyRelationBanner', () => {
     vi.clearAllMocks();
   });
 
-  it('代理人视角：展示被代理人姓名与关系状态胶囊', () => {
+  it('代理人视角：统一文案「代 被代提人 提交」+ 关系状态胶囊', () => {
     render(<ProxyRelationBanner ticketId={100} relation={makeRelation({ is_agent: true })} />);
 
+    expect(screen.getByText(/代/)).toBeInTheDocument();
     expect(screen.getByText('李四')).toBeInTheDocument();
     expect(screen.getByText('待确认')).toBeInTheDocument();
   });
 
-  it('被代理人 pending：展示「确认跟进 / 与我无关」两个操作', () => {
+  it('被代理人 pending：统一文案 + 展示「确认跟进 / 与我无关」两个操作', () => {
     render(<ProxyRelationBanner ticketId={100} relation={makeRelation({ is_principal: true })} />);
 
     expect(screen.getByText('确认跟进')).toBeInTheDocument();
@@ -76,7 +78,7 @@ describe('ProxyRelationBanner', () => {
     expect(screen.queryByText('确认跟进')).toBeNull();
   });
 
-  it('接单人视角：展示「谁代谁提单」+ 关系状态胶囊，且只读无操作按钮', () => {
+  it('接单人视角：统一文案（只展示被代提人）+ 关系状态胶囊，只读无操作按钮', () => {
     render(
       <ProxyRelationBanner
         ticketId={100}
@@ -84,10 +86,22 @@ describe('ProxyRelationBanner', () => {
       />,
     );
 
-    expect(screen.getByText('张三')).toBeInTheDocument();
     expect(screen.getByText('李四')).toBeInTheDocument();
+    expect(screen.queryByText('张三')).toBeNull();
     expect(screen.getByText('已跟进')).toBeInTheDocument();
     expect(screen.queryByText('确认跟进')).toBeNull();
+  });
+
+  it('被代提人未注册/未实名（姓名缺省）：统一缺省「未知用户」', () => {
+    render(
+      <ProxyRelationBanner
+        ticketId={100}
+        relation={makeRelation({ is_agent: true, principal_name: null })}
+      />,
+    );
+
+    expect(screen.getByText('未知用户')).toBeInTheDocument();
+    expect(screen.queryByText('李四')).toBeNull();
   });
 
   it('非参与人：不渲染（脱敏，后端无视角标记时无内容）', () => {

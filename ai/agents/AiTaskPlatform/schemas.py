@@ -62,6 +62,7 @@ class TaskContext(BaseModel):
     source: str = ""             # manual / zentao / ai_agent / ...
     assigned_to: Optional[str] = None
     project_name: Optional[str] = None
+    project_id: str = ""
     attachments: List[dict] = Field(default_factory=list)
     metadata_info: Optional[dict] = None
     attachment_analysis: Dict[str, dict] = Field(default_factory=dict,
@@ -76,6 +77,10 @@ class TaskContext(BaseModel):
     robot_type: str = ""
     location: str = ""
     diagnosis_rounds: int = 0
+    # 提单元数据 / 工单行时间（USP 拉日志锚点：发生时间 → 创建时间）
+    occurrence_time: str = ""
+    created_at: str = ""
+
 
     # ── 最终解决方案 ──
     # solution: 历史「任务 Agent 提交方案」流程曾写入 metadata_info.diagnosis.solution（dict），

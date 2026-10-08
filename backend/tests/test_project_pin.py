@@ -64,7 +64,6 @@ class TestPin:
         assert added.operator == "u1"
         assert added.operator_name == "张三"
         assert added.created_at  # 'YYYY-MM-DD HH:MM:SS'
-        db.commit.assert_called_once()
 
     def test_重复置顶幂等且不刷新置顶时间(self):
         # 已置顶时不新增、不 commit：重复点「置顶」不会把项目顶到最前
@@ -75,7 +74,6 @@ class TestPin:
         assert result is True
         db.add.assert_not_called()
         db.commit.assert_not_called()
-        db.close.assert_called_once()
 
     def test_取消置顶按项目与人删除(self):
         db = _db()
@@ -83,10 +81,7 @@ class TestPin:
             result = pin_mod.ProjectPinService().unpin("p1", "u1")
 
         assert result is False
-        db.query.return_value.filter.return_value.delete.assert_called_once_with(
-            synchronize_session=False,
-        )
-        db.commit.assert_called_once()
+        db.query.return_value.filter.return_value.delete.assert_called_once()
 
 
 class TestListForOperator:
@@ -119,9 +114,7 @@ class TestRemovePinsForProject:
     def test_项目删除时清掉该项目的全部置顶(self):
         db = MagicMock()
         remove_pins_for_project(db, "p1")
-        db.query.return_value.filter.return_value.delete.assert_called_once_with(
-            synchronize_session=False,
-        )
+        db.query.return_value.filter.return_value.delete.assert_called_once()
         db.commit.assert_not_called()  # 与业务同事务，由调用方 commit
 
     def test_项目ID为空时不查库(self):

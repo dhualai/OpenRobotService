@@ -31,6 +31,8 @@ vi.mock('@/api/client', () => ({
 // Mock auth store
 const mockLogin = vi.fn();
 vi.mock('@/stores/auth', () => ({
+  // 登录页会用它判断「刚登出」场景，不导出会在渲染时直接抛错
+  isManualLogout: () => false,
   useAuthStore: (selector?: (s: Record<string, unknown>) => unknown) => {
     const state = { login: mockLogin };
     if (selector) return selector(state);

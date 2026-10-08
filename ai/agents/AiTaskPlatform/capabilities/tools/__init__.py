@@ -8,6 +8,7 @@
   - image_analyze: 图片分析
   - attachment_parse: 非图片附件解析
   - ticket_ref: @# 跨工单引用（确定性 + 大脑决策双形态）
+  - memory_store / memory_recall: U老师长期记忆（用户明确要记 + 召回）
 
 本目录模块由 capabilities/__init__ 导入以触发自动注册。
 """

@@ -33,6 +33,8 @@ _POINTER_DIR = (Path(__file__).resolve().parent / "kb").resolve()
 
 # 五层 domain 架构：industry / company / team / project / personal
 # 另加 "dispatch"：派单模块历史工单向量库（L3-A 路，独立集合，避免与诊断方案混用）
+# 车型知识不建独立域：kb/company/{车型}/（如 XQE）入库归 company 域，payload
+# sub_domain="{车型}/manual"；检索按会话 vehicle_mode 以 sub_domain 过滤（0930）
 KB_DOMAINS = ["industry", "company", "team", "project", "personal", "dispatch"]
 
 _KB_POINTERS = {

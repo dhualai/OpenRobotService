@@ -1,8 +1,8 @@
-import { Fragment, useState, useEffect, useRef } from 'react';
+import { Fragment, useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot } from 'lucide-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -33,7 +33,7 @@ import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canE
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
-import { fetchWithAuth } from '@/api/ai';
+import { fetchWithAuth, taskDiscussStream } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
@@ -115,6 +115,9 @@ interface Comment { id: string; content: string; created_by_name?: string; creat
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
   ticket_type: string; project_name?: string; project_id?: string;
+  // 临时：重新指派选人置顶用
+  project_contact_person_id?: string | null;
+  project_contact_person_name?: string | null;
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
   reporter_name?: string; assignee_name?: string;
@@ -123,7 +126,7 @@ interface Ticket {
   // tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
   deadline_at?: string | null;
   // 二次派单感知增强（M3）：未派到指定人时的完整话术（详情页 redispatch.result.tip_detail）
-  // 二次派单感知增强：派单理由（为什么派给接单人，仅接单人/管理员可见 → redispatch.result.reasoning）
+  // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可见 → redispatch.result.reasoning）
   redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null;
   // 工单阶段性处理（协商节点）：当前节点 ID/名称/结束时间（naive UTC）
   curr_step_id?: number | null;
@@ -179,7 +182,7 @@ export default function TaskDetailPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
-  // 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可看到，详情页 redispatch.result.reasoning）
+  // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可看到）
   const [dispatchReason, setDispatchReason] = useState<string>('');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; curr_step_endtime?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
@@ -211,6 +214,23 @@ export default function TaskDetailPage() {
   const [submittingDeadline, setSubmittingDeadline] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
+  const [aiStreamReply, setAiStreamReply] = useState('');
+  const aiAbortRef = useRef<AbortController | null>(null);
+  const [aiEpoch, setAiEpoch] = useState(0);
+  const detailRef = useRef(detail);
+  detailRef.current = detail;
+  const diagnosingRef = useRef(false);
+  const aiBusyRef = useRef(false);
+  const discussQueueRef = useRef<Array<{ text: string; files: File[]; options?: { replyTo?: string | number; uspEnvId?: number } }>>([]);
+  const [aiQueueItems, setAiQueueItems] = useState<string[]>([]);
+  const MAX_AI_DISCUSS_QUEUE = 3;
+
+  const bumpAiQueue = () => setAiQueueItems(discussQueueRef.current.map((j) => j.text));
+
+  const abortAi = () => {
+    // 只停当前 HTTP；finally 负责收尾并接着跑队列，这里不清队列、不提前改 busy。
+    aiAbortRef.current?.abort();
+  };
 
   // 结束工单确认弹窗：问题 + AI 解决方式
   const [showResolutionPopup, setShowResolutionPopup] = useState(false);
@@ -220,6 +240,10 @@ export default function TaskDetailPage() {
   const [resolutionPolling, setResolutionPolling] = useState(false);
   // AI 判定当前无解决方案（仅占位提示，不填入输入框）
   const [resolutionNoSolution, setResolutionNoSolution] = useState(false);
+
+  // 请求暂停弹窗
+  const [showPausePopup, setShowPausePopup] = useState(false);
+  const [pauseReason, setPauseReason] = useState('');
   // 标记是否已"确认完成"成功（成功后关闭弹窗不应清除草稿；取消/遮罩关闭才清除）
   const resolveConfirmedRef = useRef(false);
   // 轮询停止标志：取消/关闭时置 true，让异步轮询循环及时退出（state 无法中断 while 循环）
@@ -283,7 +307,7 @@ export default function TaskDetailPage() {
         setDetail(t);
         // 二次派单感知增强（M3）：未派到指定人时的完整话术
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
-        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        // 二次派单感知增强：派单理由（后端对接单人/提单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(t.redispatch?.result?.reasoning || '');
         // 代理关系（代他人提单）：独立接口，失败不阻断详情渲染（横幅缺失而已）
         getProxyRelations(detailId)
@@ -298,14 +322,14 @@ export default function TaskDetailPage() {
           .then((res) => setStepTemplate(res?.data?.steps || []))
           .catch(() => setStepTemplate([]));
 
-        // 获取项目成员用于 @ 提及（无项目时也能拉到提单人和被指派人）
+        // 获取项目成员用于 @ 提及（无项目时也能拉到提单人、处理人和代提单人）
         getProjectMembers(detailId)
           .then((members) => {
-            const reporterUsername = t.created_by;
+            const pinRoles = ['提单人', '处理人', '代提单人'];
             const sorted = [...members].sort((a, b) => {
-              if (a.username === reporterUsername) return -1;
-              if (b.username === reporterUsername) return 1;
-              return 0;
+              const ai = pinRoles.indexOf(a.role_name || '');
+              const bi = pinRoles.indexOf(b.role_name || '');
+              return (ai === -1 ? pinRoles.length : ai) - (bi === -1 ? pinRoles.length : bi);
             });
             setProjectMembers(sorted);
           })
@@ -438,6 +462,13 @@ export default function TaskDetailPage() {
     // 拥有 backend:tasks:operate 权限的用户，对所有活跃状态工单均可见且可操作
     const canOperate = hasPermission('backend:tasks:operate');
 
+    // pending_requested：处理人已请求暂停，等待提单人确认——此时只有提单人侧（isReporter / isPrincipal）能操作
+    // 处理人和普通登录用户看不到按钮
+    if (status === 'pending_requested') {
+      if (!isReporter && !isPrincipal && !canOperate) return [];
+      // 管理员可以代替任何一方操作（运维兜底），但走和提单人侧一样的确认/驳回按钮
+    }
+
     const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
     if (assigneeOnlyStatuses.includes(status) && !isAssignee && !canOperate) return [];
 
@@ -450,10 +481,18 @@ export default function TaskDetailPage() {
     const actions: Record<string, { label: string; nextStatus: string; theme: string; actionType?: string; customStyle?: Record<string, string> }[]> = {
       // new 状态由处理人首次响应（协商节点时间/确认同意）自动转为 in_progress，不再提供「开始处理」按钮
       new: [],
-      in_progress: [
-        { label: '暂停任务', nextStatus: 'pending', theme: 'warning', customStyle: BTN_SECONDARY },
-        { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
-      ],
+      // 有步骤模板的工单 → "处理完成"由阶段性处理卡的「最末阶段结束」流程控制，顶部不再提供快捷入口
+      // 无步骤模板的工单 → 保留「处理完成」作为 fallback 解决途径
+      in_progress: detail?.curr_step_id
+        ? [
+            { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
+          ]
+        : [
+            { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
+            { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
+          ],
+      // 暂停请求中：确认/驳回按钮已移至「工单阶段性处理」卡内，顶部不再重复
+      pending_requested: [],
       pending: (isAssignee && isReporter)
         ? [
             // 工单退回发起人后：发起人可重新发起（继续处理）或关闭工单
@@ -471,15 +510,18 @@ export default function TaskDetailPage() {
     return actions[status] || [];
   };
 
-  const handleStatusChange = async (action: { nextStatus: string }) => {
+  const handleStatusChange = async (action: { nextStatus: string; pauseReason?: string; rejectReason?: string }) => {
     if (!detail) return;
     // 清空前次阻塞提示
     setBlockedError(null);
-    
+
     try {
+      const bodyObj: Record<string, string> = { status: action.nextStatus };
+      if (action.pauseReason) bodyObj.pause_reason = action.pauseReason;
+      if (action.rejectReason) bodyObj.reject_reason = action.rejectReason;
       await request<Ticket>(`/${detail.id}/status`, {
         method: 'PATCH',
-        body: JSON.stringify({ status: action.nextStatus }),
+        body: JSON.stringify(bodyObj),
       });
       refreshTasks();
       const statusLabel = STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus;
@@ -494,6 +536,11 @@ export default function TaskDetailPage() {
           Toast({ message: `被 ${body.blocked.length} 个工单阻塞`, theme: 'error' });
           return;
         }
+      }
+      // 请求暂停理由必填（400）
+      if (err instanceof ApiError && err.statusCode === 400 && action.nextStatus === 'pending_requested') {
+        Toast({ message: err.message || '请填写暂停理由', theme: 'error' });
+        return;
       }
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
@@ -600,6 +647,20 @@ export default function TaskDetailPage() {
 
   // 工单阶段性处理（协商节点）+ 结束工单（解决方式）：抽到共享 hook，与历史工单详情页复用
   const negotiation = useStepNegotiation(detailId ?? '', detail, refreshDetail);
+  // 稳定 DatePicker 受控 value 引用：内联 parse 每次渲染都生成新 dayjs 实例，会触发 rc-picker
+  // 的受控同步 effect，把「面板已选但未确认」的暂存值重置回受控 value（选完自动跳回当前时间的根因）
+  const editFormDeadlineValue = useMemo(
+    () => (editForm.curr_step_endtime ? parseDeadlineString(editForm.curr_step_endtime) : null),
+    [editForm.curr_step_endtime],
+  );
+  const deadlineDraftValue = useMemo(
+    () => (deadlineDraft ? parseDeadlineString(deadlineDraft) : null),
+    [deadlineDraft],
+  );
+  const reopenEndTimeValue = useMemo(
+    () => (negotiation.reopenEndTime ? parseDeadlineString(negotiation.reopenEndTime) : null),
+    [negotiation.reopenEndTime],
+  );
   const resolve = useResolveTicket(detailId ?? '', detail, refreshDetail, refreshTasks, (b) => setBlockedError(b));
 
   // ===== 公司/部门审核 =====
@@ -927,7 +988,7 @@ export default function TaskDetailPage() {
   };
 
   // ── 普通评论：POST /api/tasks/{id}/comments；返回 true=成功（组件清空输入） ──
-  const handleAddComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleAddComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     if (!detail) {
       Toast({ message: '请输入评论内容', theme: 'warning' });
       return false;
@@ -937,12 +998,14 @@ export default function TaskDetailPage() {
       // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
       const tempId = generateTempId();
       const uploads = dedupeFileNames(files);
+      const objectPaths: string[] = [];
       for (const f of uploads) {
-        await uploadCommentAttachment(f, tempId);
+        const p = await uploadCommentAttachment(f, tempId);
+        if (p) objectPaths.push(p);
       }
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
+        body: JSON.stringify({ content: text, is_public: true, attachments: objectPaths, reply_to: options?.replyTo }),
       });
       const enrichedComment = {
         ...newComment,
@@ -975,37 +1038,64 @@ export default function TaskDetailPage() {
     Toast({ message: '评论已删除', theme: 'success' });
   };
 
-  // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
-  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
-    if (!detail) return false;
-    const userMsg = text;
-    setAskingAI(true);
+  // ── @U老师 讨论：先存用户消息 → 空闲立刻 discuss / 进行中入队；返回 true=成功 ──
+  const postDiscussUserComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
+    const current = detailRef.current;
+    if (!current) return false;
+    const tempId = generateTempId();
+    const uploads = dedupeFileNames(files);
+    const objectPaths: string[] = [];
+    for (const f of uploads) {
+      const p = await uploadCommentAttachment(f, tempId);
+      if (p) objectPaths.push(p);
+    }
     try {
-      // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
-      const tempId = generateTempId();
-      const uploads = dedupeFileNames(files);
-      for (const f of uploads) {
-        await uploadCommentAttachment(f, tempId);
-      }
-      // 1. 先保存用户的 @U老师 消息到 task_comments
-      try {
-        const newComment = await request<Comment>(`/${detail.id}/comments`, {
-          method: 'POST',
-          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
-        });
-        setDetail((prev) => {
-          if (!prev) return prev;
-          const updatedComments = prev.comments ? [...prev.comments, newComment] : [newComment];
-          return { ...prev, comments: updatedComments };
-        });
-      } catch { /* 保存用户消息失败不阻塞 AI 调用 */ }
-      // 2. 调 AI 讨论（引用某条后再 @U老师：把被引评论单独带上，避免淹没在最近 10 条里）
-      const recentComments = (detail.comments || []).slice(-10).map((c) => ({
+      const newComment = await request<Comment>(`/${current.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content: text, is_public: true, attachments: objectPaths, reply_to: options?.replyTo }),
+      });
+      setDetail((prev) => {
+        if (!prev) return prev;
+        const updatedComments = prev.comments ? [...prev.comments, newComment] : [newComment];
+        return { ...prev, comments: updatedComments };
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const pumpDiscussQueue = () => {
+    const next = discussQueueRef.current.shift();
+    bumpAiQueue();
+    if (!next) return;
+    void startDiscussTurn(next.text, next.files, next.options);
+  };
+
+  const startDiscussTurn = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
+    await postDiscussUserComment(text, files, options);
+    return runDiscussHttp(text, options);
+  };
+
+  const runDiscussHttp = async (text: string, options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
+    const current = detailRef.current;
+    if (!current) return false;
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
+    aiBusyRef.current = true;
+    setDiagnosing(false);
+    diagnosingRef.current = false;
+    setAskingAI(true);
+    setAiStreamReply('');
+    setAiEpoch((n) => n + 1);
+    let ok = false;
+    try {
+      const recentComments = (current.comments || []).slice(-10).map((c) => ({
         author: c.created_by_name || c.created_by || '?',
         content: c.content,
       }));
       const quotedSrc = options?.replyTo != null
-        ? (detail.comments || []).find((c) => String(c.id) === String(options.replyTo))
+        ? (current.comments || []).find((c) => String(c.id) === String(options.replyTo))
         : undefined;
       const quotedComment = quotedSrc
         ? {
@@ -1014,39 +1104,116 @@ export default function TaskDetailPage() {
             content: quotedSrc.content,
           }
         : undefined;
-      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/discuss`, {
-        method: 'POST',
-        body: JSON.stringify({
-          task_id: String(detail.id),
-          // 去掉文本中任意位置的 @U老师 标记（可能有空格/重复），保留整段话作为 query，
-          // 兼容"先说话、句尾@U老师"的场景（否则 @U老师 在尾部时 query 会带残留或丢失）
-          query: userMsg.replace(/\s*@U老师\s*/g, ' ').trim(),
+      await taskDiscussStream(
+        {
+          task_id: String(current.id),
+          query: text.replace(/\s*@U老师\s*/g, ' ').trim(),
           context: {
             recent_comments: recentComments,
             ...(quotedComment ? { quoted_comment: quotedComment } : {}),
             ...(options?.replyTo != null ? { reply_to: options.replyTo } : {}),
+            ...(options?.uspEnvId != null ? { usp_env_id: options.uspEnvId } : {}),
           },
-        }),
-      });
-      const data = await res.json();
-      if (data.code === 0) {
+        },
+        {
+          onToken: (tok) => {
+            if (!tok) return;
+            setAiStreamReply((prev) => prev + tok);
+          },
+          onRewrite: (full) => setAiStreamReply(full || ''),
+          onResult: () => { ok = true; },
+        },
+        controller.signal,
+      );
+      if (ok) {
         Toast({ message: 'AI 已回复', theme: 'success' });
-        loadDetail();  // 重新加载评论（含 AI 回复）
+        loadDetail();
         return true;
-      } else {
-        Toast({ message: data.message || 'AI 回复失败', theme: 'error' });
-        return false;
       }
+      Toast({ message: 'AI 回复失败', theme: 'error' });
+      return false;
     } catch (err) {
+      const aborted = err instanceof Error && err.name === 'AbortError';
+      if (aborted) return false;
       Toast({ message: `AI 回复失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
       return false;
     } finally {
-      setAskingAI(false);
+      const stillMine = aiAbortRef.current === controller;
+      if (stillMine) {
+        aiAbortRef.current = null;
+        setAskingAI(false);
+        setAiStreamReply('');
+        aiBusyRef.current = false;
+        pumpDiscussQueue();
+      }
     }
   };
 
+  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
+    if (!detailRef.current) return false;
+    if (aiBusyRef.current || diagnosingRef.current) {
+      if (discussQueueRef.current.length >= MAX_AI_DISCUSS_QUEUE) {
+        Toast({ message: `排队已满（最多 ${MAX_AI_DISCUSS_QUEUE} 条），等当前排查结束后再 @U老师`, theme: 'warning' });
+        return false;
+      }
+      discussQueueRef.current.push({ text, files, options });
+      bumpAiQueue();
+      Toast({ message: `已排队（${discussQueueRef.current.length}/${MAX_AI_DISCUSS_QUEUE}），轮到时再上评论区`, theme: 'success' });
+      return true;
+    }
+    return startDiscussTurn(text, files, options);
+  };
+
+  const handleInsertThisRound = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
+    const current = detailRef.current;
+    if (!current) return false;
+    if (aiBusyRef.current || diagnosingRef.current) {
+      await postDiscussUserComment(text, files, options);
+      try {
+        const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/discuss/inject`, {
+          method: 'POST',
+          body: JSON.stringify({
+            task_id: String(current.id),
+            text: text.replace(/\s*@U老师\s*/g, ' ').trim(),
+          }),
+        });
+        const data = await res.json();
+        if (data.code === 0) {
+          Toast({ message: '已插入本轮排查', theme: 'success' });
+          return true;
+        }
+        Toast({ message: data.message || '插入本轮失败', theme: 'error' });
+        return false;
+      } catch (err) {
+        Toast({ message: `插入本轮失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+        return false;
+      }
+    }
+    return startDiscussTurn(text, files, options);
+  };
+
+  const handleInsertQueueItem = async (index: number): Promise<boolean> => {
+    const job = discussQueueRef.current[index];
+    if (!job) return false;
+    discussQueueRef.current.splice(index, 1);
+    bumpAiQueue();
+    const ok = await handleInsertThisRound(job.text, job.files, job.options);
+    if (!ok) {
+      discussQueueRef.current.splice(index, 0, job);
+      bumpAiQueue();
+    }
+    return ok;
+  };
+
+  const handleRemoveQueueItem = (index: number) => {
+    if (index < 0 || index >= discussQueueRef.current.length) return;
+    discussQueueRef.current.splice(index, 1);
+    bumpAiQueue();
+    Toast({ message: '已取消排队', theme: 'success' });
+  };
+
   // ── onSend：检测是否 @U老师（任意位置，前缀或句尾均触发）决定走普通评论还是 AI 讨论 ──
-  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     // 只要文本里含 @U老师（@ 在开头/中间/结尾都算）就走 AI 讨论；
     // 兼容"说完话后句尾手动@U老师"（否则会被当成普通评论发出、AI 不回复）
     if (text.includes('@U老师')) {
@@ -1058,10 +1225,19 @@ export default function TaskDetailPage() {
   // ── [帮我分析] → POST /api/ai/task/diagnose → 讨论区展示短链接 ──
   const handleDiagnose = async () => {
     if (!detail || diagnosing) return;
+    const prevAbort = aiAbortRef.current;
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
+    prevAbort?.abort();
+    aiBusyRef.current = true;
+    diagnosingRef.current = true;
+    setAiEpoch((n) => n + 1);
+    setAskingAI(false);
     setDiagnosing(true);
     try {
       const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/diagnose`, {
         method: 'POST',
+        signal: controller.signal,
         body: JSON.stringify({ task_id: String(detail.id) }),
       });
       const data = await res.json();
@@ -1087,9 +1263,19 @@ export default function TaskDetailPage() {
         Toast({ message: data.message || '分析失败', theme: 'error' });
       }
     } catch (err) {
-      Toast({ message: `分析失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      const aborted = err instanceof Error && err.name === 'AbortError';
+      if (!aborted) {
+        Toast({ message: `分析失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      }
     } finally {
-      setDiagnosing(false);
+      const stillMine = aiAbortRef.current === controller;
+      if (stillMine) {
+        aiAbortRef.current = null;
+        setDiagnosing(false);
+        diagnosingRef.current = false;
+        aiBusyRef.current = false;
+        pumpDiscussQueue();
+      }
     }
   };
 
@@ -1113,7 +1299,7 @@ export default function TaskDetailPage() {
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
         // 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径）
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
-        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        // 二次派单感知增强：派单理由（后端对接单人/提单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(t.redispatch?.result?.reasoning || '');
       })
       .catch(() => {});
@@ -1207,6 +1393,10 @@ export default function TaskDetailPage() {
                       } else if (action.nextStatus === 'resolved') {
                         // 结束工单（→ resolved）→ 打开 "问题 + AI 解决方式" 确认弹窗
                         resolve.handleResolveClick();
+                      } else if (action.nextStatus === 'pending_requested') {
+                        // 请求暂停 → 先弹理由输入弹窗
+                        setPauseReason('');
+                        setShowPausePopup(true);
                       } else {
                         handleStatusChange(action);
                       }
@@ -1313,28 +1503,13 @@ export default function TaskDetailPage() {
             <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
           )}
 
-          {/* 
-              ┌──────────────┬─────────────┬───────────────────┬──────────────────┬──────────────┐
-              │ 查看者/场景   │ dispatchReason│ redispatchTipDetail│ isAssignee/isAdmin│ 是否显示卡片  │
-              ├──────────────┼─────────────┼───────────────────┼──────────────────┼──────────────┤
-              │ 普通接单人   │ 空/有       │ 空(后端不返回 tip) │ isAssignee ✓      │ 仅看 reason │
-              │ (有理由)     │（按后端给）  │                   │                  │   → 显示     │
-              │ 接单人但无理由│ 空          │ 空                 │ isAssignee ✓      │  → 不显示    │
-              │ 提单人==接   │ 空/有       │ 空                 │ isAssignee ✓      │  → 显示      │
-              │ 单人(无 tip) │             │                   │                  │              │
-              │ 提单人==接   │ 有          │ 有                 │ isAssignee ✓      │  → 不显示    │
-              │ 单人(有 tip) │             │                   │                  │ (只显 tip)   │
-              │ 管理员       │ 有          │ 依工单而定          │ isAdmin ✓         │ tip 空→显示  │
-              │              │             │                   │                  │ tip 有→不显示│
-              │ 其它第三方   │ 空(后端过滤)│ 空                 │ 均 ✗              │  → 不显示    │
-              │ 老后端+第三方│ 有          │ —                 │ 均 ✗              │  → 不显示    │
-              │ (前端兜底防泄│             │                   │                  │ (角色兜底拦) │
-              │  露)         │             │                   │                  │              │
-              └──────────────┴─────────────┴───────────────────┴──────────────────┴──────────────┘ */}
+          {/* 派单原因：接单人 / 提单人 / 管理员 / 工单操作权限 可见。
+              有 tip（异常提醒）时 tip 已含说明，不再重复展示 reason。 */}
           {(() => {
             if (!dispatchReason || redispatchTipDetail) return null;
-            const { isAssignee } = getCurrentUserRoles();
-            if (!isAssignee && !isAdmin) return null;
+            const { isAssignee, isReporter } = getCurrentUserRoles();
+            const canOperate = isAdmin || hasPermission('backend:tasks:operate');
+            if (!isAssignee && !isReporter && !canOperate) return null;
             return (
               <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />
             );
@@ -1369,6 +1544,7 @@ export default function TaskDetailPage() {
             setReassignReason('');
             setShowReassignPopup(true);
           }}
+          onPauseResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
         />
 
         {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
@@ -1423,6 +1599,50 @@ export default function TaskDetailPage() {
             </div>
           </div>
         )}
+
+        {/* 项目信息补充工单（提单人请他人补项目信息时生成）：列出待补充节点，给回项目信息树的入口。
+            数据来自建单时写入的 metadata_info.info_supplement；普通工单没有该字段，卡片不出现。 */}
+        {(() => {
+          const meta = detail.metadata_info || {};
+          const raw = meta.info_supplement as
+            | { project_id?: string; project_name?: string; nodes?: Array<{ id?: string; path?: string }> }
+            | undefined;
+          if (!raw || !Array.isArray(raw.nodes) || raw.nodes.length === 0) return null;
+          const paths = raw.nodes
+            .map((item) => (item && typeof item.path === 'string' ? item.path : ''))
+            .filter(Boolean);
+          if (!paths.length) return null;
+          const projectId = String(raw.project_id || '');
+          return (
+            <div className="detail-card">
+              <h4 className="detail-card__h" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <ClipboardList size={15} strokeWidth={2} />
+                项目信息补充
+              </h4>
+              <div style={{ fontSize: 13, color: 'var(--foreground)', lineHeight: 1.8 }}>
+                <div><strong>项目：</strong>{raw.project_name || projectId || '—'}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
+                  待补充 {paths.length} 项，补齐后他人提单即可自动带全背景信息：
+                </div>
+                <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  {paths.map((path, index) => (
+                    <li key={`${path}-${index}`}>{path}</li>
+                  ))}
+                </ul>
+              </div>
+              {projectId ? (
+                <Button
+                  block
+                  theme="primary"
+                  style={{ borderRadius: '999px', marginTop: 12, backgroundColor: 'var(--blue-3)', color: '#fff', border: 'none' }}
+                  onClick={() => navigate(`/app/admin/project-detail/${encodeURIComponent(projectId)}/edit`)}
+                >
+                  去补充项目信息
+                </Button>
+              ) : null}
+            </div>
+          );
+        })()}
 
         <TicketDynamicsCard taskId={detailId ?? ''} />
 
@@ -1557,8 +1777,14 @@ export default function TaskDetailPage() {
           comments={detail.comments || []}
           onSend={handleSendComment}
           onDeleteComment={handleDeleteComment}
-          sending={submittingComment || askingAI}
+          sending={submittingComment}
           optimisticAi={diagnosing || askingAI}
+          onAbortAi={abortAi}
+          aiEpoch={aiEpoch}
+          aiQueueItems={aiQueueItems}
+          onInsertQueueItem={handleInsertQueueItem}
+          onRemoveQueueItem={handleRemoveQueueItem}
+          aiStreamReply={aiStreamReply}
           enableAI
           enableAttach
           mentionUsers={projectMembers}
@@ -1708,7 +1934,7 @@ export default function TaskDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                value={editForm.curr_step_endtime ? parseDeadlineString(editForm.curr_step_endtime) : null}
+                value={editFormDeadlineValue}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
@@ -1760,6 +1986,41 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => { setShowResumePopup(false); setResumeUser(null); }}>取消</Button>
             <Button theme="primary" onClick={handleResume}>确认继续</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 请求暂停弹窗：输入理由（提单人将看到） */}
+      <Popup visible={showPausePopup} onClose={() => { setShowPausePopup(false); setPauseReason(''); }} placement="bottom" showOverlay destroyOnClose>
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">请求暂停工单</h4>
+          <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            暂停理由将展示给提单人，对方据此决定是否同意暂停。
+          </p>
+          <Form initialData={{}}>
+            <FormItem label="暂停理由" name="pauseReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={pauseReason}
+                onChange={(v) => setPauseReason(String(v))}
+                placeholder="请说明为什么需要暂停工单（例如：需要外部协作 / 等待安全确认 / 资源调配中）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowPausePopup(false); setPauseReason(''); }}>取消</Button>
+            <Button
+              theme="primary"
+              disabled={!pauseReason.trim()}
+              onClick={async () => {
+                await handleStatusChange({ nextStatus: 'pending_requested', pauseReason: pauseReason.trim() });
+                setShowPausePopup(false);
+                setPauseReason('');
+              }}
+            >
+              提交暂停请求
+            </Button>
           </div>
         </div>
       </Popup>
@@ -1843,7 +2104,14 @@ export default function TaskDetailPage() {
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">重新指派</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
-          <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <UserSelect
+            value={reassignUser?.id ?? null}
+            onChange={setReassignUser}
+            placeholder="请选择处理人"
+            title="选择处理人"
+            pinUserId={detail?.project_contact_person_id || null}
+            pinLabel="项目对接人"
+          />
           <div style={{ margin: '12px 0 8px', fontSize: '14px', color: 'var(--foreground)' }}>转派类型<span style={{ color: 'var(--danger)' }}> *</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
             {([
@@ -1943,7 +2211,7 @@ export default function TaskDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                value={deadlineDraft ? parseDeadlineString(deadlineDraft) : null}
+                value={deadlineDraftValue}
                 disabledDate={range ? makeDisabledDate(range.min) : undefined}
                 disabledTime={range ? makeDisabledTime(range.min) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
@@ -2029,7 +2297,7 @@ export default function TaskDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={() => document.body}
-                value={negotiation.reopenEndTime ? parseDeadlineString(negotiation.reopenEndTime) : null}
+                value={reopenEndTimeValue}
                 disabledDate={range ? makeDisabledDate(range.min) : undefined}
                 disabledTime={range ? makeDisabledTime(range.min) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>

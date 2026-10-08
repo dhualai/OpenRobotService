@@ -227,9 +227,10 @@ def test_proxy_relation_response_flags_assignee_and_keeps_names():
     assert resp.is_agent is False
     assert resp.is_principal is False
     assert resp.relation_status == "acknowledged"
-    # user_map 未命中时回落到 relation 里的 username（不落空）
+    # 代理人姓名：user_map 未命中时回落到 relation 里的 username（不落空）
     assert resp.agent_name == "agent-01"
-    assert resp.principal_name == "principal-01"
+    # 被代提人姓名：user_map 未命中（未注册/未实名）不下发裸 id，前端缺省「代未知用户提交」
+    assert resp.principal_name is None
 
 
 def test_proxy_relation_response_keeps_agent_and_principal_views():
@@ -262,6 +263,21 @@ def test_attach_proxy_relations_flags_assignee_with_names():
     assert ticket.proxy_relation_status == "acknowledged"
     assert ticket.proxy_agent_name == "张三"
     assert ticket.proxy_principal_name == "李四"
+
+
+def test_attach_proxy_relations_principal_unregistered_returns_none():
+    """被代提人未注册/未实名（user_map 未命中）：不下发裸 id，前端缺省「代未知用户提交」。"""
+    ticket = _ticket()
+    db = _FakeSession([_relation("pending")])
+
+    asyncio.run(
+        TicketService._attach_proxy_relations(
+            db, [ticket], {"agent-01": "张三"}, "engineer-01"
+        )
+    )
+
+    assert ticket.proxy_agent_name == "张三"
+    assert ticket.proxy_principal_name is None
 
 
 def test_attach_proxy_relations_masks_names_for_stranger():

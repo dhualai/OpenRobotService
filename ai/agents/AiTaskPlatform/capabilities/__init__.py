@@ -11,7 +11,7 @@
 
 目录分层：
   - capabilities/core/   ← 能力基础设施（框架层，产品无关）：base / registry / supervisor / supervisor_todo / router / evaluator
-  - capabilities/tools/  ← 具体能力（可被 Supervisor 调度的 worker）：log_analyze / retrieve_history / retrieve_troubleshooting / code_search / image_analyze / attachment_parse / ticket_ref
+  - capabilities/tools/  ← 具体能力（可被 Supervisor 调度的 worker）：log_analyze / retrieve_history / retrieve_troubleshooting / code_search / image_analyze / attachment_parse / ticket_ref / memory_store / memory_recall
 
 公开导出（保持外部 from ...capabilities import xxx 不变）：
   - BaseCapability / CapabilityResult          # from ...capabilities.core.base
@@ -39,6 +39,17 @@ from ai.agents.AiTaskPlatform.capabilities.tools.image_analyze import ImageAnaly
 from ai.agents.AiTaskPlatform.capabilities.tools.retrieve_troubleshooting import RetrieveTroubleshootingCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.attachment_parse import AttachmentParseCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.ticket_ref import TicketRefCapability
+from ai.agents.AiTaskPlatform.capabilities.tools.project_info import ProjectInfoCapability
+
+# 长期记忆能力：生产若未同步 memory_store/memory_recall 文件，不应拖垮整个 @U老师 讨论入口
+try:
+    from ai.agents.AiTaskPlatform.capabilities.tools.memory_store import MemoryStoreCapability
+except ImportError:  # pragma: no cover
+    MemoryStoreCapability = None  # type: ignore[misc, assignment]
+try:
+    from ai.agents.AiTaskPlatform.capabilities.tools.memory_recall import MemoryRecallCapability
+except ImportError:  # pragma: no cover
+    MemoryRecallCapability = None  # type: ignore[misc, assignment]
 
 __all__ = [
     "BaseCapability",
@@ -58,4 +69,7 @@ __all__ = [
     "RetrieveTroubleshootingCapability",
     "AttachmentParseCapability",
     "TicketRefCapability",
+    "ProjectInfoCapability",
+    "MemoryStoreCapability",
+    "MemoryRecallCapability",
 ]

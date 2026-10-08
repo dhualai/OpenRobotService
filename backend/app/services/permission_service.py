@@ -10,17 +10,24 @@ from app.models.organization import Company, Department
 # 减少每请求的多次 DB 查询；变更后最多 60s 生效（用户重新登录可立即生效）。
 _USER_ROLES_CACHE_TTL = 60
 
-# ── 详情模板（全局字段定义）的编辑/可见判据 ──────────────────
+# ── 按「全局角色」派生的权限码（详情模板 / 一键导入全部项目）──────
 # 判据只写在这里一处：由「全局角色」（user_project_roles.project_id 为空）的角色名派生出
 # 一个权限码，塞进 get_user_with_roles 的 permissions 里。这样后端 require_permission 与
 # 前端 hasPermission 读的是同一个码，两端不必各写一份角色名——角色名以后要调整/enlarge，
 # 只改下面这张表；admin 账号（permissions 含 'admin'）照旧直通。
 PERM_PROJECT_INFO_TEMPLATE = "frontend:admin:project-info-template:show"
 
-# 「拥有哪个全局角色 → 额外获得哪些权限码」。开发者 / 超级管理员可编辑详情模板。
+# 后台管理-项目管理页「一键导入所有项目节点内容」（POST /info-nodes/ledger-sync/all）
+# 的可见/可调判据。2026-09-28 用户口径：从「仅 admin」放宽到**全局角色 超级管理员**
+# 也能用（它与详情模板同属「改一次全体项目生效」的全局写，但只动台账值、不动结构，
+# 所以不给开发者）。
+PERM_PROJECT_LEDGER_IMPORT = "frontend:admin:project-ledger-import:show"
+
+# 「拥有哪个全局角色 → 额外获得哪些权限码」。开发者 / 超级管理员可编辑详情模板；
+# 一键导入全部项目只开给超级管理员（admin 账号照旧直通）。
 _GLOBAL_ROLE_DERIVED_PERMISSIONS: Dict[str, tuple] = {
     "开发者": (PERM_PROJECT_INFO_TEMPLATE,),
-    "超级管理员": (PERM_PROJECT_INFO_TEMPLATE,),
+    "超级管理员": (PERM_PROJECT_INFO_TEMPLATE, PERM_PROJECT_LEDGER_IMPORT),
 }
 _user_roles_cache: Dict[str, Dict[str, Any]] = {}
 _user_roles_cache_ts: Dict[str, float] = {}

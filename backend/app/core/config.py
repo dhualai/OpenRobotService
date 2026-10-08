@@ -244,6 +244,10 @@ class Settings(BaseSettings):
     def WECHAT_TAGS_GET_ID_LIST_URL(self) -> str:
         return f"{self.WECHAT_API_BASE_URL}/cgi-bin/tags/getidlist"
     
+    @property
+    def WECHAT_QRCODE_CREATE_URL(self) -> str:
+        return f"{self.WECHAT_API_BASE_URL}/cgi-bin/qrcode/create"
+    
     @model_validator(mode='after')
     def validate_secret_key(self) -> 'Settings':
         if not self.SECRET_KEY and self.JWT_SECRET:

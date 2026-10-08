@@ -7,6 +7,7 @@ describe('Workbench Store', () => {
       activeTab: 'call',
       ticketDraft: null,
       chatContext: null,
+      vehicleContext: null,
       tasksRefreshKey: 0,
       selectedTicketId: null,
     });
@@ -18,10 +19,11 @@ describe('Workbench Store', () => {
       expect(state.activeTab).toBe('call');
     });
 
-    it('should have null ticketDraft and chatContext', () => {
+    it('should have null ticketDraft, chatContext and vehicleContext', () => {
       const state = useWorkbenchStore.getState();
       expect(state.ticketDraft).toBeNull();
       expect(state.chatContext).toBeNull();
+      expect(state.vehicleContext).toBeNull();
     });
 
     it('should have tasksRefreshKey at 0', () => {
@@ -103,6 +105,38 @@ describe('Workbench Store', () => {
     it('should return null when no context', () => {
       const consumed = useWorkbenchStore.getState().consumeChatContext();
       expect(consumed).toBeNull();
+    });
+  });
+
+  describe('vehicleContext（扫码确认后带入对话）', () => {
+    const VEHICLE = {
+      scene: 'proj_abc123def456',
+      projectName: '项目A',
+      customerName: '客户A',
+      vehicleModel: 'XQE',
+    };
+
+    it('should set and read back vehicle context', () => {
+      useWorkbenchStore.getState().setVehicleContext(VEHICLE);
+      expect(useWorkbenchStore.getState().vehicleContext).toEqual(VEHICLE);
+    });
+
+    it('should return context and clear it（消费即置空，避免重复注入）', () => {
+      useWorkbenchStore.getState().setVehicleContext(VEHICLE);
+
+      const consumed = useWorkbenchStore.getState().consumeVehicleContext();
+      expect(consumed).toEqual(VEHICLE);
+      expect(useWorkbenchStore.getState().vehicleContext).toBeNull();
+    });
+
+    it('should return null when no context', () => {
+      expect(useWorkbenchStore.getState().consumeVehicleContext()).toBeNull();
+    });
+
+    it('should clear on explicit null（用户点「暂不」时不该留残留）', () => {
+      useWorkbenchStore.getState().setVehicleContext(VEHICLE);
+      useWorkbenchStore.getState().setVehicleContext(null);
+      expect(useWorkbenchStore.getState().vehicleContext).toBeNull();
     });
   });
 
