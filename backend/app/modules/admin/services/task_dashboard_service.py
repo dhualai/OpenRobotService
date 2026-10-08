@@ -33,6 +33,8 @@ FRONTEND_STATUS_MAP: Dict[str, TaskStatus] = {
 # 仪表盘「工单状态监测」监控的状态（含 new：待处理工单计入工单总数与解决率分母，
 # 与前端 TICKET_STATUS_LIST 保持一致；超时/待处理口径不含 new，见 OPEN_STATUSES）
 MONITORED_STATUS_KEYS = ["new", "in_progress", "pending_requested", "paused", "resolved", "closed", "cancelled"]
+MONITORED_STATUSES = [FRONTEND_STATUS_MAP[key] for key in MONITORED_STATUS_KEYS]
+PENDING_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
 
 # 超时工单统计的口径：未完成且已进入处理流程的状态（new 尚未开始处理，不计入）
 OPEN_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING_REQUESTED, TaskStatus.PENDING]
@@ -66,10 +68,10 @@ class TaskDashboardService:
             for key, status_enum in FRONTEND_STATUS_MAP.items()
         }
 
-        # 总数与状态分布同口径：监控中的六种状态之和（含 new）
+        # 总数与状态分布同口径：监控中的状态之和（含 new）
         total = sum(by_status.values())
 
-        pending_count = by_status["in_progress"] + by_status["paused"]
+        pending_count = sum(status_counts.get(status, 0) for status in PENDING_STATUSES)
 
         now = datetime.now()
         overdue_query = select(func.count(Task.id)).where(
@@ -139,13 +141,13 @@ class TaskDashboardService:
             return {"items": [], "total": 0}
 
         # 组合 scope key（对应仪表盘统计卡下钻，与 get_ticket_summary 同口径）：
-        #   all     总工单数 = 监控中的六种状态（含 new）
+        #   all     总工单数 = 监控中的状态（含 new）
         #   pending 待处理   = 处理中 + 暂停/挂起
         #   overdue 超时工单 = 截止时间已过且仍处于未完成状态（挂起置顶 + 超时最久在前，见下方 order_by）
         if status_key == "all":
-            filters = [Task.status.in_([FRONTEND_STATUS_MAP[k] for k in MONITORED_STATUS_KEYS])]
+            filters = [Task.status.in_(MONITORED_STATUSES)]
         elif status_key == "pending":
-            filters = [Task.status.in_(OPEN_STATUSES)]
+            filters = [Task.status.in_(PENDING_STATUSES)]
         elif status_key == "overdue":
             filters = [
                 Task.deadline_at.isnot(None),
@@ -172,9 +174,9 @@ class TaskDashboardService:
         # 本 scope 的过滤条件已保证 deadline_at 非空，无 NULL 排序歧义。
         # 其余 scope 维持创建时间倒序。
         order_by = (
-            (case((Task.status == TaskStatus.PENDING, 0), else_=1), Task.deadline_at.asc())
+            (case((Task.status == TaskStatus.PENDING, 0), else_=1), Task.deadline_at.asc(), Task.id.desc())
             if status_key == "overdue"
-            else (Task.created_at.desc(),)
+            else (Task.created_at.desc(), Task.id.desc())
         )
         result = await db.execute(
             list_query.order_by(*order_by).offset(skip).limit(limit)
