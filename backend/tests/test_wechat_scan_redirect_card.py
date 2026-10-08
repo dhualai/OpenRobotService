@@ -26,7 +26,7 @@ import pytest
 
 from app.core import database as core_database
 from app.core.config import settings
-from app.models.wechat_qrcode import QrcodeStatus
+from app.models.wechat_qrcode import QrcodeStatus, WechatQrcode
 from app.wechat.api import wechat as wechat_api
 
 
@@ -55,18 +55,17 @@ def db(monkeypatch):
     return fake
 
 
+# 假行的字段集合直接取自模型列：wechat.py 一旦读到新列（如按状态分流的文案读了
+# customer_name / vehicle_model），这里自动就有，不会因 fixture 漏字段而静默抛
+# AttributeError（被 _send_scan_redirect_card 的 except 吞成「不推卡片」→ 假红）。
+# scene_str 是模型上的 property、不是列，单独补。
+_ROW_FIELDS = tuple(c.name for c in WechatQrcode.__table__.columns)
+
+
 def _row(**over):
-    """一条二维码配置行（覆盖 _send_scan_redirect_card 会读到的字段）。"""
-    fields = {
-        "id": 7,
-        "scene_str": "7",
-        "name": None,
-        "description": None,
-        "qrcode_image_url": None,
-        "redirect_url": None,
-        "status": QrcodeStatus.PUBLISHED,
-        "project_code": None,
-    }
+    """一条二维码配置行（字段 = 模型列全量，用例只覆盖自己关心的列）。"""
+    fields = dict.fromkeys(_ROW_FIELDS)
+    fields.update({"id": 7, "scene_str": "7", "status": QrcodeStatus.PUBLISHED})
     fields.update(over)
     return SimpleNamespace(**fields)
 
