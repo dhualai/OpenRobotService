@@ -204,8 +204,10 @@ describe('ProjectInfoEdit（信息树编辑页）', () => {
     renderEdit();
 
     // 结构类入口都在（不再只有管理员看得到）
+    // 页头「新标签」在树加载前就渲染，拖动把手挂在行上——必须 await 等树渲染完再断言，
+    // 否则会在「树还没回来」的瞬间取元素，步骤里偶发红。
     expect(await screen.findByRole('button', { name: '新标签' })).toBeTruthy();
-    expect(screen.getByLabelText('长按拖动调整从属')).toBeTruthy();
+    expect(await screen.findByLabelText('长按拖动调整从属')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('编辑基础信息'));
     const input = screen.getAllByTestId('info-row-input')[0] as HTMLInputElement;
