@@ -6829,6 +6829,37 @@ html, body, #root {
 .detail-card__title-inner { font: inherit; color: inherit; letter-spacing: inherit; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 /* 卡片小节标题（设计稿 SectionCard：13px font-semibold 前景色） */
 .detail-card__h { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--foreground); }
+/* 标题行带右侧操作（问题描述 → 「详细问题文档」入口）：标题左对齐、按钮右对齐 */
+.detail-card__h--with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+/* 标题行入口按钮：口径对齐详情页其他卡片操作按钮
+   （AppButton size="small"：12px 字号 / 胶囊 / 28px 高，内边距随文字宽度自适应、不折行） */
+.detail-card__h-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--blue-4);
+  border-radius: 999px;
+  background: var(--card, #fff);
+  color: var(--blue-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.detail-card__h-action:active {
+  background: var(--blue-5);
+}
 /* 卡片正文文本（统一标准：12.5px / 24px 行高，与讨论气泡 .detail-chat-bubble 一致；
    问题描述 / 解决方式 / 讨论摘要 等卡片正文统一使用，避免裸容器回退到 body 15px） */
 .detail-card__body {

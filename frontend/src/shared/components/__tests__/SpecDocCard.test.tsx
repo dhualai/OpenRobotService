@@ -56,7 +56,12 @@ const DOC = {
   updated_by_name: '张三',
 };
 
-describe('问题文档卡片（工单详情，AI 汇总讨论内容）', () => {
+/** 打开弹窗：入口按钮常驻在「问题描述」标题行右侧 */
+const openSheet = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: '详细问题文档' }));
+};
+
+describe('详细问题文档入口（工单详情，标题行按钮 + 弹窗，AI 汇总讨论内容）', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getSpecDoc).mockResolvedValue(DOC);
@@ -69,21 +74,48 @@ describe('问题文档卡片（工单详情，AI 汇总讨论内容）', () => {
     });
   });
 
-  it('可编辑者看到「AI 汇总讨论内容」与「编辑补充」入口', async () => {
+  it('有文档且可编辑：入口按钮常驻，未点击不渲染弹窗内容，打开后看到正文与两个入口', async () => {
     render(<SpecDocCard taskId={9527} canEdit />);
+
+    expect(await screen.findByRole('button', { name: '详细问题文档' })).toBeTruthy();
+    // 懒挂载：未打开弹窗时不渲染内容子树
+    expect(screen.queryByTestId('md-render')).toBeNull();
+
+    await openSheet();
     expect(await screen.findByRole('button', { name: 'AI 汇总讨论内容' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '编辑补充' })).toBeTruthy();
     expect(screen.getByTestId('md-render')).toBeTruthy();
   });
 
-  it('不可编辑者看不到 AI 汇总入口', async () => {
+  it('有文档但不可编辑：弹窗内只有正文，看不到 AI 汇总与编辑补充', async () => {
     render(<SpecDocCard taskId={9527} canEdit={false} />);
+
+    await openSheet();
     expect(await screen.findByTestId('md-render')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'AI 汇总讨论内容' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '编辑补充' })).toBeNull();
+  });
+
+  it('无文档但可编辑：入口仍在，弹窗内是「编写」与空态文案', async () => {
+    vi.mocked(getSpecDoc).mockResolvedValue({ ...DOC, exists: false, content: '', revision: 0 });
+    render(<SpecDocCard taskId={9527} canEdit />);
+
+    await openSheet();
+    expect(screen.getByRole('button', { name: '编写' })).toBeTruthy();
+    expect(screen.getByText(/尚未编写问题文档/)).toBeTruthy();
+  });
+
+  it('无文档且无编辑权限：入口按钮整体不渲染', async () => {
+    vi.mocked(getSpecDoc).mockResolvedValue({ ...DOC, exists: false, content: '', revision: 0 });
+    render(<SpecDocCard taskId={9527} canEdit={false} />);
+
+    await waitFor(() => expect(vi.mocked(getSpecDoc)).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: '详细问题文档' })).toBeNull();
   });
 
   it('评论按正序交给接口，确认后只替换补充段并乐观锁写入', async () => {
     render(<SpecDocCard taskId={9527} canEdit />);
+    await openSheet();
     fireEvent.click(await screen.findByRole('button', { name: 'AI 汇总讨论内容' }));
 
     await waitFor(() => expect(vi.mocked(generateProblemDoc)).toHaveBeenCalledTimes(1));
@@ -115,6 +147,7 @@ describe('问题文档卡片（工单详情，AI 汇总讨论内容）', () => {
     vi.mocked(getSpecDoc).mockResolvedValue({ ...DOC, exists: false, content: '', revision: 0 });
     render(<SpecDocCard taskId={9527} canEdit />);
 
+    await openSheet();
     fireEvent.click(await screen.findByRole('button', { name: 'AI 汇总讨论内容' }));
     await waitFor(() => expect(vi.mocked(generateProblemDoc)).toHaveBeenCalledTimes(1));
     fireEvent.click(await screen.findByRole('button', { name: '写入文档' }));

@@ -1,4 +1,4 @@
-/* 问题文档：编辑器弹层（md 在线编辑）+ 提单弹窗字段 + 详情卡片
+/* 问题文档：编辑器弹层（md 在线编辑）+ 提单弹窗字段 + 详情页「详细问题文档」弹窗
    配色统一走全局 token（--primary 蒂芙尼蓝 / --border / --muted 等），不再硬编码色值 */
 
 /* ── 编辑器弹层 ── */
@@ -202,65 +202,88 @@
   padding: 2px 4px;
 }
 
-/* ── 详情页「问题文档」卡片 ── */
-.spec-card {
-  margin: 12px 0;
-  border: 1px solid var(--border, #e5e7eb);
-  border-radius: var(--radius-lg, 10px);
-  background: var(--card, #fff);
-  overflow: hidden;
-}
-
-/* 头部布局：第一行「标题 + 操作区」（按钮右对齐、按内容自适应宽度、不折行），
-   元信息独占第二行做副标题——三种信息挤在一行时长文案必然压扁标题、折行按钮，
-   换行后既保证按钮尺寸稳定，窄屏（320px）依旧单行放得下，极窄时才让按钮整体下移。 */
-.spec-card__head {
+/* ── 详情页「详细问题文档」弹窗 ──
+   2026-10-08：原「问题文档」详情卡片改为「问题描述」标题行右侧入口按钮 + 弹窗，
+   移动端底部弹层 / PC 居中弹窗，口径与 ProjectInfoEditDrawer（.info-drawer）一致。 */
+.spec-sheet {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  width: 100vw;
+  height: min(88vh, 720px);
+  border-radius: 16px 16px 0 0;
+  overflow: hidden;
+  background: var(--card, #fff);
+}
+
+/* PC：居中大弹窗 */
+.spec-sheet--center {
+  width: min(880px, 92vw);
+  height: min(86vh, 760px);
+  border-radius: 14px;
+}
+
+.spec-sheet__head {
+  display: flex;
   align-items: center;
-  gap: 6px 8px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border, #eee);
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
 }
 
-.spec-card__title {
-  order: 1;
-  flex: 0 0 auto;
-  font-size: 15px;
-  font-weight: 600;
-  white-space: nowrap;
-  color: var(--foreground, #222);
-}
-
-.spec-card__meta {
-  order: 3;
-  flex: 1 1 100%;
+.spec-sheet__title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground, #222);
+}
+
+.spec-sheet__close {
+  flex: 0 0 auto;
+  padding: 4px 2px;
+  border: none;
+  background: transparent;
+  color: var(--blue-2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* 弹窗内唯一滚动容器：正文 / 附件都在这里滚（弹窗本体不滚，避免双滚动条）；
+   底部留出全面屏安全区 */
+.spec-sheet__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+}
+
+/* 副标题（谁更新过 · 修订号），无内容时不渲染 */
+.spec-sheet__meta {
+  padding: 10px 14px 0;
   font-size: 12px;
   color: var(--muted-foreground, #999);
 }
 
-/* 无更新人/修订号时不渲染（避免空行多出 6px 间距） */
-.spec-card__meta:empty {
-  display: none;
-}
-
-.spec-card__actions {
-  order: 2;
-  flex: 0 0 auto;
+/* 操作条：可编辑者的「AI 汇总讨论内容 + 编辑补充/编写」。
+   移动端底部弹层宽度有限，统一放在内容顶部（不塞头部，避免窄屏折行） */
+.spec-sheet__actions {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 8px;
-  margin-left: auto;
+  padding: 10px 14px 0;
 }
 
-/* 头部操作按钮：与全局按钮口径统一（主操作 = 品牌蓝实心胶囊，次操作 = 品牌蓝描边胶囊），
+/* 弹窗内按钮：与全局按钮口径统一（主操作 = 品牌蓝实心胶囊，次操作 = 品牌蓝描边胶囊），
    尺寸对齐详情页其他卡片操作（AppButton size="small"：12px 字号 / 胶囊 / 28px 高，
    内边距随文字宽度自适应，不折行） */
-.spec-card__btn {
+.spec-sheet__btn {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -280,43 +303,42 @@
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.spec-card__btn:not(:disabled):active {
+.spec-sheet__btn:not(:disabled):active {
   background: var(--blue-5);
 }
 
-.spec-card__btn:disabled {
+.spec-sheet__btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
-.spec-card__btn--primary {
+.spec-sheet__btn--primary {
   border-color: transparent;
   background: var(--blue-3);
   color: #fff;
 }
 
-.spec-card__btn--primary:not(:disabled):active {
+.spec-sheet__btn--primary:not(:disabled):active {
   background: var(--blue-2);
 }
 
-.spec-card__body {
+/* markdown 正文：不限高，滚动交给 .spec-sheet__body */
+.spec-sheet__doc {
   padding: 12px 14px;
-  max-height: 420px;
-  overflow-y: auto;
 }
 
-.spec-card__empty {
+.spec-sheet__empty {
   padding: 16px 14px;
   color: var(--muted-foreground, #999);
   font-size: 13px;
 }
 
-.spec-card__files {
+.spec-sheet__files {
   padding: 8px 14px 12px;
   border-top: 1px dashed var(--border, #eee);
 }
 
-.spec-card__file {
+.spec-sheet__file {
   font-size: 12px;
   color: var(--gray, #666);
   margin-top: 4px;

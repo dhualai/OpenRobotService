@@ -24,7 +24,7 @@ export interface AiProblemDocGeneratorProps {
   hasUserContent?: boolean;
   disabled?: boolean;
   label?: string;
-  /** 触发按钮类名，默认提单页 macaron 胶囊；工单详情卡片传 spec-card__btn spec-card__btn--primary */
+  /** 触发按钮类名，默认提单页 macaron 胶囊；工单详情「详细问题文档」弹窗传 spec-sheet__btn spec-sheet__btn--primary */
   triggerClassName?: string;
   onApply: (markdown: string) => void;
 }
