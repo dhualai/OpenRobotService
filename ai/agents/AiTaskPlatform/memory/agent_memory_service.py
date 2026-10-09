@@ -481,11 +481,18 @@ async def prepare_discuss_memory(query: str, task_id: str = "") -> tuple[str, st
         if candidate:
             should_save, directive = await confirm_directive_with_llm(query or "", candidate)
             if should_save and directive:
-                mem_id = await svc.store(
-                    content=directive, kind="directive", source="task", source_id=str(task_id or ""),
+                from ai.agents.AiTaskPlatform.capabilities.tools.memory_store import (
+                    MemoryStoreCapability,
                 )
-                if mem_id:
+                stored = await MemoryStoreCapability()(
+                    content=directive,
+                    user_query=query or "",
+                    source_id=str(task_id or ""),
+                )
+                if stored.ok:
                     saved = directive
+                elif (stored.meta or {}).get("approval") == "required":
+                    logger.info("[memory] 未通过审批，不写入")
             elif candidate and not should_save:
                 logger.info("[memory] extract 判定不写入（should_save=false）")
         hits = await svc.recall(query or saved, top_k=3)

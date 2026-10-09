@@ -25,6 +25,13 @@ def is_cluster_learning_source(source) -> bool:
     return (str(source or "").strip().lower() == CLUSTER_LEARNING_SOURCE)
 
 
+def _ticket_meta(meta) -> dict:
+    """工单元数据只当字典用。JSON null 收成空字典，避免后面 .get 失败。"""
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer import _parse_metadata
+
+    return _parse_metadata(meta)
+
+
 def _extract_keywords(text: str, keyword_dict: Dict[str, List[str]]) -> Set[str]:
     if not text:
         return set()
@@ -88,13 +95,7 @@ def _fetch_from_tasks_table(module_keywords: Dict[str, List[str]]) -> list[dict]
             desc = t.description or ""
             combined = f"{title} {desc}"
             keywords = _extract_keywords(combined, module_keywords)
-            meta = getattr(t, "metadata_info", None)
-            if not isinstance(meta, dict):
-                try:
-                    import json
-                    meta = json.loads(meta) if meta else {}
-                except Exception:
-                    meta = {}
+            meta = _ticket_meta(getattr(t, "metadata_info", None))
             src = getattr(t, "source", None) or CLUSTER_LEARNING_SOURCE
             if not is_cluster_learning_source(src):
                 continue

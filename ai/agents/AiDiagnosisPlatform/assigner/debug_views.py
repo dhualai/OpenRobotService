@@ -25,7 +25,7 @@ def _name_by_id() -> Dict[str, str]:
 
 def _cluster_params() -> dict:
     cfg = AssignerConfig()
-    hc = cfg.history_recall or {}
+    hc = cfg.history_recall if isinstance(getattr(cfg, "history_recall", None), dict) else {}
     return {
         "cluster_merge": hc.get("cluster_merge"),
         "cluster_min_size": hc.get("cluster_min_size"),
@@ -66,7 +66,9 @@ async def history_overview(name_by_id: Dict[str, str] | None = None) -> dict:
     from ai.core import get_retrieval_service
 
     names = name_by_id if name_by_id is not None else _name_by_id()
-    records = _load_history_tasks()
+    records = _load_history_tasks() or []
+    if not isinstance(records, list):
+        records = []
     stats = {"collection": "", "points": 0}
     try:
         retriever = await get_retrieval_service()
@@ -74,8 +76,12 @@ async def history_overview(name_by_id: Dict[str, str] | None = None) -> dict:
     except Exception as e:
         logger.warning(f"[debug] Qdrant 统计失败: {e}")
 
+    if not isinstance(stats, dict):
+        stats = {"collection": "", "points": 0}
     tickets = []
     for r in records[:80]:
+        if not isinstance(r, dict):
+            continue
         eid = (r.get("engineer_id") or "").strip()
         tickets.append({
             "ticket_id": r.get("ticket_id") or "",

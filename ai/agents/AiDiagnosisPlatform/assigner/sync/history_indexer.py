@@ -61,12 +61,21 @@ def _as_iso(v) -> str:
 
 
 def _parse_metadata(meta) -> dict:
+    """工单 metadata 只当字典用。null 和空对象 {} 都是空白户，收成空字典。"""
     if isinstance(meta, dict):
         return meta
+    if isinstance(meta, (bytes, bytearray)):
+        try:
+            meta = meta.decode("utf-8")
+        except Exception:
+            return {}
+    if not isinstance(meta, str) or not meta.strip():
+        return {}
     try:
-        return json.loads(meta) if meta else {}
+        parsed = json.loads(meta)
     except Exception:
         return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def build_index_record(

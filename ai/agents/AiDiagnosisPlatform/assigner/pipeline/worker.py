@@ -45,8 +45,12 @@ def _diagnosis_from_meta(meta) -> dict:
     诊断落库是嵌套对象：
       diagnosis.hypotheses / ruled_out / collected_info / rounds / problem_summary
     不是顶层平铺的 diagnosis_hypotheses。
+    metadata 为 null 或 {} 时按空白户处理，诊断字段留空。
     """
-    diag = (meta or {}).get("diagnosis") or {}
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer import _parse_metadata
+
+    parsed = _parse_metadata(meta)
+    diag = parsed.get("diagnosis") or {}
     if not isinstance(diag, dict):
         diag = {}
     hyps = diag.get("hypotheses")
@@ -60,6 +64,23 @@ def _diagnosis_from_meta(meta) -> dict:
         "diagnosis_collected_info": collected if isinstance(collected, dict) else None,
         "diagnosis_problem_summary": summary.strip() if isinstance(summary, str) and summary.strip() else None,
         "diagnosis_rounds": rounds if isinstance(rounds, int) else None,
+    }
+
+
+def _meta_fields(meta) -> dict:
+    """从 metadata_info 取出派单字段。null 与 {} 都当空白户，字段留空。"""
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer import _parse_metadata
+
+    parsed = _parse_metadata(meta)
+    return {
+        "session_id": parsed.get("session_id") or "",
+        "location": parsed.get("location") or "",
+        "robot_type": parsed.get("robot_type") or "",
+        "fault_code": parsed.get("fault_code") or "",
+        "preferred_assignee": parsed.get("preferred_assignee"),
+        "preferred_assignee_remark": parsed.get("preferred_assignee_remark"),
+        **_diagnosis_from_meta(parsed),
+        "dispatch_hint": parsed.get("dispatch_hint") or "",
     }
 
 
@@ -203,14 +224,7 @@ class AssignmentWorker:
                     "created_by": task.created_by or "",
                     "priority": (task.priority.value if hasattr(task.priority, 'value') else str(task.priority or "中")),
                     "task_type": (task.task_type.value if hasattr(task.task_type, 'value') else str(task.task_type or "other")),
-                    "session_id": (task.metadata_info or {}).get("session_id", "") if task.metadata_info else "",
-                    "location": (task.metadata_info or {}).get("location", "") if task.metadata_info else "",
-                    "robot_type": (task.metadata_info or {}).get("robot_type", "") if task.metadata_info else "",
-                    "fault_code": (task.metadata_info or {}).get("fault_code", "") if task.metadata_info else "",
-                    "preferred_assignee": (task.metadata_info or {}).get("preferred_assignee") if task.metadata_info else None,
-                    "preferred_assignee_remark": (task.metadata_info or {}).get("preferred_assignee_remark") if task.metadata_info else None,
-                    **_diagnosis_from_meta(task.metadata_info),
-                    "dispatch_hint": (task.metadata_info or {}).get("dispatch_hint", "") if task.metadata_info else "",
+                    **_meta_fields(task.metadata_info),
                     "project_name": task.project_name or "",
                     "project_id": task.project_id or "",
                 }
@@ -271,14 +285,7 @@ class AssignmentWorker:
                         "created_by": r.created_by or "",
                         "priority": (r.priority.value if hasattr(r.priority, 'value') else str(r.priority or "中")),
                         "task_type": (r.task_type.value if hasattr(r.task_type, 'value') else str(r.task_type or "other")),
-                        "session_id": (r.metadata_info or {}).get("session_id", "") if r.metadata_info else "",
-                        "location": (r.metadata_info or {}).get("location", "") if r.metadata_info else "",
-                        "robot_type": (r.metadata_info or {}).get("robot_type", "") if r.metadata_info else "",
-                        "fault_code": (r.metadata_info or {}).get("fault_code", "") if r.metadata_info else "",
-                        "preferred_assignee": (r.metadata_info or {}).get("preferred_assignee") if r.metadata_info else None,
-                        "preferred_assignee_remark": (r.metadata_info or {}).get("preferred_assignee_remark") if r.metadata_info else None,
-                        **_diagnosis_from_meta(r.metadata_info),
-                        "dispatch_hint": (r.metadata_info or {}).get("dispatch_hint", "") if r.metadata_info else "",
+                        **_meta_fields(r.metadata_info),
                         "project_name": r.project_name or "",
                         "project_id": r.project_id or "",
                         "curr_step_name": r.curr_step_name or "",

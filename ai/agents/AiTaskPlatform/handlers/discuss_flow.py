@@ -5,6 +5,7 @@ discuss = 针对性：按 query 关键词触发日志/图片/代码/历史，组
 """
 
 import asyncio
+import os
 import time
 from pathlib import Path
 
@@ -15,15 +16,44 @@ from ai.agents.AiTaskPlatform.prompts import (
 )
 # @# 跨工单引用解析/注入（模块顶层导入，避免运行时静默降级掩盖 import 错误）
 from ai.agents.AiTaskPlatform.contexts import (
+    build_task_ctx,
     extract_referenced_task_ids,
-    format_discussion_thread,
     format_referenced_tickets,
     format_quoted_comment_block,
-    load_ticket_discussion,
+    load_ticket_comment_rows,
+    render_comment_lines,
 )
+from ai.agents.AiTaskPlatform.contexts.history_compact import fit_ticket_history
 from ai.agents.AiTaskPlatform.tracing import nest_progress_todos
 
 logger = get_logger("TASK_AGENT")
+
+
+def _bind_runtime_logs(runtime_ctx: dict, log_paths, tmp_dirs=None, query: str = "", extra: str = "", prefer_map_id: str = "") -> None:
+    """压缩包解出的每一份日志都进 log_paths，按问题选头文件。"""
+    from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import order_logs_for_analysis
+
+    seen = set()
+    merged: list[str] = []
+    for p in list(runtime_ctx.get("log_paths") or []) + list(log_paths or []):
+        if not p:
+            continue
+        try:
+            k = os.path.normcase(os.path.abspath(p))
+        except Exception:
+            k = str(p)
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(p)
+    hint = " ".join(filter(None, [query, extra]))
+    ordered = order_logs_for_analysis(merged, hint, prefer_map_id=prefer_map_id)
+    if not ordered:
+        return
+    runtime_ctx["log_path"] = ordered[0]
+    runtime_ctx["log_paths"] = ordered
+    if tmp_dirs:
+        runtime_ctx.setdefault("_tmp_dirs", []).extend(tmp_dirs)
 
 
 async def _client_cancelled(is_cancelled) -> bool:
@@ -176,7 +206,28 @@ def _attachment_inventory(ctx, kinds: dict, has_log_file: bool) -> str:
     return head + "\n没有 .log/.zip 等现场日志，不能做日志逐行分析；有文档则应派 attachment_parse 读内容。"
 
 
-def _build_progress_emitter(task_id, run_id, live_todo: dict):
+def _log_site_facts(project_id: str) -> str:
+    """车型与调度版本。读不到就空着，不阻断讨论。"""
+    if not (project_id or "").strip():
+        return ""
+    try:
+        from ai.agents.AiTaskPlatform.capabilities.tools.project_info import site_facts_for_log
+        return site_facts_for_log(project_id)
+    except Exception as exc:
+        logger.warning(f"[discuss] 现场档案读取失败: {type(exc).__name__}")
+        return ""
+
+
+def _span_tree(trace_bus):
+    if trace_bus is None:
+        return None
+    try:
+        return trace_bus.tree()
+    except Exception:
+        return None
+
+
+def _build_progress_emitter(task_id, run_id, live_todo: dict, trace_bus=None):
     """构造 Supervisor 单项进度回调：累积 live_todo 并广播 ai.progress 到后端 WS。
 
     让前端在执行过程中实时看到"正在做哪一步 / 已完成哪步"。
@@ -194,7 +245,7 @@ def _build_progress_emitter(task_id, run_id, live_todo: dict):
         phase = "running"
         _broadcast_ai_progress(
             task_id, run_id,
-            todos=nest_progress_todos(list(live_todo.values())),
+            todos=nest_progress_todos(list(live_todo.values()), span_tree=_span_tree(trace_bus)),
             phase=phase,
         )
     return emitter
@@ -278,18 +329,17 @@ class DiscussFlow:
                 logger.warning(f"[discuss] @# 引用工单注入失败: {_ref_e}")
                 referenced_tickets = ""
 
-        # 2. 本工单讨论史：从评论表按时间整段读取，不依赖前端只传最近几条。
-        discussion_history = ""
+        # 2. 本工单讨论史：从评论表按时间整段读取原文。未到窗口不压缩。
+        comment_lines: list[str] = []
         try:
-            discussion_history = load_ticket_discussion(task_id)
+            comment_lines = render_comment_lines(load_ticket_comment_rows(task_id))
         except Exception as _hist_e:
             logger.warning(f"[discuss] 读取工单讨论史失败: {_hist_e}")
         recent = context.get("recent_comments", []) if context else []
-        if not discussion_history:
-            discussion_history = format_discussion_thread(recent if isinstance(recent, list) else [])
-        if not discussion_history:
-            discussion_history = "（暂无讨论）"
-        discussion_lines = [] if discussion_history == "（暂无讨论）" else [discussion_history]
+        if not comment_lines:
+            comment_lines = render_comment_lines(recent if isinstance(recent, list) else [])
+        discussion_history = "\n".join(comment_lines) if comment_lines else "（暂无讨论）"
+        discussion_lines = comment_lines
 
         # 2b. 讨论区「引用这句话」：用户引用某条评论后再 @U老师。
         #     与 @# 同款预加载，单独成段，避免淹没在最近 10 条历史里。
@@ -344,6 +394,17 @@ class DiscussFlow:
                 "robot_type": ctx.robot_type or "",
                 "project_id": getattr(ctx, "project_id", "") or "",
             },
+            # 日志分析用的完整工单上下文：描述、讨论原文、附件摘要、现场车型与调度版本。
+            "task_context": build_task_ctx(
+                ctx,
+                discussion="\n".join(comment_lines),
+                attachment_summaries=[
+                    f"{rec.get('filename') or obj}: {rec.get('summary') or ''}"
+                    for obj, rec in known_map.items()
+                    if isinstance(rec, dict)
+                ],
+                project_facts=_log_site_facts(getattr(ctx, "project_id", "") or ""),
+            ),
             "is_cancelled": is_cancelled,
             "round_supplements": [],
         }
@@ -364,8 +425,15 @@ class DiscussFlow:
             try:
                 log_paths, _tmp_dirs = self._extract_log_paths(ctx.attachments, task_id)
                 if log_paths:
-                    runtime_ctx["log_path"] = log_paths[0]
-                    logger.info(f"[discuss] 解析到 {len(log_paths)} 个日志文件")
+                    _bind_runtime_logs(
+                        runtime_ctx, log_paths, _tmp_dirs,
+                        query=query or "",
+                        extra=" ".join(filter(None, [ctx.title or "", ctx.description or "", ctx.problem_summary or ""])),
+                    )
+                    logger.info(
+                        f"[discuss] 解析到 {len(runtime_ctx.get('log_paths') or log_paths)} 个日志文件 "
+                        f"first={Path(runtime_ctx['log_path']).name}"
+                    )
             except Exception:
                 log_paths, _tmp_dirs = [], []
             runtime_ctx.setdefault("_tmp_dirs", _tmp_dirs)
@@ -396,10 +464,12 @@ class DiscussFlow:
             runtime_ctx["attachments"] = analyzed_atts
             try:
                 lpaths, _td = self._extract_log_paths(analyzed_atts, task_id)
-                if lpaths and not runtime_ctx.get("log_path"):
-                    runtime_ctx["log_path"] = lpaths[0]
-                    if _td:
-                        runtime_ctx.setdefault("_tmp_dirs", []).extend(_td)
+                if lpaths:
+                    _bind_runtime_logs(
+                        runtime_ctx, lpaths, _td,
+                        query=query or "",
+                        extra=" ".join(filter(None, [ctx.title or "", ctx.description or "", ctx.problem_summary or ""])),
+                    )
             except Exception:
                 pass
         # 用户明确要"重新分析日志/再分析/前面的分析是错的"时，强制重读日志并让
@@ -472,9 +542,30 @@ class DiscussFlow:
         if not project_catalog:
             project_catalog = "（工单未关联项目，或该项目还没有可引用的现场信息）"
 
+        async def _fit_history(extra: str = "", *, for_plan: bool = False) -> tuple[str, str]:
+            parts = [
+                ctx.title or "",
+                query or "",
+                quoted_comment or "",
+                memory_block or "",
+                referenced_tickets or "",
+                user_profile_block or "",
+                extra or "",
+            ]
+            if for_plan:
+                parts.extend([att_inventory, known_txt, new_txt, project_catalog])
+            return await fit_ticket_history(
+                description=ctx.description or "",
+                comment_lines=comment_lines,
+                fixed_text="\n".join(parts),
+                llm_client=self._llm_client,
+            )
+
+        description_for_prompt, discussion_history = await _fit_history(for_plan=True)
+
         task_ctx_for_plan = (
             f"工单: {ctx.title or ''}\n"
-            f"描述: {(ctx.description or '')[:200]}\n"
+            f"描述: {description_for_prompt}\n"
             f"假设: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}\n"
             f"用户问题: {query or '（本轮用户仅@U老师未附加文字，请基于下方讨论历史延续解答）'}\n"
             f"{quoted_comment}"
@@ -491,8 +582,9 @@ class DiscussFlow:
             "规则：新增附件必分析；历史图片一般用其摘要即可（除非用户明确要重看）；\n"
             "历史日志/文档摘要**不能替代真实分析**：用户可能说\"之前的分析是错的\"，"
             "只要本问题需要从日志取证，就应派 log_analyze 真实分析日志（内部复用缓存索引，快）。\n"
-            "若附件只有「对话记录」md：派 attachment_parse 读取聊天内容，"
-            "**不要说工单没有任何附件**，但要说清楚这不是车端日志、没法逐行分析 log。\n"
+            "若附件只有「对话记录」md 且本轮**尚未**拉取到服务器算法日志：派 attachment_parse 读取聊天内容，"
+            "**不要说工单没有任何附件**，但要说清楚这不是车端日志、没法逐行分析 log。"
+            "一旦已从 USP 拉到算法日志，**禁止**再说「只有对话记录/没有车端日志」。\n"
             "若问题属于知识问答（怎么操作/错误码含义/协议标准/产品介绍/排查方法）→ 派 retrieve_kb 查知识库。\n"
             "若用户要看项目信息、现场信息，或问题依赖车型、软件版本、外设、业务系统、人员、风险"
             " → 派 project_info，目标里保留用户原话。"
@@ -538,6 +630,7 @@ class DiscussFlow:
             _live_todo: dict[str, dict] = {}
             _emit_progress = _build_progress_emitter(
                 task_id=task_id, run_id=run_id, live_todo=_live_todo,
+                trace_bus=runtime_ctx.get("trace_bus"),
             )
 
             # 起始 running 信号（确定性广播）：前端只有在收到 phase=running 时才会建立
@@ -585,12 +678,40 @@ class DiscussFlow:
                     )
                     if not occurrence:
                         occurrence_src = "now(fallback)"
+                    # 先判定「路径规划中」，供时间窗 + 现场探测共用（与是否解析到时间无关）
+                    _win_blob = " ".join(
+                        filter(
+                            None,
+                            [
+                                query or "",
+                                ctx.title or "",
+                                ctx.description or "",
+                                ctx.problem_summary or "",
+                            ],
+                        )
+                    )
+                    _planning_stuck = any(
+                        m in _win_blob
+                        for m in (
+                            "路径规划中", "规划中", "卡在规划", "一直规划",
+                            "规划卡住", "没有路径下发", "机器人不动", "车不动",
+                        )
+                    )
                     if occurrence:
                         runtime_ctx["occurred_at"] = occurrence
                         # 主路径：故障前 15 分钟；不强制 ±2 分钟（那是可选兜底）
                         runtime_ctx["window_minutes"] = 15
                         runtime_ctx.pop("before_minutes", None)
                         runtime_ctx.pop("after_minutes", None)
+                        # 「路径规划中」常卡在 T 之后数分钟：需要后窗，否则规划开始/求解成功被砍掉
+                        if _planning_stuck:
+                            runtime_ctx["before_minutes"] = 15
+                            runtime_ctx["after_minutes"] = 5
+                            runtime_ctx.pop("window_minutes", None)
+                            logger.info(
+                                f"[discuss] 路径规划中现象 → 分析窗 "
+                                f"{occurrence} 前15m~后5m"
+                            )
                         # 本轮内存补上，供后续 log_analyze / 回复引用（不写回 DB）
                         try:
                             ci = dict(ctx.collected_info or {})
@@ -599,6 +720,117 @@ class DiscussFlow:
                                 ctx.collected_info = ci
                         except Exception:
                             pass
+
+                    # 「路径规划中」：先 SSH+Ray 探车态，再拉日志并按 map_id 选 TMS-MAP-{map_id}
+                    _probe_map_id = ""
+                    if _planning_stuck:
+                        try:
+                            from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import (
+                                _extract_robot_ids,
+                            )
+                            from ai.agents.AiTaskPlatform.server_pull.usp_live_probe import (
+                                probe_usp_robot_live,
+                            )
+                            _probe_robots = _extract_robot_ids(
+                                query or "",
+                                {
+                                    "title": ctx.title or "",
+                                    "description": ctx.description or "",
+                                    "problem_summary": ctx.problem_summary or "",
+                                },
+                            )
+                            _probe_robot = _probe_robots[0] if _probe_robots else ""
+                            _live_todo["usp_live_probe"] = {
+                                "id": "usp_live_probe",
+                                "description": (
+                                    f"现场探测车态"
+                                    + (f"（{_probe_robot}）" if _probe_robot else "")
+                                    + "：Ray DYNAMIC-MAP 快照"
+                                ),
+                                "status": "in_progress",
+                                "capability": "ssh_live_probe",
+                                "phase": "running",
+                            }
+                            _emit_progress(_live_todo["usp_live_probe"])
+                            _probe = await probe_usp_robot_live(
+                                env_id=usp_env_id,
+                                robot_id=_probe_robot,
+                            )
+                            runtime_ctx["usp_live_probe"] = _probe
+                            _probe_map_id = (_probe.get("map_id") or "").strip()
+                            if _probe.get("ok"):
+                                _sum = (
+                                    f"车={_probe.get('robot_id') or _probe_robot or '?'} "
+                                    f"map_id={_probe_map_id or '?'} "
+                                    f"pathId={_probe.get('path_id')} "
+                                    f"task={_probe.get('task_id') or '-'} "
+                                    f"node={_probe.get('task_node_id') or '-'}"
+                                )
+                                _live_todo["usp_live_probe"] = {
+                                    "id": "usp_live_probe",
+                                    "description": f"现场车态已探测：{_sum}",
+                                    "status": "completed",
+                                    "capability": "ssh_live_probe",
+                                    "phase": "done",
+                                }
+                                task_ctx_for_plan = (
+                                    task_ctx_for_plan
+                                    + "\n【硬规则·现场快照】已通过 SSH+Ray 读取 DYNAMIC-MAP 车态："
+                                    + _sum
+                                    + "。"
+                                    + (
+                                        f"规划日志优先 TMS-MAP-{_probe_map_id}；"
+                                        if _probe_map_id
+                                        else ""
+                                    )
+                                    + (
+                                        "pathId=None 且有任务 → 卡在等规划下发，不是没任务。"
+                                        if _probe.get("path_id_none")
+                                        and (_probe.get("task_id") or _probe.get("task_node_id"))
+                                        else ""
+                                    )
+                                    + "缺环判定必须引用此快照字段。\n"
+                                )
+                            else:
+                                _live_todo["usp_live_probe"] = {
+                                    "id": "usp_live_probe",
+                                    "description": (
+                                        "现场车态探测失败，已跳过："
+                                        f"{(_probe.get('error') or 'unknown')[:80]}"
+                                    ),
+                                    "status": "completed",
+                                    "capability": "ssh_live_probe",
+                                    "phase": "done",
+                                }
+                            _emit_progress(_live_todo["usp_live_probe"])
+                            self._add_trace(
+                                self.NODE_DISCUSS, "ok",
+                                output={
+                                    "usp_live_probe": {
+                                        "ok": bool(_probe.get("ok")),
+                                        "robot": _probe.get("robot_id"),
+                                        "map_id": _probe_map_id,
+                                        "path_id_none": _probe.get("path_id_none"),
+                                        "task_id": _probe.get("task_id"),
+                                        "task_node_id": _probe.get("task_node_id"),
+                                    }
+                                },
+                            )
+                        except Exception as _probe_e:
+                            logger.warning(
+                                f"[discuss] USP 现场探测降级 env={usp_env_id}: {_probe_e}"
+                            )
+                            _live_todo["usp_live_probe"] = {
+                                "id": "usp_live_probe",
+                                "description": (
+                                    f"现场车态探测异常，已跳过：{type(_probe_e).__name__}"
+                                ),
+                                "status": "completed",
+                                "capability": "ssh_live_probe",
+                                "phase": "done",
+                            }
+                            _emit_progress(_live_todo["usp_live_probe"])
+
                     logger.info(
                         f"[discuss] 从 USP 环境 env={usp_env_id} 拉取最近日志 "
                         f"anchor={occurrence_src} raw={occurrence!r}"
@@ -617,32 +849,44 @@ class DiscussFlow:
                         env_id=usp_env_id, occurrence_time=occurrence,
                     )
                     if pulled:
-                        from ai.agents.AiTaskPlatform.server_pull.usp_log_puller import (
-                            select_log_for_query,
-                        )
-                        # 按问题选服务日志：「不可达」优先 TMS-MAP → DYNAMIC_MAP，勿先读 TASK-MANAGER
                         pick_hint = " ".join(
                             filter(
                                 None,
                                 [
                                     query or "",
                                     ctx.title or "",
-                                    (ctx.description or "")[:400],
+                                    ctx.description or "",
                                     ctx.problem_summary or "",
                                 ],
                             )
                         )
-                        ordered = select_log_for_query(pulled, pick_hint)
-                        chosen = ordered[0]
-                        runtime_ctx["log_path"] = chosen
-                        runtime_ctx["log_paths"] = ordered
-                        runtime_ctx.setdefault("_tmp_dirs", []).extend(pull_tmps or [])
+                        _bind_runtime_logs(
+                            runtime_ctx, pulled, pull_tmps,
+                            query=pick_hint,
+                            prefer_map_id=_probe_map_id or "",
+                        )
                         runtime_ctx["usp_env_id"] = usp_env_id
                         has_logs = True
+                        ordered = runtime_ctx.get("log_paths") or [runtime_ctx["log_path"]]
+                        chosen = runtime_ctx["log_path"]
+                        names = [Path(p).name for p in ordered]
+                        has_tms_map = any("TMS-MAP-" in p.replace("\\", "/").upper() for p in ordered)
+                        has_tms_only = any(
+                            "TMS" in p.replace("\\", "/").upper()
+                            and "TMS-MAP-" not in p.replace("\\", "/").upper()
+                            for p in ordered
+                        )
                         logger.info(
                             f"[discuss] USP 选用日志 first={Path(chosen).name} "
-                            f"all={[Path(p).name for p in ordered[:6]]}"
+                            f"all={names[:6]} prefer_map={_probe_map_id or '-'}"
                         )
+                        if not has_tms_map and has_tms_only:
+                            logger.warning(
+                                "[discuss] 本次拉包只有通用 TMS、没有 TMS-MAP-*；"
+                                "路径规划中场景下规划原文通常在 TMS-MAP-{map_id}，"
+                                "通用 TMS 可能只是心跳"
+                                + (f"；现场 map_id={_probe_map_id}" if _probe_map_id else "")
+                            )
                         self._add_trace(
                             self.NODE_DISCUSS, "ok",
                             output={
@@ -650,6 +894,7 @@ class DiscussFlow:
                                     "env_id": usp_env_id,
                                     "logs": len(pulled),
                                     "chosen": Path(chosen).name,
+                                    "prefer_map_id": _probe_map_id or None,
                                 }
                             },
                         )
@@ -658,7 +903,9 @@ class DiscussFlow:
                             "description": (
                                 f"已从 USP 拉取日志（选用 {Path(chosen).name}，共 {len(pulled)} 个"
                                 + (f"，锚点 {occurrence}" if occurrence else "")
-                                + f"，来源 {occurrence_src}）"
+                                + f"，来源 {occurrence_src}"
+                                + (f"，优先地图 {_probe_map_id}" if _probe_map_id else "")
+                                + "）"
                             ),
                             "status": "completed",
                             "capability": "ssh_export_logs",
@@ -685,11 +932,15 @@ class DiscussFlow:
                 if runtime_ctx.get("log_path"):
                     # 拉取成功后补一句，避免规划上下文仍写「没有现场日志」
                     _occ_hint = runtime_ctx.get("occurred_at") or ""
+                    _log_names = [Path(p).name for p in (runtime_ctx.get("log_paths") or [runtime_ctx["log_path"]])]
                     task_ctx_for_plan = (
                         task_ctx_for_plan
-                        + f"\n已从可达 USP 环境 #{usp_env_id} 拉取到算法日志"
+                        + f"\n【硬规则】已从可达 USP 环境 #{usp_env_id} 拉取到算法日志"
                         + (f"（故障时间锚点 {_occ_hint}）" if _occ_hint else "")
-                        + "，应优先派 log_analyze；调用时传入 occurred_at。\n"
+                        + f"：{', '.join(_log_names[:6])}。"
+                        "应优先派 log_analyze；调用时传入 occurred_at。"
+                        "**禁止**回复「附件只有对话记录 / 没有车端日志 / 无法直接定位」；"
+                        "对话记录.md 只是附属材料，不是唯一材料。\n"
                     )
 
             # 把进度回调注入运行时上下文，供子 Agent（如 LogSubAgent）内部上报子步骤
@@ -720,6 +971,15 @@ class DiscussFlow:
                     elif isinstance(res, dict) and not res.get("ok"):
                         # 能力失败：记录告警（无发生时间的日志提示已内嵌在结果文本里，不再单独阻断）
                         logger.warning(f"[discuss] 能力 {cap_name} 失败: {res.get('error')}")
+                        if cap_name == "log_analyze" and runtime_ctx.get("log_path"):
+                            _enames = [Path(p).name for p in (runtime_ctx.get("log_paths") or [runtime_ctx["log_path"]])]
+                            facultative += (
+                                f"\n[日志分析失败说明]\n"
+                                f"本轮已从 USP 拉取算法日志（{', '.join(_enames[:6])}），"
+                                f"但 log_analyze 执行失败：{res.get('error') or '未知错误'}。"
+                                "**禁止**对用户说「附件只有对话记录/没有车端日志」；"
+                                "应如实说明：服务器算法日志已到位，分析因 LLM/服务异常中断，请稍后重试。\n"
+                            )
 
             # ── 确定性保底（仅当用户明确要求"分析全部/所有附件/图片"时）——强制补做图片分析 ──
             # LLM 调度偶发只派 attachment_parse（解析文本附件）而不派 image_analyze，
@@ -763,9 +1023,11 @@ class DiscussFlow:
                     logger.warning(f"[discuss] 强制 image_analyze 失败: {e}")
 
             # 用户点名日志/全面分析，但 Supervisor 没读文档附件（常见：只有对话记录.md）
+            # 若本轮已拉到 USP 算法日志，不要再强推对话记录解析抢叙事（容易胡说「没有车端日志」）
             _ask_logs = any(kw in (query or "") for kw in ("日志", "附件", "全面分析", "分析一下"))
             if (
                 _ask_logs
+                and not runtime_ctx.get("log_path")
                 and "attachment_parse" in available_caps
                 and "attachment_parse" not in (sup_result.get("results") or {})
                 and (runtime_ctx.get("attachments") or _cap_all)
@@ -815,7 +1077,7 @@ class DiscussFlow:
                             "log_path": runtime_ctx["log_path"],
                             "log_paths": runtime_ctx.get("log_paths") or [],
                             "query": query,
-                            "task_context": runtime_ctx.get("current_task", {}),
+                            "task_context": runtime_ctx.get("task_context") or runtime_ctx.get("current_task", {}),
                             "occurred_at": runtime_ctx.get("occurred_at") or "",
                             "window_minutes": runtime_ctx.get("window_minutes", 15),
                         }
@@ -904,7 +1166,9 @@ class DiscussFlow:
                 if _t.get("phase") in ("running", "in_progress"):
                     _t["phase"] = "done"
                 _final_todo.append(_t)
-            final_todo = nest_progress_todos(_final_todo)
+            final_todo = nest_progress_todos(
+                _final_todo, span_tree=_span_tree(runtime_ctx.get("trace_bus")),
+            )
             reasoning_trace["todo"] = final_todo
             # 先不广播 done：浏览器离开/刷新时连接会断，若此处就「完成」前端会收起过程区，
             # 后面再跳过写评论就变成「执行完成但没有回复」。等评论落库后再发 done。
@@ -954,9 +1218,10 @@ class DiscussFlow:
             from ai.agents.AiTaskPlatform.prompts import (
                 DISCUSS_LIGHT_SYSTEM_PROMPT, DISCUSS_LIGHT_USER_TEMPLATE,
             )
+            description_for_prompt, discussion_history = await _fit_history()
             prompt = DISCUSS_LIGHT_USER_TEMPLATE.format(
                 title=ctx.title or "",
-                description=(ctx.description or "")[:200],
+                description=description_for_prompt,
                 discussion_history=discussion_history,
                 quoted_comment=quoted_comment or "",
                 query=query or "",
@@ -978,9 +1243,10 @@ class DiscussFlow:
                         facultative = "当前工单没有日志、图片或任何可解析的附件。请如实告知工程师，不要编造。"
 
             diag_summary = f"推测: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}"
+            description_for_prompt, discussion_history = await _fit_history(facultative or "")
             prompt = DISCUSS_USER_TEMPLATE.format(
                 title=ctx.title or "",
-                description=(ctx.description or "")[:200],
+                description=description_for_prompt,
                 diagnosis_summary=diag_summary,
                 discussion_history=discussion_history,
                 quoted_comment=quoted_comment or "",

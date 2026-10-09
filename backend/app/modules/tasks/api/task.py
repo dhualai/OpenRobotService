@@ -65,6 +65,7 @@ from app.services.redispatch_tip_service import (  # 派单说明：列表/气�
     build_redispatch_tip,
     clean_reasoning_for_display,
     step0_blocks_redispatch,
+    yaorenba_assignee_tip,
 )
 
 router = APIRouter(tags=["tasks"])
@@ -923,7 +924,8 @@ async def get_task(
             from sqlalchemy import select as _sel
             # 权限控制：派单理由相关属较敏感信息，按下述身份矩阵返回，避免无关查看者拿到：
             #   - result.reasoning（"为什么派给他"）→ 「接单人 / 提单人 / 管理员 / 有 operate 权限」可见
-            #   - result.tip_detail（异常场景提醒，如未派到倾向人）→ 「提单人 / 管理员 / operate」可见
+            #   - result.tip_detail：提单人/管理员看提单侧说明；接单人仅在「摇人吧挂现场内容」时看接单侧提醒
+
             # （接单人身份依据 _log.assigned_id（本轮真正被派单对象）判定，见下 `_viewer_assignee`）
             _viewer_user = None
             _viewer_creator = False
@@ -1000,8 +1002,11 @@ async def get_task(
                         "matched_pref": _log.matched_pref,
                         "name_collision": _log.name_collision,
                         "pinyin_match": _log.pinyin_match,
-                        # 异常派单提醒：提单人 / 管理员 / 工单操作权限 可见
-                        "tip_detail": tip_detail if (_viewer_creator or _viewer_operate) else None,
+                        # 派单提醒：提单人/运维看完整 tip；接单人看摇人吧错位专用提醒（角度不同）
+                        "tip_detail": (
+                            tip_detail if (_viewer_creator or _viewer_operate)
+                            else (yaorenba_assignee_tip(prof) if _viewer_assignee else None)
+                        ),
                     },
                 })
             else:

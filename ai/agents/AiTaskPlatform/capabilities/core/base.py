@@ -78,6 +78,7 @@ class BaseCapability(ABC):
 
     # ── 生命周期 / 配额（可选）──
     max_usage_per_session: Optional[int] = None  # 单会话调用上限（None=不限）
+    requires_approval: bool = False  # True 时 before_run 按审批策略短路，读日志/知识库保持 False
 
     def __init__(self):
         # 会话内调用计数（配额）
@@ -113,8 +114,9 @@ class BaseCapability(ABC):
         return True
 
     async def before_run(self, **kwargs: Any) -> Optional[CapabilityResult]:
-        """执行前钩子。返回 CapabilityResult 则短路（不跑 run）；默认 None 继续。"""
-        return None
+        """执行前钩子。审批策略不通过时返回结果并短路；否则 None，继续 run。"""
+        from ai.agents.AiTaskPlatform.capabilities.core.approval import approval_gate
+        return approval_gate(self, kwargs)
 
     async def after_run(self, result: CapabilityResult, **kwargs: Any) -> CapabilityResult:
         """执行后钩子：可改写/盖章结果；默认原样返回。异常由调用方忽略后处理。"""

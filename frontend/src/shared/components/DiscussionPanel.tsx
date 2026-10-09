@@ -127,21 +127,27 @@ const CAP_LABELS: Record<string, string> = {
 
 function ProgressTodoItem({ t }: { t: AiProgressTodo }) {
   const desc = t.description || (t.capability ? CAP_LABELS[t.capability] : '') || t.capability || '分析';
-  const status = t.phase === 'done' || t.status === 'completed';
-  const running = t.phase === 'running' || t.status === 'in_progress';
+  const done = t.phase === 'done' || t.status === 'completed';
+  const running = !done && (t.phase === 'running' || t.status === 'in_progress');
+  const pending = !done && !running;
   const children = Array.isArray(t.children) ? t.children : [];
+  const stateLabel = done ? '已完成' : running ? '进行中' : '待做';
   return (
-    <li className={`detail-chat-ai-progress__item ${running ? 'is-running' : ''} ${status ? 'is-done' : ''}`}>
+    <li
+      className={`detail-chat-ai-progress__item ${running ? 'is-running' : ''} ${done ? 'is-done' : ''} ${pending ? 'is-pending' : ''}`}
+      data-state={done ? 'done' : running ? 'running' : 'pending'}
+    >
       <div className="detail-chat-ai-progress__row">
         <span className="detail-chat-ai-progress__icon" aria-hidden="true">
-          {status ? (
+          {done ? (
             <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic done-icon">
               <circle cx="8" cy="8" r="7" />
               <path d="M4.9 8.3l1.9 1.9 4.2-4.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           ) : running ? (
             <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic running-icon">
-              <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" fill="none" strokeLinecap="round" />
+              <circle cx="8" cy="8" r="6.2" fill="none" />
+              <path d="M8 1.8a6.2 6.2 0 0 1 6.2 6.2" fill="none" strokeLinecap="round" />
             </svg>
           ) : (
             <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic pending-icon">
@@ -149,7 +155,7 @@ function ProgressTodoItem({ t }: { t: AiProgressTodo }) {
             </svg>
           )}
         </span>
-        <span className="detail-chat-ai-progress__text">{desc}</span>
+        <span className="detail-chat-ai-progress__text" aria-label={`${stateLabel}：${desc}`}>{desc}</span>
       </div>
       {children.length > 0 && (
         <ul className="detail-chat-ai-progress__children">
@@ -238,7 +244,8 @@ export interface ProjectMember {
 interface DiscussionPanelProps {
   /** 评论列表（两端共用 /api/tasks/{id}/comments 数据） */
   comments: DiscussionComment[];
-  /** 发送：父级处理 POST 评论 / @U老师 路由 / 附件上传；返回 true=成功（组件清空输入），false=失败（保留输入）。
+  /** 发送：父级处理 POST 评论 / @U老师 路由 / 附件上传；返回 true=成功，false=失败。
+   *  输入框在点击发送后立刻清空（不等 AI 流式结束）；失败时组件会还原原文。
    *  options.replyTo 为引用评论ID；options.uspEnvId 为讨论区选中的可达 USP 环境。 */
   onSend: (text: string, files: File[], options?: { replyTo?: string | number; uspEnvId?: number }) => Promise<boolean>;
   /** 发送中（禁用输入与按钮、按钮文案变“发送中”） */
@@ -1130,27 +1137,32 @@ export default function DiscussionPanel({
       notifySpill();
     }
     const replyTo = quoted ? quoted.id : undefined;
+    const quotedSnap = quoted;
     const sendOpts: { replyTo?: string | number; uspEnvId?: number } = {};
     if (replyTo !== undefined) sendOpts.replyTo = replyTo;
     if (canUseUspEnv && uspEnvId !== '' && Number.isFinite(Number(uspEnvId))) {
       sendOpts.uspEnvId = Number(uspEnvId);
     }
+    // 立刻清空：@U老师 流式可能很久，不能等 onSend 整段结束才清，否则发出的话一直挂在输入框
+    setCommentText('');
+    setPendingFiles([]);
+    setQuoted(null);
+    setShowEmoji(false);
+    forceScrollRef.current = true;
+    isAtBottomRef.current = true;
+    scrollToBottom();
+
     let ok = false;
     try {
       ok = await onSend(text, files, Object.keys(sendOpts).length ? sendOpts : undefined);
     } catch (err) {
       Toast({ message: `发送失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
-    if (ok) {
-      setCommentText('');
-      setPendingFiles([]);
-      setQuoted(null);
-      setShowEmoji(false);
-      // 用户主动发消息 → 强制滚动到底部最新（无论之前是否翻看历史），
-      // 进入「强制贴底」模式；之后新消息（含回显）无条件跟随，直到用户手动上翻历史才退出。
-      forceScrollRef.current = true;
-      isAtBottomRef.current = true;
-      scrollToBottom();
+    if (!ok) {
+      // 失败还原，便于改完重发（含排队失败 / 评论 POST 失败）
+      setCommentText(text0);
+      setPendingFiles(files.filter((f) => !spilled.filename || f.name !== spilled.filename));
+      if (quotedSnap) setQuoted(quotedSnap);
     }
     // 发送完成（无论成功/失败）焦点回到输入框，避免点「发送」按钮夺焦后需手动点回，支持连续输入；
     // textarea 始终挂载，下一帧渲染（sending 解除 disabled）后 focus 生效。
@@ -1761,7 +1773,7 @@ export default function DiscussionPanel({
                     ? 'U老师 正在排查执行'
                     : '排查执行完成'}
               {aiQueueItems.length > 0 && (
-                <span className="detail-chat-ai-progress__queue">另有 {aiQueueItems.length} 条排队</span>
+                <span className="detail-chat-ai-progress__queue">结束后跟进 {aiQueueItems.length} 条</span>
               )}
               {onAbortAi && (!allTodosDone || !!aiStreamReply) && (
                 <button
@@ -1789,11 +1801,13 @@ export default function DiscussionPanel({
               </div>
             )}
             {aiQueueItems.length > 0 && (
+              <>
+              <p className="detail-chat-ai-progress__queue-note">这些会等本轮结束再开始。要改当前排查，点插入本轮。</p>
               <ul className="detail-chat-ai-progress__queue-list">
                 {aiQueueItems.map((q, i) => (
                   <li key={`${i}-${q.slice(0, 12)}`} className="detail-chat-ai-progress__queue-item">
                     <span className="detail-chat-ai-progress__queue-text">
-                      排队 {i + 1}/{aiQueueItems.length}：{q.replace(/\s*@U老师\s*/g, ' ').trim() || q}
+                      跟进 {i + 1}/{aiQueueItems.length}：{q.replace(/\s*@U老师\s*/g, ' ').trim() || q}
                     </span>
                     {onInsertQueueItem && (
                       <button
@@ -1816,6 +1830,7 @@ export default function DiscussionPanel({
                   </li>
                 ))}
               </ul>
+              </>
             )}
           </div>
         )}

@@ -355,10 +355,12 @@ class TestStep0TipOutlet:
         assert build_redispatch_tip(log, {"u-zhang": "张三"}) is None
 
     def test_yaorenba_field_entry_tip(self):
-        """正常流程：挂在摇人吧但内容是现场问题 → 提醒入口选错，不说派单判错。"""
+        """正常流程：挂在摇人吧但内容是现场问题 → 提单人侧温和提醒改项目。"""
         from app.services.redispatch_tip_service import (
             YAORENBA_FIELD_ENTRY_TIP,
+            YAORENBA_FIELD_ENTRY_ASSIGNEE_TIP,
             build_redispatch_tip,
+            yaorenba_assignee_tip,
         )
 
         log = SimpleNamespace(
@@ -368,7 +370,19 @@ class TestStep0TipOutlet:
             name_collision=False,
             profile={"yaorenba_field_entry": True, "missing": []},
         )
-        assert build_redispatch_tip(log, {"u-zhang": "张三"}) == YAORENBA_FIELD_ENTRY_TIP
+        tip = build_redispatch_tip(log, {"u-zhang": "张三"})
+        assert tip == YAORENBA_FIELD_ENTRY_TIP
+        assert "不是派单判错" not in tip
+        assert "建议之后提单" in tip
+        assert "派单容易不准" in tip
+        # 接单人话术：角度不同，提示可能需转派
+        assignee = yaorenba_assignee_tip(log.profile)
+        assert assignee == YAORENBA_FIELD_ENTRY_ASSIGNEE_TIP
+        assert "并不属于摇人吧服务平台" in assignee
+        assert "按服务平台候选" in assignee
+        assert "容易不准确" in assignee
+        assert "建议转派" in assignee
+        assert assignee != tip
 
     def test_incomplete_tip(self):
         """正常流程：已派到指定人但画像不完整。"""

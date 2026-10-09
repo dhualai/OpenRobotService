@@ -67,13 +67,16 @@ _KEEP_WORDS = (
     "不可达", "可达", "无解", "求解", "拓扑", "topo", "TOPO",
     "unreachable", "Unreachable", "UNREACHABLE",
     "no solution", "NO_SOLUTION", "no_path", "NO_PATH", "NoSolutionFound",
-    "路径规划", "path plan", "PathPlan", "planning fail",
-    "DPP规划请求", "DPP规划结果", "路径规划开始", "路径规划结束",
+    "路径规划", "path plan", "PathPlan", "planning fail", "路径规划中",
+    "MAPF", "MAPF-T", "下发路径", "路径下发", "求解成功",
     "路径规划失败", "路径规划超时", "路径规划异常", "路径规划结果为空",
-    "LOCATE FAILED", "LOCATE ERROR", "LOCATE SUCCESS",
+    "路径规划开始", "路径规划结束", "新任务-----",
+    "LOCATE FAILED", "LOCATE ERROR", "LOCATE SUCCESS", "Locate Robot",
     "目标点", "goal", "Goal", "mapId", "map_id", "地图层",
     "不在当前所有地图层上", "前置点", "路径拒收", "DMAP已接收路径",
+    "接收到TMS路径", "路径校验通过",
     "新任务-----", "求解成功", "非强连通",
+    "原始地图单车路径无解", "TRAFFIC_LOCK", "blocked_edges", "障碍物",
 )
 
 # 行头像「刷状态/更新」的 INFO 大行：体内常嵌历史 error_code，不能当 ERROR 行

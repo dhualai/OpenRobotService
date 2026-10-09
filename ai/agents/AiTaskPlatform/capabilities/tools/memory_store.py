@@ -10,6 +10,7 @@ logger = get_logger("TASK_AGENT")
 
 class MemoryStoreCapability(BaseCapability):
     name = "memory_store"
+    requires_approval = True
     description = (
         "把一条重要信息存入 U老师 的长期记忆。"
         "仅在用户明确说「记住/记一下/以后都用」时使用，不要自行从讨论里抽取。"

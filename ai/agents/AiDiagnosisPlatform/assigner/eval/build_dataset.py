@@ -172,9 +172,10 @@ def _parse_meta(meta) -> dict:
         return meta
     if isinstance(meta, str):
         try:
-            return json.loads(meta)
+            parsed = json.loads(meta)
         except (json.JSONDecodeError, TypeError):
             return {}
+        return parsed if isinstance(parsed, dict) else {}
     return {}
 
 

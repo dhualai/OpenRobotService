@@ -318,7 +318,7 @@ function funnelWidthPct(value: number, base: number): number {
   return Math.min(100, raw);
 }
 
-/** 漏斗层间：一行说明扣除与剩余，可点开对应工单。 */
+/** 漏斗层间：只放扣除说明，不画收窄的过渡面。 */
 function FunnelBridge(props: {
   deductLabel: string;
   deduct: number;
@@ -328,29 +328,28 @@ function FunnelBridge(props: {
   expose?: boolean;
   onDeductClick?: () => void;
   deductActive?: boolean;
-  fromPct: number;
-  toPct: number;
 }) {
   const unit = props.unit || '张';
-  const text = (
-    <>
-      {props.expose ? '仅曝光' : '扣除'} {props.deductLabel} −{props.deduct}{unit}
-      <span> → {props.remainLabel || '剩余'} {props.remain}{unit}</span>
-    </>
-  );
+  const remainLabel = props.remainLabel || '剩余';
+  const short = props.expose
+    ? `仅曝光 ${props.deductLabel} ${props.deduct}${unit}`
+    : `−${props.deduct}${unit} ${props.deductLabel}`;
+  const full = `${props.expose ? '仅曝光' : '扣除'} ${props.deductLabel} −${props.deduct}${unit}，${remainLabel} ${props.remain}${unit}`;
   const cls = `dispatch-dev__funnel-link${props.expose ? ' is-expose' : ''}${props.deductActive ? ' is-active' : ''}`;
+  const bridgeCls = `dispatch-dev__funnel-bridge${props.expose ? ' is-expose' : ''}`;
+  const chip = props.onDeductClick ? (
+    <button type="button" className={cls} title={full} onClick={props.onDeductClick}>{short}</button>
+  ) : (
+    <span className={cls} title={full}>{short}</span>
+  );
   return (
-    <div className="dispatch-dev__funnel-bridge">
-      {props.onDeductClick ? (
-        <button type="button" className={cls} onClick={props.onDeductClick}>{text}</button>
-      ) : (
-        <span className={cls}>{text}</span>
-      )}
+    <div className={bridgeCls}>
+      {chip}
     </div>
   );
 }
 
-/** 漏斗一层：圆角条按真实比例居中，名称和错派率放在条下方，窄屏也能读全。 */
+/** 漏斗一层：名称在左，纯色条按数量居中，错派率在右。 */
 function FunnelStepRow(props: {
   widthPct: number;
   title: string;
@@ -378,13 +377,11 @@ function FunnelStepRow(props: {
   );
   return (
     <div className="dispatch-dev__funnel-row">
-      {bar}
-      <div className="dispatch-dev__funnel-meta">
-        <span>{props.title}</span>
-        <em title={props.rateHint}>
-          错派 {pct(props.rate)}
-          <i>{props.rateHint}</i>
-        </em>
+      <div className="dispatch-dev__funnel-name">{props.title}</div>
+      <div className="dispatch-dev__funnel-track">{bar}</div>
+      <div className="dispatch-dev__funnel-rate" title={props.rateHint}>
+        <em>错派 {pct(props.rate)}</em>
+        <i>{props.rateHint}</i>
       </div>
     </div>
   );
@@ -1422,7 +1419,7 @@ export default function DispatchDev() {
             <p className="dispatch-dev__hint">
               按单按工单创建时间归周。按次按派单发生时间归周：ai_assign 记在日志那一周，没走过 AI 的建单指派记在创建周，每张 1 次。
               层宽按本漏斗顶层真实数量缩放。按次从「本周派单次」起算，再扣从未走过 AI。
-              错派率写在层块内（按单=并集错派/本层张数，按次=错派事件/本层次数）。倾向人×2 仅曝光暂不扣。下方审核区口径不变。
+              错派率写在每层名称右侧（按单=并集错派/本层张数，按次=错派事件/本层次数）。倾向人×2 仅曝光暂不扣。下方审核区口径不变。
             </p>
             {reassign?.error ? (
               <p className="dispatch-dev__hint">{reassign.error}</p>
@@ -1475,8 +1472,6 @@ export default function DispatchDev() {
                       deduct={drops?.never_ai?.count ?? 0}
                       remain={afterNeverN}
                       remainLabel="走过 AI"
-                      fromPct={wACreated}
-                      toPct={wAAfterNever}
                       onDeductClick={() => setListKey((k) => (k === 'never_ai' ? null : 'never_ai'))}
                       deductActive={listKey === 'never_ai'}
                     />
@@ -1493,8 +1488,6 @@ export default function DispatchDev() {
                       deduct={drops?.step0?.count ?? 0}
                       remain={tf?.after_step0 ?? aiPoolN}
                       remainLabel="进入 AI 池"
-                      fromPct={wAAfterNever}
-                      toPct={wAPool}
                       onDeductClick={() => setListKey((k) => (k === 'step0' ? null : 'step0'))}
                       deductActive={listKey === 'step0'}
                     />
@@ -1513,15 +1506,10 @@ export default function DispatchDev() {
                       deduct={drops?.preferred_twice?.count ?? 0}
                       remain={aiPoolN}
                       remainLabel="仍计 AI 池"
-                      fromPct={wAPool}
-                      toPct={wAPool}
                       expose
                       onDeductClick={() => setListKey((k) => (k === 'preferred_twice' ? null : 'preferred_twice'))}
                       deductActive={listKey === 'preferred_twice'}
                     />
-                    <div className="dispatch-dev__funnel-arrow">
-                      ↓ 仅派错了 {tf?.misassign_only ?? 0} · 仅重派不准确 {tf?.redispatch_only ?? 0} · 两者都有 {tf?.both ?? 0}
-                    </div>
                     <FunnelStepRow
                       widthPct={wAUnion}
                       title="错派并集"
@@ -1532,6 +1520,9 @@ export default function DispatchDev() {
                       active={listKey === 'union'}
                       onClick={() => setListKey((k) => (k === 'union' ? null : 'union'))}
                     />
+                    <div className="dispatch-dev__funnel-arrow">
+                      仅派错了 {tf?.misassign_only ?? 0} · 仅重派不准确 {tf?.redispatch_only ?? 0} · 两者都有 {tf?.both ?? 0}
+                    </div>
                   </div>
 
                   <div className="dispatch-dev__funnel">
@@ -1552,8 +1543,6 @@ export default function DispatchDev() {
                       remain={attBase}
                       remainLabel="走过 AI"
                       unit="次"
-                      fromPct={wBCreated}
-                      toPct={wBBase}
                       onDeductClick={() => setListKey((k) => (k === 'never_ai' ? null : 'never_ai'))}
                       deductActive={listKey === 'never_ai'}
                     />
@@ -1571,8 +1560,6 @@ export default function DispatchDev() {
                       remain={attDen}
                       remainLabel="计入分母"
                       unit="次"
-                      fromPct={wBBase}
-                      toPct={wBDen}
                       onDeductClick={() => setListKey((k) => (k === 'step0' ? null : 'step0'))}
                       deductActive={listKey === 'step0'}
                     />
@@ -1590,15 +1577,10 @@ export default function DispatchDev() {
                       remain={attDen}
                       remainLabel="仍计分母"
                       unit="次"
-                      fromPct={wBDen}
-                      toPct={wBDen}
                       expose
                       onDeductClick={() => setListKey((k) => (k === 'preferred_twice' ? null : 'preferred_twice'))}
                       deductActive={listKey === 'preferred_twice'}
                     />
-                    <div className="dispatch-dev__funnel-arrow">
-                      ↓ 派错了 {af?.misassign_events ?? 0} 次 · 重派不准确 {af?.redispatch_inaccurate_events ?? 0} 次
-                    </div>
                     <FunnelStepRow
                       widthPct={wBUnion}
                       title="错派事件合计"
@@ -1607,6 +1589,9 @@ export default function DispatchDev() {
                       rateHint={`相对计入分母 ${attUnion}/${attDen}`}
                       tone="warn"
                     />
+                    <div className="dispatch-dev__funnel-arrow">
+                      派错了 {af?.misassign_events ?? 0} 次 · 重派不准确 {af?.redispatch_inaccurate_events ?? 0} 次
+                    </div>
                   </div>
                 </div>
 

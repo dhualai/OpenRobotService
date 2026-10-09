@@ -16,7 +16,9 @@ from ai.agents.AiTaskPlatform.contexts.contexts import (
 from ai.agents.AiTaskPlatform.contexts.comments import (
     format_discussion_thread,
     load_discussion,
+    load_ticket_comment_rows,
     load_ticket_discussion,
+    render_comment_lines,
     load_quoted_comment,
     format_quoted_comment_block,
     add_diagnosis_comment,
@@ -34,6 +36,7 @@ __all__ = [
     "is_platform_ticket", "build_query",
     "build_task_ctx", "build_img_ctx",
     "format_discussion_thread", "load_discussion", "load_ticket_discussion",
+    "load_ticket_comment_rows", "render_comment_lines",
     "load_quoted_comment", "format_quoted_comment_block",
     "add_diagnosis_comment",
     "add_diagnosis_comment_short", "notify_backend_comment_broadcast",

@@ -1,7 +1,9 @@
-"""本轮强插邮箱：分析进行中工程师「插入本轮」的文字，按 task_id 排队给当前排查读。
+"""排查进行中的双队列邮箱。
 
-只活在进程内存，请求结束后未消费的条目会留到该工单下一次 drain
-（下一次 discuss/diagnose 边界会再读）。不跨进程、不落库。
+steer：插入本轮。当前日志轮次和能力边界会 drain，纳入正在进行的排查。
+followup：结束后跟进。当前排查不会读它，避免跟进被当成这一轮的补充。
+
+只活在进程内存。不跨进程、不落库。
 """
 
 from __future__ import annotations
@@ -10,28 +12,45 @@ import asyncio
 from typing import Iterable
 
 _lock = asyncio.Lock()
-_boxes: dict[str, list[str]] = {}
+_boxes: dict[str, dict[str, list[str]]] = {}
 
 
 def _key(task_id: str | int | None) -> str:
     return str(task_id or "").strip()
 
 
-async def put(task_id: str | int | None, text: str) -> None:
+def _lane(lane: str | None) -> str:
+    return "followup" if str(lane or "").strip() == "followup" else "steer"
+
+
+def _empty() -> dict[str, list[str]]:
+    return {"steer": [], "followup": []}
+
+
+async def put(task_id: str | int | None, text: str, lane: str = "steer") -> None:
     key = _key(task_id)
     body = (text or "").strip()
     if not key or not body:
         return
     async with _lock:
-        _boxes.setdefault(key, []).append(body)
+        box = _boxes.setdefault(key, _empty())
+        box[_lane(lane)].append(body)
 
 
-async def drain(task_id: str | int | None) -> list[str]:
+async def drain(task_id: str | int | None, lane: str = "steer") -> list[str]:
+    """取走指定队列。默认只取 steer，当前排查读不到 followup。"""
     key = _key(task_id)
     if not key:
         return []
+    chosen = _lane(lane)
     async with _lock:
-        items = _boxes.pop(key, [])
+        box = _boxes.get(key)
+        if not box:
+            return []
+        items = box.get(chosen) or []
+        box[chosen] = []
+        if not box.get("steer") and not box.get("followup"):
+            _boxes.pop(key, None)
     return [x for x in items if x]
 
 

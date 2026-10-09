@@ -242,18 +242,33 @@ def build_query(context: TaskContext) -> str:
     return " ".join(parts) if parts else (context.description or "")
 
 
-def build_task_ctx(context: TaskContext) -> dict:
-    """组装日志子 Agent 的 task_ctx（disagnose/discuss 共用）。"""
+def build_task_ctx(
+    context: TaskContext,
+    *,
+    discussion: str = "",
+    attachment_summaries: list | None = None,
+    project_facts: str = "",
+) -> dict:
+    """组装日志子 Agent 的工单上下文（diagnose/discuss 共用）。
+
+    描述、讨论、附件摘要都放原文。是否压缩由日志侧按窗口决定。
+    project_facts 是现场档案里已经脱敏的车型与调度版本，压缩讨论时仍保留。
+    """
     return {
         "task_id": context.task_id,
         "title": context.title,
-        "description": context.description,
+        "description": context.description or "",
         "problem_summary": context.problem_summary,
         "hypotheses": context.hypotheses,
         "ruled_out": context.ruled_out,
         "robot_type": context.robot_type,
         "fault_code": context.fault_code,
         "collected_info": context.collected_info,
+        "location": getattr(context, "location", "") or "",
+        "occurrence_time": getattr(context, "occurrence_time", "") or "",
+        "discussion": discussion or "",
+        "attachment_summaries": list(attachment_summaries or []),
+        "project_facts": (project_facts or "").strip(),
     }
 
 
