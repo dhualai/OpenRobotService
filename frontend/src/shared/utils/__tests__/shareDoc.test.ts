@@ -1,14 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   buildProjectBackgroundMarkdown,
   collectMissingInfoNodes,
   composeShareDoc,
   listShareDocRootTags,
-  loadShareDocTags,
   mergeShareDoc,
   missingSelectedTags,
   replaceUserSection,
-  saveShareDocTags,
   SHARE_DOC_DIVIDER,
   SHARE_DOC_SECTION_TEMPLATE,
   shareDocValueText,
@@ -209,20 +207,6 @@ describe('待补充节点清单', () => {
 
   it('未勾选的标签不进入清单', () => {
     expect(collectMissingInfoNodes(NODES, ['r1']).map((m) => m.path)).toEqual(['车端软件 / 控制器品牌']);
-  });
-});
-
-describe('勾选记忆（按项目存本机）', () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  it('没记过时返回空集合，存了能读回来', () => {
-    expect(loadShareDocTags('P1').size).toBe(0);
-    saveShareDocTags('P1', ['r1', 'r2']);
-    expect([...loadShareDocTags('P1')].sort()).toEqual(['r1', 'r2']);
-    // 按项目隔离
-    expect(loadShareDocTags('P2').size).toBe(0);
   });
 });
 
