@@ -434,13 +434,14 @@ export default function ProjectDetail() {
           onMarkChange={() => setActivityToken((value) => value + 1)}
         />
 
+        {/* 项目动态（对照原型 ProjectActivityCard 的「关注节点变动」分组）：
+            被关注节点的最新一条变动，只展示变动内容（不带时间与人员）；新建模式下项目未落库，不渲染。
+            2026-10-09 用户口径：放在「项目工单」上面 */}
+        {!isNew && <ProjectActivityCard projectId={id} reloadToken={activityToken} />}
+
         {/* 项目工单（对照原型 ProjectTicketsCard）：总数/各状态数量 + 核心阻滞工单 +
             近 8 周变化趋势；新建模式下项目未落库（也没有工单），不渲染 */}
         {!isNew && <ProjectTicketsCard projectId={id} />}
-
-        {/* 项目动态（对照原型 ProjectActivityCard 的「关注节点变动」分组）：
-            被关注节点的最新一条变动，只展示变动内容（不带时间与人员）；新建模式下项目未落库，不渲染 */}
-        {!isNew && <ProjectActivityCard projectId={id} reloadToken={activityToken} />}
       </div>
 
       {/* 项目阶段 / 项目类别 —— 单选弹窗（真实枚举，与 backend 对应 Enum 一致） */}
