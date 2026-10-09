@@ -413,9 +413,12 @@ export default function ProjectDetail() {
               </div>
             </div>
             {/* 摘要为大模型输出的结构化 Markdown（## 小节 + - 要点），用 react-markdown 渲染为 React 元素（天然防 XSS） */}
-            <div className={`mac-ai__body${aiSummary ? (summaryExpanded ? '' : ' is-collapsed') : ' is-empty'}`}>
+            <div
+              className={`mac-ai__body${aiSummary ? (summaryExpanded ? '' : ' is-collapsed') : ' is-empty'}`}
+              data-testid="ai-summary-body"
+            >
               {aiSummary ? (
-                <div className="mac-ai__md">
+                <div className="mac-ai__md" data-testid="ai-summary-md">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiSummary}</ReactMarkdown>
                 </div>
               ) : '暂无数据'}
@@ -559,7 +562,7 @@ function EditableField({ label, value, placeholder, multiline, type, title, meta
   // 概要卡 MetaRow（项目经理 / 对接人 / 内嵌项目编号）
   if (meta) {
     return (
-      <div className={`mac-meta-row${plain ? ' mac-meta-row--plain' : ''}`}>
+      <div className={`mac-meta-row${plain ? ' mac-meta-row--plain' : ''}`} data-testid="meta-row">
         <span className="mac-meta-row__label">{inlineLabel || label}{required && requiredMark}</span>
         {editing ? (
           <div style={{ flex: 1, minWidth: 0, marginLeft: 8 }}>

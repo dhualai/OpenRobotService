@@ -95,8 +95,8 @@ export default function ProjectImport() {
         </button>
       </div>
 
-      {/* 录入信息：把项目信息（项目id/项目编号/项目名/项目地点/客户名/车型）登记成
-          wechat_qrcodes 一行，见 pages/admin/InfoEntry.tsx */}
+      {/* 录入信息：把项目信息（项目编号/项目名/项目地点/客户名称/车型）登记成
+          wechat_qrcodes 一行（项目id 即行 id，不单独显示），见 pages/admin/InfoEntry.tsx */}
       <button
         type="button"
         className="mac-btn mac-btn--outline mac-btn--block"

@@ -1530,12 +1530,13 @@ export default function TaskDetailPage() {
         </div>
 
         <div className="detail-card">
-          <h4 className="detail-card__h">问题描述</h4>
+          {/* 标题行右侧常驻「详细问题文档」入口（问题描述为空也展示，弹窗内再判断有无文档/权限） */}
+          <h4 className="detail-card__h detail-card__h--with-action">
+            问题描述
+            <SpecDocCard taskId={detail.id} canEdit={canEditSpecDoc} />
+          </h4>
           <SafeHtml className="detail-card__body detail-card__body--pre" html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
-
-        {/* 问题文档：提单人结构化描述 + 接单人补充（md 在线编辑） */}
-        <SpecDocCard taskId={detail.id} canEdit={canEditSpecDoc} />
 
         {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用 */}
         <StepNegotiationCard

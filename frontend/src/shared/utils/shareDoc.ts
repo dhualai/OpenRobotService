@@ -160,14 +160,32 @@ export function splitShareDoc(doc: string): { system: string; user: string } {
 }
 
 /**
+ * 系统段 + 补充段 → 整篇文档（没有补充内容时不写分隔线，文档就是纯系统段）。
+ */
+export function composeShareDoc(system: string, user: string): string {
+  const head = (system ?? '').trimEnd();
+  const body = (user ?? '').replace(/^\n+/, '').trimEnd();
+  if (!body) return `${head}\n`;
+  // 没有系统段（还没选项目 / 上传的文档）时整篇就是补充段，不补分隔线
+  if (!head) return `${body}\n`;
+  return `${head}\n\n${SHARE_DOC_DIVIDER}\n\n${body}\n`;
+}
+
+/**
  * 用新的系统段重算整篇文档，**补充段原样保留**（这是「随勾选自动更新、以下内容不被覆盖」的落点）。
- * 没有补充内容时不写分隔线，文档就是纯系统段。
  */
 export function mergeShareDoc(doc: string, system: string): string {
-  const head = (system ?? '').trimEnd();
-  const user = splitShareDoc(doc ?? '').user.replace(/^\n+/, '').trimEnd();
-  if (!user) return `${head}\n`;
-  return `${head}\n\n${SHARE_DOC_DIVIDER}\n\n${user}\n`;
+  return composeShareDoc(system, splitShareDoc(doc ?? '').user);
+}
+
+/**
+ * 整篇替换补充段（AI 生成 / 整段粘贴）：系统段（项目背景信息）原样保留，
+ * 分隔线以下整体换成 markdown。
+ *
+ * 会丢掉用户已写的补充内容 —— 调用方必须先让用户确认（见 AiProblemDocGenerator）。
+ */
+export function replaceUserSection(doc: string, user: string): string {
+  return composeShareDoc(splitShareDoc(doc ?? '').system, user);
 }
 
 /** 勾选的一级标签里「缺省过半」的那些（提单页提示条用，顺序同树） */

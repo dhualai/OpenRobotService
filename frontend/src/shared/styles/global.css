@@ -927,10 +927,45 @@ html, body, #root {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
-/* 车型选项气泡组（0930）：与大方向短选项更相称的三列网格（开场题 5 个短词），
-   复用 __btn 全部样式与派生禁用/加深逻辑 */
-.chat-veh-choices.chat-proj-choices {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+/* 车型选项胶囊组（0930）：样式对齐交互模拟页——自适应宽度的圆角胶囊
+   （flex wrap，非网格），浅蓝底+描边，选中实心主蓝白字、其余弱化禁用 */
+.chat-veh-choices {
+  margin: 10px 0 2px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chat-veh-chip {
+  appearance: none;
+  max-width: 100%;
+  padding: 8px 14px;
+  border: 1px solid #c9d9f5;
+  border-radius: 16px;
+  background: #f4f7fd;
+  color: #1a5cc8;
+  font-size: 13.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.chat-veh-chip:active {
+  background: #e8f0fe;
+  border-color: #1a73e8;
+}
+.chat-veh-chip:disabled {
+  cursor: default;
+}
+/* 答复后整组持久保留：所选实心加深，其余弱化 */
+.chat-veh-chip--selected {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #fff;
+  font-weight: 600;
+}
+.chat-veh-chip--done {
+  opacity: 0.45;
 }
 /* 开场题大字题面（「您遇到了什么问题？」） */
 .chat-veh-q {
@@ -939,12 +974,160 @@ html, body, #root {
   color: var(--card-foreground);
   margin: 2px 0 4px;
 }
-/* 「其他」提示语行：固定渲染在按钮组下方，不入 content 不落库 */
+/* 「其他」提示语行：固定渲染在胶囊组下方，不入 content 不落库 */
 .chat-veh-hint {
   margin-top: 8px;
   font-size: 12px;
   color: var(--muted-foreground, #98a2b3);
   line-height: 1.5;
+}
+/* SOP 快捷气泡条（0930）：输入框上方豆包式小气泡横排，溢出横向滚动 */
+.chat-veh-sop-bar {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px;
+}
+.chat-veh-sop-bar::-webkit-scrollbar {
+  display: none;
+}
+.chat-veh-sop-chip {
+  appearance: none;
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid #dde4f0;
+  border-radius: 14px;
+  background: #fafbfd;
+  color: #45536b;
+  font-size: 12.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+.chat-veh-sop-chip:active {
+  background: #e8f0fe;
+  border-color: #1a73e8;
+  color: #1a5cc8;
+}
+/* SOP 在线查看抽屉：全屏遮罩 + 白面板（头部固定 + 正文滚动） */
+.chat-veh-sop-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.chat-veh-sop-viewer__panel {
+  width: 100%;
+  max-width: 760px;
+  height: 88%;
+  background: #fff;
+  border-radius: 16px 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.chat-veh-sop-viewer__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #eef1f6;
+}
+.chat-veh-sop-viewer__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2d3d;
+}
+.chat-veh-sop-viewer__close {
+  appearance: none;
+  flex: none;
+  border: 1px solid #dde2ea;
+  border-radius: 14px;
+  background: #f5f6f9;
+  color: #55606e;
+  font-size: 12.5px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+.chat-veh-sop-viewer__body {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 18px 32px;
+  font-size: 14px;
+  line-height: 1.75;
+  color: #24303f;
+}
+/* SOP 文档排版（0930）：聊天 Markdown 样式偏紧凑，文档阅读单独给层级 */
+.chat-veh-sop-viewer__body h1,
+.chat-veh-sop-viewer__body h2,
+.chat-veh-sop-viewer__body h3,
+.chat-veh-sop-viewer__body h4 {
+  margin: 20px 0 10px;
+  line-height: 1.4;
+  color: #17212e;
+}
+.chat-veh-sop-viewer__body h1 { font-size: 20px; }
+.chat-veh-sop-viewer__body h2 { font-size: 17px; padding-bottom: 6px; border-bottom: 1px solid #eef1f6; }
+.chat-veh-sop-viewer__body h3 { font-size: 15.5px; }
+.chat-veh-sop-viewer__body h4 { font-size: 14.5px; }
+.chat-veh-sop-viewer__body p { margin: 8px 0; }
+.chat-veh-sop-viewer__body ul,
+.chat-veh-sop-viewer__body ol { margin: 8px 0; padding-left: 22px; }
+.chat-veh-sop-viewer__body li { margin: 4px 0; }
+.chat-veh-sop-viewer__body table {
+  width: 100%;
+  margin: 12px 0;
+  border-collapse: collapse;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+}
+.chat-veh-sop-viewer__body th,
+.chat-veh-sop-viewer__body td {
+  border: 1px solid #e3e8ef;
+  padding: 7px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.chat-veh-sop-viewer__body th { background: #f5f7fa; font-weight: 600; }
+.chat-veh-sop-viewer__body code {
+  background: #f4f6f9;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12.5px;
+  color: #b3446c;
+}
+.chat-veh-sop-viewer__body pre {
+  background: #f6f8fa;
+  border: 1px solid #e6eaf0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.chat-veh-sop-viewer__body pre code { background: none; padding: 0; }
+.chat-veh-sop-viewer__body img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 8px 0;
+  border: 1px solid #eef1f6;
+}
+.chat-veh-sop-viewer__body blockquote {
+  margin: 10px 0;
+  padding: 6px 12px;
+  border-left: 3px solid #c9d9f5;
+  background: #f7f9fd;
+  color: #55606e;
 }
 /* 奇数个候选时最后一个独占半行右侧空缺，拉通栏补齐 */
 .chat-proj-choices > button:last-child:nth-child(odd) {
@@ -6646,6 +6829,37 @@ html, body, #root {
 .detail-card__title-inner { font: inherit; color: inherit; letter-spacing: inherit; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 /* 卡片小节标题（设计稿 SectionCard：13px font-semibold 前景色） */
 .detail-card__h { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--foreground); }
+/* 标题行带右侧操作（问题描述 → 「详细问题文档」入口）：标题左对齐、按钮右对齐 */
+.detail-card__h--with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+/* 标题行入口按钮：口径对齐详情页其他卡片操作按钮
+   （AppButton size="small"：12px 字号 / 胶囊 / 28px 高，内边距随文字宽度自适应、不折行） */
+.detail-card__h-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--blue-4);
+  border-radius: 999px;
+  background: var(--card, #fff);
+  color: var(--blue-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.detail-card__h-action:active {
+  background: var(--blue-5);
+}
 /* 卡片正文文本（统一标准：12.5px / 24px 行高，与讨论气泡 .detail-chat-bubble 一致；
    问题描述 / 解决方式 / 讨论摘要 等卡片正文统一使用，避免裸容器回退到 body 15px） */
 .detail-card__body {
@@ -9754,6 +9968,28 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 
 /* toast */
 .qr-toast { top: 50% !important; }
+
+/* 录入信息页的项目名建议下拉（InfoEntry）：输入框下方随打随出的候选，点击即带出编号。
+   flex:1 必须留：内容区是 flex，不撑开的话这一格会缩成内容宽，项目名称输入框比别的短一截 */
+.proj-suggest { position: relative; flex: 1; min-width: 0; }
+.proj-suggest__panel {
+  position: absolute; left: 0; right: 0; top: 100%; z-index: 20;
+  margin-top: 4px; padding: 4px; max-height: 240px; overflow-y: auto;
+  background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+.proj-suggest__item { padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.proj-suggest__item:active { background: #f4f6f7; }
+.proj-suggest__item-name { font-size: 14px; color: var(--foreground); }
+.proj-suggest__item-code { margin-top: 2px; font-size: 12px; color: #888d8f; }
+.proj-suggest__empty { padding: 8px 10px; font-size: 12px; color: #888d8f; }
+
+/* 录入信息页版式（InfoEntry）：整页一张白卡片，标签列等宽不折行、输入框等长。
+   标签宽度由 Form 的 labelWidth=96px 统一给出（见 InfoEntry.tsx），这里只补折行保险与留白 */
+.info-entry { padding: 16px; }
+.info-entry__title { margin: 0 0 12px; font-size: 18px; font-weight: 600; line-height: 26px; color: var(--foreground); }
+.info-entry__form { border-radius: 12px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04); }
+.info-entry .t-form__label label { white-space: nowrap; }
 
 .mac-info-row__main { display: flex; align-items: center; gap: 4px; min-height: 36px; padding: 6px 8px 6px 4px; }
 .mac-info-row--d1 .mac-info-row__main { padding: 7px 10px 7px 6px; }

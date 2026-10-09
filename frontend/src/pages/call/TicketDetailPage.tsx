@@ -1097,16 +1097,16 @@ export default function TicketDetailPage() {
           </div>
         )}
 
-        {/* 问题描述 */}
-        {ticket.description && (
-          <div className="detail-card">
-            <h4 className="detail-card__h">问题描述</h4>
-            <div style={{ whiteSpace: 'pre-wrap', color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>{ticket.description}</div>
+        {/* 问题描述：描述为空也渲染（标题行右侧常驻「详细问题文档」入口，不随描述有无变化） */}
+        <div className="detail-card">
+          <h4 className="detail-card__h detail-card__h--with-action">
+            问题描述
+            {ticket.id ? <SpecDocCard taskId={ticket.id} canEdit={canEdit} /> : null}
+          </h4>
+          <div style={{ whiteSpace: 'pre-wrap', color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>
+            {ticket.description || '无描述'}
           </div>
-        )}
-
-        {/* 问题文档：提单人结构化描述 + 接单人补充（md 在线编辑） */}
-        {ticket.id && <SpecDocCard taskId={ticket.id} canEdit={canEdit} />}
+        </div>
 
         {/* 工单阶段性处理（协商节点）：与系统任务详情页同源，抽到共享组件 StepNegotiationCard */}
         <StepNegotiationCard

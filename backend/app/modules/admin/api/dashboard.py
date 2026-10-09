@@ -146,6 +146,9 @@ async def get_ticket_source_analysis(
 ):
     """工单数据来源分析 —— 供仪表盘「工单数据来源分析」看板（类型分布 + 提单人角色分布）。
 
+    by_role 的 count 为工单数量：按提单人主角色归组累加其提单工单数
+    （见 task_dashboard_service.get_source_analysis），供「提单人角色分布」看板。
+
     响应结构：
     {
         "code": 0,
@@ -237,9 +240,13 @@ async def get_ticket_summary(
 async def get_tickets_by_status(
     status: Optional[str] = Query(None, description="工单状态key"),
     project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅返回这些项目内的工单"),
+    skip: int = Query(0, ge=0, description="分页偏移量"),
+    limit: int = Query(20, ge=1, le=100, description="每页工单数"),
     db: AsyncSession = Depends(get_db),
 ):
     """按状态筛选工单列表 —— 点击状态标签下钻时调用。
+
+    skip 为非负偏移量，limit 为每页条数（1–100，默认20）；total 为筛选后的完整工单数。
 
     响应结构：
     {
@@ -254,7 +261,9 @@ async def get_tickets_by_status(
         return {"code": 0, "data": {"items": [], "total": 0}}
 
     pid_list = _parse_project_ids(project_ids)
-    result = await task_dashboard_service.get_tickets_by_status(db, status, project_ids=pid_list)
+    result = await task_dashboard_service.get_tickets_by_status(
+        db, status, skip=skip, limit=limit, project_ids=pid_list,
+    )
     return {"code": 0, "data": result}
 
 

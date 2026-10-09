@@ -1034,7 +1034,7 @@ def _send_scan_redirect_card(openid: str, scene_str: str):
 
     支持每个二维码独立配置 redirect_url / name / description / picurl：
     - wechat_qrcodes 表有记录且字段非空 → 用配置值
-    - 没记录或字段为空 → 用默认 /app/call 拼接 scene+openid
+    - 没记录或字段为空 → 用默认 /call 拼接 scene+openid
 
     scene_str 归一化在入口统一做：未关注用户扫码关注时微信推 subscribe 事件，
     EventKey 形如 `qrscene_<scene>`（微信自动加前缀）；已关注用户扫码走 SCAN
@@ -1050,18 +1050,21 @@ def _send_scan_redirect_card(openid: str, scene_str: str):
     try:
         from urllib.parse import urlencode
 
-        # ── 1. 查数据库：scene_str（=str(id)）对应的码配置 ──
+        # ── 1. 查数据库：先用 scene_str 精确匹配，再 fallback 按主键 id ──
         qr_cfg = None
         try:
             from app.core.database import db_manager
             from app.models.wechat_qrcode import WechatQrcode as _W
             db = db_manager.get_db()
-            # scene_str 始终等于 str(id)，直接按 id 查询
-            try:
-                qid = int(scene_str)
-                qr_cfg = db.query(_W).filter(_W.id == qid).first()
-            except (ValueError, TypeError):
-                qr_cfg = None  # 非数字 EventKey，无 DB 记录
+            # 优先按 scene_str（微信回调原样回传的 EventKey）精确匹配——这是最稳的方式
+            qr_cfg = db.query(_W).filter(_W.scene_str == scene_str).first()
+            if not qr_cfg:
+                # 再按主键 id 查（兼容 scene_str = str(id) 的老习惯）
+                try:
+                    qid = int(scene_str)
+                    qr_cfg = db.query(_W).filter(_W.id == qid).first()
+                except (ValueError, TypeError):
+                    pass  # 非数字，跳过
             db.close()
         except Exception:
             qr_cfg = None  # 没建表 / 没迁移过，静默回退默认
@@ -1072,33 +1075,59 @@ def _send_scan_redirect_card(openid: str, scene_str: str):
         # 直接 entering → published，2026-09-30 用户口径）；
         # 确认过之后按常规走（redirect_url 优先，否则默认落地页）。
         # 'entering' 即 QrcodeStatus.ENTERING（纯字符串常量，此处不额外引入）
+        # 路径里一律不硬拼 /app：FRONTEND_BASE_URL 部署值已带 /app 后缀
+        #（.../t/app、.../p/app），硬拼会出现 .../app/app/... 重复。
         is_info_entering = bool(
             qr_cfg and qr_cfg.status == 'entering' and qr_cfg.project_code
         )
         base_url = None
         if is_info_entering:
-            base_url = f"{settings.FRONTEND_BASE_URL}/app/admin/info-entry/{qr_cfg.id}"
+            # id 必须占路径：微信 OAuth 回跳会丢 query，带 id 的 path 才稳
+            #（前端 QrcodeManage / InfoEntry 契约）；scene/openid 仍以 query 兜底
+            base_url = f"{settings.FRONTEND_BASE_URL}/admin/info-entry/{qr_cfg.id}"
         elif qr_cfg and qr_cfg.redirect_url:
             # 二维码配置了 redirect_url 就用它（可带 query，也可不带）
             base_url = qr_cfg.redirect_url
+        elif qr_cfg:
+            # 默认：录入信息详情页（其余状态扫码先进入这个页面）
+            base_url = f"{settings.FRONTEND_BASE_URL}/admin/info-entry"
 
         if base_url:
             # 如果配置的 URL 没有 ? 就附加 scene + openid 参数
             sep = '&' if '?' in base_url else '?'
             redirect_url = f"{base_url}{sep}{urlencode({'scene': scene_str, 'openid': openid})}"
         else:
-            call_path = f"{settings.FRONTEND_BASE_URL}/app/call"
-            redirect_url = f"{call_path}?{urlencode({'scene': scene_str, 'openid': openid})}"
+            # 无 DB 记录（可能是手动发的 EventKey 或老码），兜底走 /call
+            redirect_url = f"{settings.FRONTEND_BASE_URL}/call?{urlencode({'scene': scene_str, 'openid': openid})}"
 
         # ── 3. 卡片标题/描述/图片 ──
-        title = qr_cfg.name if qr_cfg and qr_cfg.name else "点击继续"
-        if qr_cfg and qr_cfg.description:
-            description = qr_cfg.description
-        elif is_info_entering:
-            description = "请点击进入，核对并确认项目信息"
-        else:
-            description = "你扫了一个带参数的二维码，点击前往对应页面"
+        # 分支核心：先拦截 deprecated → 再按「是否录入项目信息」分流。
+        # 自动生成的码 name 形如 test-1、test-2 可读性差，未录入时直接用固定文案引导用户。
         picurl = qr_cfg.qrcode_image_url if qr_cfg and qr_cfg.qrcode_image_url else ''
+
+        if qr_cfg and qr_cfg.status == 'deprecated':
+            # 已弃用：扫码直接告知停用，不再引导跳转
+            title = "二维码已停用"
+            description = "此二维码已停止使用，请联系管理员"
+        elif qr_cfg and qr_cfg.project_code:
+            # 已录入：标题取「客户名称 - 车型」，描述放项目名 / 地点
+            title_parts = [p for p in [qr_cfg.customer_name, qr_cfg.vehicle_model] if p]
+            title = " - ".join(title_parts) if title_parts else (qr_cfg.project_name or "扫码跳转")
+            desc_parts = []
+            if qr_cfg.project_name:
+                desc_parts.append(f"项目：{qr_cfg.project_name}")
+            if qr_cfg.project_location:
+                desc_parts.append(f"地点：{qr_cfg.project_location}")
+            desc_parts.append("点击前往咨询页面")
+            description = "\n".join(desc_parts) or "项目信息已登记"
+        elif qr_cfg:
+            # 有 DB 记录但未录入信息（init / entering 空白码，自动 name 可读性差）
+            title = "请完成信息录入"
+            description = "请点击进入，完成项目名称、客户名称、车型等信息"
+        else:
+            # 无 DB 记录（老码或手动 EventKey）——兜底
+            title = "点击继续"
+            description = "你扫了一个带参数的二维码，点击前往对应页面"
 
         logger.info(f'推送扫码跳转卡片: openid={openid}, scene={scene_str}, url={redirect_url}')
 

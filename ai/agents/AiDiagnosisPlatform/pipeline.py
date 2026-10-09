@@ -465,10 +465,14 @@ def _vehicle_mode_block(memory) -> str:
     if vm.get("customer_name"):
         seg.append(f"客户「{vm['customer_name']}」")
     lines = [
-        f"【车辆】本会话已扫码绑定：{'｜'.join(seg)}",
-        "（该车的车型/车辆型号视为已知信息，涉及这些的字段不要向用户追问；"
-        "回答与排查默认围绕该车型的知识库内容展开；"
-        "用户报故障码时先在知识库按码精确查证再解释，查不到如实说明）",
+        f"【车辆】本会话进入车型专属模式：U 老师现在是**这台车**的专属售后助手——"
+        f"{'｜'.join(seg)}。一切问题默认围绕这台车与该车型展开：",
+        "- 该车的车型/型号是已知信息，涉及这些的字段不要向用户追问；",
+        "- 一切问题默认发生在车端，不要询问问题出现在哪个系统或页面；",
+        "- 回答只依据该车型的知识库内容展开，知识库没有的如实说明；",
+        "- 用户报故障码时：直接按码在知识库精确查证，命中即给出该码的含义与"
+        "处置（临时处理/根治/处置级别），不要反问码出现的界面或环境，不要先"
+        "科普码段分类；查不到该码才如实说明，引导确认码是否输入完整。",
     ]
     last = vm.get("last_choices") or []
     if last:
@@ -3522,18 +3526,34 @@ class AiDiagnosisPlatform:
     async def _vehicle_mode_domains(self, session_id: str):
         """车辆定制模式的检索域配额；常规会话返回 None（走默认三域，行为不变）。
 
-        车型域高配额优先 + 通用域低配额兜底——车型问题车型域内容占绝对优势，
-        用户问非车型问题时仍能从通用知识回答（不硬过滤）。"""
+        0930 收紧为**车型知识库定向过滤**：车型知识挂 company 域子目录
+        （kb/company/{车型}/，payload sub_domain="{车型}/manual"），检索
+        company 域 + sub_domain 精确过滤——两重隔离：既不捞 team/cheduan
+        老知识（通用域兜底已删，串味实锤），也不捞 company 域里其他产品线
+        内容（xmover 等）。车型域空 = LLM 如实说手册未收录，宁缺勿串。
+        返回元素 (domain, top_k, qdrant_filter)；qdrant_filter=None 时等价
+        旧行为（域内不过滤）。"""
         try:
             memory = await self._memory_manager.get_memory(session_id)
             vm = (getattr(memory, "metadata", None) or {}).get("vehicle_mode") or {}
         except Exception as e:
             logger.debug(f"[retrieve] vehicle_mode 读取失败按常规处理: {e}")
             return None
-        domain = str(vm.get("domain") or "").strip()
-        if not domain:
+        model = str(vm.get("model") or "").strip()
+        if not model:
             return None
-        return [(domain, 8), ("team", 2), ("company", 1), ("industry", 1)]
+        from qdrant_client import models as qmodels
+
+        from ai.api.vehicle_mode import model_to_subpath
+        # 车型串归一到大写再拼 sub_domain：kb 侧 sub_domain 是按磁盘目录名原样
+        # 推出来的（kb_markdown 相对路径），目录名是大写，而档案表 model 存的是
+        # 录入串、可能小写。不归一 → 过滤成空集（0930 实锤：小写 xqe 拼出
+        # xqe/manual，qdrant 命中 0，company 域 0+0，开场类目除故障码外全部零
+        # 召回，模型只能拿历史工单凑答案）。
+        sub_domain = f"{model_to_subpath(model)}/manual"
+        _filt = qmodels.Filter(must=[qmodels.FieldCondition(
+            key="sub_domain", match=qmodels.MatchValue(value=sub_domain))])
+        return [("company", 8, _filt)]
 
     async def _three_way_retrieve(self, query: str, domains=None) -> list:
         """三路并行域检索（team/company/industry），异常降级为空列表。
@@ -3543,10 +3563,11 @@ class AiDiagnosisPlatform:
 
         domains：可选 [(域, top_k)] 配额列表；None=默认 team/company/industry
         三域（车辆定制模式由 _vehicle_mode_domains 传入车型域优先配额）。"""
-        async def _one(domain: str, top_k: int):
+        async def _one(domain: str, top_k: int, qfilter=None):
             try:
                 dense_res, sparse_res = await asyncio.wait_for(
-                    self._retriever.retrieve_domain_dual(query, domain, top_k=8),
+                    self._retriever.retrieve_domain_dual(
+                        query, domain, top_k=8, query_filter=qfilter),
                     timeout=15.0,
                 )
                 for r in list(dense_res) + list(sparse_res):
@@ -3559,14 +3580,18 @@ class AiDiagnosisPlatform:
                 return [], []
 
         _domains = list(domains) if domains else [("team", 5), ("company", 4), ("industry", 3)]
-        _tasks = [asyncio.create_task(_one(d, k)) for d, k in _domains]
+        # 配额元素支持二元 (domain, top_k) 或三元 (domain, top_k, qdrant_filter)
+        def _norm(t):
+            return (t[0], t[1], t[2]) if len(t) > 2 else (t[0], t[1], None)
+        _tasks = [asyncio.create_task(_one(*_norm(t))) for t in _domains]
         gathered = await asyncio.gather(*_tasks, return_exceptions=True)
         results = []
         seen = set()
         # 每域召回汇总（稠密+稀疏条数、首条标题@分）：域 0+0 = 该域集合空/异常，
         # 有召回但标题不相关 = 知识库缺该内容，排查时先看这行分流
         _summ = []
-        for _domain, g in zip(_domains, gathered):
+        for t, g in zip(_domains, gathered):
+            _domain = t[0]
             if isinstance(g, BaseException):
                 _summ.append(f"{_domain} 异常")
                 continue
@@ -5514,6 +5539,26 @@ class AiDiagnosisPlatform:
         # 必须在 LLM 提炼 problem_summary 之后，这样同一轮里描述的新问题能被识别。
         state.diagnosis_rounds += 1
         state.phase = "diagnosing"
+
+        # ---- 车型开场类目短接（0930）：用户点开场题气泡发出的消息就是类目原文。
+        # 故障码类目不需要诊断推理（产品定稿：引导输码查表），直接回固定话术——
+        # 零检索零 LLM。否则走完整诊断被检索内容带偏（0930 实锤：串成通用故障码
+        # 知识长篇作答）。非故障码类目不短接，走正常链路（知识库入库后自然对味）。
+        _vm_open = ((getattr(memory, "metadata", None) or {}).get("vehicle_mode") or {}).get("opening_choices") or []
+        if _vm_open and request.query.strip() in _vm_open and "故障码" in request.query:
+            logger.info(f"[vehicle_mode] 开场类目短接(故障码引导输码): session={request.session_id}")
+            _cat_msg = ("故障码比较多，就不列选项啦。\n\n"
+                        "请直接把界面显示的故障码输入给我（一个或多个都行），"
+                        "我帮您查处理方法。")
+            yield {"event": "token", "data": _cat_msg}
+            _cat_result = await self._finalize_diagnosis(
+                request.session_id, state,
+                thinking="", action="answer", message=_cat_msg,
+                streaming=True)
+            if _cat_result.get("title"):
+                yield {"event": "title", "data": {"title": _cat_result["title"]}}
+            yield {"event": "result", "data": _cat_result}
+            return
 
         # ---- 闲聊收尾短接：纯问候/致谢/结束语 → 跳过 LLM，直接回复 ----
         _bye_str = re.sub(r"[，。.!！\s]", "", request.query.strip())

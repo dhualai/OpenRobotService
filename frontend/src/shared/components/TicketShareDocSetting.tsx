@@ -5,12 +5,14 @@
  * 同一棵树）。所有展示与统计都在前端完成，后端不需要新接口。
  *
  * 1. 一级标签 chips：勾选哪些标签的项目背景信息要带进文档；
- *    缺省过半（可填节点空值 > 50%）的标签右上角出感叹号（`projectInfoTree.computeInfoCompleteness`）。
- * 2. 缺信息的三种处理：
- *    ① 补充信息 —— 右侧侧滑抽屉直接编辑项目信息（复用编辑页的嵌入模式），改完文档自动重算；
- *    ② 提单给他人补充 —— 选人后建一张 support 工单，附「待补充节点清单」；
- *    ③ 暂时跳过 —— 本次不提醒，照常提单。
- * 3. 文档正文：系统段（项目背景信息，随勾选实时重算）+ 分隔线 + 补充段（用户自己写的不被覆盖），
+ *    缺省过半（可填节点空值 > 50%）的标签右上角出感叹号（`projectInfoTree.computeInfoCompleteness`），
+ *    标签池下方常驻一行口径说明（感叹号是什么，见 mac-info__legend，与项目信息管理页一致）。
+ * 2. 缺信息提示条 + 处理按钮：
+ *    ① 补充信息 / ② 提单给他人补充 —— 选定项目后常驻（不再只在缺信息时出现）；
+ *    ③ 暂时跳过 —— 点了本次（本组件实例）不再提示、按钮也不再显示，刷新/重进页面恢复；
+ *    缺信息提示条本身仍只在「勾选标签里有缺省过半」时出现。
+ * 3. 标签勾选默认全不选（按项目记住上次勾选，没记过 → 全不选），标签行上方提供全选 / 全部取消。
+ * 4. 文档正文：系统段（项目背景信息，随勾选实时重算）+ 分隔线 + 补充段（用户自己写的不被覆盖），
  *    见 shared/utils/shareDoc.ts；编辑入口复用既有的 SpecDocField（上传 / 在线编写）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -18,8 +20,10 @@ import { Popup, Toast } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { createTicket } from '@/api/ticket';
+import type { ProblemDocSourceItem } from '@/api/specDoc';
 import type { UserItem } from '@/api/users';
 import UserSelect from '@/shared/components/UserSelect';
+import AiProblemDocGenerator from '@/shared/components/AiProblemDocGenerator';
 import SpecDocField, { type SpecDocDraft } from '@/shared/components/SpecDocField';
 import ProjectInfoEditDrawer from '@/shared/components/ProjectInfoEditDrawer';
 import { computeInfoCompleteness, loadInfoNodes, type ProjectInfoNode } from '@/shared/utils/projectInfoTree';
@@ -29,8 +33,10 @@ import {
   loadShareDocTags,
   mergeShareDoc,
   missingSelectedTags,
+  replaceUserSection,
   saveShareDocTags,
   SHARE_DOC_SECTION_TEMPLATE,
+  splitShareDoc,
 } from '@/shared/utils/shareDoc';
 import '@/shared/styles/shareDoc.css';
 
@@ -42,6 +48,11 @@ export interface TicketShareDocSettingProps {
   value: SpecDocDraft | null;
   onChange: (value: SpecDocDraft | null) => void;
   disabled?: boolean;
+  /**
+   * 「AI 生成问题文档」的素材（提单页传本次会话消息；讨论区场景传评论）。
+   * 不传 / 为空时不显示生成入口。
+   */
+  sourceItems?: ProblemDocSourceItem[];
 }
 
 /** 项目成员行（GET /projects/{id}/members 的最小字段） */
@@ -70,12 +81,37 @@ function buildSupplementDescription(
   ].join('\n');
 }
 
+/** 信息树的一级标签（根节点），按 sort_order 排好序 */
+function rootNodes(list: ProjectInfoNode[]): ProjectInfoNode[] {
+  return list
+    .filter((node) => node.parent_id === null)
+    .slice()
+    .sort((a, b) => a.sort_order - b.sort_order);
+}
+
+/**
+ * 首次拿到树时该勾哪些：按本机记住的恢复（只保留仍存在的标签，树可能改过）；
+ * 没记过 / 记忆失效 → 默认全不选。
+ *
+ * 必须在「拿到树」的同一步算好、和 setNodes 同批提交，不能放到后续 effect 里（见下方 useEffect 注释）。
+ */
+function initialSelectedTags(list: ProjectInfoNode[], projectId: string): Set<string> {
+  const stored = loadShareDocTags(projectId);
+  if (!stored.size) return new Set<string>();
+  return new Set(
+    rootNodes(list)
+      .filter((root) => stored.has(root.id))
+      .map((root) => root.id),
+  );
+}
+
 export default function TicketShareDocSetting({
   projectId,
   projectName = '',
   value,
   onChange,
   disabled = false,
+  sourceItems = [],
 }: TicketShareDocSettingProps) {
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
 
@@ -102,12 +138,25 @@ export default function TicketShareDocSetting({
     }
     let cancelled = false;
     setLoading(true);
+    // 换项目：等新树到了再重新初始化一次勾选
+    initedRef.current = '';
     loadInfoNodes(projectId)
       .then((list) => {
-        if (!cancelled) setNodes(list);
+        if (cancelled) return;
+        // 一次性初始化（恢复记忆 / 默认全不选）必须和 setNodes 落在同一次提交里。
+        // 放到后续 effect 里会留出一个窗口：树已经渲染、用户（或 CI 用例）点了「全选」，
+        // 初始化 effect 才跑并把勾选重置成空 —— 勾选丢失、文档不再重算
+        // （CI 慢机器上这条竞态就是 test gate 偶发红的原因，deploy-split run #37595347855）。
+        initedRef.current = projectId;
+        setSelected(initialSelectedTags(list, projectId));
+        setNodes(list);
       })
       .catch(() => {
-        if (!cancelled) setNodes([]);
+        if (cancelled) return;
+        // 拉树失败也记成「初始化过」：避免抽屉里改树（handleTreeChange）后又被初始化清掉勾选
+        initedRef.current = projectId;
+        setSelected(new Set());
+        setNodes([]);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -117,24 +166,7 @@ export default function TicketShareDocSetting({
     };
   }, [projectId]);
 
-  const roots = useMemo(
-    () => nodes.filter((node) => node.parent_id === null).slice().sort((a, b) => a.sort_order - b.sort_order),
-    [nodes],
-  );
-
-  // 首次拿到树：按本机记住的勾选恢复；没记过则默认全选（一次性，后续由用户控制）
-  useEffect(() => {
-    if (!roots.length || initedRef.current === projectId) return;
-    initedRef.current = projectId;
-    const stored = loadShareDocTags(projectId);
-    const valid = roots.map((root) => root.id);
-    if (stored.size) {
-      const kept = valid.filter((id) => stored.has(id));
-      setSelected(new Set(kept.length ? kept : valid));
-      return;
-    }
-    setSelected(new Set(valid));
-  }, [roots, projectId]);
+  const roots = useMemo(() => rootNodes(nodes), [nodes]);
 
   const toggleTag = useCallback((id: string) => {
     setSelected((prev) => {
@@ -144,6 +176,12 @@ export default function TicketShareDocSetting({
       return next;
     });
   }, []);
+
+  const selectAllTags = useCallback(() => {
+    setSelected(new Set(roots.map((root) => root.id)));
+  }, [roots]);
+
+  const clearAllTags = useCallback(() => setSelected(new Set()), []);
 
   // 本机记住勾选（按项目隔离，与项目信息卡的筛选状态互不影响）
   useEffect(() => {
@@ -168,6 +206,21 @@ export default function TicketShareDocSetting({
   valueRef.current = value;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+
+  /** 补充段是否已有内容（AI 生成前要提示「这部分会被替换」） */
+  const hasUserContent = useMemo(
+    () => splitShareDoc(value?.content ?? '').user.trim().length > 0,
+    [value?.content],
+  );
+
+  /** AI 生成的结果：只替换分隔线以下的补充段，系统段（项目背景信息）原样保留 */
+  const applyGenerated = useCallback((markdown: string) => {
+    onChangeRef.current({
+      content: replaceUserSection(valueRef.current?.content ?? '', markdown),
+      source: valueRef.current?.source || 'ai_summary',
+      source_files: valueRef.current?.source_files ?? [],
+    });
+  }, []);
   useEffect(() => {
     if (!system || !selected.size) return;
     const current = valueRef.current?.content ?? '';
@@ -254,11 +307,28 @@ export default function TicketShareDocSetting({
   };
 
   const showWarn = !skipMissing && missing.length > 0 && !loading;
+  /** 标签区渲染条件（选定项目且信息树已拿到）：操作按钮与全选/全部取消的常驻判据 */
+  const showTags = Boolean(projectId) && !loading && roots.length > 0;
 
   return (
     <section className="share-doc">
       <h4 className="share-doc__title">问题共享文档设置</h4>
       <p className="share-doc__hint">勾选要带入文档的项目背景信息（来自所绑定项目的信息标签）。</p>
+
+      {/* 全选 / 全部取消：标签默认全不选，给一键操作（版式对齐项目信息管理页的 poolhead） */}
+      {showTags ? (
+        <div className="mac-info__poolhead">
+          <span className="mac-info__poolhead-label">问题标签</span>
+          <div className="mac-info__poolhead-ops">
+            <button type="button" className="mac-info__poolbtn" disabled={disabled} onClick={selectAllTags}>
+              全选
+            </button>
+            <button type="button" className="mac-info__poolbtn" disabled={disabled} onClick={clearAllTags}>
+              全部取消
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {!projectId ? (
         <p className="share-doc__empty">请先选择项目，再设置共享文档。</p>
@@ -292,33 +362,49 @@ export default function TicketShareDocSetting({
         </div>
       )}
 
-      {showWarn ? (
-        <>
-          <div className="share-doc__warn">
-            <span className="share-doc__warn-icon" aria-hidden="true">
+      {/* 感叹号口径说明：常驻一行图例（与项目信息管理页同一套说明，提醒用户 ! 的含义） */}
+      {showTags ? (
+        <p className="mac-info__legend">
+          <span className="mac-info__legend-item">
+            <span className="mac-tagpool__warn mac-tagpool__warn--static" aria-hidden="true">
               !
             </span>
-            <span>
-              当前问题缺少有效信息，可能影响问题定位（{missing.map((item) => item.title).join('、')}）
-            </span>
-          </div>
-          <div className="share-doc__actions">
-            <button
-              type="button"
-              className="share-doc__btn share-doc__btn--primary"
-              disabled={disabled}
-              onClick={() => setDrawerOpen(true)}
-            >
-              补充信息
-            </button>
-            <button
-              type="button"
-              className="share-doc__btn"
-              disabled={disabled}
-              onClick={() => setAssignOpen(true)}
-            >
-              提单给他人补充
-            </button>
+            标签旁的 ! = 该标签下过半信息未填写，可能影响问题定位
+          </span>
+        </p>
+      ) : null}
+
+      {showWarn ? (
+        <div className="share-doc__warn">
+          <span className="share-doc__warn-icon" aria-hidden="true">
+            !
+          </span>
+          <span>
+            当前问题缺少有效信息，可能影响问题定位（{missing.map((item) => item.title).join('、')}）
+          </span>
+        </div>
+      ) : null}
+
+      {/* 处理按钮：补充信息 / 提单给他人补充 常驻；暂时跳过点了本次不再显示（刷新/重进页面恢复） */}
+      {showTags ? (
+        <div className="share-doc__actions">
+          <button
+            type="button"
+            className="share-doc__btn share-doc__btn--primary"
+            disabled={disabled}
+            onClick={() => setDrawerOpen(true)}
+          >
+            补充信息
+          </button>
+          <button
+            type="button"
+            className="share-doc__btn"
+            disabled={disabled}
+            onClick={() => setAssignOpen(true)}
+          >
+            提单给他人补充
+          </button>
+          {!skipMissing ? (
             <button
               type="button"
               className="share-doc__btn share-doc__btn--ghost"
@@ -327,12 +413,24 @@ export default function TicketShareDocSetting({
             >
               暂时跳过
             </button>
-          </div>
-        </>
+          ) : null}
+        </div>
       ) : null}
 
       <div className="share-doc__doc">
         <p className="share-doc__label">问题共享文档（选填）</p>
+        {sourceItems.length > 0 ? (
+          <div className="share-doc__actions">
+            <AiProblemDocGenerator
+              items={sourceItems}
+              projectName={projectName}
+              scene="conversation"
+              hasUserContent={hasUserContent}
+              disabled={disabled}
+              onApply={applyGenerated}
+            />
+          </div>
+        ) : null}
         <SpecDocField value={value} onChange={onChange} disabled={disabled} />
         <p className="share-doc__tip">
           项目背景信息随勾选自动更新；分隔线以下的补充内容不会被覆盖。

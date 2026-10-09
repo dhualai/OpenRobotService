@@ -26,7 +26,7 @@ import pytest
 
 from app.core import database as core_database
 from app.core.config import settings
-from app.models.wechat_qrcode import QrcodeStatus
+from app.models.wechat_qrcode import QrcodeStatus, WechatQrcode
 from app.wechat.api import wechat as wechat_api
 
 
@@ -55,18 +55,17 @@ def db(monkeypatch):
     return fake
 
 
+# 假行的字段集合直接取自模型列：wechat.py 一旦读到新列（如按状态分流的文案读了
+# customer_name / vehicle_model），这里自动就有，不会因 fixture 漏字段而静默抛
+# AttributeError（被 _send_scan_redirect_card 的 except 吞成「不推卡片」→ 假红）。
+# scene_str 是模型上的 property、不是列，单独补。
+_ROW_FIELDS = tuple(c.name for c in WechatQrcode.__table__.columns)
+
+
 def _row(**over):
-    """一条二维码配置行（覆盖 _send_scan_redirect_card 会读到的字段）。"""
-    fields = {
-        "id": 7,
-        "scene_str": "7",
-        "name": None,
-        "description": None,
-        "qrcode_image_url": None,
-        "redirect_url": None,
-        "status": QrcodeStatus.PUBLISHED,
-        "project_code": None,
-    }
+    """一条二维码配置行（字段 = 模型列全量，用例只覆盖自己关心的列）。"""
+    fields = dict.fromkeys(_ROW_FIELDS)
+    fields.update({"id": 7, "scene_str": "7", "status": QrcodeStatus.PUBLISHED})
     fields.update(over)
     return SimpleNamespace(**fields)
 
@@ -114,7 +113,10 @@ def test_subscribe_prefix_hits_qrcode_config(sent, db):
     }))
 
     assert len(sent) == 1
-    assert "/app/admin/info-entry/7" in sent[0]["url"]
+    # id 必须占路径（微信 OAuth 回跳会丢 query，前端 QrcodeManage/InfoEntry 契约）。
+    # 从 FRONTEND_BASE_URL 起拼、不写死 /app：部署值已带 /app 后缀，本地/CI 不带，
+    # 相对 base 断言在两种环境下都成立（曾因写死 /app 与 6465982a 的去重修正互相打架）。
+    assert f"{settings.FRONTEND_BASE_URL}/admin/info-entry/7" in sent[0]["url"]
     assert _scene_of(sent[0]) == "7"
 
 

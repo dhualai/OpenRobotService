@@ -18,17 +18,16 @@ type FilterType = '' | QrcodeType;
 const PAGE_SIZE = 20;
 const TICKET_IMAGE_BASE = 'https://mp.weixin.qq.com/cgi-bin/showqrcode?ticket=';
 
-const STATUS_ORDER: QrcodeStatus[] = ['init', 'entering', 'confirming', 'published', 'deprecated'];
+const STATUS_ORDER: QrcodeStatus[] = ['init', 'entering', 'published', 'deprecated'];
 const TYPE_LABEL: Record<QrcodeType, string> = { temporary: '临时', permanent: '永久' };
 
 /** 状态流转：允许谁从哪来 */
 const TRANSITIONS: Record<QrcodeStatus, Array<{ action: string; target: QrcodeStatus; label: string; needTicket?: boolean }>> = {
   init:       [{ action: 'generate',  target: 'entering',   label: '生成 ticket' }],
   entering:   [
-               { action: 'confirm',   target: 'confirming', label: '确认' },
-               { action: 'regenerate', target: 'entering', label: '重新生成', needTicket: true },
+               { action: 'publish',    target: 'published',  label: '发布' },
+               { action: 'regenerate', target: 'entering',   label: '重新生成', needTicket: true },
               ],
-  confirming: [{ action: 'publish',   target: 'published', label: '发布' }],
   published:  [{ action: 'deprecate', target: 'deprecated', label: '弃用' }],
   deprecated: [],
 };
@@ -94,7 +93,8 @@ export default function QrcodeManage() {
       setLoading(true);
       const q = await qrcodeTransition(id, action);
       setItems((prev) => prev.map((x) => (x.id === q.id ? q : x)));
-      showToast(`已${QRCODE_STATUS_LABELS[q.status as QrcodeStatus]?.label || action}`);
+      // 结果按后端返回的状态回显：标签本身就带「已」，不要再拼一个
+      showToast(QRCODE_STATUS_LABELS[q.status as QrcodeStatus]?.label || `已${action}`);
     } catch (e: any) { showToast(e?.message || '操作失败'); }
     finally { setLoading(false); }
   };
@@ -149,7 +149,7 @@ export default function QrcodeManage() {
       <Popup visible={popup === 'batch-create'} onVisibleChange={() => setPopup(null)} placement="bottom">
         <div className="qr-popup">
           <h3>批量创建二维码（仅落库）</h3>
-          <p className="qr-popup-hint">创建后为 init 状态，scene_str 自动等于 str(id)，可批量生成 ticket</p>
+          <p className="qr-popup-hint">创建后为 init 状态，批量生成 ticket 后即可扫码；扫码进入录入信息页登记项目信息</p>
 
           <label className="qr-field">创建数量</label>
           <input
@@ -164,7 +164,7 @@ export default function QrcodeManage() {
           <div className="qr-row">
             <div className="qr-field-group">
               <label className="qr-field">名称前缀</label>
-              <input className="qr-input" value={namePrefix} onChange={(e) => setNamePrefix(e.target.value)} placeholder="智能体-" />
+              <input className="qr-input" value={namePrefix} onChange={(e) => setNamePrefix(e.target.value)} placeholder="如 test → test-1, test-2…" />
             </div>
             <div className="qr-field-group">
               <label className="qr-field">类型</label>
@@ -175,8 +175,11 @@ export default function QrcodeManage() {
             </div>
           </div>
 
-          <label className="qr-field" style={{ marginTop: 12 }}>扫码跳转 URL（选填，留空则默认 /app/call）</label>
-          <input className="qr-input" value={redirectUrl} onChange={(e) => setRedirectUrl(e.target.value)} placeholder="https://example.com/app/call" />
+          {/* 留空 = 存 NULL，跳转由扫码链路算：DB 有记录且没配 redirect_url →
+              /app/admin/info-entry/{id}（见 wechat.py::_send_scan_redirect_card）。
+              前端不预填域名，也不写死地址：带 id 的 path 才扛得住微信 OAuth 回跳丢 query */}
+          <label className="qr-field" style={{ marginTop: 12 }}>扫码跳转 URL（选填，留空则默认跳转到录入信息页面）</label>
+          <input className="qr-input" value={redirectUrl} onChange={(e) => setRedirectUrl(e.target.value)} placeholder="留空默认：录入信息页" />
 
           {result && (
             <div className="qr-batch-result">
@@ -263,7 +266,7 @@ export default function QrcodeManage() {
           {/* 录入信息行：项目名就是码记录名（见上方 h4），这里列出登记的项目字段 */}
           {qr.project_code && <div className="qr-preview-scene">项目编号：{qr.project_code}</div>}
           {qr.project_location && <div className="qr-preview-scene">项目地点：{qr.project_location}</div>}
-          {qr.customer_name && <div className="qr-preview-scene">客户名：{qr.customer_name}</div>}
+          {qr.customer_name && <div className="qr-preview-scene">客户名称：{qr.customer_name}</div>}
           {qr.vehicle_model && <div className="qr-preview-scene">车型：{qr.vehicle_model}</div>}
           {qr.ticket ? (
             <img

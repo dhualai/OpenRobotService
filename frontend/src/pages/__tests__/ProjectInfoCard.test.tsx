@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import ProjectInfoCard from '../admin/ProjectInfoCard';
+import { useAuthStore } from '@/stores/auth';
 import {
   fetchInfoNodeChangeSummaryApi, fetchInfoNodeMarksApi, fetchInfoTree, toggleInfoNodeMarkApi,
   type ApiInfoNode,
@@ -27,10 +28,6 @@ vi.mock('@/api/infoNodes', () => ({
 }));
 
 // 红点水位按「项目 + 登录用户」存本机：固定登录用户，测出的水位 key 可预期
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: (selector: (s: { username: string }) => unknown) => selector({ username: 'admin' }),
-}));
-
 const TS = '2026-09-14 10:00:00';
 const node = (partial: Partial<ApiInfoNode> & { id: string }): ApiInfoNode => ({
   project_id: 'CODE-1',
@@ -84,6 +81,7 @@ describe('ProjectInfoCard（项目信息管理卡）', () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
+    useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
     vi.mocked(fetchInfoTree).mockResolvedValue(TREE);
     vi.mocked(fetchInfoNodeMarksApi).mockResolvedValue([]);
     vi.mocked(fetchInfoNodeChangeSummaryApi).mockResolvedValue({});
@@ -106,23 +104,23 @@ describe('ProjectInfoCard（项目信息管理卡）', () => {
     expect(screen.getByText('托盘')).toBeTruthy();
   });
 
-  it('标题与内容同行（同一 .mac-doc__row 内），根节点各占一个一级分组', async () => {
+  it('标题与内容同行（同一行内），根节点各占一个一级分组', async () => {
     renderCard('CODE-1');
     await screen.findByText('客户信息');
-    const rows = Array.from(document.querySelectorAll('.mac-doc__row'));
-    const rowOf = (title: string) =>
-      rows.find((row) => row.querySelector('.mac-doc__label')?.textContent === title);
+    // 行按节点标题标识（data-node），分组按层级标识（data-depth）：都是组件显式声明的语义，
+    // 不依赖样式类名
+    const rowOf = (title: string) => document.querySelector(`[data-node="${title}"]`) as HTMLElement | null;
 
     // 标题与内容在同一行里，而不是标题一行、内容另起一行
-    expect(rowOf('客户信息')?.querySelector('.mac-doc__value')?.textContent).toBe('中力');
-    expect(rowOf('载具类型')?.querySelector('.mac-doc__value')?.textContent).toBe('托盘');
+    expect(within(rowOf('客户信息') as HTMLElement).getByText('中力')).toBeTruthy();
+    expect(within(rowOf('载具类型') as HTMLElement).getByText('托盘')).toBeTruthy();
     // 分支节点只有标题、没有内容块
-    expect(rowOf('基础信息')?.querySelector('.mac-doc__value')).toBeNull();
+    expect(rowOf('基础信息')?.textContent).toBe('基础信息');
 
     // 每个根节点一个一级分组（相邻分组之间由 CSS 画浅灰横线）
-    expect(document.querySelectorAll('.mac-doc__section--d1').length).toBe(2);
+    expect(document.querySelectorAll('[data-depth="1"]').length).toBe(2);
     // 二级节点整体缩进一级：只有填过值的那些（基础信息下 c2 空 → 只剩 1 个）
-    expect(document.querySelectorAll('.mac-doc__section--d2').length).toBe(2);
+    expect(document.querySelectorAll('[data-depth="2"]').length).toBe(2);
   });
 
   it('整片没值的标签：点开不展示内容，提示信息不足请补充', async () => {
@@ -156,7 +154,7 @@ describe('ProjectInfoCard（项目信息管理卡）', () => {
     // 点开空标签 → 不展示内容，改为提示补充
     fireEvent.click(screen.getByRole('button', { name: /^基础信息/ }));
     expect(screen.queryByText('客户信息')).toBeNull();
-    expect(document.querySelector('.mac-doc')).toBeNull();
+    expect(screen.queryByTestId('doc')).toBeNull();
     expect(screen.getByText('信息不足请补充')).toBeTruthy();
     expect(screen.getByText(/「基础信息」下还没有任何已填写的信息/)).toBeTruthy();
     // 有编辑权限时给出补充入口（普通用户不回编辑页）
@@ -249,9 +247,8 @@ describe('ProjectInfoCard（项目信息管理卡）', () => {
 
     // 车型1 带子节点，但它自己的下拉选中项要展示出来（不是只当分支标题）
     expect(await screen.findByText('车型1')).toBeTruthy();
-    const rows = Array.from(document.querySelectorAll('.mac-doc__row'));
-    const modelRow = rows.find((row) => row.querySelector('.mac-doc__label')?.textContent === '车型1');
-    expect(modelRow?.querySelector('.mac-doc__value')?.textContent).toBe('XC1051');
+    const modelRow = document.querySelector('[data-node="车型1"]') as HTMLElement;
+    expect(within(modelRow).getByText('XC1051')).toBeTruthy();
     // 没填的「数量」不出占位，但它的存在没把整条分支判成空
     expect(screen.queryByText('数量')).toBeNull();
     expect(screen.queryByText('信息不足请补充')).toBeNull();
@@ -260,7 +257,7 @@ describe('ProjectInfoCard（项目信息管理卡）', () => {
   it('点选一级标签只显示该标签下的内容', async () => {
     renderCard('CODE-1');
     fireEvent.click(await screen.findByRole('button', { name: /^硬件/ }));
-    const doc = document.querySelector('.mac-doc') as HTMLElement;
+    const doc = screen.getByTestId('doc');
     expect(within(doc).getByText('载具类型')).toBeTruthy();
     expect(within(doc).queryByText('项目类型')).toBeNull();
     expect(within(doc).queryByText('客户信息')).toBeNull();
@@ -340,23 +337,20 @@ describe('ProjectInfoCard（项目信息管理卡）', () => {
 
   // —— 标签池角标：红点 = 该标签下有本机没看过的操作记录（与编辑页行内红点同一套水位） ——
 
-  const chipOf = (title: string) =>
-    Array.from(document.querySelectorAll('.mac-tagpool__chip'))
-      .find((chip) => chip.textContent?.startsWith(title)) as HTMLElement | undefined;
+  // 标签就是按钮，角标是带无障碍名字的标记：按名字取，不认类名
+  const chipOf = (title: string) => screen.getByRole('button', { name: new RegExp(`^${title}`) });
 
   it('子节点有未读变动时归到所在的一级标签：该标签右上角出红点，别的标签没有', async () => {
     vi.mocked(fetchInfoNodeChangeSummaryApi).mockResolvedValue({ c1: 'rec-1' });
     renderCard('CODE-1');
     await screen.findByText('客户信息');
 
-    await waitFor(() => expect(chipOf('基础信息')?.querySelector('.mac-tagpool__dot')).toBeTruthy());
-    expect(chipOf('硬件')?.querySelector('.mac-tagpool__dot')).toBeNull();
+    await waitFor(() => expect(within(chipOf('基础信息')).getByLabelText('有新变动')).toBeTruthy());
+    expect(within(chipOf('硬件')).queryByLabelText('有新变动')).toBeNull();
     expect(fetchInfoNodeChangeSummaryApi).toHaveBeenCalledWith('CODE-1');
-    // 同类标签同时带感叹号（c2 未选择）：感叹号仍在标签角上，红点挪到感叹号右上角
-    expect(chipOf('基础信息')?.querySelector('.mac-tagpool__warn')).toBeTruthy();
-    expect(chipOf('基础信息')?.querySelector('.mac-tagpool__dot--on-warn')).toBeTruthy();
-    // 只有红点的标签不带挪位修饰
-    expect(chipOf('硬件')?.querySelector('.mac-tagpool__dot--on-warn')).toBeNull();
+    // 同类标签同时带感叹号（c2 未选择）：两个角标并存（红点避让感叹号的位置是纯样式，不在这里断言）
+    expect(within(chipOf('基础信息')).getByLabelText('信息不全')).toBeTruthy();
+    expect(within(chipOf('硬件')).queryByLabelText('信息不全')).toBeNull();
   });
 
   it('一级标签自身的未读记录也出红点；已读（水位=最新记录 id）的标签不出', async () => {
@@ -368,8 +362,8 @@ describe('ProjectInfoCard（项目信息管理卡）', () => {
     renderCard('CODE-1');
     await screen.findByText('客户信息');
 
-    await waitFor(() => expect(chipOf('硬件')?.querySelector('.mac-tagpool__dot')).toBeTruthy());
-    expect(chipOf('基础信息')?.querySelector('.mac-tagpool__dot')).toBeNull();
+    await waitFor(() => expect(within(chipOf('硬件')).getByLabelText('有新变动')).toBeTruthy());
+    expect(within(chipOf('基础信息')).queryByLabelText('有新变动')).toBeNull();
   });
 
   it('标签下方给出口径说明：感叹号=信息未填写，红点=有新变动（看过「历史」后消失）', async () => {

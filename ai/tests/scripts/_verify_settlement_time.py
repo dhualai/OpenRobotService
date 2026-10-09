@@ -21,7 +21,7 @@ import types
 from datetime import date, datetime
 from pathlib import Path
 
-_project_root = Path(__file__).resolve().parent.parent.parent
+_project_root = Path(__file__).resolve().parent.parent.parent.parent
 _dap_dir = _project_root / "ai" / "agents" / "AiDataAnalysisPlatform"
 
 

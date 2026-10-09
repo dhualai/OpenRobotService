@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   buildProjectBackgroundMarkdown,
   collectMissingInfoNodes,
+  composeShareDoc,
   loadShareDocTags,
   mergeShareDoc,
   missingSelectedTags,
+  replaceUserSection,
   saveShareDocTags,
   SHARE_DOC_DIVIDER,
   SHARE_DOC_SECTION_TEMPLATE,
@@ -152,6 +154,44 @@ describe('共享文档两段式合并', () => {
     const next = mergeShareDoc(written, buildProjectBackgroundMarkdown('P', NODES, ['r1']));
     expect(next).toContain('10:20 起 A 区小车全部离线。');
     expect(next).toContain('## 涉及人员');
+  });
+});
+
+describe('AI 生成内容写入补充段（确认后才替换）', () => {
+  const system = buildProjectBackgroundMarkdown('P', NODES, ['r1']);
+
+  it('只替换分隔线以下，系统段原样保留', () => {
+    const doc = mergeShareDoc('我自己写的描述', system);
+    const next = replaceUserSection(doc, '## 问题描述\n- A 区小车离线');
+
+    expect(next.startsWith(system.trimEnd())).toBe(true);
+    expect(next).toContain('A 区小车离线');
+    expect(next).not.toContain('我自己写的描述');
+    // 仍只有一条分隔线
+    expect(next.split(SHARE_DOC_DIVIDER).length).toBe(2);
+  });
+
+  it('还没选项目（无系统段）时整篇就是补充段，不补分隔线', () => {
+    expect(replaceUserSection('', '## 问题描述\n- x')).toBe('## 问题描述\n- x\n');
+    expect(replaceUserSection('', '## 问题描述\n- x')).not.toContain(SHARE_DOC_DIVIDER);
+  });
+
+  it('上传的文档（无系统段）同样是整篇替换', () => {
+    expect(replaceUserSection('# 我的文档\n\n内容\n', '## 问题描述\n- y')).toBe('## 问题描述\n- y\n');
+  });
+
+  it('composeShareDoc：补充段为空时不写分隔线', () => {
+    expect(composeShareDoc(system, '')).toBe(system);
+    expect(composeShareDoc(system, '   \n ')).toBe(system);
+  });
+
+  it('生成后系统段再重算，AI 写进去的内容不丢', () => {
+    const written = replaceUserSection(mergeShareDoc('', system), '## 问题描述\n- 现象A');
+    const filled = NODES.map((item) => (item.id === 'r2c1' ? { ...item, value: 'MQTT' } : item));
+    const next = mergeShareDoc(written, buildProjectBackgroundMarkdown('P', filled, ['r1', 'r2']));
+
+    expect(next).toContain('MQTT');
+    expect(next).toContain('现象A');
   });
 });
 

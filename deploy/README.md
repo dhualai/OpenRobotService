@@ -28,7 +28,7 @@
 | 名称 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `TEST_SSH_PRIVATE_KEY` | Secret | 是（复用已有） | usp-a 私钥，多条既有 workflow 已在用 |
-| `NOTIFY_WEBHOOKS` | Secret | 否 | 多群推送，逗号分隔，每项写 `<url>\|<policy>\|<群名>`（后两段可省）：`always`（默认，每条都发）/ `failure`（仅失败或自动回滚）/ `success`（仅成功）/ `off`（永久禁发，仅留档 URL）；群名仅作日志标签。例：`群A的url\|always\|研发群,群B的url\|failure\|运维群,群C的url\|off\|勿扰群`。<br>注意：**没写进本变量的群本来就不会收到通知**（不在名单 = 不发） |
+| `NOTIFY_WEBHOOKS` | Secret | 否 | 多群推送，逗号分隔，每项写 `<url>\|<policy>\|<群名>\|<envs>`（后三段可省）：`policy` = `always`（默认，每条都发）/ `failure`（仅失败或自动回滚）/ `success`（仅成功）/ `off`（永久禁发，仅留档 URL）；`envs` = 分号分隔的环境名（test / prod，**不能用逗号，那是目标分隔符**），只在这些环境发送，缺省所有环境；群名仅作日志标签。例：`群A的url\|always\|研发群,群B的url\|failure\|运维群,群C的url\|always\|发布群\|prod`。<br>注意：**没写进本变量的群本来就不会收到通知**（不在名单 = 不发） |
 | `NOTIFY_WEBHOOK` | Secret | 否 | 单群 Webhook（旧变量，作为 `NOTIFY_WEBHOOKS` 的回退，等价 `always`） |
 | `NOTIFY_PROVIDER` | Variable | 否 | `wecom`（默认）/ `feishu` |
 | `NOTIFY_STYLE` | Variable | 否 | 企微通知样式：`card`（默认，模板卡片）/ `markdown`（markdown_v2）/ `image`（自绘卡片图，字号比模板卡片大 2~3 倍，主旨取「部署分支上最近一条已合并 PR」）。企微图片消息不能点击跳转，因此图片后会紧跟一条只含运行链接的文本。渲染不可用或被企微拒收时自动降级 `image → card → markdown_v2` |
@@ -46,6 +46,17 @@
 （`python3 -m pip install --user --break-system-packages pillow`，服务器已装）。
 中文字体不需要在服务器上安装——已随 `deploy/assets/fonts/`（Noto Sans SC 子集，OFL 许可证）打进 artifact。
 缺 Pillow / 缺字体 / 图片超 2MB / 图片被拒，都会自动降级为模板卡片，通知不会丢。
+
+### 生产 / 测试通知分流与发布说明
+
+- **群路由**：`NOTIFY_WEBHOOKS` 每项的第 4 段 `envs`（分号分隔环境名 test / prod）控制只在哪些环境发送，缺省所有环境。当前约定：**测试环境只发「开源小组」群；生产环境（成功 + 失败）两个群都发**。配置示例：
+  `开源小组url|always|开源小组,发布群url|always|【USP】开源机器人服务平台|prod`
+- **生产发布成功**：自动改用「更新日志」卡片（简约风：纯文字组标题 + 小黑点），内容取自
+  [`docs/RELEASE_NOTES.md`](../docs/RELEASE_NOTES.md) 的「## 未发布」区——各功能负责人在合入后
+  自行往里追加 `- 条目`（写法见文件头注释）；文件缺失或没有条目时退回默认版面（最近一条 PR 标题）。
+- **生产发布失败**：自动改用「建议操作」卡片（红色状态 + 自动回滚告警 + 编号步骤 + 部署元信息）。
+- 以上两种生产版面仅影响企微 `image` 样式；降级到 `card` / `markdown_v2` / 纯文本时，
+  发布说明会以列表形式附带在 markdown / 文本里，不会丢。
 
 ### 3. 健康检查默认地址（均已实测 HTTP 200）
 
@@ -117,10 +128,18 @@ $HOME/deploy_backups/test/20260923-152741-381030/
 | 前端构建失败在 `tsc -b` | 类型检查未过，本地 `npm run build:test` 可复现 |
 | SSH 连接失败 | 检查 `TEST_SSH_PRIVATE_KEY` 与 `DEPLOY_SSH_*`；preflight 步骤会打印远端 `supervisorctl status` |
 | 健康检查失败并自动回滚 | Summary 标注「自动回滚=是」，需人工确认服务；必要时再 Rollback 到更早备份 |
-| 没收到通知 | 未配置 `NOTIFY_WEBHOOKS` / `NOTIFY_WEBHOOK` 会跳过；Webhook 域名仅允许企业微信 / 飞书（防 SSRF）；某群策略与本次结果不匹配时也会跳过（如 `failure` 群在部署成功时不发），日志会逐条打印每个目标的发送 / 跳过原因 |
+| 没收到通知 | 未配置 `NOTIFY_WEBHOOKS` / `NOTIFY_WEBHOOK` 会跳过；Webhook 域名仅允许企业微信 / 飞书（防 SSRF）；某群策略与本次结果不匹配时也会跳过（如 `failure` 群在部署成功时不发）；目标配了 `envs` 且不在本次环境时同样跳过（如只配 `prod` 的群在 test 部署时不发）。日志会逐条打印每个目标的发送 / 跳过原因 |
 | 备份占用磁盘 | 调小 `DEPLOY_BACKUP_KEEP`，或到服务器清理 `~/deploy_backups/<env>/` |
 
-## 六、本地等价操作
+## 六、通知脚本测试（deploy/tests）
+
+发布说明解析 / 群路由 envs / 版面选择 / 三种版面渲染的回归测试：
+
+```bash
+python -m pytest deploy/tests -q
+```
+
+## 七、本地等价操作
 
 ```bash
 # 预览（不产生任何远端改动）
@@ -140,7 +159,7 @@ python deploy/deploy.py -e test --rollback latest \
   --health-urls "http://127.0.0.1:9400/api/health,https://usp.ep-zl.com/t/app/"
 ```
 
-## 七、安全边界（本仓库为 public，务必知悉）
+## 八、安全边界（本仓库为 public，务必知悉）
 
 **开源代码 ≠ 开放部署权限。** 外部人员可查看代码、workflow 定义与 Actions 日志，但**无法触发部署、无法读取 Secrets**：
 

@@ -65,10 +65,11 @@ describe('MainLayout', () => {
     expect(screen.getByText('后台管理')).toBeInTheDocument();
   });
 
-  it('should highlight active tab from store', () => {
+  it('should mark active tab from store', () => {
     renderLayout();
-    expect(screen.getByTestId('nav-item-call').className).toContain('is-active');
-    expect(screen.getByTestId('nav-item-tasks').className).not.toContain('is-active');
+    // 选中态用 aria-current 表达（视觉高亮由样式层负责）
+    expect(screen.getByTestId('nav-item-call').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('nav-item-tasks').getAttribute('aria-current')).toBeNull();
   });
 
   it('should render Outlet for child routes', () => {

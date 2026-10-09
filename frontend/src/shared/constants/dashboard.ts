@@ -24,7 +24,8 @@ export const TICKET_STATUS_LIST: StatusMeta[] = [
   // 六种状态全部参与工单状态监测统计（后端 get_ticket_summary 含 new，与「工单总数」同口径）；
   // tone 按处理流程由深到浅分配：待处理(最深) → 处理中 → 暂停/挂起 → 已解决 → 已关闭 → 已取消(最浅)；
   // status-1..5 沿用原蓝阶亮度序列，已取消取最浅一档 status-6（#155979 → #d9eef8 共六档）；
-  // 图例/环图顺序由 Dashboard 的 STATUS_TONE_ORDER 控制（即上文的流程顺序，「待处理」在第一行）。
+  // 图例/环图顺序由使用页面的 STATUS_TONE_ORDER 控制（首页 Dashboard.tsx 与工单数据看板页 TicketDashboard.tsx 各一份）
+  // （即上文的流程顺序，「待处理」在第一行）。
   { key: 'new', label: '待处理', color: '#51bfee', tone: 'status-1', backendReady: true },
   { key: 'in_progress', label: '处理中', color: '#2ba471', tone: 'status-2', backendReady: true },
   { key: 'paused', label: '暂停/挂起', color: '#e37318', tone: 'status-3', backendReady: true },

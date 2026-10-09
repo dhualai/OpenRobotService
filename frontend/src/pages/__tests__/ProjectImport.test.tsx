@@ -9,20 +9,10 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { Toast } from 'tdesign-mobile-react';
 import ProjectImport from '../admin/ProjectImport';
 import { importAllProjectsLedgerApi, type ApiImportAllResult } from '@/api/infoNodes';
+import { useAuthStore } from '@/stores/auth';
 
 vi.mock('@/api/infoNodes', () => ({
   importAllProjectsLedgerApi: vi.fn(),
-}));
-
-const authState = vi.hoisted(() => ({ permissions: ['admin'] as string[] }));
-vi.mock('@/stores/auth', () => ({
-  PERM_PROJECT_LEDGER_IMPORT: 'frontend:admin:project-ledger-import:show',
-  useAuthStore: (selector: (s: { hasPermission: (code: string) => boolean }) => unknown) =>
-    selector({
-      // 与真实 store 的语义一致：admin 直通，其余按权限码精确匹配（用例里不涉及通配）
-      hasPermission: (code: string) =>
-        authState.permissions.includes('admin') || authState.permissions.includes(code),
-    }),
 }));
 
 // Dialog.confirm 在真机上是弹层；测试里把 onConfirm 抓出来手动触发（与用户点「开始导入」等价）
@@ -58,7 +48,8 @@ const confirmImport = async () => {
 describe('项目管理 · 一键导入所有项目节点内容', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    authState.permissions = ['admin'];
+    // 真 auth store：admin 权限码直通（与线上 hasPermission 同一套判定）
+    useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
   });
 
   it('管理员与超级管理员可见；普通用户看不到（后端闸门同判据，这里不给点了就报错的入口）', () => {
@@ -67,12 +58,12 @@ describe('项目管理 · 一键导入所有项目节点内容', () => {
     unmount();
 
     // 全局角色「超级管理员」：后端派生出该权限码随登录态下发（2026-09-28 起也可见可点）
-    authState.permissions = ['frontend:admin:project-ledger-import:show'];
+    useAuthStore.setState({ permissions: ['frontend:admin:project-ledger-import:show'] });
     const superAdmin = render(<ProjectImport />);
     expect(screen.getByRole('button', { name: '一键导入所有项目节点内容' })).toBeTruthy();
     superAdmin.unmount();
 
-    authState.permissions = ['frontend:admin:project-detail:show'];
+    useAuthStore.setState({ permissions: ['frontend:admin:project-detail:show'] });
     render(<ProjectImport />);
     expect(screen.queryByRole('button', { name: '一键导入所有项目节点内容' })).toBeNull();
   });

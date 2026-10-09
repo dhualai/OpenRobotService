@@ -4,7 +4,8 @@
 由 GitHub Actions 通过环境变量驱动（见 .github/workflows/deploy-split.yml）：
 
 - 支持同时推送到多个群：`NOTIFY_WEBHOOKS` 用逗号分隔多个 Webhook，每项可写
-  `<url>|<policy>|<群名>`（后两段可省略，例 `url1|always|研发群,url2|failure|运维群`）；
+  `<url>|<policy>|<群名>|<envs>`（后三段可省略，例 `url1|always|研发群,url2|always|发布群|prod`；
+  envs 内部分隔符是分号，如 `url|always|群名|test;prod`）；
   未配置时回退到单个 `NOTIFY_WEBHOOK`；
 - 未配置任何 Webhook 时静默跳过，不影响部署结果；
 - Webhook 主机做域名白名单校验，避免误配成内网地址产生 SSRF；
@@ -17,19 +18,29 @@
             （markdown_v2 不支持 <font> 彩色标签，勿引入）
   image     自绘卡片图（见 deploy/notify_image.py）：字号比模板卡片大 2~3 倍，
             标题取当前分支最近一条已合并 PR，可点开看原图；
+            生产环境自动换两种版面（按 ENV_NAME + 结果 + 有无发布说明决定）：
+            发布成功且有发布说明 → 「更新日志」卡片（简约风，纯文字组标题+小黑点）；
+            发布失败 → 「建议操作」卡片（红色状态+编号步骤）；
             企微 image 消息不支持跳转，因此紧接着补一条只含 Actions 链接的文本消息。
 降级链：image → card → markdown_v2。渲染不可用（缺 Pillow / 缺中文字体 / 体积超限）
 或任一形态被企微拒收（errcode != 0）时逐级降级，保证通知不丢。
 
 环境变量：
-  NOTIFY_WEBHOOKS  多群推送：`<url>|<policy>|<群名>[, ...]`（policy、群名均可省略）
+  NOTIFY_WEBHOOKS  多群推送：`<url>|<policy>|<群名>|<envs>[, ...]`（后三段均可省略）
                    policy = always（默认，每条都发）| failure（仅失败/自动回滚）
                             | success（仅成功）| off（永久禁发，仅留档 URL）
+                   envs = 分号分隔的环境名（test / prod），只在这些环境的部署时发送；
+                          缺省 = 所有环境都发（例 `url|always|发布群|prod`；
+                          多环境写 `url|always|群名|test;prod`——不能用逗号，那是目标分隔符）
                    群名只是日志标签，用来一眼看出哪个群发送/跳过了
                    注：没写进本变量的群本来就不会收到通知（不在名单 = 不发）
   NOTIFY_WEBHOOK   单群 Webhook（旧变量，作为 NOTIFY_WEBHOOKS 的回退，等价于 always）
   NOTIFY_PROVIDER  wecom（默认）| feishu
-  NOTIFY_STYLE     card（默认）| markdown（仅企微）
+  NOTIFY_STYLE     card（默认）| markdown | image（仅企微）
+  RELEASE_NOTES_FILE  发布说明文件路径（Markdown，取「## 未发布」区内容）。
+                      生产发布成功时渲染成「更新日志」卡片内容；文件缺失/无条目时
+                      退回默认版面。部署时该文件随部署脚本一起打包到 runner
+                      （见 .github/workflows/deploy-split.yml 的 Build components 步骤）。
   NOTIFY_STATUS    success | failure | cancelled（用于判定成功与否）
   NOTIFY_TITLE     动作名，如「部署」「回滚」
   ENV_NAME         目标环境 test|prod
@@ -52,16 +63,31 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
 ALLOWED_HOSTS = ("qyapi.weixin.qq.com", "open.feishu.cn")
 POLICIES = ("always", "failure", "success", "off")
 STYLES = ("card", "markdown", "image")
 EVENT_LABELS = {"workflow_dispatch": "手动触发", "push": "推送触发", "schedule": "定时触发"}
+ENV_LABELS = {"test": "测试", "prod": "生产"}
+ENV_NAMES = tuple(ENV_LABELS)
+
+# 发布说明分组固定展示顺序；文件里多写的组按出现顺序排在后面（见 docs/RELEASE_NOTES.md）
+RELEASE_GROUPS = ("新增功能", "体验优化", "BUG 修复")
+
+# 生产发布失败卡片（failure-prod 版面）的「建议操作」步骤
+FAILURE_STEPS = (
+    "查看 Actions 运行日志，定位失败步骤（日志已脱敏）",
+    "若已触发自动回滚，先人工确认线上服务状态是否正常",
+    "按需手动回滚：运行工作流选 rollback，backup_id 填 latest",
+    "修复后在 prod 环境重新走审批发布（确认词 DEPLOY-PROD）",
+)
 
 
 def env(name, default=""):
@@ -109,14 +135,66 @@ def health_summary():
     return f"{len(urls)} 个端点（{shown}）"
 
 
+def parse_release_notes(path):
+    """解析发布说明文件，取「## 未发布」区内容。
+
+    返回 [(组名, [条目, ...]), ...]：只收 `### 组名` 下的 `- 条目` 行；
+    组名按 RELEASE_GROUPS 固定顺序排列，未识别的组名按出现顺序排在最后；
+    文件不存在 / 没有「未发布」区 / 没有任何条目时返回空列表（调用方据此退回默认版面）。
+    """
+    if not path or not Path(path).is_file():
+        return []
+    groups, current, in_unreleased = {}, None, False
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")
+    except OSError:
+        return []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            in_unreleased = line[3:].strip() == "未发布"
+            current = None
+            continue
+        if not in_unreleased:
+            continue
+        if line.startswith("### "):
+            current = line[4:].strip()
+            groups.setdefault(current, [])
+            continue
+        if current and line.startswith(("-", "*")):
+            item = re.sub(r"^[-*]+\s*", "", line).strip()
+            if item:
+                groups[current].append(item)
+    ordered = [g for g in RELEASE_GROUPS if g in groups]
+    ordered += [g for g in groups if g not in RELEASE_GROUPS]
+    return [(g, groups[g]) for g in ordered if groups[g]]
+
+
+def pick_layout(ok, env_name, notes):
+    """选择 image 版面：生产成功且有发布说明 → release；生产失败 → failure-prod；否则 standard。"""
+    if env_name != "prod":
+        return "standard"
+    if not ok:
+        return "failure-prod"
+    return "release" if notes else "standard"
+
+
 def collect():
     ok = env("NOTIFY_STATUS", "success") == "success"
     event = env("EVENT_NAME")
+    env_name = env("ENV_NAME", "-")
+    notes = parse_release_notes(env("RELEASE_NOTES_FILE"))
+    alerts = []
+    if env("AUTO_ROLLBACK") == "yes":
+        alerts.append("健康检查未通过，已自动回滚到部署前版本，请人工确认线上服务")
+    if env("SKIP_GATE") == "true":
+        alerts.append("本次发布已跳过测试门禁（紧急发布），请事后补测")
     return {
         "ok": ok,
         "icon": "✅" if ok else "❌",
         "title": f"{env('NOTIFY_TITLE', '部署')}{'成功' if ok else '失败'}",
-        "env_name": env("ENV_NAME", "-"),
+        "env_name": env_name,
+        "env_label": ENV_LABELS.get(env_name, env_name),
         "components": env("COMPONENTS", "all"),
         "git_ref": env("GIT_REF"),
         "sha": env("COMMIT_SHA")[:8],
@@ -131,6 +209,11 @@ def collect():
         "run_url": env("RUN_URL"),
         "pr_no": env("PR_NO"),
         "pr_title": env("PR_TITLE"),
+        "release_notes": notes,
+        "release_date": datetime.now().date().isoformat(),
+        "alerts": alerts,
+        "steps": list(FAILURE_STEPS) if (env_name == "prod" and not ok) else [],
+        "layout": pick_layout(ok, env_name, notes),
     }
 
 
@@ -206,6 +289,11 @@ def build_markdown(c):
 
     if c["commit_msg"]:
         lines += ["", f"提交：{clip(c['commit_msg'], 100)}"]
+    notes = c.get("release_notes") or []
+    if notes and c["ok"]:                    # 图片降级到 markdown 时不丢发布说明
+        lines += ["", "**更新说明**"]
+        for title, items in notes:
+            lines += [f"· [{title}] {clip(i, 60)}" for i in items]
     if not c["ok"]:
         lines += ["", "⚠️ 请到 Actions 日志查看失败原因"]
     if c["run_url"]:
@@ -231,6 +319,12 @@ def build_text(c):
         lines.append("⚠️ 健康检查未通过，已自动回滚到部署前版本，请人工确认服务状态")
     if c["backup_id"]:
         lines.append(f"回滚目标: {c['backup_id']}")
+    notes = c.get("release_notes") or []
+    if notes and c["ok"]:                    # 图片降级到纯文本时不丢发布说明
+        lines.append("")
+        lines.append("更新说明:")
+        for title, items in notes:
+            lines += [f"· [{title}] {clip(i, 60)}" for i in items]
     if not c["ok"]:
         lines.append("请到 Actions 日志查看失败原因")
     if c["run_url"]:
@@ -328,7 +422,12 @@ def allowed_webhook(url):
 
 
 def parse_targets(raw):
-    """解析 `NOTIFY_WEBHOOKS`：`<url>|<policy>|<群名>[, ...]`（后两段可省略）。"""
+    """解析 `NOTIFY_WEBHOOKS`：`<url>|<policy>|<群名>|<envs>[, ...]`（后三段均可省略）。
+
+    policy = always（默认，每条都发）| failure | success | off
+    envs = 分号分隔的环境名（test / prod），只在其中列出的环境发送；缺省 = 所有环境。
+           例 `<url>|always|群名|test;prod`（不能用逗号：那是目标之间的分隔符）。
+    """
     targets = []
     for item in raw.split(","):
         item = item.strip()
@@ -338,10 +437,17 @@ def parse_targets(raw):
         url = parts[0]
         policy = (parts[1] if len(parts) > 1 and parts[1] else "always").lower()
         label = parts[2] if len(parts) > 2 and parts[2] else ""
+        # envs 内部分隔符用 `;`：`,` 是目标之间的分隔符，混用会把一个目标切成两个
+        envs = {e.lower() for e in (parts[3] if len(parts) > 3 and parts[3] else "").split(";") if e}
         if policy not in POLICIES:
             print(f"未识别的通知策略（{policy}），按 always 处理")
             policy = "always"
-        targets.append((url, policy, label))
+        unknown = envs - set(ENV_NAMES)
+        if unknown:
+            # 环境名写错时告警但忽略环境限制：通知不丢优先于严格校验
+            print(f"未识别的环境范围（{'、'.join(sorted(unknown))}），忽略环境限制")
+            envs = set()
+        targets.append((url, policy, label, envs))
     return targets
 
 
@@ -352,6 +458,7 @@ def wants(policy, ok):
 
 def main():
     ok = env("NOTIFY_STATUS", "success") == "success"
+    env_name = env("ENV_NAME", "test")   # 路由用：workflow 总会传，缺省按 test
 
     raw = env("NOTIFY_WEBHOOKS")
     if raw:
@@ -361,7 +468,7 @@ def main():
         if not single:
             print("未配置 NOTIFY_WEBHOOKS / NOTIFY_WEBHOOK，跳过通知")
             return 0
-        targets = [(single, "always", "")]
+        targets = [(single, "always", "", set())]
 
     if not targets:
         print("NOTIFY_WEBHOOKS 未解析出有效目标，跳过通知")
@@ -379,8 +486,13 @@ def main():
 
     c = collect()
     sent = skipped = 0
-    for index, (url, policy, label) in enumerate(targets, 1):
+    for index, (url, policy, label, envs) in enumerate(targets, 1):
         name = label or f"#{index}"
+        if envs and env_name not in envs:
+            print(f"[{name}] 环境范围为 {'/'.join(sorted(envs))}，本次为 {env_name}，"
+                  f"按策略跳过 {masked(url)}")
+            skipped += 1
+            continue
         if not allowed_webhook(url):
             print(f"[{name}] 不在白名单（仅允许 https 的企业微信 / 飞书域名），"
                   f"跳过 {masked(url)}")

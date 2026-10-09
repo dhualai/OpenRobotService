@@ -62,8 +62,8 @@ def vehicle_db(monkeypatch):
 
 @pytest.fixture
 def kb_tmp(tmp_path):
-    """临时 kb 目录：xqe/manual/ 两篇 + 一个非 md 文件（应被忽略）。"""
-    manual = tmp_path / "xqe" / "manual"
+    """临时 kb 目录：company/XQE/manual/ 两篇 + 一个非 md 文件（应被忽略）。"""
+    manual = tmp_path / "company" / "XQE" / "manual"
     manual.mkdir(parents=True)
     (manual / "XQE下线调试与部署文档.md").write_text("# 手册A\n", encoding="utf-8")
     (manual / "故障分叉树.md").write_text("# 手册B\n", encoding="utf-8")
@@ -106,25 +106,27 @@ def test_list_manual_docs_scans_dir(kb_tmp):
     docs = list_manual_docs("XQE", kb_root=kb_tmp, media_prefix="/api/ai/media")
     titles = [d["title"] for d in docs]
     assert titles == ["XQE下线调试与部署文档", "故障分叉树"]  # sorted 序
-    assert docs[0]["url"] == "/api/ai/media/kb/xqe/manual/XQE下线调试与部署文档.md"
-    assert docs[0]["path"] == "xqe/manual/XQE下线调试与部署文档.md"
+    assert docs[0]["url"] == "/api/ai/media/kb/company/XQE/manual/XQE下线调试与部署文档.md"
+    assert docs[0]["path"] == "company/XQE/manual/XQE下线调试与部署文档.md"
 
 
 def test_list_manual_docs_missing_dir_returns_empty(tmp_path):
     from ai.api.vehicle_mode import list_manual_docs
 
-    # 域目录不存在 → 空清单（手册可选，不阻塞注册）
+    # 车型目录不存在 → 空清单（手册可选，不阻塞注册）
     assert list_manual_docs("XQE", kb_root=tmp_path) == []
     # 空车型 → 空清单
     assert list_manual_docs("", kb_root=tmp_path) == []
 
 
 def test_model_to_domain():
-    from ai.api.vehicle_mode import model_to_domain
+    from ai.api.vehicle_mode import model_to_domain, model_to_subpath
 
-    assert model_to_domain("XQE") == "xqe"
-    assert model_to_domain(" xqe ") == "xqe"
-    assert model_to_domain("") == ""
+    # 0930 定稿：车型知识挂 company 域子目录（kb/company/{车型}/），不建独立域
+    assert model_to_domain("XQE") == "company"
+    assert model_to_subpath("XQE") == "XQE"
+    assert model_to_subpath(" xqe ") == "XQE"
+    assert model_to_subpath("") == ""
 
 
 # ================================================================
@@ -150,8 +152,20 @@ async def test_lookup_by_model_and_project(vehicle_db):
     _seed_vehicle(vehicle_db, code="XQE-122")
     v = await _lookup_vehicle("XQE", "试点项目", "")
     assert v is not None and v.project_name == "试点项目"
-    # 项目名不匹配 → 拦（严格校验，初版不宽容匹配）
-    assert await _lookup_vehicle("XQE", "别的项目", "") is None
+    # 0930 放宽：项目名仅展示不参与匹配（车型是白名单键）——项目名不一致也放行
+    v2 = await _lookup_vehicle("XQE", "别的项目", "")
+    assert v2 is not None and v2.vehicle_code == "XQE-122"
+    # 大小写归一：小写 xqe 等价 XQE（用户实锤：录入小写被「未建档」拦）
+    assert await _lookup_vehicle("xqe", "", "") is not None
+
+
+async def test_lookup_case_insensitive_code(vehicle_db):
+    from ai.api.vehicle_mode import _lookup_vehicle
+
+    _seed_vehicle(vehicle_db, code="XQE-122")
+    # 车号大小写归一
+    v = await _lookup_vehicle("XQE", "", "xqe-122")
+    assert v is not None and v.vehicle_code == "XQE-122"
 
 
 async def test_lookup_ignores_disabled(vehicle_db):
@@ -176,13 +190,15 @@ async def test_register_mode_success(vehicle_db, kb_tmp, mock_memory, monkeypatc
     resp = await vm.register_mode(_make_request(), memory_manager=mock_memory)
     assert resp["code"] == 0
     assert resp["data"]["confirmed"] is True
-    assert resp["data"]["domain"] == "xqe"
-    assert len(resp["data"]["manual_docs"]) == 2
+    assert resp["data"]["domain"] == "company"
+    # SOP 外显清单排除引导设施（故障分叉树不外显）→ 只剩手册A
+    assert len(resp["data"]["manual_docs"]) == 1
+    assert resp["data"]["manual_docs"][0]["title"] == "XQE下线调试与部署文档"
 
     mem = await mock_memory.get_memory("sess-xqe-1")
     mode = mem.metadata["vehicle_mode"]
     assert mode["model"] == "XQE"
-    assert mode["domain"] == "xqe"
+    assert mode["domain"] == "company"
     assert mode["vehicle_code"] == "XQE-122"
     assert mode["project_name"] == "试点项目"
     assert mode["customer_name"] == "试点客户"
@@ -236,6 +252,24 @@ async def test_register_mode_idempotent_overwrite(vehicle_db, kb_tmp, mock_memor
     assert mem.metadata["vehicle_mode"]["vehicle_code"] == "XQE-9"
 
 
+async def test_register_mode_normalizes_model_case(vehicle_db, kb_tmp, mock_memory, monkeypatch):
+    """档案表里存小写录入串 xqe → 注册后 model 归一为 XQE（大写）。
+
+    归一不是洁癖：kb 目录名/入库 sub_domain 都是 XQE/manual，pipeline 按
+    model 拼检索 filter，小写会过滤出空集（0930 实锤：company 域 0+0）。
+    """
+    from ai.api import vehicle_mode as vm
+
+    _seed_vehicle(vehicle_db, model="xqe")
+    monkeypatch.setattr(vm, "_default_kb_root", lambda: kb_tmp)
+
+    resp = await vm.register_mode(_make_request(model="xqe"), memory_manager=mock_memory)
+    assert resp["code"] == 0
+    assert resp["data"]["model"] == "XQE"
+    mem = await mock_memory.get_memory("sess-xqe-1")
+    assert mem.metadata["vehicle_mode"]["model"] == "XQE"
+
+
 # ================================================================
 # 开场大方向引导题（0930：随机 5 + 故障码保底，服务端直出）
 # ================================================================
@@ -243,7 +277,7 @@ async def test_register_mode_idempotent_overwrite(vehicle_db, kb_tmp, mock_memor
 @pytest.fixture
 def kb_fork(tmp_path):
     """带 9 大类顶层节点的分叉树（### 子节点不算顶层）。"""
-    manual = tmp_path / "xqe" / "manual"
+    manual = tmp_path / "company" / "XQE" / "manual"
     manual.mkdir(parents=True)
     (manual / "故障分叉树.md").write_text(
         "# XQE 故障分叉树\n"

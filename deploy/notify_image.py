@@ -10,6 +10,11 @@
 - 图标（勾/叉）用绘图 API 自绘，不依赖彩色 emoji 字体，Linux runner 同样可用；
 - 字体优先用随包携带的子集（Noto Sans SC，OFL 许可证），找不到再退回系统字体；
   全部找不到时抛 `NotifyImageError`，由 notify.py 降级回模板卡片，保证通知不丢。
+
+版面（由 notify.py 按 `ctx["layout"]` 选择）：
+- standard     默认：状态 + 引用块 + 键值对（test 环境与无发布说明场景）
+- release      生产发布成功：环境+日期头 + 分组更新日志（简约风，纯文字组标题 + 小黑点）
+- failure-prod 生产发布失败：红色状态 + 告警条 + 编号建议操作 + 键值对
 """
 import io
 import os
@@ -157,56 +162,36 @@ def _rows(ctx):
     return rows[:5]
 
 
-def render_png(ctx):
-    """渲染通知卡片图，返回 PNG 字节。"""
+def _load_fonts():
+    """返回 (font 工厂, bold_stroke)；没有粗体文件时用描边模拟加粗。"""
     regular_path, bold_path = pick_fonts()
-    ok = bool(ctx.get("ok"))
-    color = GREEN if ok else RED
-    state = ctx.get("title") or ("部署成功" if ok else "部署失败")
 
-    env_name = ctx.get("env_name") or "-"
-    pr_no = str(ctx.get("pr_no") or "").strip()
-    headline = f"#{pr_no} · {env_name} 环境" if pr_no else f"{env_name} 环境"
+    def font(size, bold=False):
+        return ImageFont.truetype(bold_path if (bold and bold_path) else regular_path, size)
 
-    quote = quote_text(ctx)
+    return font, (0 if bold_path else 2)
 
-    actor = ctx.get("actor") or ""
-    event = ctx.get("event") or ""
-    sub = " · ".join(x for x in (actor, event) if x)
 
-    font = lambda size, bold=False: ImageFont.truetype(  # noqa: E731
-        bold_path if (bold and bold_path) else regular_path, size)
-    bold_stroke = 0 if bold_path else 2      # 没有粗体文件时用描边模拟
+def _canvas():
+    """预留足够高度的画布与画笔，画完由 `_finish` 按内容裁剪。"""
+    img = Image.new("RGB", (W, 6000), BG)
+    return img, ImageDraw.Draw(img)
 
-    f_head = font(23)
-    f_title = font(48, bold=True)
-    f_desc = font(25)
-    f_quote = font(29)
-    f_label = font(24)
-    f_value = font(26)
-    f_link = font(27)
 
-    rows = _rows(ctx)
-    box = 68
-    value_x = PAD + 300
-    line_h, row_gap = 38, 26
-
-    probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
-    row_lines = [_wrap(probe, v, f_value, W - PAD - value_x) for _, v, _ in rows]
-
-    img = Image.new("RGB", (W, 2600), BG)     # 先给足高度，画完按内容裁剪
-    d = ImageDraw.Draw(img)
-    y = PAD
-
-    # 顶部：PR 号 + 环境（拿不到 PR 号时只显示环境）
-    for line in _head_lines(d, headline, f_head, W - 2 * PAD, 2):
+def _head_row(d, y, f_head, left):
+    """顶部标题行（最多 2 行）+ 虚线分隔，返回下一段起始 y。"""
+    for line in _head_lines(d, left, f_head, W - 2 * PAD, 2):
         d.text((PAD, y), line, font=f_head, fill=MID)
         y += 34
     y += 10
     _dashed(d, y, PAD, W - PAD)
-    y += 40
+    return y + 40
 
-    # 状态区：自绘圆角方块 + 勾/叉
+
+def _status_row(d, y, f_title, f_desc, bold_stroke, ok, state, sub):
+    """状态方块（自绘勾/叉）+ 大字状态 + 副标题 + 分隔线，返回下一段起始 y。"""
+    box = 68
+    color = GREEN if ok else RED
     d.rounded_rectangle([PAD, y, PAD + box, y + box], radius=16, fill=color)
     if ok:
         d.line([(PAD + 17, y + 35), (PAD + 30, y + 48)], fill="#FFFFFF", width=7)
@@ -222,7 +207,92 @@ def render_png(ctx):
         d.text((tx, y + box), sub, font=f_desc, fill=SUB)
     y += box + 50
     d.line([(PAD, y), (W - PAD, y)], fill=LINE, width=2)
-    y += 30
+    return y + 30
+
+
+def _link_row(d, y, f_link, color):
+    """底部「查看运行日志」行；图片不可点，真实链接由随后的文本消息给出。"""
+    y += 4
+    d.line([(PAD, y), (W - PAD, y)], fill=LINE, width=2)
+    y += 22
+    d.text((PAD, y), "查看运行日志", font=f_link, fill=color)
+    d.text((W - PAD - 16, y - 2), ">", font=f_link, fill=color)
+    return y + 46
+
+
+def _finish(img, y):
+    """裁剪到内容高度、2x 放大并做体积校验（企微 image 上限 2MB）。"""
+    if y > img.height:
+        raise NotifyImageError(f"内容过高（{y} > {img.height}），改用其他样式")
+    img = img.crop((0, 0, W, y))
+    img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)   # 2x 高清
+    buf = io.BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    data = buf.getvalue()
+    if len(data) > 2 * 1024 * 1024:           # 企微 image 上限 2MB
+        raise NotifyImageError(f"渲染结果过大（{len(data)} 字节），改用其他样式")
+    return data
+
+
+def _sub_text(ctx):
+    """状态行副标题：操作人 · 触发方式。"""
+    return " · ".join(x for x in (ctx.get("actor") or "", ctx.get("event") or "") if x)
+
+
+def render_png(ctx):
+    """按 ctx["layout"] 分派版面，返回 PNG 字节。
+
+    layout:
+      release      生产发布成功且带发布说明（见 `_render_release`）
+      failure-prod 生产发布失败（见 `_render_failure`）
+      standard     默认版面（test / 无发布说明 / 未识别取值）
+    """
+    layout = ctx.get("layout") or "standard"
+    if layout == "release":
+        return _render_release(ctx)
+    if layout == "failure-prod":
+        return _render_failure(ctx)
+    return _render_standard(ctx)
+
+
+def _render_standard(ctx):
+    """默认版面：状态 + 引用块（最近一条 PR/提交）+ 键值对。"""
+    ok = bool(ctx.get("ok"))
+    color = GREEN if ok else RED
+    state = ctx.get("title") or ("部署成功" if ok else "部署失败")
+
+    env_name = ctx.get("env_name") or "-"
+    pr_no = str(ctx.get("pr_no") or "").strip()
+    headline = f"#{pr_no} · {env_name} 环境" if pr_no else f"{env_name} 环境"
+
+    quote = quote_text(ctx)
+
+    sub = _sub_text(ctx)
+
+    font, bold_stroke = _load_fonts()
+
+    f_head = font(23)
+    f_title = font(48, bold=True)
+    f_desc = font(25)
+    f_quote = font(29)
+    f_label = font(24)
+    f_value = font(26)
+    f_link = font(27)
+
+    rows = _rows(ctx)
+    value_x = PAD + 300
+    line_h, row_gap = 38, 26
+
+    probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    row_lines = [_wrap(probe, v, f_value, W - PAD - value_x) for _, v, _ in rows]
+
+    img, d = _canvas()
+    y = PAD
+
+    # 顶部：PR 号 + 环境（拿不到 PR 号时只显示环境）
+    y = _head_row(d, y, f_head, headline)
+
+    y = _status_row(d, y, f_title, f_desc, bold_stroke, ok, state, sub)
 
     # 引用块：本次部署带上了什么（左竖线 + 标题）
     if quote:
@@ -244,19 +314,153 @@ def render_png(ctx):
 
     # 底部跳转提示（图片不可点，真实链接由随后的一条文本消息给出）
     if ctx.get("run_url"):
-        y += 4
-        d.line([(PAD, y), (W - PAD, y)], fill=LINE, width=2)
-        y += 22
-        d.text((PAD, y), "查看运行日志", font=f_link, fill=color)
-        d.text((W - PAD - 16, y - 2), ">", font=f_link, fill=color)
-        y += 46
+        y = _link_row(d, y, f_link, color)
     y += PAD
+    return _finish(img, y)
 
-    img = img.crop((0, 0, W, y))
-    img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)   # 2x 高清
-    buf = io.BytesIO()
-    img.save(buf, "PNG", optimize=True)
-    data = buf.getvalue()
-    if len(data) > 2 * 1024 * 1024:           # 企微 image 上限 2MB
-        raise NotifyImageError(f"渲染结果过大（{len(data)} 字节），改用其他样式")
-    return data
+
+def _render_release(ctx):
+    """生产发布成功：环境+日期头 + 大字成功 + 分组更新日志。
+
+    简约风（对齐 CodeBuddy 更新日志）：纯文字组标题、小黑点 bullet，无图标；
+    不显示版本号，只显示日期。
+    """
+    font, bold_stroke = _load_fonts()
+    f_head = font(23, bold=True)
+    f_head_r = font(23)
+    f_title = font(48, bold=True)
+    f_desc = font(25)
+    f_sec = font(30, bold=True)
+    f_grp = font(27, bold=True)
+    f_item = font(25)
+    f_meta = font(23)
+    f_link = font(27)
+
+    img, d = _canvas()
+    y = PAD
+
+    # 头部：环境 + 日期（不显示版本号）
+    env_label = ctx.get("env_label") or ctx.get("env_name") or "-"
+    left = f"{env_label}环境发布说明"
+    date = ctx.get("release_date") or ""
+    d.text((PAD, y), left, font=f_head, fill=INK)
+    if date:
+        d.text((W - PAD - d.textlength(date, font=f_head_r), y), date, font=f_head_r, fill=SUB)
+    y += 36
+    _dashed(d, y, PAD, W - PAD)
+    y += 40
+
+    y = _status_row(d, y, f_title, f_desc, bold_stroke, True,
+                    ctx.get("title") or "部署成功", _sub_text(ctx))
+
+    # 更新日志区：标题 + 右侧条目计数
+    groups = ctx.get("release_notes") or []
+    d.text((PAD, y), "更新日志", font=f_sec, fill=INK)
+    hint = f"共 {sum(len(items) for _, items in groups)} 项更新"
+    d.text((W - PAD - d.textlength(hint, font=f_meta), y + 6), hint, font=f_meta, fill=SUB)
+    y += 62
+
+    indent = 26                      # 条目整体右移：组标题贴左边距，层级一眼可辨
+    text_w = W - 2 * PAD - indent
+    for gi, (title, items) in enumerate(groups):
+        d.text((PAD, y), title, font=f_grp, fill=INK)
+        y += 50
+        for item in items:
+            lines = _wrap(d, item, f_item, text_w)
+            for li, line in enumerate(lines):
+                if li == 0:
+                    d.ellipse([PAD + 4, y + 17, PAD + 10, y + 23], fill=INK)   # 6px 小黑点
+                d.text((PAD + indent, y), line, font=f_item, fill=MID if li else INK)
+                y += 40
+            y += 10
+        if gi < len(groups) - 1:
+            y += 22
+
+    y += 18
+    d.line([(PAD, y), (W - PAD, y)], fill=LINE, width=2)
+    y += 32
+
+    meta = " · ".join(x for x in (
+        f"部署组件 {component_text(ctx.get('components'))}",
+        f"分支 {ctx['git_ref']} @ {ctx.get('sha', '')}".strip() if ctx.get("git_ref") else "",
+        f"耗时 {ctx['elapsed']}" if ctx.get("elapsed") else "",
+    ) if x)
+    d.text((PAD, y), meta, font=f_meta, fill=SUB)
+    y += 44
+
+    if ctx.get("run_url"):
+        y = _link_row(d, y, f_link, GREEN)
+    y += PAD
+    return _finish(img, y)
+
+
+def _render_failure(ctx):
+    """生产发布失败：红色状态 + 告警条（自动回滚/跳过门禁）+ 编号建议操作 + 键值对。"""
+    font, bold_stroke = _load_fonts()
+    f_head = font(23, bold=True)
+    f_head_r = font(23)
+    f_title = font(48, bold=True)
+    f_desc = font(25)
+    f_sec = font(30, bold=True)
+    f_step = font(25)
+    f_warn = font(24)
+    f_label = font(24)
+    f_value = font(26)
+    f_link = font(27)
+
+    img, d = _canvas()
+    y = PAD
+
+    env_label = ctx.get("env_label") or ctx.get("env_name") or "-"
+    left = f"{env_label}环境 · 发布失败"
+    date = ctx.get("release_date") or ""
+    d.text((PAD, y), left, font=f_head, fill=RED)
+    if date:
+        d.text((W - PAD - d.textlength(date, font=f_head_r), y), date, font=f_head_r, fill=SUB)
+    y += 36
+    _dashed(d, y, PAD, W - PAD)
+    y += 40
+
+    y = _status_row(d, y, f_title, f_desc, bold_stroke, False,
+                    ctx.get("title") or "部署失败", _sub_text(ctx))
+
+    # 告警条：自动回滚 / 跳过门禁（浅橙底 + 橙左边线）
+    for alert in ctx.get("alerts") or []:
+        lines = _wrap(d, alert, f_warn, W - 2 * PAD - 48)
+        block_h = 26 * len(lines) + 24
+        d.rounded_rectangle([PAD, y, W - PAD, y + block_h], radius=10, fill="#FFF7E6")
+        d.rectangle([PAD, y, PAD + 6, y + block_h], fill=ORANGE)
+        for i, line in enumerate(lines):
+            d.text((PAD + 26, y + 12 + i * 26), line, font=f_warn, fill="#AD4E00")
+        y += block_h + 30
+
+    # 建议操作：编号步骤
+    d.text((PAD, y), "建议操作", font=f_sec, fill=INK)
+    y += 52
+    step_w = W - 2 * PAD - 48
+    for i, step in enumerate(ctx.get("steps") or [], 1):
+        lines = _wrap(d, step, f_step, step_w)
+        chip = 30
+        d.ellipse([PAD, y, PAD + chip, y + chip], fill=RED)
+        d.text((PAD + chip / 2, y + chip / 2), str(i), font=font(17, bold=True),
+               fill="#FFFFFF", anchor="mm")
+        for li, line in enumerate(lines):
+            d.text((PAD + chip + 18, y + 3 + li * 32), line, font=f_step,
+                   fill=INK if li == 0 else MID)
+        y += max(chip, len(lines) * 32) + 16
+    y += 8
+    d.line([(PAD, y), (W - PAD, y)], fill=LINE, width=2)
+    y += 28
+
+    value_x = PAD + 300
+    for key, value, value_color in _rows(ctx):
+        d.text((PAD, y + 4), key, font=f_label, fill=SUB)
+        for i, line in enumerate(_wrap(d, value, f_value, W - PAD - value_x)):
+            d.text((value_x, y + i * 36), line, font=f_value, fill=value_color)
+        y += 36 + 18
+    y += 6
+
+    if ctx.get("run_url"):
+        y = _link_row(d, y, f_link, RED)
+    y += PAD
+    return _finish(img, y)

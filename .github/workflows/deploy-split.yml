@@ -16,6 +16,15 @@ name: Deploy (split build/deploy)
 #
 # 部署脚本仍是同一份 deploy/deploy.py：build job 用 --build-artifacts 生产产物，
 # deploy job 用 --from-artifacts 消费产物，两侧共用同一套打包定义，不会漂移。
+#
+# 2026-09-30 提速（依据同日本仓 run 36685781583 分步实测）：
+#   1. gate 与 build 无数据依赖，改为并行（原来串行白等 ~100s 墙钟）；
+#      deploy 仍以 gate 结果为准入，安全边界不变。
+#   2. 自托管 runner 对 job 引用的每个 Node action 都会在 Set up job 阶段从
+#      codeload.github.com 重新下载（实测 download-artifact 36s + upload-artifact
+#      78s，且被 skip 的步骤也照下），故 deploy/rollback 两个自托管 job 彻底不引
+#      uses:；fallback 改 inline curl，日志改由尾段 hosted upload-logs job 上传。
+#   3. 多连接分片 8 → 24 连接（8 连接相对单连接已有约 3 倍提升，24 为待实测值）。
 
 on:
   workflow_dispatch:
@@ -318,10 +327,13 @@ jobs:
         run: echo "::notice::AI 组件无自动门禁（ai/tests 依赖外部服务），本次跳过测试，请确认已人工验证"
 
   # ---------------- 构建 + 上传 artifact（托管 runner） ----------------
+  # 与 gate 并行：build 只依赖 plan（产物与测试无数据依赖，串行纯浪费 ~100s 墙钟）。
+  # gate 失败时这里已跑完 = 白跑一次 hosted 构建（public 仓分钟免费），换取墙钟；
+  # 部署准入不受影响——deploy job 仍以 gate 结果为准入。
   build:
     name: Build artifacts (hosted)
-    needs: [plan, gate]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' && (needs.plan.outputs.skip_gate == 'true' || needs.gate.result == 'success') }}
+    needs: [plan]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -361,6 +373,11 @@ jobs:
           mkdir -p _artifacts/deploy
           cp deploy/deploy.py deploy/notify.py deploy/notify_image.py _artifacts/deploy/
           cp -r deploy/assets _artifacts/deploy/assets
+          # 发布说明：prod 部署成功时通知「更新日志」卡片的内容来源（缺失不阻断构建，
+          # 此时 notify.py 会自动退回默认版面）
+          if [ -f docs/RELEASE_NOTES.md ]; then
+            cp docs/RELEASE_NOTES.md _artifacts/deploy/
+          fi
           ls -lh _artifacts/deploy
 
       - name: Upload artifacts
@@ -387,11 +404,15 @@ jobs:
   # ---------------- 下载 artifact + 本机部署（自托管 runner） ----------------
   deploy:
     name: Deploy (self-hosted)
-    needs: [plan, build]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.action == 'deploy' }}
+    # gate 与 build 并行后，deploy 同时等两者：build 产物到位 + gate 结果为准入
+    # （skip_gate=true 时 gate 为 skipped，走 needs.plan.outputs.skip_gate 分支）。
+    needs: [plan, gate, build]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.action == 'deploy' && (needs.plan.outputs.skip_gate == 'true' || needs.gate.result == 'success') }}
     runs-on: [self-hosted, ors-verify]
     timeout-minutes: 30
     environment: ${{ needs.plan.outputs.environment }}
+    outputs:
+      deploy_log: ${{ steps.export_log.outputs.deploy_log }}
     steps:
       # 自托管 runner 的 workspace 不会在两次运行之间清空，download-artifact
       # 也只覆盖同名文件。残留的上一次 tar 会被 --from-artifacts 一起展开，
@@ -403,9 +424,11 @@ jobs:
           echo "已清空 _artifacts"
 
       # 多连接分片下载：服务器→artifact 存储（Azure blob）的国际链路单连接被 BDP
-      # 卡在 ~50KB/s，实测 8 连接可到 ~154KB/s（约 3 倍）。这里用 github.token 取
-      # artifact 的签名 URL，再 curl -r 并行分片拉回并解压。
-      # 失败不阻断部署：下一步用官方 action 兜底。
+      # 卡在 ~50KB/s，实测 8 连接可到 ~154KB/s（约 3 倍，11.4MB 下载 99s）。
+      # 24 连接是在此基础上的进一步尝试：若吞吐随连接数线性提升，预计下载可降到
+      # ~35s；若国际链路已饱和则收益递减，以下方打印的「用时 Xs」为准，
+      # 无效时把 N 调回 8 即可（一行改动，无其他副作用）。
+      # 失败不阻断部署：下一步 curl 单连接兜底（不用官方 action，原因见下）。
       - name: Download artifacts (multi-connection)
         id: mconn
         continue-on-error: true
@@ -426,7 +449,7 @@ jobs:
           test -n "$url" || { echo "::error::拿不到签名下载 URL"; exit 1; }
           echo "artifact id=$aid size=${size}B"
 
-          N=8
+          N=24
           chunk=$(( (size + N - 1) / N ))
           t0=$(date +%s)
           i=0
@@ -453,13 +476,41 @@ jobs:
           rm -f _artifact.zip
           ls -lh _artifacts
 
-      # 兜底：多连接步骤失败（接口变动 / 网络抖动）时退回官方 action
-      - name: Download artifacts (fallback)
+      # 兜底：多连接步骤失败（接口变动 / 网络抖动）时退回单连接 curl。
+      # 注意：不能用 actions/download-artifact@v4 兜底——自托管 runner 对 job 里
+      # 引用的每个 action 都会在 Set up job 阶段从 codeload.github.com 重新下载
+      # （实测 ~35s/个，且被 skip 的步骤也照下），一个从没执行过的 fallback 会
+      # 让每次部署白付这笔钱。取签名 URL 的方式与主路径一致（Bearer 只发给
+      # api.github.com，绝不随 302 落到 blob 域名）。
+      - name: Download artifacts (fallback, single-connection)
         if: ${{ steps.mconn.outcome == 'failure' }}
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.plan.outputs.artifact_name }}
-          path: _artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ needs.plan.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts"
+          body=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$api")
+          aid=$(printf '%s' "$body" | jq -r --arg n "$ARTIFACT_NAME" '.artifacts[] | select(.name==$n) | .id' | head -1)
+          size=$(printf '%s' "$body" | jq -r --arg n "$ARTIFACT_NAME" '.artifacts[] | select(.name==$n) | .size_in_bytes' | head -1)
+          case "$aid" in ''|null) echo "::error::兜底下载：找不到产物 $ARTIFACT_NAME"; exit 1;; esac
+          case "$size" in ''|null) echo "::error::兜底下载：取不到产物大小"; exit 1;; esac
+          url=$(curl -sS -o /dev/null -D - -H "Authorization: Bearer $GH_TOKEN" \
+                "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$aid/zip" \
+                | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')
+          test -n "$url" || { echo "::error::兜底下载：拿不到签名下载 URL"; exit 1; }
+          echo "兜底下载：artifact id=$aid size=${size}B（单连接）"
+          t0=$(date +%s)
+          curl -fsS --retry 3 --retry-delay 2 -o _artifact.zip "$url"
+          got=$(wc -c < _artifact.zip | tr -d ' ')
+          t1=$(date +%s)
+          echo "单连接下载完成：${got}B / ${size}B，用时 $((t1 - t0))s"
+          [ "$got" = "$size" ] || { echo "::error::兜底下载字节数不符"; exit 1; }
+          rm -rf _artifacts
+          mkdir -p _artifacts
+          unzip -q -o _artifact.zip -d _artifacts
+          rm -f _artifact.zip
+          ls -lh _artifacts
 
       # upload-artifact 对「单个目录」是否保留目录名在不同版本间有过差异，
       # 这里统一归一化，避免 _artifacts/_artifacts/... 之类的嵌套导致后续路径找不到
@@ -552,16 +603,32 @@ jobs:
             echo "（备份 id 填 \`${backup_id}\` 或 \`latest\`）"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 日志上传是辅助能力（走 GitHub 的 artifact 服务），失败不改变部署结论
-      - name: Upload deploy logs
+      # 日志导出：deploy.log 经 job output（base64 单行）交给尾段的 hosted
+      # upload-logs job 上传 artifact。自托管 runner 不引任何 uses:——引一个
+      # action 就要在 Set up job 阶段花 ~35~80s 重下一次。base64 字母表 shell
+      # 安全，可原样注入 upload job 的 printf；256KB 体积守卫防异常大日志。
+      # if: always() 保证部署失败现场（含自动回滚路径）的日志照样导出。
+      - name: Export deploy log to job output
+        id: export_log
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: deploy-log-${{ needs.plan.outputs.environment }}-${{ github.run_id }}
-          path: deploy.log
-          if-no-files-found: ignore
-          retention-days: 30
+        run: |
+          set -uo pipefail
+          if [ ! -f deploy.log ]; then
+            echo "deploy.log 不存在（部署未进入执行阶段），跳过导出"
+            exit 0
+          fi
+          if [ "$(wc -c < deploy.log)" -gt 262144 ]; then
+            tail -c 262144 deploy.log > deploy.log.trimmed
+            mv deploy.log.trimmed deploy.log
+            printf '\n...[earlier output truncated]...\n' >> deploy.log
+          fi
+          {
+            printf 'deploy_log<<EOF_DEPLOY_LOG_B64\n'
+            base64 -w0 deploy.log
+            printf '\nEOF_DEPLOY_LOG_B64\n'
+          } >> "$GITHUB_OUTPUT"
+          echo "已导出 deploy.log（$(wc -c < deploy.log) 字节）到 job output"
 
       - name: Notify
         if: always()
@@ -579,6 +646,8 @@ jobs:
           RUN_STARTED_AT: ${{ github.run_started_at }}
           HEALTH_URLS: ${{ needs.plan.outputs.health_urls }}
           ENV_NAME: ${{ needs.plan.outputs.environment }}
+          # 生产发布成功的「更新日志」卡片内容；文件随 artifact 带过来，缺失时 notify.py 自动降级
+          RELEASE_NOTES_FILE: _artifacts/deploy/RELEASE_NOTES.md
           COMPONENTS: ${{ needs.plan.outputs.components }}
           GIT_REF: ${{ needs.plan.outputs.git_ref }}
           COMMIT_SHA: ${{ needs.plan.outputs.git_sha }}
@@ -600,6 +669,8 @@ jobs:
       ENV_NAME: ${{ needs.plan.outputs.environment }}
       BACKUP_ID: ${{ needs.plan.outputs.backup_id }}
       HEALTH_URLS: ${{ needs.plan.outputs.health_urls }}
+    outputs:
+      rollback_log: ${{ steps.export_log.outputs.rollback_log }}
     steps:
       - name: Locate cached deploy script
         id: locate
@@ -642,15 +713,29 @@ jobs:
             echo "| 回滚目标 | \`$BACKUP_ID\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload rollback logs
+      # 同 deploy job：日志经 job output 交给尾段 hosted upload-logs job，
+      # 自托管 job 不引 uses:（引一个 action 每次 run 就要多花 ~35~80s 下载）。
+      - name: Export rollback log to job output
+        id: export_log
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: rollback-log-${{ needs.plan.outputs.environment }}-${{ github.run_id }}
-          path: rollback.log
-          if-no-files-found: ignore
-          retention-days: 30
+        run: |
+          set -uo pipefail
+          if [ ! -f rollback.log ]; then
+            echo "rollback.log 不存在（回滚未进入执行阶段），跳过导出"
+            exit 0
+          fi
+          if [ "$(wc -c < rollback.log)" -gt 262144 ]; then
+            tail -c 262144 rollback.log > rollback.log.trimmed
+            mv rollback.log.trimmed rollback.log
+            printf '\n...[earlier output truncated]...\n' >> rollback.log
+          fi
+          {
+            printf 'rollback_log<<EOF_ROLLBACK_LOG_B64\n'
+            base64 -w0 rollback.log
+            printf '\nEOF_ROLLBACK_LOG_B64\n'
+          } >> "$GITHUB_OUTPUT"
+          echo "已导出 rollback.log（$(wc -c < rollback.log) 字节）到 job output"
 
       - name: Notify
         if: always()
@@ -672,4 +757,61 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         # 回滚场景没有 artifact，用 runner 上缓存的 notify.py（与 deploy.py 同目录）
         run: python3 "$(dirname '${{ steps.locate.outputs.script }}')/notify.py"
+
+  # ---------------- 日志上传（托管 runner） ----------------
+  # 为什么单独放一个 hosted job：
+  #   1. 自托管 runner 对 job 里引用的每个 Node action 都会在 Set up job 阶段
+  #      从 codeload.github.com 重新下载（实测单次 run 白付 ~110s，含从未执行的
+  #      兜底步骤），因此 deploy/rollback 两个自托管 job 已彻底不引 uses:；
+  #   2. GitHub 公开 REST API 只能下载/删除 artifact，没有上传端点，上传必须走
+  #      runner 侧的 actions/upload-artifact；托管 runner 的 action 是镜像预缓存的
+  #      （同 workflow 的 build job 实测 Set up job 仅 1~9s），放这里几乎零成本。
+  # 日志本体不走网络：deploy/rollback job 用 if: always() 把日志 base64 单行
+  # 写进 job output（部署失败现场也导出），本 job 还原后用官方 action 上传，
+  # artifact 名称/30 天保留/页面可直接下载的体验与改造前完全一致。
+  # 本 job 失败不影响部署结论与通知（通知已在 deploy/rollback job 末尾先行发出）。
+  upload-logs:
+    name: Upload logs (hosted)
+    needs: [plan, deploy, rollback]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # action=deploy 时 rollback job 被 skip（outputs 为空），两个分支互斥
+      - name: Restore deploy.log
+        id: deploy_log
+        if: ${{ needs.deploy.outputs.deploy_log != '' }}
+        run: |
+          set -euo pipefail
+          # base64 字母表对 shell 安全，可原样注入单引号
+          printf '%s' '${{ needs.deploy.outputs.deploy_log }}' | base64 -d > deploy.log
+          wc -c deploy.log
+
+      - name: Upload deploy log
+        if: ${{ steps.deploy_log.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-log-${{ needs.plan.outputs.environment }}-${{ github.run_id }}
+          path: deploy.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Restore rollback.log
+        id: rollback_log
+        if: ${{ needs.rollback.outputs.rollback_log != '' }}
+        run: |
+          set -euo pipefail
+          printf '%s' '${{ needs.rollback.outputs.rollback_log }}' | base64 -d > rollback.log
+          wc -c rollback.log
+
+      - name: Upload rollback log
+        if: ${{ steps.rollback_log.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-log-${{ needs.plan.outputs.environment }}-${{ github.run_id }}
+          path: rollback.log
+          if-no-files-found: warn
+          retention-days: 30
 

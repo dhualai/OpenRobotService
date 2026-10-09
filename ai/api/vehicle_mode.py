@@ -35,16 +35,18 @@ _OPENING_LIMIT = 5
 
 
 def parse_fork_tree_choices(model: str, kb_root: Optional[Path] = None) -> List[str]:
-    """读 kb/{domain}/manual/ 下文件名含「分叉树」的 md，解析顶层 ## 标题。
+    """读 kb/company/{车型}/manual/ 下文件名含「分叉树」的 md，解析顶层 ## 标题。
 
-    顶层标题 = 大方向类目（剥「N. 」序号前缀）。文件不存在/无标题返回 []
+    只收**带数字序号前缀**的顶层节点（`## 1. xxx`）——分叉树大方向类目天然
+    编号；「附：…」「待用户确认」等文档管理章节无序号，天然排除（v0.1 实测
+    混进过「待用户确认」）。剥序号后返回类目列表；文件不存在/无标题返回 []
     （开场题是可选能力，空库自动退化为纯输入框，不阻塞模式注册）。
     kb_root 参数供测试注入临时目录。
     """
-    domain = model_to_domain(model)
-    if not domain:
+    sub = model_to_subpath(model)
+    if not sub:
         return []
-    root = (kb_root or _default_kb_root()) / domain / "manual"
+    root = (kb_root or _default_kb_root()) / "company" / sub / "manual"
     tree = None
     if root.is_dir():
         for f in sorted(root.glob("*.md")):
@@ -60,10 +62,10 @@ def parse_fork_tree_choices(model: str, kb_root: Optional[Path] = None) -> List[
         return []
     out: List[str] = []
     for ln in lines:
-        m = re.match(r"^##\s+(.+?)\s*$", ln)
+        m = re.match(r"^##\s+(\d+)\s*[.、．]\s*(.+?)\s*$", ln)
         if not m:
             continue
-        t = re.sub(r"^[0-9一二三四五六七八九十]+[.、．]\s*", "", m.group(1)).strip()
+        t = m.group(2).strip()
         if t and t not in out:
             out.append(t)
     return out
@@ -122,54 +124,81 @@ async def _ensure_vehicle_table() -> None:
 async def _lookup_vehicle(model: str, project_name: str, vehicle_code: str):
     """查车辆档案。返回 Vehicle 行或 None（调用方报错拦住）。
 
-    匹配规则：
-      1. vehicle_code 非空 → 按唯一车号精确匹配（最可信）
-      2. 否则 → 车型 + 项目名匹配（初版 URL 上游只带这三个字段）
+    匹配规则（0930 放宽：车型是白名单键，项目名/客户名仅展示不参与匹配——
+    车辆档案与二维码录入信息是两套数据，靠项目名字符串相等关联太脆，实锤
+    卡「未建档」）：
+      1. model 大小写归一必匹配（xqe/XQE 等价；知识库目录也按 upper 归一）
+      2. vehicle_code 非空 → 车号大小写归一精确匹配
     只认 active 档案；多条命中取第一条（初版手工建档保证不重复）。
     """
     from ai.core.database import Vehicle, engine
+    from sqlalchemy import func
     from sqlalchemy.orm import Session as DBSession
+
+    m = (model or "").strip().upper()
+    code = (vehicle_code or "").strip().upper()
+    if not m:
+        return None
 
     def _query():
         with DBSession(engine) as s:
-            q = s.query(Vehicle).filter(Vehicle.status == "active")
-            if vehicle_code:
-                q = q.filter(Vehicle.vehicle_code == vehicle_code)
-            else:
-                q = q.filter(Vehicle.model == model, Vehicle.project_name == project_name)
+            q = s.query(Vehicle).filter(
+                Vehicle.status == "active",
+                func.upper(Vehicle.model) == m)
+            if code:
+                q = q.filter(func.upper(Vehicle.vehicle_code) == code)
             return q.first()
 
     return await asyncio.to_thread(_query)
 
 
 # ============================================================
-# 车型 → 知识库域映射 + 手册清单
+# 车型 → 知识库目录映射 + 手册清单
 # ============================================================
+def model_to_subpath(model: str) -> str:
+    """车型 → company 域下的知识库子目录名。XQE → XQE；未来新车型零改动。
+
+    车型知识不建独立顶层域（0930 用户定稿）：kb/company/{车型}/ 入库归
+    company 域，payload sub_domain="{车型}/manual"，检索按此过滤。"""
+    return (model or "").strip().upper()
+
+
 def model_to_domain(model: str) -> str:
-    """车型 → kb 域名。XQE → xqe；未来新车型零改动（默认小写）。"""
-    return (model or "").strip().lower()
+    """车型 → 所属 kb 域名。车型知识统一挂 company 域。"""
+    return "company"
+
+
+# 引导设施文档（不走 SOP 外显按钮）：分叉树=对话引导题的内容源、故障码表=
+# 输码直查的内容源——它们的入口在对话里，不作为文档气泡重复露出（0930 定稿：
+# 除引导设施外，一个文件一个 SOP 气泡按钮）
+_GUIDE_DOC_KEYWORDS = ("分叉树", "故障码表")
 
 
 def list_manual_docs(model: str, kb_root: Optional[Path] = None,
-                     media_prefix: str = "/api/ai/media") -> List[Dict[str, str]]:
-    """扫 kb/{domain}/manual/*.md 生成手册文档清单（title + 正文 URL）。
+                     media_prefix: str = "/api/ai/media",
+                     exclude_guide_docs: bool = False) -> List[Dict[str, str]]:
+    """扫 kb/company/{车型}/manual/*.md 生成手册文档清单（title + 正文 URL）。
 
-    kb 目录/域目录不存在 → 返回空清单（手册是可选能力，不阻塞模式注册）。
+    exclude_guide_docs=True 时排除引导设施文档（分叉树/故障码表）——confirm
+    响应的 manual_docs 用于 SOP 外显气泡，只出可在线查看的操作文档。
+    kb 目录/车型目录不存在 → 返回空清单（手册是可选能力，不阻塞模式注册）。
     URL 走 run.py 已挂的静态路由 {media_prefix}/kb/**（前端 fetch 后自行渲染）。
     kb_root 参数供测试注入临时目录。
     """
-    domain = model_to_domain(model)
-    if not domain:
+    sub = model_to_subpath(model)
+    if not sub:
         return []
-    root = (kb_root or _default_kb_root()) / domain / "manual"
+    root = (kb_root or _default_kb_root()) / "company" / sub / "manual"
     if not root.is_dir():
         return []
     docs: List[Dict[str, str]] = []
     for f in sorted(root.glob("*.md")):
+        if exclude_guide_docs and any(k in f.stem for k in _GUIDE_DOC_KEYWORDS):
+            continue
         docs.append({
             "title": f.stem,
-            "path": f"{domain}/manual/{f.name}",
-            "url": f"{media_prefix}/kb/{domain}/manual/{f.name}",
+            "path": f"company/{sub}/manual/{f.name}",
+            "url": f"{media_prefix}/kb/company/{sub}/manual/{f.name}",
         })
     return docs
 
@@ -208,8 +237,12 @@ async def register_mode(req: ModeConfirmRequest,
         return {"code": 1, "message": f"车型 {model} 未建档或不在服务范围，请确认扫码信息"}
 
     domain = model_to_domain(vehicle.model)
+    # 车型存归一后的值（= 磁盘目录名大小写）：档案表 model 是录入串，可能小写，
+    # 而下游拿它拼检索 filter 的 sub_domain（pipeline._vehicle_mode_domains）、
+    # 渲染 prompt 里的「车型 xxx」，都要与 kb 入库同形才对得上。
+    model_key = model_to_subpath(vehicle.model)
     mode_info = {
-        "model": vehicle.model,
+        "model": model_key,
         "domain": domain,
         "vehicle_code": vehicle.vehicle_code,
         "project_name": vehicle.project_name or project_name,
@@ -220,14 +253,19 @@ async def register_mode(req: ModeConfirmRequest,
 
     mm = memory_manager or await _default_memory_manager()
     memory = await mm.get_memory(req.session_id)
+    # SOP 外显清单：排除引导设施文档（分叉树/故障码表的入口在对话里）
+    manual_docs = list_manual_docs(vehicle.model, exclude_guide_docs=True)
+    opening = build_opening(parse_fork_tree_choices(vehicle.model))
+    if opening:
+        # 开场类目随模式入 metadata：pipeline 识别「用户点开场气泡」（query
+        # == 类目原文）做零 LLM 短接，不必再读分叉树文件
+        mode_info["opening_choices"] = opening["choices"]
     # 覆盖重注册 = 幂等（前端刷新即重调本接口）
     memory.metadata["vehicle_mode"] = mode_info
     await mm.save_memory(memory)
 
-    manual_docs = list_manual_docs(vehicle.model)
-    opening = build_opening(parse_fork_tree_choices(vehicle.model))
     logger.info(
-        f"[vehicle_mode] 定制模式注册: session={req.session_id} model={vehicle.model} "
+        f"[vehicle_mode] 定制模式注册: session={req.session_id} model={model_key} "
         f"vehicle={vehicle.vehicle_code} domain={domain} manual={len(manual_docs)}篇 "
         f"opening={len(opening['choices']) if opening else 0}类",
     )
@@ -235,7 +273,7 @@ async def register_mode(req: ModeConfirmRequest,
         "code": 0,
         "data": {
             "confirmed": True,
-            "model": vehicle.model,
+            "model": model_key,
             "domain": domain,
             "manual_docs": manual_docs,
             "opening": opening,

@@ -35,6 +35,14 @@
 .share-doc__label { margin: 0; font-size: 13px; font-weight: 600; color: var(--mac-fg); }
 .share-doc__tip { margin: 8px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--mac-muted-fg); }
 
+/* AI 生成预览（可编辑后再确认写入） */
+.share-doc__textarea {
+  display: block; width: 100%; margin-top: 12px; padding: 10px 12px;
+  border: 1px solid var(--mac-border); border-radius: 10px;
+  font: inherit; font-size: 12.5px; line-height: 1.6; color: var(--mac-fg);
+  background: #fff; resize: vertical; box-sizing: border-box;
+}
+
 /* 选人弹层（提单给他人补充） */
 .share-doc__sheet { padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); background: #fff; }
 .share-doc__sheet-title { margin: 0; font-size: 15px; font-weight: 700; color: var(--mac-fg); }
@@ -42,11 +50,17 @@
 .share-doc__sheet-actions { display: flex; gap: 10px; margin-top: 16px; }
 .share-doc__sheet-actions .share-doc__btn { flex: 1; }
 
-/* —— 项目信息编辑抽屉（右侧侧滑；内容复用信息树编辑页的嵌入模式） —— */
+/* —— 项目信息编辑弹窗（PC 居中 / 移动端底部弹层；内容复用信息树编辑页的嵌入模式） —— */
 .info-drawer {
   display: flex; flex-direction: column;
-  width: 92vw; max-width: 560px; height: 100vh; max-height: 100vh;
+  width: 100vw; max-width: 560px; height: 88vh; max-height: 88vh;
+  border-radius: 16px 16px 0 0; overflow: hidden;
   background: var(--mac-bg, #f7f8f9);
+}
+/* PC：居中大弹窗（替代原右侧侧滑：桌面端不遮挡提单弹窗主体，点遮罩可关） */
+.info-drawer--center {
+  width: min(880px, 92vw); height: min(86vh, 760px);
+  border-radius: 14px;
 }
 .info-drawer__head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

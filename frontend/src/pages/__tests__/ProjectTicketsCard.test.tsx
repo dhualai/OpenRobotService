@@ -6,6 +6,8 @@ import {
   fetchProjectTicketsOverviewApi,
   type ProjectTicketsOverview,
 } from '@/api/projectTickets';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { useAuthStore } from '@/stores/auth';
 
 // tdesign 弹层/Toast 桩：Toast 记录调用，Popup 仅 visible 时渲染内容，Textarea 用原生元素
 const mockToast = vi.fn();
@@ -41,19 +43,9 @@ vi.mock('@/shared/components/ReactECharts', () => ({
   ),
 }));
 
-// 「配置阻滞权重」按登录用户权限显隐：权限列表由用例控制
-const authState = vi.hoisted(() => ({ permissions: ['admin'] as string[] }));
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: (selector: (s: { permissions: string[] }) => unknown) => selector({ permissions: authState.permissions }),
-}));
-
-// 工单条目点击跳转：断言 mock 的 useNavigate 收到的目标路由
-// （jsdom 的 UA 不是微信，navigateInWechat 会直接调 navigate）
-const mockNavigate = vi.hoisted(() => vi.fn());
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
-  return { ...actual, useNavigate: () => mockNavigate };
-});
+// 「配置阻滞权重」按登录用户权限显隐：权限走真 auth store（用例里 setState 控制）
+// 工单条目点击跳转：jsdom 的 UA 不是微信，navigateInWechat 会直接调 navigate → 真路由，
+// 断言落在真实地址上（见 renderCard 的地址栏探针）
 
 const TS = '2026-09-14 10:00:00';
 
@@ -100,12 +92,26 @@ const OVERVIEW: ProjectTicketsOverview = {
   },
 };
 
-const renderCard = () => render(<ProjectTicketsCard projectId="P-001" />);
+/** 地址栏探针：卡内跳转落到真实 URL 上，断言「跳到哪」而不是「调了哪个 hook」 */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="path">{location.pathname}</div>;
+}
+
+const renderCard = (projectId = 'P-001') =>
+  render(
+    <MemoryRouter initialEntries={[`/admin/project-detail/${projectId}`]}>
+      <LocationProbe />
+      <Routes>
+        <Route path="*" element={<ProjectTicketsCard projectId={projectId} />} />
+      </Routes>
+    </MemoryRouter>,
+  );
 
 describe('ProjectTicketsCard（项目工单卡）', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    authState.permissions = ['admin'];
+    useAuthStore.setState({ permissions: ['admin'] });
     vi.mocked(fetchProjectTicketsOverviewApi).mockResolvedValue(OVERVIEW);
   });
 
@@ -116,15 +122,16 @@ describe('ProjectTicketsCard（项目工单卡）', () => {
     // 正在处理 = 2+1 = 3（新建、已取消不计入）；超期取后端 overdue_count，不前端自己比时间
     // （能比出「几个已超期」的前端算法与后端口径迟早会漂，故逐格比对防回归）
     expect(await screen.findByText('总工单数')).toBeTruthy();
-    const stats = Array.from(document.querySelectorAll('.mac-tix__stat')).map((cell) => [
-      cell.querySelector('.mac-tix__label')?.textContent,
-      cell.querySelector('.mac-tix__num')?.textContent,
-    ]);
-    expect(stats).toEqual([
-      ['总工单数', '7'],
-      ['正在处理', '3'],
-      ['超期工单数', '1'],
-    ]);
+    // 恰好三格，逐格比对（scope 是每格点进去的列表口径，也是这格的含义）
+    const statOf = (scope: string) =>
+      screen.getAllByTestId('ticket-stat').find((el) => el.getAttribute('data-scope') === scope) as HTMLElement;
+    expect(screen.getAllByTestId('ticket-stat')).toHaveLength(3);
+    expect(within(statOf('all')).getByText('总工单数')).toBeTruthy();
+    expect(within(statOf('all')).getByText('7')).toBeTruthy();
+    expect(within(statOf('pending')).getByText('正在处理')).toBeTruthy();
+    expect(within(statOf('pending')).getByText('3')).toBeTruthy();
+    expect(within(statOf('overdue')).getByText('超期工单数')).toBeTruthy();
+    expect(within(statOf('overdue')).getByText('1')).toBeTruthy();
   });
 
   it('三格都是入口：点击进该口径的工单列表（带本项目 id，只列这个项目）', async () => {
@@ -138,16 +145,15 @@ describe('ProjectTicketsCard（项目工单卡）', () => {
       ['超期工单数', '/admin/project-detail/P-001/tickets/overdue'],
     ];
     for (const [label, path] of targets) {
-      mockNavigate.mockClear();
       fireEvent.click(screen.getByRole('button', { name: new RegExp(label) }));
-      expect(mockNavigate).toHaveBeenCalledWith(path);
+      expect(screen.getByTestId('path').textContent).toBe(path);
     }
   });
 
   it('默认模式下展示阻滞工单条目（工单号/提单人/接单人/优先级/状态/超期/问题概况）', async () => {
     renderCard();
     expect(await screen.findByText('核心阻滞工单')).toBeTruthy();
-    const card = document.querySelector('.mac-tix__ticket') as HTMLElement;
+    const card = screen.getAllByTestId('ticket-item')[0];
     expect(within(card).getByText('导航不识别货架')).toBeTruthy();
     expect(within(card).getByText('#12')).toBeTruthy();
     expect(within(card).getByText('提单人 张三')).toBeTruthy();
@@ -164,7 +170,7 @@ describe('ProjectTicketsCard（项目工单卡）', () => {
   it('点击阻滞工单条目跳转到该工单详情页（/tasks/:id）', async () => {
     renderCard();
     fireEvent.click(await screen.findByText('导航不识别货架'));
-    expect(mockNavigate).toHaveBeenCalledWith('/tasks/12');
+    expect(screen.getByTestId('path').textContent).toBe('/tasks/12');
   });
 
   it('AI 配置模式：显示 AI 判定徽标、总述与逐单阻滞理由', async () => {
@@ -222,8 +228,8 @@ describe('ProjectTicketsCard（项目工单卡）', () => {
     expect(await screen.findByRole('button', { name: /配置阻滞权重/ })).toBeTruthy();
     admin.unmount();
 
-    authState.permissions = ['user'];
-    render(<ProjectTicketsCard projectId="P-002" />);
+    useAuthStore.setState({ permissions: ['user'] });
+    renderCard('P-002');
     await waitFor(() => expect(fetchProjectTicketsOverviewApi).toHaveBeenCalledWith('P-002'));
     expect(screen.queryByRole('button', { name: /配置阻滞权重/ })).toBeNull();
     // 非管理员仍能看到默认排序口径说明（但没有「让 AI 判定」的引导语）
