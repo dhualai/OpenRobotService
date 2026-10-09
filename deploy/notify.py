@@ -53,6 +53,9 @@
   HEALTH_URLS      健康检查地址（逗号分隔，仅展示端点概况）
   BACKUP_ID        回滚目标备份 id（rollback 场景）
   SKIP_GATE        "true" 表示已跳过测试门禁
+  PYTEST_OUTCOME   gate 里 pytest 步的 outcome（success|failure|skipped）；
+  VITEST_OUTCOME   同上的 vitest 步。门禁取消拦截后，靠它们如实标注「有失败用例」，
+                   不谎报「已通过」。
   AUTO_ROLLBACK    "yes" 表示已自动回滚
   ACTOR            触发人
   RUN_URL          Actions 运行链接
@@ -179,6 +182,16 @@ def pick_layout(ok, env_name, notes):
     return "release" if notes else "standard"
 
 
+def gate_failed_steps():
+    """gate 里跑出失败用例的步骤名（如 ["pytest"]）。
+
+    2026-10-08 起 gate 的两步测试改为非阻塞（continue-on-error）：job 结果恒为 success，
+    真实结果只能从 PYTEST_OUTCOME / VITEST_OUTCOME 读出，用于如实标注而非谎报「已通过」。
+    """
+    return [name for name in ("pytest", "vitest")
+            if env(f"{name.upper()}_OUTCOME") == "failure"]
+
+
 def collect():
     ok = env("NOTIFY_STATUS", "success") == "success"
     event = env("EVENT_NAME")
@@ -189,6 +202,10 @@ def collect():
         alerts.append("健康检查未通过，已自动回滚到部署前版本，请人工确认线上服务")
     if env("SKIP_GATE") == "true":
         alerts.append("本次发布已跳过测试门禁（紧急发布），请事后补测")
+    gate_failed = gate_failed_steps()
+    if gate_failed:
+        alerts.append(
+            f"测试门禁有失败用例（{'/'.join(gate_failed)}），已按非阻塞放行，请关注回归")
     return {
         "ok": ok,
         "icon": "✅" if ok else "❌",
@@ -203,6 +220,7 @@ def collect():
         "event": EVENT_LABELS.get(event, event),
         "elapsed": elapsed_text(),
         "skip_gate": env("SKIP_GATE") == "true",
+        "gate_failed": gate_failed,
         "auto_rollback": env("AUTO_ROLLBACK") == "yes",
         "backup_id": env("BACKUP_ID"),
         "health": health_summary(),
@@ -230,6 +248,8 @@ def build_card(c):
         rows.append(("处理建议", "查看 Actions 日志定位失败原因"))
     if c["skip_gate"]:
         rows.append(("测试门禁", "⚠️ 已跳过（紧急发布）"))
+    elif c["gate_failed"]:
+        rows.append(("测试门禁", "⚠️ 有失败用例（非阻塞放行）"))
     if c["git_ref"]:
         rows.append(("代码分支", clip(f"{c['git_ref']} @ {c['sha']}", 120)))
     if c["commit_msg"]:
@@ -277,7 +297,13 @@ def build_markdown(c):
     lines = [f"# {c['icon']} {c['title']}", ""]
     lines += [f"> {m}" for m in meta]
 
-    checks = [("测试门禁", "⚠️ 已跳过" if c["skip_gate"] else "✅ 已通过")]
+    if c["skip_gate"]:
+        gate_text = "⚠️ 已跳过"
+    elif c["gate_failed"]:
+        gate_text = "⚠️ 有失败用例（非阻塞放行）"
+    else:
+        gate_text = "✅ 已通过"
+    checks = [("测试门禁", gate_text)]
     if c["auto_rollback"]:
         checks.append(("自动回滚", "⚠️ 已触发，请人工确认"))
     if c["backup_id"]:
@@ -315,6 +341,8 @@ def build_text(c):
         lines.append(f"耗时: {c['elapsed']}")
     if c["skip_gate"]:
         lines.append("⚠️ 已跳过测试门禁（紧急发布，请事后补测）")
+    elif c["gate_failed"]:
+        lines.append("⚠️ 测试门禁有失败用例（已按非阻塞放行，请关注回归）")
     if c["auto_rollback"]:
         lines.append("⚠️ 健康检查未通过，已自动回滚到部署前版本，请人工确认服务状态")
     if c["backup_id"]:

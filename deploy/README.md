@@ -83,7 +83,10 @@
 
 1. **guard**：校验生产确认词，解析分支与健康检查地址，输出「部署计划」表格；
 2. **gate**：`backend|all → pytest --ignore=tests/tasks`、`frontend|all → vitest run`；
-   失败即硬拦（不构建不部署）。`ai` 组件无自动门禁（`ai/tests` 依赖外部服务），需人工验证；
+   **非阻塞**（2026-10-08 起）：用例失败只红步骤、不拦部署——gate 跑的是上游 test 代码，
+   上游用例漂移的红与本次发布源码无关，稳定发布优先；失败会如实写进 Summary 与通知的
+   「测试门禁」栏（「有失败用例（非阻塞放行）」），不谎报「已通过」。
+   `ai` 组件无自动门禁（`ai/tests` 依赖外部服务），需人工验证；
 3. **deploy**：`npm ci` → `deploy.py` 备份远端 → 构建打包上传 → `supervisorctl restart` →
    健康检查（默认重试 20 次 × 间隔 3 秒）；
 4. 健康检查失败 → **自动回滚到本次部署前的备份**并重启，流水线标记失败；
@@ -124,7 +127,7 @@ $HOME/deploy_backups/test/20260923-152741-381030/
 | --- | --- |
 | Deploy 页面没有 Run workflow 按钮 | 文件尚未合入默认分支 `main` |
 | `unrecognized arguments: --yes / --rollback` | 目标分支 `test` / `dev` 上的 `deploy.py` 仍是旧版，需先合入 |
-| 门禁失败（gate 红） | 看 gate 日志跑对应测试；紧急发布可勾选 `skip_gate`（会被显著标注） |
+| 门禁有用例失败（gate 步骤红但 job 绿） | 已按非阻塞放行，Summary / 通知标注「有失败用例」；到 gate 日志看明细，判定是本仓改动还是上游用例漂移；紧急情况可勾选 `skip_gate` 连测试都不跑（会被显著标注） |
 | 前端构建失败在 `tsc -b` | 类型检查未过，本地 `npm run build:test` 可复现 |
 | SSH 连接失败 | 检查 `TEST_SSH_PRIVATE_KEY` 与 `DEPLOY_SSH_*`；preflight 步骤会打印远端 `supervisorctl status` |
 | 健康检查失败并自动回滚 | Summary 标注「自动回滚=是」，需人工确认服务；必要时再 Rollback 到更早备份 |
