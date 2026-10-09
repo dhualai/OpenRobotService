@@ -153,6 +153,8 @@ def _rows(ctx):
         rows.append(("代码分支", f"{ctx['git_ref']} @ {ctx.get('sha', '')}".strip(), INK))
     if ctx.get("skip_gate"):
         rows.append(("测试门禁", "已跳过（紧急发布）", ORANGE))
+    elif ctx.get("gate_failed"):
+        rows.append(("测试门禁", "有失败用例（非阻塞放行）", ORANGE))
     if ctx.get("auto_rollback"):
         rows.append(("自动回滚", "已触发，请人工确认服务", ORANGE))
     if ctx.get("backup_id"):
