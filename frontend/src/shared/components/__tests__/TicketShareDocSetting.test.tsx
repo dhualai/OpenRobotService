@@ -224,19 +224,17 @@ describe('问题共享文档设置（提单弹窗内）', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('记忆按项目隔离：localStorage 有记录时恢复上次的勾选', async () => {
+  it('不记忆：本机有该项目的旧勾选记录，打开仍是全不选', async () => {
     localStorage.setItem('share-doc:selected-tags:P1', JSON.stringify(['r1']));
     renderSetting();
     const vehicle = await screen.findByRole('button', { name: /车端软件/ });
     const schedule = screen.getByRole('button', { name: /调度软件/ });
 
-    // 恢复依赖「拿到信息树后」的第二次渲染（与默认勾选同一时序，CI 慢机器上要等），
-    // 这里必须 waitFor 等 effect 真正生效，否则 aria-pressed 可能还是初始的 false
-    await waitFor(() => expect(vehicle.getAttribute('aria-pressed')).toBe('true'));
-    // 上次只选了「车端软件」→ 恢复这一个；「调度软件」仍未选
+    // 旧记录不再被读取：两个标签都保持未勾选
+    expect(vehicle.getAttribute('aria-pressed')).toBe('false');
     expect(schedule.getAttribute('aria-pressed')).toBe('false');
-    // 车端软件不过半 → 不出缺信息提示条
-    expect(screen.queryByText(/当前问题缺少有效信息/)).toBeNull();
+    // 也不再读写本机：旧记录原样留着，不会被覆盖或清掉
+    expect(localStorage.getItem('share-doc:selected-tags:P1')).toBe(JSON.stringify(['r1']));
   });
 
   it('取消勾选后该标签从文档里消失', async () => {

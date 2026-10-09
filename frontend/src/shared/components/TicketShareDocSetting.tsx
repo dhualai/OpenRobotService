@@ -11,7 +11,7 @@
  *    ① 补充信息 / ② 提单给他人补充 —— 选定项目后常驻（不再只在缺信息时出现）；
  *    ③ 暂时跳过 —— 点了本次（本组件实例）不再提示、按钮也不再显示，刷新/重进页面恢复；
  *    缺信息提示条本身仍只在「勾选标签里有缺省过半」时出现。
- * 3. 标签勾选默认全不选（按项目记住上次勾选，没记过 → 全不选），标签行上方提供全选 / 全部取消。
+ * 3. 标签勾选每次打开都默认全不选（不做记忆），标签行上方提供全选 / 全部取消。
  * 4. 文档正文：系统段（项目背景信息，随勾选实时重算）+ 分隔线 + 补充段（用户自己写的不被覆盖），
  *    见 shared/utils/shareDoc.ts；编辑入口复用既有的 SpecDocField（上传 / 在线编写）。
  */
@@ -30,11 +30,9 @@ import { computeInfoCompleteness, loadInfoNodes, type ProjectInfoNode } from '@/
 import {
   buildProjectBackgroundMarkdown,
   collectMissingInfoNodes,
-  loadShareDocTags,
   mergeShareDoc,
   missingSelectedTags,
   replaceUserSection,
-  saveShareDocTags,
   SHARE_DOC_SECTION_TEMPLATE,
   splitShareDoc,
 } from '@/shared/utils/shareDoc';
@@ -89,22 +87,6 @@ function rootNodes(list: ProjectInfoNode[]): ProjectInfoNode[] {
     .sort((a, b) => a.sort_order - b.sort_order);
 }
 
-/**
- * 首次拿到树时该勾哪些：按本机记住的恢复（只保留仍存在的标签，树可能改过）；
- * 没记过 / 记忆失效 → 默认全不选。
- *
- * 必须在「拿到树」的同一步算好、和 setNodes 同批提交，不能放到后续 effect 里（见下方 useEffect 注释）。
- */
-function initialSelectedTags(list: ProjectInfoNode[], projectId: string): Set<string> {
-  const stored = loadShareDocTags(projectId);
-  if (!stored.size) return new Set<string>();
-  return new Set(
-    rootNodes(list)
-      .filter((root) => stored.has(root.id))
-      .map((root) => root.id),
-  );
-}
-
 export default function TicketShareDocSetting({
   projectId,
   projectName = '',
@@ -125,36 +107,27 @@ export default function TicketShareDocSetting({
   const [memberIds, setMemberIds] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
 
-  /** 已按项目初始化过勾选（避免每次树刷新都把用户取消的勾选复原） */
-  const initedRef = useRef('');
-
   // 读项目信息树（切换项目时重读；失败静默为空态，不阻断提单主流程）
   useEffect(() => {
     if (!projectId) {
       setNodes([]);
       setSelected(new Set());
-      initedRef.current = '';
       return;
     }
     let cancelled = false;
     setLoading(true);
-    // 换项目：等新树到了再重新初始化一次勾选
-    initedRef.current = '';
     loadInfoNodes(projectId)
       .then((list) => {
         if (cancelled) return;
-        // 一次性初始化（恢复记忆 / 默认全不选）必须和 setNodes 落在同一次提交里。
-        // 放到后续 effect 里会留出一个窗口：树已经渲染、用户（或 CI 用例）点了「全选」，
-        // 初始化 effect 才跑并把勾选重置成空 —— 勾选丢失、文档不再重算
-        // （CI 慢机器上这条竞态就是 test gate 偶发红的原因，deploy-split run #37595347855）。
-        initedRef.current = projectId;
-        setSelected(initialSelectedTags(list, projectId));
+        // 每次打开提单弹窗都从「全不选」开始（不做记忆）：和 setNodes 落在同一次提交里，
+        // 保证标签首次渲染出来时勾选就是空的 —— 不留「树先渲染、初始化后跑」的窗口，
+        // 否则用户（或 CI 用例）在这个窗口点「全选」会被随后的初始化清掉
+        // （deploy-split gate 曾因这条竞态偶发变红，run #37595347855）。
+        setSelected(new Set());
         setNodes(list);
       })
       .catch(() => {
         if (cancelled) return;
-        // 拉树失败也记成「初始化过」：避免抽屉里改树（handleTreeChange）后又被初始化清掉勾选
-        initedRef.current = projectId;
         setSelected(new Set());
         setNodes([]);
       })
@@ -182,12 +155,6 @@ export default function TicketShareDocSetting({
   }, [roots]);
 
   const clearAllTags = useCallback(() => setSelected(new Set()), []);
-
-  // 本机记住勾选（按项目隔离，与项目信息卡的筛选状态互不影响）
-  useEffect(() => {
-    if (!projectId || initedRef.current !== projectId) return;
-    saveShareDocTags(projectId, selected);
-  }, [projectId, selected]);
 
   /** 系统段：勾选标签的项目背景信息（只写有值的节点） */
   const system = useMemo(

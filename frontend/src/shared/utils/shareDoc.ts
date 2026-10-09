@@ -281,25 +281,3 @@ export function collectMissingInfoNodes(
   return result;
 }
 
-// —— 提单弹窗里的标签勾选：按项目存本机（与项目信息卡的「筛选」状态各自独立） ——
-
-const SHARE_DOC_TAGS_KEY = 'share-doc:selected-tags';
-
-/** 读本机记住的勾选标签（项目没记过 → 空集合，由调用方决定默认全选） */
-export function loadShareDocTags(projectId: string): Set<string> {
-  try {
-    const raw = localStorage.getItem(`${SHARE_DOC_TAGS_KEY}:${projectId}`);
-    const list = raw ? (JSON.parse(raw) as unknown) : [];
-    return new Set(Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
-
-export function saveShareDocTags(projectId: string, ids: Iterable<string>) {
-  try {
-    localStorage.setItem(`${SHARE_DOC_TAGS_KEY}:${projectId}`, JSON.stringify([...ids]));
-  } catch {
-    // 隐私模式等场景静默降级为仅内存态
-  }
-}
