@@ -211,3 +211,5 @@ class TestDiagnosisFromMeta:
         )
         assert _diagnosis_from_meta({})["diagnosis_hypotheses"] is None
         assert _diagnosis_from_meta(None)["diagnosis_rounds"] is None
+        assert _diagnosis_from_meta("null")["diagnosis_hypotheses"] is None
+        assert _diagnosis_from_meta("{}")["diagnosis_rounds"] is None

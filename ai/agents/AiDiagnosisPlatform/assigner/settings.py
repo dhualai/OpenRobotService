@@ -372,9 +372,15 @@ class AssignerConfig:
         keywords: Dict[str, list] = {}
         anchors: Dict[str, str] = {}
         for product, pnode in (tree or {}).items():
+            if not isinstance(pnode, dict):
+                continue
             classify[product] = {}
-            for iface in (pnode or {}).get("interfaces", []) or []:
-                for fn in (iface.get("functions", []) or []):
+            for iface in pnode.get("interfaces") or []:
+                if not isinstance(iface, dict):
+                    continue
+                for fn in iface.get("functions") or []:
+                    if not isinstance(fn, dict):
+                        continue
                     # 领取/锚粒度 = 功能 name（中文）；无 name 时回退功能 key
                     fname = (fn.get("name") or fn.get("key") or "").strip()
                     if not fname:

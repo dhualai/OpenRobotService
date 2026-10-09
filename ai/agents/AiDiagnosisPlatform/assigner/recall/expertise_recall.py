@@ -463,8 +463,13 @@ def cluster_snapshot_from_cache(name_by_id: Optional[Dict[str, str]] = None) -> 
         members = []
         for eid, entry in sorted(
             (tbl or {}).items(),
-            key=lambda kv: (-int(kv[1].get("count") or 0), kv[0]),
+            key=lambda kv: (
+                -int((kv[1] or {}).get("count") or 0) if isinstance(kv[1], dict) else 0,
+                kv[0],
+            ),
         ):
+            if not isinstance(entry, dict):
+                entry = {}
             members.append({
                 "engineer_id": eid,
                 "name": names.get(eid) or eid,
@@ -472,6 +477,8 @@ def cluster_snapshot_from_cache(name_by_id: Optional[Dict[str, str]] = None) -> 
             })
         shown = []
         for t in items[:40]:
+            if not isinstance(t, dict):
+                continue
             eid = t.get("engineer_id") or ""
             shown.append({
                 **t,
@@ -488,6 +495,8 @@ def cluster_snapshot_from_cache(name_by_id: Optional[Dict[str, str]] = None) -> 
     ready = bool(_cache.get("hash") and cents is not None)
     points = []
     for p in _cache.get("ticket_points") or []:
+        if not isinstance(p, dict):
+            continue
         eid = p.get("engineer_id") or ""
         points.append({
             **p,
