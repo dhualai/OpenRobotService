@@ -21,7 +21,7 @@ def ensure_dispatch_dev_permission() -> None:
         name="显示开发者模式",
         resource_type="frontend",
         action="show",
-        description="后台「其他」中显示派单开发者模式（派单调试 / 界面图鉴标注）",
+        description="后台「其他」中显示派单开发者模式（派单调试 / 界面图鉴 / 可达环境 / 长期记忆）",
     )
 
 
@@ -158,4 +158,36 @@ async def test_run(
     data = await _proxy(
         "POST", "/api/ai/assigner/debug/test-run", timeout=120.0, json=payload or {},
     )
+    return DataResponse(code=0, message="success", data=data)
+
+
+@router.get("/memories", response_model=DataResponse, summary="列出 U老师 长期记忆")
+async def list_memories(
+    current_user: Dict[str, Any] = require_permission(PERM),
+):
+    ensure_dispatch_dev_permission()
+    data = await _proxy("GET", "/api/ai/task/memory", timeout=20.0)
+    return DataResponse(code=0, message="success", data=data)
+
+
+@router.put("/memories/{mem_id}", response_model=DataResponse, summary="改写一条长期记忆")
+async def update_memory(
+    mem_id: str,
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any] = require_permission(PERM),
+):
+    ensure_dispatch_dev_permission()
+    data = await _proxy(
+        "PUT", f"/api/ai/task/memory/{mem_id}", timeout=30.0, json=payload or {},
+    )
+    return DataResponse(code=0, message="success", data=data)
+
+
+@router.delete("/memories/{mem_id}", response_model=DataResponse, summary="删除一条长期记忆")
+async def delete_memory(
+    mem_id: str,
+    current_user: Dict[str, Any] = require_permission(PERM),
+):
+    ensure_dispatch_dev_permission()
+    data = await _proxy("DELETE", f"/api/ai/task/memory/{mem_id}", timeout=20.0)
     return DataResponse(code=0, message="success", data=data)

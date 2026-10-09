@@ -48,6 +48,7 @@ from app.models.task import (
     TaskRelation,
     RelationType,
     SystemConfig,
+    ArchiveReport,
 )
 
 # 任务派单日志（二次派单感知增强）
@@ -104,6 +105,15 @@ from app.models.user_info import UserInfo
 # 用户统计（按日期 + 来源）
 from app.models.user_statistics import UserStatistics
 
+# 微信公众号带参数二维码
+from app.models.wechat_qrcode import WechatQrcode, QrcodeStatus, QrcodeType
+
+# 可达 USP 内网环境
+from app.models.usp_env import UspEnv
+
+# 企业微信表格数据源 + 记录镜像
+from app.models.wecom_sheet import WecomSheetSource, ExternalRecord
+
 __all__ = [
     "Base",
     # identity
@@ -121,7 +131,7 @@ __all__ = [
     "ProjectBlockingConfig",
     # task
     "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping", "TaskStep",
-    "TaskRelation", "RelationType", "SystemConfig",
+    "TaskRelation", "RelationType", "SystemConfig", "ArchiveReport",
     # task dispatch log
     "TaskDispatchLog",
     # task proxy relation
@@ -144,4 +154,10 @@ __all__ = [
     "UserInfo",
     # user statistics
     "UserStatistics",
+    # wechat qrcode
+    "WechatQrcode", "QrcodeStatus", "QrcodeType",
+    # usp env
+    "UspEnv",
+    # wecom sheet source / mirror
+    "WecomSheetSource", "ExternalRecord",
 ]

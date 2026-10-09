@@ -3,6 +3,7 @@
 from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import (
     aggregate_events,
     build_dispatch_funnel,
+    build_funnel_weekly,
     build_ticket_lists,
     build_weekly_metrics,
     classify_dispatch_branch,
@@ -297,12 +298,54 @@ class TestDispatchFunnel:
         assert funnel["ticket_funnel"]["redispatch_only"] == 0
         assert funnel["ticket_funnel"]["both"] == 1
         assert funnel["ticket_funnel"]["union"] == 2
+        assert funnel["attempt_funnel"]["never_ai_attempts"] == 1
+        assert funnel["attempt_funnel"]["created_attempts"] == 7  # 走过 AI 6 次 + 未走 AI 1 次
+        assert funnel["attempt_funnel"]["after_never_ai_attempts"] == 6
         assert funnel["attempt_funnel"]["ai_assign_total"] == 5  # 2+2+1，不含 step0 的 1
         assert funnel["attempt_funnel"]["step0_attempts"] == 1
         assert funnel["attempt_funnel"]["misassign_events"] == 2
         assert funnel["attempt_funnel"]["redispatch_inaccurate_events"] == 1
         assert funnel["rates"]["ticket_union"] == round(2 / 3, 4)
         assert funnel["rates"]["attempt_union"] == round(3 / 5, 4)
+
+    def test_weekly_attempts_follow_dispatch_time(self):
+        """正常流程：按次归到派单发生周，按单仍归工单创建周。"""
+        tickets = [
+            {"task_id": 1, "title": "上周一创建", "created_at": "2026-09-15T10:00:00"},
+            {"task_id": 2, "title": "本周未走 AI", "created_at": "2026-09-22T10:00:00"},
+            {"task_id": 3, "title": "Step0", "created_at": "2026-09-10T10:00:00"},
+        ]
+        flags = {
+            1: {"step0": False, "preferred_twice": False, "preferred_twice_attempts": 0},
+            2: {"step0": False, "preferred_twice": False, "preferred_twice_attempts": 0},
+            3: {"step0": True, "preferred_twice": False, "preferred_twice_attempts": 0},
+        }
+        ai_rows = [
+            {"task_id": 1, "created_at": "2026-09-15T11:00:00"},
+            {"task_id": 1, "created_at": "2026-09-22T11:00:00"},
+            {"task_id": 3, "created_at": "2026-09-22T12:00:00"},
+        ]
+        events = [
+            {
+                "task_id": 1, "channel": "signal", "kind": "misassign",
+                "created_at": "2026-09-22T13:00:00", "detail": {"kind": "misassign"},
+            },
+        ]
+        weeks = build_funnel_weekly(tickets, ai_rows, events, flags, keep=8)
+        by_start = {w["week_start"]: w["funnel"] for w in weeks}
+        born = by_start["2026-09-14"]
+        dispatched = by_start["2026-09-21"]
+        assert born["ticket_funnel"]["created"] == 1
+        assert born["ticket_funnel"]["union"] == 1
+        assert born["attempt_funnel"]["after_never_ai_attempts"] == 1
+        assert born["attempt_funnel"]["misassign_events"] == 0
+        assert dispatched["ticket_funnel"]["created"] == 1
+        assert dispatched["attempt_funnel"]["never_ai_attempts"] == 1
+        assert dispatched["attempt_funnel"]["after_never_ai_attempts"] == 2
+        assert dispatched["attempt_funnel"]["step0_attempts"] == 1
+        assert dispatched["attempt_funnel"]["denominator"] == 1
+        assert dispatched["attempt_funnel"]["created_attempts"] == 3
+        assert dispatched["attempt_funnel"]["misassign_events"] == 1
 
 
 class TestUnlabeledGroups:

@@ -158,11 +158,15 @@ def load_task_context(task_id: str) -> TaskContext:
             ctx.priority = d.get("priority", "中") or "中"
             ctx.status = d.get("status", "pending") or "pending"
             ctx.source = d.get("source", "ai") or "ai"
+            ctx.project_name = d.get("project") or ""
+            ctx.project_id = str(d.get("project_id") or "")
             ctx.attachments = d.get("attachments") or []
             ctx.attachment_analysis = d.get("attachment_analysis") or {}
             ctx.robot_type = d.get("robot_type", "")
             ctx.fault_code = d.get("fault_code", "")
             ctx.location = d.get("location", "")
+            ctx.occurrence_time = d.get("occurrence_time", "") or ""
+            ctx.created_at = d.get("created_at", "") or ""
 
             # diagnosis JSON — 提单 Agent 的诊断结果（核心材料）
             ctx.problem_summary = d.get("problem_summary", "")
@@ -170,6 +174,7 @@ def load_task_context(task_id: str) -> TaskContext:
             ctx.ruled_out = d.get("ruled_out") or []
             ctx.collected_info = d.get("collected_info") or {}
             ctx.diagnosis_rounds = d.get("diagnosis_rounds", 0)
+
 
             # 最终解决方案（工程确认方案后写入 metadata_info.diagnosis.solution）
             # 只有已提交过方案的工单有；是"参考怎么解决"最有价值的内容。
@@ -237,18 +242,33 @@ def build_query(context: TaskContext) -> str:
     return " ".join(parts) if parts else (context.description or "")
 
 
-def build_task_ctx(context: TaskContext) -> dict:
-    """组装日志子 Agent 的 task_ctx（disagnose/discuss 共用）。"""
+def build_task_ctx(
+    context: TaskContext,
+    *,
+    discussion: str = "",
+    attachment_summaries: list | None = None,
+    project_facts: str = "",
+) -> dict:
+    """组装日志子 Agent 的工单上下文（diagnose/discuss 共用）。
+
+    描述、讨论、附件摘要都放原文。是否压缩由日志侧按窗口决定。
+    project_facts 是现场档案里已经脱敏的车型与调度版本，压缩讨论时仍保留。
+    """
     return {
         "task_id": context.task_id,
         "title": context.title,
-        "description": context.description,
+        "description": context.description or "",
         "problem_summary": context.problem_summary,
         "hypotheses": context.hypotheses,
         "ruled_out": context.ruled_out,
         "robot_type": context.robot_type,
         "fault_code": context.fault_code,
         "collected_info": context.collected_info,
+        "location": getattr(context, "location", "") or "",
+        "occurrence_time": getattr(context, "occurrence_time", "") or "",
+        "discussion": discussion or "",
+        "attachment_summaries": list(attachment_summaries or []),
+        "project_facts": (project_facts or "").strip(),
     }
 
 

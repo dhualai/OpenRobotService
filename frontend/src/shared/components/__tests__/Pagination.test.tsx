@@ -54,19 +54,17 @@ describe('Pagination', () => {
     expect(onChange).toHaveBeenCalledWith(4);
   });
 
-  it('should highlight current page with different style', () => {
+  it('should mark current page for assistive tech', () => {
     render(
       <Pagination current={3} total={50} pageSize={10} onChange={() => {}} />
     );
-    const currentBtn = screen.getByText('3');
-    expect(currentBtn).toHaveStyle({ background: 'var(--mac-blue-2)', color: '#fff' });
+    expect(screen.getByText('3').getAttribute('aria-current')).toBe('page');
   });
 
-  it('should not highlight non-current pages', () => {
+  it('should not mark non-current pages', () => {
     render(
       <Pagination current={1} total={50} pageSize={10} onChange={() => {}} />
     );
-    const otherBtn = screen.getByText('2');
-    expect(otherBtn).toHaveStyle({ color: 'var(--mac-fg)' });
+    expect(screen.getByText('2').getAttribute('aria-current')).toBeNull();
   });
 });

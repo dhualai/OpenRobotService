@@ -9,15 +9,17 @@ import { ArrowUp, Plus, MessageSquarePlus, TicketPlus, Paperclip, ThumbsUp, Thum
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/stores/auth';
-import { useWorkbenchStore } from '@/stores/workbench';
+import { useWorkbenchStore, type VehicleContext } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
-import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, qaGetTicketSteps, type TicketDraft, type TicketStep } from '@/api/ai';
+import { toAppUrl } from '@/shared/utils/markdown';
+import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, qaGetTicketSteps, qaModeConfirm, type TicketDraft, type TicketStep } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
 import OnBehalfSelect from '@/shared/components/OnBehalfSelect';
 import type { OnBehalfCandidate } from '@/api/ticket';
 import RedispatchCandidateList from '@/shared/components/RedispatchCandidateList';
-import SpecDocField, { type SpecDocDraft } from '@/shared/components/SpecDocField';
+import type { SpecDocDraft } from '@/shared/components/SpecDocField';
+import TicketShareDocSetting from '@/shared/components/TicketShareDocSetting';
 import { createTicket, reDispatchTicket, uploadCommentAttachment, fetchRedispatch, type RedispatchCandidate } from '@/api/ticket';
 
 /** 远程方式选项（摇人→转工单确认弹窗 与 系统任务新建弹窗 共用）：
@@ -90,8 +92,13 @@ interface Message {
   // 任务 Agent 专属：工单概览 / 信息不足提示（长文本可展开）
   subtype?: 'ticket_overview' | 'missing_hint';
   // 项目编号题候选（prepare not_ready+project_ask）：气泡下方渲染可点按钮，
-  // 点击=以用户身份发送序号走编号还原链路；点击/发送后清空（防重复点与过期按钮）
+  // 点击=以用户身份发送序号，走编号还原→预填→自动弹窗既有链路；答后整组禁用
   project_choices?: Array<{ index: number; name: string; code?: string }> | null;
+  // 车型追问/开场引导选项（0930）：气泡下方渲染可点按钮（不带序号），点击=发送
+  // 选项全文（源自知识库，下轮检索 query 质量更好）；答后整组禁用，所选加深
+  vehicle_choices?: Array<string> | null;
+  // 开场大方向引导题标记：题面大字渲染（区别于追问条的普通题面）
+  vehicleOpening?: boolean;
   // 后端落库的 assistant 消息 DB id（event:message_created 回传）。不替换气泡 id
   // （流式闭包持续以本地 id 引用），仅作 mergeDbMessages 对账锚点——打字机排空
   // 未完时 content 与 DB 全文不等，role+content 匹配会失手产生幽灵重复气泡
@@ -231,6 +238,11 @@ const mapDbMessages = (
       if (Array.isArray(pc) && pc.length > 0) {
         msg.project_choices = pc as NonNullable<Message['project_choices']>;
       }
+      // 车型追问选项持久化恢复（metadata_.vehicle_choices，后端 SSE 落库，0930）
+      const vc = meta?.vehicle_choices;
+      if (Array.isArray(vc) && vc.length > 0) {
+        msg.vehicle_choices = vc as NonNullable<Message['vehicle_choices']>;
+      }
       const extraMsgs: Message[] = [];
       if (m.file_urls) {
         try {
@@ -319,7 +331,7 @@ const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice, answered, selectedChoice,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice, answered, selectedChoice, onVehicleChoice, vehicleAnswered, vehiclePicked,
   selectMode, checked, onCheck, onLongPress, selActive,
 }: {
   msg: Message;
@@ -341,6 +353,10 @@ const MessageBubble = memo(function MessageBubble({
   // 禁用防重复发序号）；selectedChoice=答复序号对应按钮（加深显示）
   answered?: boolean;
   selectedChoice?: number;
+  // 车型选项按钮（0930）：点击=发送选项全文；答后整组禁用，等值全文加深
+  onVehicleChoice?: (msgId: string, choice: string) => void;
+  vehicleAnswered?: boolean;
+  vehiclePicked?: string;
   // 转发多选（0911）：多选模式下点击整条切换勾选；长按唤起操作菜单（复制/多选，微信式）
   selectMode?: boolean;
   checked?: boolean;
@@ -585,6 +601,36 @@ const MessageBubble = memo(function MessageBubble({
                   </>
                 );
               })()
+            ) : msg.vehicle_choices && msg.vehicle_choices.length > 0 ? (
+              // 车型追问/开场引导（0930）：题面照常渲染（开场题大字），胶囊
+              // 按钮组（自适应宽度，样式对齐交互模拟页）+ 固定提示语。点按钮=
+              // 发送选项全文；答后整组禁用、所选实心加深，打字走「其他」不打断。
+              (() => {
+                const answeredV = vehicleAnswered ?? false;
+                return (
+                  <>
+                    {msg.vehicleOpening ? (
+                      <div className="chat-veh-q">{msg.content}</div>
+                    ) : (
+                      <MarkdownRenderer content={msg.content} compact={compact} />
+                    )}
+                    <div className="chat-veh-choices">
+                      {msg.vehicle_choices.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          className={`chat-veh-chip${answeredV ? (c === vehiclePicked ? ' chat-veh-chip--selected' : ' chat-veh-chip--done') : ''}`}
+                          disabled={answeredV}
+                          onClick={() => onVehicleChoice?.(msg.id, c)}
+                        >
+                          {c}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="chat-veh-hint">若是其他情况，请在下方输入框描述</div>
+                  </>
+                );
+              })()
             ) : msg.streaming ? (
               // 流式期间实时 Markdown 渲染文字/格式；媒体（图片/视频）由 MarkdownRenderer 用
               // 稳定占位代替（streaming=true），避免流式中间态渲染真实 <img> 反复 remount/重载闪烁；
@@ -741,12 +787,16 @@ const convMessagesCache: Record<number, Message[]> = {};
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
 
   const { token, name, username } = useAuthStore();
-  const { chatContext, consumeChatContext, refreshTasks, tasksRefreshKey, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations, requestNewConversation } = useWorkbenchStore();
+  const { chatContext, consumeChatContext, vehicleContext, consumeVehicleContext, refreshTasks, tasksRefreshKey, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations, requestNewConversation } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
   const navigate = useNavigate();
 
   const [messages, setMessages] = useState<Message[]>([]);
+  // 车型 SOP 外显（0930）：confirm 响应的 manual_docs（已排除分叉树/故障码表
+  // 引导设施）→ 会话顶部一排胶囊按钮，点击拉 md 在线查看
+  const [vehicleSopDocs, setVehicleSopDocs] = useState<Array<{ title: string; url: string }>>([]);
+  const [sopViewing, setSopViewing] = useState<{ title: string; content: string } | null>(null);
   // 图片预览：点击用户气泡图片 → 全屏遮罩放大查看
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [input, setInput] = useState('');
@@ -1163,6 +1213,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [remoteShots, setRemoteShots] = useState<{ objectPath: string; fileName: string }[]>([]);
   // 问题文档草稿（选填）：随 overrides.spec_doc 透传后端落 task_spec_doc
   const [specDoc, setSpecDoc] = useState<SpecDocDraft | null>(null);
+  // 「AI 生成问题文档」的素材 = 本次会话消息（只取有正文的，最多 60 条，避免超长 payload）
+  const shareDocSourceItems = useMemo(
+    () =>
+      messages
+        .filter((m) => !m.uploading && (m.content || '').trim())
+        .slice(-60)
+        .map((m) => ({ role: m.role, content: (m.content || '').trim(), created_at: m.timestamp })),
+    [messages],
+  );
   const [uploadingShot, setUploadingShot] = useState(false);
   const remoteShotInputRef = useRef<HTMLInputElement | null>(null);
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
@@ -1490,16 +1549,105 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatContext]);
 
+  // 车体扫码进入：待注册「车型定制模式」的车辆身份（确认后记账，首次发送前注册掉即清空）
+  const pendingVehicleModeRef = useRef<VehicleContext | null>(null);
+
+  // call 场景：扫码确认车辆信息后注入一条引导说明消息，并把车辆身份记下来待发送前注册。
+  // 本 effect 必须声明在 [conversationId] 那个清空对话的 effect 之后：
+  // 确认时 requestNewConversation() 与 setVehicleContext() 会被批到同一次 render，
+  // effect 按声明顺序执行——先清空对话、再追加本条引导消息，消息才不会被清空动作冲掉。
+  useEffect(() => {
+    if (!isCall) return;
+    const ctx = consumeVehicleContext();
+    if (ctx) {
+      pendingVehicleModeRef.current = ctx;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: uid(),
+          role: 'assistant',
+          content: `已确认车辆信息：项目 ${ctx.projectName || '—'}、客户 ${ctx.customerName || '—'}、车型 ${ctx.vehicleModel || '—'}。\n接下来按该车型的引导流程协助你，直接描述现象或点下面的选项即可。`,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+      // 确认即注册（0930 调整）：本地生成 sessionId 立即绑模式——原「发送前注册」
+      // 会让开场题晚到（用户首问之后才出）。confirm 按 session_id 幂等覆盖，
+      // 发送前兜底重调无害；开场题在用户首问之前渲染。
+      // sid 必须显式生成并回写、不能用 ensureSessionId()：同一 commit 内
+      // [conversationId] effect（新建空白会话）已排队 setSessionId('')（下一轮
+      // 渲染才生效），本 effect 闭包读到的仍是页面进入时自动恢复出的旧会话 sid。
+      // 拿旧 sid 注册 → 首问时 sessionId 已被清空、ensureSessionId 改生成新 sid，
+      // 注册与提问落在两个 session 上，车型模式对首问不可见（落默认三域检索、
+      // 老内容串味，0930 线上实锤）。同批两次 setSessionId 以最后一次为准，
+      // 发送路径复用它；全新 sid 同时保证不污染历史会话。
+      const sid = newSessionId();
+      setSessionId(sid);
+      void registerVehicleModeNow(ctx, sid);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vehicleContext]);
+
+  /**
+   * 车型模式注册（0930 改造）：确认弹窗「确认」时立即调用（本地生成 sessionId），
+   * 成功后渲染开场大方向引导题——必须在用户首问之前出题。
+   *
+   * 历史：原实现挂发送前（sessionId 到那时才确定），开场题会晚到一轮。现在
+   * 确认时本地生成 sid（ensureSessionId）即可立即注册；confirm 按 session_id
+   * 幂等覆盖，此函数保留为发送前的兜底（pendingVehicleModeRef 已在确认时清空
+   * 则直接 return，不重复调）。
+   * 注册失败（车型未建档 / 网络异常）只提示，不阻断用户提问。
+   */
+  const registerVehicleModeNow = useCallback(async (ctx: VehicleContext, sid: string): Promise<void> => {
+    pendingVehicleModeRef.current = null;
+    try {
+      const res = await qaModeConfirm({
+        session_id: sid,
+        model: ctx.vehicleModel,
+        project_name: ctx.projectName,
+        customer_name: ctx.customerName,
+      });
+      if (res?.code !== 0) {
+        Toast({ message: res?.message || '车型未建档，请确认扫码信息', theme: 'warning' });
+        return;
+      }
+      // SOP 外显按钮（0930）：除引导设施外一个文件一个气泡，点击在线查看
+      if (res.data?.manual_docs?.length) {
+        setVehicleSopDocs(res.data.manual_docs.map((d) => ({ title: d.title, url: d.url })));
+      }
+      // 开场大方向引导题：confirm 响应直出，本地渲染气泡（demo 阶段不落库，
+      // 刷新后开场题不再显示，转正时再持久化）。
+      const op = res.data?.opening;
+      if (op?.choices?.length) {
+        setMessages((prev) => [...prev, {
+          id: uid(),
+          role: 'assistant',
+          content: op.question,
+          timestamp: new Date().toISOString(),
+          vehicle_choices: op.choices,
+          vehicleOpening: true,
+        }]);
+      }
+    } catch {
+      Toast({ message: '车型引导模式注册失败，已按常规问答继续', theme: 'warning' });
+    }
+  }, []);
+
+  /** 生成并登记一个全新 session id（不读现有状态，供强制新建会话的场景使用） */
+  const newSessionId = useCallback((): string => {
+    const id = generateSessionId();
+    trackSession(id);
+    return id;
+  }, []);
+
   /** 确保 sessionId——新 AI 模块无需预先创建会话 */
   const ensureSessionId = useCallback((): string => {
     if (!sessionId) {
-      const id = generateSessionId();
+      const id = newSessionId();
       setSessionId(id);
-      trackSession(id);
       return id;
     }
     return sessionId;
-  }, [sessionId]);
+  }, [sessionId, newSessionId]);
 
   /** 确保 DB 会话存在：首条消息时创建（title 用占位「新会话」，第2轮由 AI 生成后同步），后续复用 convRef */
   const ensureConversation = async (sid: string, firstContent: string): Promise<number | null> => {
@@ -1565,6 +1713,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     let lastFlush = 0;
     // 本轮项目题候选：前端兜底落库时随 metadata 持久化（同 send 主链路）
     let turnChoices: Array<{ index: number; name: string; code?: string }> | null = null;
+    let turnVChoices: Array<string> | null = null;
     const FLUSH_MS = 90;
     const paint = () => setMessages((prev) => prev.map((m) => {
       if (m.id !== assistantId) return m;
@@ -1586,6 +1735,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
     try {
       const sid = ensureSessionId();
+      // 扫码进入的车型定制模式：确认时已注册（ref 已清）则跳过；异常未注册才在此兜底
+      if (pendingVehicleModeRef.current) await registerVehicleModeNow(pendingVehicleModeRef.current, sid);
 
       await qaUploadStream(sid, files, content, {
         onFileSaved: async (d) => {
@@ -1656,6 +1807,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             turnChoices = choices;
             setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, project_choices: choices } : m)));
           }
+          // 车型追问气泡（0930）：附件+文字路径与纯文字路径统一挂可点按钮
+          if (Array.isArray(data.vehicle_choices) && data.vehicle_choices.length) {
+            const vchoices = data.vehicle_choices as Array<string>;
+            turnVChoices = vchoices;
+            setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, vehicle_choices: vchoices } : m)));
+          }
           if (!acc && typeof data.message === 'string' && data.message) {
             acc = data.message;
             paint();
@@ -1681,9 +1838,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (finalContent) {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, phase: undefined, streaming: false } : m)));
         // 落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）；
-        // 项目题候选随 metadata 持久化（切会话/刷新后按钮可恢复）
+        // 项目题候选/车型选项随 metadata 持久化（切会话/刷新后按钮可恢复）
         if (convId) appendMessage(convId, 'assistant', finalContent, {
           ...(turnChoices ? { metadata: JSON.stringify({ project_choices: turnChoices }) } : {}),
+          ...(turnVChoices ? { metadata: JSON.stringify({ vehicle_choices: turnVChoices }) } : {}),
         }).then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); }).catch(() => {});
       } else if (!hasResult) {
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
@@ -1765,6 +1923,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 本轮项目题候选（result 事件挂到气泡）：前端兜底落库时随 metadata 持久化
     // （后端 SSE 主路径自己写 metadata，这里仅老后端未接管时的兜底）
     let turnChoices: Array<{ index: number; name: string; code?: string }> | null = null;
+    let turnVChoices: Array<string> | null = null;
     let typeTimer: ReturnType<typeof setInterval> | null = null;
     // 伪流式（打字机缓冲）：token 先入 pending 队列，定时器按积压规模渐进出字到 acc。
     // 上游（中转站）token 是突发块+真空期交替，直接上屏就是「卡一下出一坨」；
@@ -1836,6 +1995,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     };
     try {
       const sid = ensureSessionId();
+      // 扫码进入的车型定制模式：确认时已注册（ref 已清）则跳过；异常未注册才在此兜底
+      if (pendingVehicleModeRef.current) await registerVehicleModeNow(pendingVehicleModeRef.current, sid);
       const wasNew = !convRef.current; // 新会话：首轮问答完成后才同步到列表
       // 持久化用户消息（首条会顺带建会话）。
       // 必须 await 落库完成后再启动流式（happens-before）：user 行先提交拿到更小的 sequence，
@@ -1935,6 +2096,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, project_choices: choices } : m)));
             }
           }
+          // 车型追问气泡（0930）：result 携带 vehicle_choices → 挂到本轮 assistant
+          // 气泡渲染可点按钮（点击=发送选项全文）。题面 token 已流式上屏，按钮随定稿出现
+          if (currentEvent === 'result' && Array.isArray(data.vehicle_choices) && data.vehicle_choices.length) {
+            const vchoices = data.vehicle_choices as Array<string>;
+            turnVChoices = vchoices;
+            setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, vehicle_choices: vchoices } : m)));
+          }
           // 第2轮 AI 生成会话标题：更新当前标题 + 刷新左侧列表（DB 已由后端同步）
           if (currentEvent === 'title' && data.title) {
             setConversationTitle(data.title);
@@ -2030,9 +2198,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
       if (fullText && assistantDbId == null && sentConvId) {
         // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）；
-        // 项目题候选随 metadata 持久化（切会话/刷新后按钮可恢复）
+        // 项目题候选/车型选项随 metadata 持久化（切会话/刷新后按钮可恢复）
         appendMessage(sentConvId, 'assistant', fullText, {
           ...(turnChoices ? { metadata: JSON.stringify({ project_choices: turnChoices }) } : {}),
+          ...(turnVChoices ? { metadata: JSON.stringify({ vehicle_choices: turnVChoices }) } : {}),
         })
           .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
           .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
@@ -2125,6 +2294,42 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const pickProjectChoiceRef = useRef(pickProjectChoice);
   pickProjectChoiceRef.current = pickProjectChoice;
   const handleProjectChoice = useCallback((msgId: string, index: number) => pickProjectChoiceRef.current(msgId, index), []);
+  // 车型选项按钮点击（0930）：发送选项全文（自描述且源自知识库，下轮检索
+  // query 质量更好）。ref 转发同项目题；发送锁占用时忽略，等流式结束再点。
+  const pickVehicleChoice = (msgId: string, choice: string) => {
+    if (sendingRef.current) return;
+    send(choice);
+  };
+  const pickVehicleChoiceRef = useRef(pickVehicleChoice);
+  pickVehicleChoiceRef.current = pickVehicleChoice;
+  const handleVehicleChoice = useCallback((msgId: string, choice: string) => pickVehicleChoiceRef.current(msgId, choice), []);
+  // SOP 文档在线查看（0930）：拉 md 正文 → 全屏抽屉渲染
+  const [sopLoading, setSopLoading] = useState(false);
+  const openSopDoc = async (d: { title: string; url: string }) => {
+    if (sopLoading) return;
+    setSopLoading(true);
+    try {
+      // 服务端返回的是裸相对路径 /api/ai/media/...（不带部署环境前缀）。
+      // 页面挂在 /t/app、/p/app 下，直接 fetch 会打到网关未配置的裸 /api/ 上 404
+      // ——这正是「SOP 文档加载失败」的根因。补前缀交给统一出口 toAppUrl。
+      const r = await fetch(toAppUrl(d.url));
+      const text = r.ok ? await r.text() : '';
+      // 相对路径改写（0930）：md 里的图片/链接引用是相对同级 media/ 目录的
+      // （如 media/image109.png），补全为 KB 静态路由路径，否则 404 图裂。
+      // 这里保持裸 /api/ 形态，环境前缀同样由 MarkdownRenderer 的
+      // appUrlTransform 在渲染时补（不重复补）。
+      const base = d.url.slice(0, d.url.lastIndexOf('/') + 1);
+      const fixed = text.replace(
+        /(\]\(|src="|src=')((?!https?:|data:|#|\/)[^)"'\s]+)/g,
+        (_m, p1: string, p2: string) => p1 + base + p2.replace(/^\.\//, ''),
+      );
+      setSopViewing({ title: d.title, content: r.ok && fixed ? fixed : '文档加载失败，请稍后重试。' });
+    } catch {
+      setSopViewing({ title: d.title, content: '文档加载失败，请稍后重试。' });
+    } finally {
+      setSopLoading(false);
+    }
+  };
   // 稳定 onEditChange / onEditCancel：内联箭头会让 MessageBubble 的 React.memo 失效（每次渲染新引用），
   // 导致流式 flush 时整列表重渲染、页面闪烁。包成 useCallback 后历史气泡可跳过重渲染。
   const handleEditChange = useCallback((id: string, v: string) => {
@@ -3128,6 +3333,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               }
             }
           }
+          // 车型选项派生态（0930，纯计算不持久化）：题后已有用户消息 → 整组
+          // 禁用；答复与某选项全文等值 → 该按钮加深（用户打字走「其他」路径
+          // 仅禁用不加深）
+          let vehicleAnswered: boolean | undefined;
+          let vehiclePicked: string | undefined;
+          if (msg.vehicle_choices?.length) {
+            const nextUserV = arr.slice(i + 1).find((x) => x.role === 'user');
+            if (nextUserV) {
+              vehicleAnswered = true;
+              const tv = (nextUserV.content || '').trim();
+              if (msg.vehicle_choices.includes(tv)) vehiclePicked = tv;
+            }
+          }
           return (
           <MessageBubble
             key={msg.id}
@@ -3146,6 +3364,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onProjectChoice={handleProjectChoice}
             answered={answered}
             selectedChoice={selectedChoice}
+            onVehicleChoice={handleVehicleChoice}
+            vehicleAnswered={vehicleAnswered}
+            vehiclePicked={vehiclePicked}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
             selectMode={isCall && selectMode}
@@ -3157,6 +3378,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           );
         })}
         <div ref={messagesEndRef} />
+        {/* SOP 文档在线查看抽屉（0930）：全屏覆盖，点遮罩/关闭退出 */}
+        {sopViewing && (
+          <div className="chat-veh-sop-viewer" onClick={() => setSopViewing(null)}>
+            <div className="chat-veh-sop-viewer__panel" onClick={(e) => e.stopPropagation()}>
+              <div className="chat-veh-sop-viewer__head">
+                <span className="chat-veh-sop-viewer__title">{sopViewing.title}</span>
+                <button type="button" className="chat-veh-sop-viewer__close"
+                  onClick={() => setSopViewing(null)}>关闭</button>
+              </div>
+              <div className="chat-veh-sop-viewer__body">
+                <MarkdownRenderer content={sopViewing.content} />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 长按操作菜单：TDesign Popover（自带箭头/动画/外点关闭），代理锚点定位到被长按气泡。
@@ -3275,6 +3511,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           >
             {forwardBusy ? '生成中…' : `生成转发图（${selectedIds.size} 条）`}
           </button>
+        </div>
+      )}
+      {/* 车型 SOP 快捷气泡（0930）：豆包式输入框上方小气泡横排，点击在线查看 md */}
+      {vehicleSopDocs.length > 0 && !selectMode && (
+        <div className="chat-veh-sop-bar">
+          {vehicleSopDocs.map((d) => (
+            <button key={d.url} type="button" className="chat-veh-sop-chip"
+              onClick={() => void openSopDoc(d)}>{d.title}</button>
+          ))}
         </div>
       )}
       <div
@@ -3477,9 +3722,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   placeholder="问题描述"
                   rows={3}
                 />
-                {/* 问题文档（选填）：上传 .md/.doc/.docx 或在线编写，接单人可在此基础上补充 */}
-                <label className="ticket-confirm__label">完整问题文档（选填）</label>
-                <SpecDocField value={specDoc} onChange={setSpecDoc} disabled={ticketConfirm.submitting} />
+                {/* 问题共享文档设置：先选项目 → 勾选要带入的项目背景信息标签（缺信息出感叹号），
+                    缺信息时可选「补充信息 / 提单给他人补充 / 暂时跳过」；
+                    文档正文的系统段随勾选自动重算，分隔线以下的补充内容不被覆盖。 */}
+                <TicketShareDocSetting
+                  projectId={draftField('project_id')}
+                  projectName={draftField('project')}
+                  value={specDoc}
+                  onChange={setSpecDoc}
+                  disabled={ticketConfirm.submitting}
+                  sourceItems={shareDocSourceItems}
+                />
                 <label className="ticket-confirm__label">优先级</label>
                 <select
                   className="ticket-confirm__select"
@@ -3603,8 +3856,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 )}
                 {/* 代他人提单：AI 从对话识别到「帮张三提个单」时预填姓名，由用户确认到具体人。
                     选填 —— 不选即普通自提单，行为与改造前一致。 */}
+                {/* 标题固定「被代理人」，不再追加「· 代提」标记；未选时仅提示选填 */}
                 <label className="ticket-confirm__label">
-                  被代理人 {onBehalfUser ? <span style={{ color: 'var(--primary)' }}>· 代提</span> : <span className="ticket-confirm__hint">（选填）</span>}
+                  被代理人 {!onBehalfUser && <span className="ticket-confirm__hint">（选填）</span>}
                 </label>
                 {/* AI 从对话里识别到「帮张三提个单」时只给姓名，这里提示用户手动选到具体人 */}
                 {!onBehalfUser && ticketConfirm.draft?.on_behalf_of_name ? (

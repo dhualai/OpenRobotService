@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import ticket_fields_block
-from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext
+from typing import List, Union
+
+from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import (
+    engineer_brief_lines,
+    ticket_fields_block,
+)
+from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 
 
 def build_weak(ticket: TicketContext) -> str:
@@ -24,10 +29,16 @@ def build_weak(ticket: TicketContext) -> str:
         "- ✗ 转述/引用**别的工单**里的人：那是被引用工单的诉求，不是本单要指定谁。\n"
         "  例：“工单 #870（…）用户要求重新派单给汪海波。”\n"
         "  → 人名属于 #870，本单只是复述，has_preference=false。\n"
+        "- ✗ 仅叙述历史处理人，未要求本单再派给他：\n"
+        "  例：“上次汪海波处理过类似问题” / “之前是汪海波跟的”。\n"
+        "  → has_preference=false。\n"
         "- ✓ 本单提单人自己的指派意图：无论谁转达，只要是指向本单的就认。\n"
         "  例：“客服说让汪海波看看” / “要求派给汪海波” / “备注：再派给汪海波”\n"
         "  → has_preference=true, preferred_name=汪海波。\n"
-        "判断要点：看这个人是“**本单**该由谁处理”，还是只在描述“**另一张单**当时指定了谁”。\n"
+        "- ✓ 重新派单备注里明确换人：\n"
+        "  例：重派备注“再派给汪海波” / “请改派张三”。\n"
+        "  → has_preference=true。\n"
+        "判断要点：看这个人是“**本单**该由谁处理”，还是只在描述“**另一张单**当时指定了谁”或“历史上谁处理过”。\n"
         "若本单描述引用了其他工单（如出现“工单 #数字”“某单子里”），只在该引用范围内出现的人名不算本单指定人。\n"
         "\n"
         f"{ticket_fields_block(ticket)}\n"
@@ -37,12 +48,27 @@ def build_weak(ticket: TicketContext) -> str:
     )
 
 
-def build_collision(ticket: TicketContext, cand_list: str) -> str:
+def build_collision(
+    ticket: TicketContext,
+    candidates: Union[str, List[EngineerProfile]],
+) -> str:
+    """同名抉择。优先传工程师列表（含职责卡片）；兼容旧的候选人字符串。"""
+    if isinstance(candidates, str):
+        cand_block = candidates
+    else:
+        lines: List[str] = []
+        for eng in candidates or []:
+            lines.extend(engineer_brief_lines(eng, duty_max=120, scope_max=200))
+        cand_block = "\n".join(lines) if lines else "（无候选人）"
     return (
         "用户已指定处理人，但工单系统中存在多个同名/近似名候选人。"
-        "请结合工单内容在下列候选人中选定**一位**。\n"
+        "请结合工单内容与各人职责卡片选定**一位**。\n"
         f"{ticket_fields_block(ticket)}\n"
-        f"候选列表（每人格式为 姓名:xx ID:yy，selected_id 必须原样复制「ID:」后的 id）：\n{cand_list}\n\n"
+        "【同名候选人】（每人含 姓名: / ID: / 部门 / 责任模块 / 职责；"
+        "selected_id 必须原样复制「ID:」后的 id）\n"
+        f"{cand_block}\n\n"
+        "优先选责任模块/职责与本单现象更对口的人；"
+        "卡片都对不上或无法区分时输出 {\"can_determine\": false}。\n"
         "输出 JSON：{\"selected_id\": \"候选 id\", \"reason\": \"简述选择理由\"}；"
         "若实在无法区分则输出 {\"can_determine\": false}。"
     )

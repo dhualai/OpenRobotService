@@ -8,6 +8,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from urllib.parse import quote
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -992,7 +993,118 @@ class WechatService:
                 print(f'获取用户标签列表失败: {result}')
                 return None
         except Exception as e:
-            print(f'请求获取用户标签列表异常: {e}')
+            print(f'请求获取标签列表异常: {e}')
+            return None
+
+    def create_qrcode_ticket(
+        self,
+        scene_str: str,
+        is_permanent: bool = False,
+        expire_seconds: int = 2592000,
+    ) -> Optional[Dict]:
+        """创建带参数二维码的 ticket。
+
+        Args:
+            scene_str: 场景值字符串（1~64 字符），扫码后微信会通过 EventKey 回传
+            is_permanent: 是否永久二维码（永久码数量最多 10 万）
+            expire_seconds: 临时码有效期，最大 2592000 秒（30 天）
+
+        Returns:
+            微信返回的原始 dict: {ticket, expire_seconds, url}；失败返回 None
+        """
+        if not scene_str:
+            logger.error('scene_str 不能为空')
+            return None
+
+        action_name = 'QR_LIMIT_STR_SCENE' if is_permanent else 'QR_STR_SCENE'
+
+        body: Dict = {
+            'action_name': action_name,
+            'action_info': {
+                'scene': {
+                    'scene_str': scene_str,
+                }
+            }
+        }
+
+        if not is_permanent:
+            body['expire_seconds'] = min(expire_seconds, 2592000)
+
+        access_token = self.get_access_token()
+        if not access_token:
+            logger.error('获取 access_token 失败，无法创建二维码 ticket')
+            return None
+
+        url = f'{settings.WECHAT_QRCODE_CREATE_URL}?access_token={access_token}'
+
+        try:
+            headers = {'Content-Type': 'application/json'}
+            response = self.session.post(
+                url,
+                data=json.dumps(body, ensure_ascii=False).encode('utf-8'),
+                headers=headers,
+                timeout=5,
+            )
+            result = response.json()
+
+            if 'ticket' in result:
+                logger.info(f'二维码 ticket 创建成功: scene_str={scene_str}, ticket={result["ticket"][:20]}...')
+                return result
+
+            # access_token 失效 → 清缓存重试一次
+            if result.get('errcode') in (40001, 42001):
+                logger.warning(f'access_token 失效(errcode={result.get("errcode")})，刷新后重试创建二维码')
+                self._invalidate_token_cache()
+                new_token = self.get_access_token()
+                if new_token:
+                    retry_url = f'{settings.WECHAT_QRCODE_CREATE_URL}?access_token={new_token}'
+                    response2 = self.session.post(
+                        retry_url,
+                        data=json.dumps(body, ensure_ascii=False).encode('utf-8'),
+                        headers=headers,
+                        timeout=5,
+                    )
+                    result2 = response2.json()
+                    if 'ticket' in result2:
+                        logger.info(f'二维码 ticket 重试创建成功: scene_str={scene_str}')
+                        return result2
+                    logger.warning(f'二维码 ticket 重试仍失败: {result2}')
+                return None
+
+            logger.error(f'创建二维码 ticket 失败: {result}')
+            return result
+        except Exception as e:
+            logger.error(f'请求创建二维码 ticket 异常: {e}')
+            return None
+
+    def get_qrcode_image_bytes(self, ticket: str) -> Optional[bytes]:
+        """用 ticket 换取二维码图片二进制。
+
+        该接口无需 access_token，ticket 需要 UrlEncode。
+        成功返回图片字节（通常 image/jpeg），失败返回 None。
+        """
+        if not ticket:
+            logger.error('ticket 不能为空')
+            return None
+
+        url = f'https://mp.weixin.qq.com/cgi-bin/showqrcode?ticket={quote(ticket)}'
+
+        try:
+            response = self.session.get(url, timeout=10)
+            if response.status_code == 200:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type:
+                    logger.info(f'二维码图片获取成功，大小 {len(response.content)} 字节')
+                    return response.content
+                else:
+                    # 微信偶发返回 JSON 错误体而非图片
+                    logger.warning(f'二维码返回非图片内容: Content-Type={content_type}, body={response.text[:200]}')
+                    return None
+            else:
+                logger.error(f'二维码图片请求失败: HTTP {response.status_code}, body={response.text[:200]}')
+                return None
+        except Exception as e:
+            logger.error(f'请求二维码图片异常: {e}')
             return None
 
     def request_debug(self, url: str, method: str, params: Dict, body: Dict) -> Optional[Dict]:

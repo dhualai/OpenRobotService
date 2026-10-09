@@ -51,6 +51,19 @@ export const MacPlus = ({ size }: { size?: number }) => (
   </Icon>
 );
 
+/* lucide table-2：企业微信表格数据源管理入口 */
+export const MacTable2 = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M9 3H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Z" />
+    <path d="M9 13H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2Z" />
+    <path d="M21 3h-4" />
+    <path d="M21 9h-4" />
+    <path d="M21 13h-4" />
+    <path d="M21 17h-4" />
+    <path d="M21 21h-4" />
+  </Icon>
+);
+
 /* lucide users */
 export const MacUsers = ({ size }: { size?: number }) => (
   <Icon size={size}>

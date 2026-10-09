@@ -25,8 +25,10 @@
   后端 require_permission 与前端 hasPermission 读同一个码）。
 
   `POST /ledger-sync/all`（一键导入全部项目的台账内容）也是这一层：它一次写**所有项目**
-  的数据，不属于任何单个项目，所以按管理员/超级管理员把关（`get_current_admin_user`，
-  与「配置阻滞权重」同一判据）；单个项目的台账同步仍是 `require_project_member`。
+  的数据，不属于任何单个项目，所以按**全局角色 超级管理员 或 admin** 把关
+  （判据同详情模板：permission_service 派生权限码 `PERM_PROJECT_LEDGER_IMPORT`，
+  后端 require_permission 与前端 hasPermission 读同一个码）；单个项目的台账同步
+  仍是 `require_project_member`。
 
   值类写接口 = 填「项目数据」：`PUT /nodes/{id}/value`
   → 任何登录用户都能写，且只能写**已存在节点**的值，不能改结构、不能加节点。
@@ -48,9 +50,8 @@ from app.modules.admin.api.auth import (
     get_request_actor_optional,
     require_permission,
 )
-from app.services.permission_service import PERM_PROJECT_INFO_TEMPLATE
+from app.services.permission_service import PERM_PROJECT_INFO_TEMPLATE, PERM_PROJECT_LEDGER_IMPORT
 from app.modules.admin.api.permissions import (
-    get_current_admin_user,
     is_project_member_or_admin,
     require_project_member,
 )
@@ -142,6 +143,9 @@ def _require_node_project_member(
 
 # 详情模板（全局字段定义，改一次全体项目生效）：全局角色 开发者 / 超级管理员 或 admin
 require_template_editor = require_permission(PERM_PROJECT_INFO_TEMPLATE)
+
+# 一键导入全部项目（全局批量写，一次覆盖全体项目的台账值）：全局角色 超级管理员 或 admin
+require_ledger_importer = require_permission(PERM_PROJECT_LEDGER_IMPORT)
 
 
 # ── 路由 ───────────────────────────────────────────────
@@ -522,9 +526,9 @@ def preview_ledger_sync(project_id: str,
 
 
 @info_node_router.post("/ledger-sync/all",
-                       summary="一键导入全部项目的台账内容（管理员/超级管理员）")
+                       summary="一键导入全部项目的台账内容（超级管理员/管理员）")
 def import_all_projects_ledger(
-    current_user: Dict[str, Any] = Depends(get_current_admin_user),
+    current_user: Dict[str, Any] = require_ledger_importer,
 ):
     """把本地台账镜像（project 表）里有值的内容批量写进**全部项目**的信息节点。
 
@@ -534,9 +538,10 @@ def import_all_projects_ledger(
     记「一键导入（项目台账）」）；**不建节点**（台账有、树里没有的列只计数返回，
     那属于「去详情模板里补字段」）。已有值与台账一致的不动，重复点击天然幂等。
 
-    这是全局批量写（一次可能写上万条、覆盖所有项目），所以闸门是管理员/超级管理员
-    （`get_current_admin_user`，与「配置阻滞权重」同一判据），而不是项目成员——
-    项目成员只能同步自己的项目，走上面那条单项目接口。
+    这是全局批量写（一次可能写上万条、覆盖所有项目），所以闸门是**全局角色 超级管理员
+    或 admin**（`PERM_PROJECT_LEDGER_IMPORT`，与详情模板同一套「全局角色派生权限码」
+    机制，2026-09-28 前是 `get_current_admin_user`），而不是项目成员——项目成员只能
+    同步自己的项目，走上面那条单项目接口。
 
     响应是汇总计数（project_total / project_written / project_no_change /
     project_skipped / project_failed / filled / overwritten / unmatched /

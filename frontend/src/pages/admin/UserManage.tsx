@@ -675,6 +675,14 @@ export default function UserManage() {
         >
           责任模块树
         </button>
+        <button
+          type="button"
+          className="mac-btn mac-btn--outline"
+          style={{ fontWeight: 400 }}
+          onClick={() => navigate('/admin/dual-tree')}
+        >
+          双树试做
+        </button>
       </div>
 
       {/* 搜索框 + 计数胶囊 */}
@@ -699,6 +707,7 @@ export default function UserManage() {
             key={opt.key}
             type="button"
             className={`mac-filter-chip${sort === opt.key ? ' is-active' : ''}`}
+            aria-pressed={sort === opt.key}
             onClick={() => handleSortChange(opt.key)}
           >
             {opt.label}
@@ -736,7 +745,7 @@ export default function UserManage() {
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                    <span className="mac-user-card__title">{user.name || user.username}</span>
+                    <span className="mac-user-card__title" data-testid="user-card-title">{user.name || user.username}</span>
                     {/* @账号 标签：username 非空时不再显示（微信登录账号形如 wechat_xxxx，展示无意义）；
                         username 为空的历史账号保持原有展示逻辑 */}
                     {!user.username && user.name && user.name !== user.username && (

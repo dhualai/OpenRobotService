@@ -46,6 +46,9 @@ async def get_projects(
     execution_status: Optional[str] = Query(None, description="按执行状态过滤"),
     contact_person_id: Optional[str] = Query(None, description="按对接人ID过滤"),
     include_analysis: bool = Query(True, description="是否包含分析信息"),
+    # 默认口径不变（只返回已承接项目）；录入信息页的项目名选择器要能选到台账里的
+    # 「待定」项目，才显式传 include_pending=true（不传时与其它列表/统计完全一致）
+    include_pending: bool = Query(False, description="是否包含「待定」（未承接）项目"),
     db: AsyncSession = Depends(get_db),
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> List[ProjectResponse]:
@@ -56,7 +59,7 @@ async def get_projects(
     elif status or execution_status or contact_person_id:
         projects = project_service.filter_projects(status, execution_status, contact_person_id)
     else:
-        projects = project_service.get_projects(skip, limit)
+        projects = project_service.get_projects(skip, limit, include_pending=include_pending)
 
     # 项目卡右上角工单数：与 include_analysis 无关，始终附带
     await _attach_ticket_counts(db, projects)

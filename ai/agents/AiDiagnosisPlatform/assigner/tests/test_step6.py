@@ -88,6 +88,22 @@ class TestIronRulesPrompt:
         assert "产品已对齐" in prompt
         assert "不要只按精排分在产品和研发之间瞎猜" in prompt
         assert "不要只因类型改选" not in prompt
+        assert "禁止写总分" in prompt
+        assert "正例：" in prompt
+        assert "反例：" in prompt
+        assert "decision_type 可填" in prompt
+        assert "auto(>=0.8)" not in prompt
+        assert "系统会按 confidence_score 校正" in prompt
+
+    def test_feature_stage_in_step6(self):
+        """正常流程：需求单阶段进入 Step6 分流，设计辅助偏向产品。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(ticket_type="feature", curr_step_name="设计"),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert "当前阶段：设计" in prompt
+        assert "当前阶段是「设计」，辅助偏向产品经理" in prompt
+        assert "不要只按阶段名硬派" in prompt
 
 
 class TestRedispatchRemarkOnly:
@@ -195,8 +211,33 @@ class TestParseExits:
         assert out is not None
         assert out.engineer_id == "u-a"
         assert out.engineer_name == "甲"
+        assert out.decision_type == "auto"
         assert "u-a" not in (out.reasoning or "")
 
+    def test_decision_type_from_confidence(self):
+        """正常流程：decision_type 按 confidence 校正，不信模型自填。"""
+        out = LlmDecision(_cfg())._parse(
+            '{"can_decide":true,"engineer_id":"u-a","engineer_name":"甲",'
+            '"confidence_score":0.6,"reasoning":"尚可","decision_type":"auto"}',
+            [_eng("u-a", "甲")],
+        )
+        assert out is not None
+        assert out.decision_type == "recommend"
+        low = LlmDecision(_cfg())._parse(
+            '{"can_decide":true,"engineer_id":"u-a","engineer_name":"甲",'
+            '"confidence_score":0.3,"reasoning":"勉强","decision_type":"auto"}',
+            [_eng("u-a", "甲")],
+        )
+        assert low is not None
+        assert low.decision_type == "fallback"
+
+    def test_usp_appendix_has_symptom_hints(self):
+        """正常流程：调度USP 附录含路径/锁区现象对照。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.prompts.step6 import build_product_appendix
+        text = build_product_appendix("调度USP")
+        assert "NO_SOLUTION" in text
+        assert "路径规划" in text
+        assert "锁区" in text
     def test_can_decide_false_is_none(self):
         """异常流程：can_decide=false → None，即使填了人。"""
         out = LlmDecision(_cfg())._parse(

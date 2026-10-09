@@ -114,7 +114,7 @@ def _parse_decision(raw: str) -> Optional[SupervisorDecision]:
                 "goal": str(p.get("goal", "")),
                 "parallel": bool(p.get("parallel", False)),
             }
-            for extra_key in ("window_minutes", "occurred_at", "params"):
+            for extra_key in ("window_minutes", "before_minutes", "after_minutes", "occurred_at", "params"):
                 if extra_key in p and p[extra_key] is not None:
                     item[extra_key] = p[extra_key]
             clean_plan.append(item)
@@ -469,7 +469,21 @@ class Supervisor:
                 return cap_name, {"ok": False, "error": f"能力不可用: {cap_name}", "text": ""}
             todo.mark_in_progress(todo_item.id)
             if emit is not None:
-                emit("running", {"id": todo_item.id, "description": todo_item.description, "status": "in_progress", "capability": cap_name})
+                desc = todo_item.description
+                # log_analyze：过程区展示真实文件名，避免 Supervisor goal 写成「分析 TASK-MANAGER」却实际在读 DYNAMIC_MAP
+                if cap_name == "log_analyze":
+                    try:
+                        from pathlib import Path as _P
+                        lp = self._runtime_ctx.get("log_path") or ""
+                        occ = self._runtime_ctx.get("occurred_at") or ""
+                        if lp:
+                            desc = f"分析日志文件：{_P(lp).name}"
+                            if occ:
+                                desc += f"（锚点 {occ}）"
+                            todo_item.description = desc
+                    except Exception:
+                        pass
+                emit("running", {"id": todo_item.id, "description": desc, "status": "in_progress", "capability": cap_name})
             try:
                 async with sem:
                     kwargs = {"query": step.get("goal", "")}
@@ -477,7 +491,7 @@ class Supervisor:
                     if extra:
                         kwargs["query"] = f"{kwargs['query']}\n\n工程师本轮补充:\n{extra}".strip()
                     kwargs.update(self._runtime_ctx)
-                    for extra_key in ("window_minutes", "occurred_at", "params"):
+                    for extra_key in ("window_minutes", "before_minutes", "after_minutes", "occurred_at", "params"):
                         if extra_key in step and step[extra_key] is not None:
                             kwargs[extra_key] = step[extra_key]
                     bus = self._bus()

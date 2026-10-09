@@ -118,6 +118,9 @@ MarkupSafe>=3.0.3
 email-validator>=2.3.0
 dnspython>=2.8.0
 
+# ---- SSH（USP 环境拉日志）----
+paramiko>=3.5.0
+
 # ---- 测试 / 调试（可选）----
 pytest>=9.1.1
 iniconfig>=2.3.0

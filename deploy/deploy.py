@@ -457,11 +457,15 @@ _ARTIFACT_TAR_NAME = {comp: tar_name for comp, tar_name, _ in _ARTIFACT_LAYOUT}
 
 # 打包排除项：构建侧（--build-artifacts）与部署侧（deploy_*）、备份侧同源，
 # 避免「备份/上传/产物」三处各写一套排除表而互相漂移。
+#
+# 注意：不要写裸名 "tools"。tar --exclude tools 会匹配任意路径段名为 tools 的目录，
+# 连带打掉 ai/agents/.../capabilities/tools/（含 memory_store 等运行时能力），
+# 生产曾因此 ModuleNotFoundError。顶层 ai/tools/ 只是本地脚本，体积小，允许打进包。
 _AI_EXCLUDES = [
     "__pycache__", "*.pyc", "*.pyo",
     ".venv", "venv", "env",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    "kb", "embed_models", "docs", "tests", "tools", "uploads",
+    "kb", "embed_models", "docs", "tests", "uploads",
     ".env", ".env.*", "*.log", "logs", "*.sqlite3", "*.db",
     ".git", ".idea", ".vscode",
 ]

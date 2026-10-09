@@ -22,6 +22,22 @@ from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability, Capa
 logger = get_logger("TASK_AGENT")
 
 
+def _resolve_query(kwargs: dict) -> str:
+    """调度 goal → 用户原话 → 工单摘要，避免 LLM 漏填 goal 时检索空跑。"""
+    q = (kwargs.get("query") or kwargs.get("query_text") or "").strip()
+    if q:
+        return q
+    q = (kwargs.get("user_query") or "").strip()
+    if q:
+        return q
+    ct = kwargs.get("current_task") or {}
+    if isinstance(ct, dict):
+        return (
+            ct.get("problem_summary") or ct.get("title") or ct.get("description") or ""
+        ).strip()
+    return ""
+
+
 class RetrieveKbCapability(BaseCapability):
     """完整知识库检索：操作手册 / FAQ / 排查 / 车端错误码 / 产品目录 / 行业标准。
 
@@ -41,7 +57,7 @@ class RetrieveKbCapability(BaseCapability):
     tags = ["knowledge", "kb", "知识库", "手册", "FAQ", "错误码", "操作手册"]
 
     async def run(self, **kwargs) -> CapabilityResult:
-        query = kwargs.get("query") or kwargs.get("query_text") or ""
+        query = _resolve_query(kwargs)
         if not query:
             return CapabilityResult.failure("知识库检索需要 query 参数")
 

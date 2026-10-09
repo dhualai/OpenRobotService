@@ -396,7 +396,7 @@ export async function fetchLedgerSyncPreviewApi(projectId: string): Promise<ApiL
   };
 }
 
-// —— 一键导入全部项目节点内容（仅管理员/超级管理员）：后台管理-项目管理页 ——
+// —— 一键导入全部项目节点内容（全局角色 超级管理员 / 有管理员权限的人）：后台管理-项目管理页 ——
 
 /** POST /info-nodes/ledger-sync/all 返回：整批的汇总计数（单个项目的问题也在里面报，不失败整批） */
 export interface ApiImportAllResult {

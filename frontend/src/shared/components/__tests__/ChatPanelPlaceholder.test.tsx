@@ -16,6 +16,8 @@ const wbState = {
   tasksRefreshKey: 0, conversationId: null, setConversationId: vi.fn(),
   setConversationTitle: vi.fn(), renameConversation: vi.fn(),
   refreshConversations: vi.fn(), requestNewConversation: vi.fn(),
+  // 车体扫码进入：车辆上下文与消费回调（挂载 effect 会无条件调用 consume）
+  vehicleContext: null, consumeVehicleContext: vi.fn(),
   // getState() 解构字段（挂载 effect 直接读）
   conversations: [], pendingNewConversation: false,
 };

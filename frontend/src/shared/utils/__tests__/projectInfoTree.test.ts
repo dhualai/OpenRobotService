@@ -472,8 +472,9 @@ describe('本地纯函数', () => {
 
   it('computeInfoCompleteness 按一级标签统计末级填写情况', () => {
     const completeness = computeInfoCompleteness(base);
-    expect(completeness.get('a')).toEqual({ total: 1, empty: 1, incomplete: true }); // a → b → c，末级只有 C 且未填写
-    expect(completeness.get('d')).toEqual({ total: 1, empty: 1, incomplete: true });
+    // a → b → c，末级只有 C 且未填写；只有一个可填节点时空一个即「缺省过半」
+    expect(completeness.get('a')).toEqual({ total: 1, empty: 1, incomplete: true, mostlyEmpty: true });
+    expect(completeness.get('d')).toEqual({ total: 1, empty: 1, incomplete: true, mostlyEmpty: true });
   });
 
   it('resetInfoTreeToTemplate 删掉增补节点、清掉全局字段的值，下拉选项保留', () => {
@@ -553,13 +554,13 @@ describe('已填写信息统计（展示页裁剪空内容的依据）', () => {
   it('完整度统计把带值的非末级节点算成一条：数量空 → 该标签信息不全', () => {
     // 可填的是 车型1（已填）与 数量（空）；纯文本的 硬件 / 车辆 是分组，不算条目
     expect(computeInfoCompleteness(withValues).get('h'))
-      .toEqual({ total: 2, empty: 1, incomplete: true });
+      .toEqual({ total: 2, empty: 1, incomplete: true, mostlyEmpty: false }); // 2 个里空 1 个，未过半
   });
 
   it('车型1 与数量都填好时该标签信息完整', () => {
     const filled = withValues.map((node) =>
       node.id === 'q' ? { ...node, value: '6 台' } : node);
     expect(computeInfoCompleteness(filled).get('h'))
-      .toEqual({ total: 2, empty: 0, incomplete: false });
+      .toEqual({ total: 2, empty: 0, incomplete: false, mostlyEmpty: false });
   });
 });

@@ -46,6 +46,7 @@ tzlocal>=5.4.4
 urllib3>=2.7.0
 uvicorn>=0.30.1
 redis>=5.0.0
+paramiko>=3.5.0
 vine>=5.1.0
 watchfiles>=1.2.0
 wcwidth>=0.8.2

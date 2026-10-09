@@ -96,6 +96,9 @@ class ManualGuide:
             candidates.append(str(Path(_cfg.docs_path) / "task_agent"))
         # 3. 代码目录内置 log_manual（离线兜底，非产品手册）
         candidates.append(str(Path(__file__).parent / "log_manual"))
+        # 4. 本机 Algorithm 仓库 USP 手册（开发机常见路径）
+        candidates.append(r"D:\CodeHub\Algorithm\help_manuals\USP日志分析指南")
+        candidates.append("/data/apps/OpenRobotService_Data/help_manuals/USP日志分析指南")
 
         for c in candidates:
             if c and Path(c).is_dir():
@@ -557,7 +560,13 @@ def classify(signals: Dict[str, int]) -> Tuple[str, float, str]:
                 "任务被终止。模板: 车型+task_id 追根因")
     if has("路径规划超时", "规划超时"):
         return ("PLAN_TIMEOUT", 0.8,
-                "路径规划超时→srp_timeout/图过大/并发不足。模板: 查 DPP规划请求/结果 对账")
+                "路径规划超时→图过大/并发不足。模板: DYNAMIC_MAP 查 MAPF/下发路径，再凭任务号查 TMS")
+    if has("MAPF", "MAPF-T") and not has("下发路径", "路径下发", "DMAP已接收路径"):
+        return ("PLAN_STUCK_NO_DISPATCH", 0.75,
+                "有MAPF活动但未见下发路径→卡在路径规划中。模板: DYNAMIC_MAP 对账下发→任务号→TMS")
+    if has("下发路径", "路径下发", "DMAP已接收路径") and has("路径拒收"):
+        return ("PLAN_PATH_REJECTED", 0.7,
+                "已下发但路径拒收。模板: 记下任务号换 TMS 追状态回写")
     return ("GENERAL", 0.2,
             "未匹配到明确场景，建议先呈现 Discovery 信号给工程师确认")
 

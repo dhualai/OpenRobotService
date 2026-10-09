@@ -14,6 +14,22 @@ from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability, Capa
 logger = get_logger("TASK_AGENT")
 
 
+def _resolve_query(kwargs: dict) -> str:
+    """调度 goal → 用户原话 → 工单摘要，避免 LLM 漏填 goal 时检索空跑。"""
+    q = (kwargs.get("query") or kwargs.get("query_text") or "").strip()
+    if q:
+        return q
+    q = (kwargs.get("user_query") or "").strip()
+    if q:
+        return q
+    ct = kwargs.get("current_task") or {}
+    if isinstance(ct, dict):
+        return (
+            ct.get("problem_summary") or ct.get("title") or ct.get("description") or ""
+        ).strip()
+    return ""
+
+
 class RetrieveTroubleshootingCapability(BaseCapability):
     """排查树结论检索：按问题检索故障排查树，只取结论节点（根因+方案）。
 
@@ -30,7 +46,7 @@ class RetrieveTroubleshootingCapability(BaseCapability):
     tags = ["troubleshooting", "排查树", "知识库"]
 
     async def run(self, **kwargs) -> CapabilityResult:
-        query = kwargs.get("query") or kwargs.get("query_text") or ""
+        query = _resolve_query(kwargs)
         if not query:
             return CapabilityResult.failure("排查树检索需要 query 参数")
 

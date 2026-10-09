@@ -14,7 +14,7 @@ import { WECHAT_CONFIG } from '@/config/wechat';
 import { Folder, UserRound, Clock, AlarmClock, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bell, Upload, Undo2, Pencil } from 'lucide-react';
 import PersonArrow from '@/shared/components/PersonArrow';
 import { getMyProjects, getProjectMembers, type ProjectItem, type ProjectMember } from '@/api/projects';
-import { qaGetTicket, fetchWithAuth } from '@/api/ai';
+import { qaGetTicket, fetchWithAuth, taskDiscussStream } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment, getProxyRelations, type ProxyRelation } from '@/api/ticket';
 import {
   isTerminalTicketStatus,
@@ -80,6 +80,9 @@ interface AiTicket {
   project_name?: string;
   // 所属项目编码（DB TicketResponse 返回，编辑回显与提交用）
   project_id?: string;
+  // 临时：重新指派选人置顶用
+  project_contact_person_id?: string | null;
+  project_contact_person_name?: string | null;
   // 当前阶段截止时间（ISO 字符串，编辑弹窗 antd DatePicker 回显/编辑；详情页只读展示。tasks 详情接口返回蛇形 curr_step_endtime）
   curr_step_endtime?: string | null;
   // 工单阶段性处理（协商节点）：与系统任务详情页同源
@@ -177,7 +180,7 @@ export default function TicketDetailPage() {
   const focusCommentId = searchParams.get('commentId');
   const focusAuthor = searchParams.get('author');
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
-  const { username, userId, name, isAdmin } = useAuthStore();
+  const { username, userId, name, isAdmin, hasPermission } = useAuthStore();
 
   const [ticket, setTicket] = useState<AiTicket | null>(null);
   const [loading, setLoading] = useState(true);
@@ -186,7 +189,7 @@ export default function TicketDetailPage() {
   const [aiSummary, setAiSummary] = useState('');
   // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
   const [redispatchTipDetail, setRedispatchTipDetail] = useState('');
-  // 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可看到，详情页 redispatch.result.reasoning）
+  // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可看到）
   const [dispatchReason, setDispatchReason] = useState('');
   const tempIdRef = useRef<string>(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
@@ -196,12 +199,13 @@ export default function TicketDetailPage() {
   const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
   // @U老师 AI 讨论中标记
   const [askingAI, setAskingAI] = useState(false);
+  const [aiStreamReply, setAiStreamReply] = useState('');
   const aiAbortRef = useRef<AbortController | null>(null);
   const [aiEpoch, setAiEpoch] = useState(0);
   const ticketRef = useRef(ticket);
   ticketRef.current = ticket;
   const aiBusyRef = useRef(false);
-  const discussQueueRef = useRef<Array<{ text: string; files: File[]; options?: { replyTo?: string | number } }>>([]);
+  const discussQueueRef = useRef<Array<{ text: string; files: File[]; options?: { replyTo?: string | number; uspEnvId?: number } }>>([]);
   const [aiQueueItems, setAiQueueItems] = useState<string[]>([]);
   const MAX_AI_DISCUSS_QUEUE = 3;
   const bumpAiQueue = () => setAiQueueItems(discussQueueRef.current.map((j) => j.text));
@@ -241,7 +245,7 @@ export default function TicketDetailPage() {
         if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
         // 二次派单感知增强（M3）：完整情商话术（未派到指定人时）
         setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
-        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        // 二次派单感知增强：派单理由（后端对接单人/提单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(taskDetail.redispatch?.result?.reasoning || '');
         setTicket({
           ticket_id: String(dbId),
@@ -260,6 +264,8 @@ export default function TicketDetailPage() {
           assigned_to_name: taskDetail.assigned_to_name || '',
           project_name: taskDetail.project_name || '',
           project_id: taskDetail.project_id || '',
+          project_contact_person_id: (taskDetail as { project_contact_person_id?: string | null }).project_contact_person_id || null,
+          project_contact_person_name: (taskDetail as { project_contact_person_name?: string | null }).project_contact_person_name || null,
           created_at: taskDetail.created_at || '',
           // 当前阶段截止时间：tasks 详情接口 GET /{id} 返回蛇形 curr_step_endtime（见 TicketResponse）
           curr_step_endtime: taskDetail.curr_step_endtime ?? null,
@@ -297,7 +303,7 @@ export default function TicketDetailPage() {
             if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
             // 二次派单感知增强（M3）：完整情商话术随 DB 刷新
             setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
-            // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+            // 二次派单感知增强：派单理由（后端对接单人/提单人/管理员返回 reasoning，非空即展示）
             setDispatchReason(taskDetail.redispatch?.result?.reasoning || '');
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
@@ -322,6 +328,8 @@ export default function TicketDetailPage() {
               project_name: taskDetail.project_name || prev.project_name || prev.project,
               // 项目编码以 DB 为准（编辑回显与提交用），AI 接口不返回该字段
               project_id: taskDetail.project_id || prev.project_id,
+              project_contact_person_id: (taskDetail as { project_contact_person_id?: string | null }).project_contact_person_id ?? prev.project_contact_person_id ?? null,
+              project_contact_person_name: (taskDetail as { project_contact_person_name?: string | null }).project_contact_person_name ?? prev.project_contact_person_name ?? null,
               // 当前阶段截止时间以 DB 为准（tasks 详情接口蛇形 curr_step_endtime），覆盖 AI 滞后副本
               curr_step_endtime: taskDetail.curr_step_endtime ?? prev.curr_step_endtime ?? null,
               // 工单阶段性处理（协商节点）以 DB 为准
@@ -662,7 +670,7 @@ export default function TicketDetailPage() {
   };
 
   // ── @U老师 讨论：先存用户消息 → 空闲立刻 discuss / 进行中入队；返回 true=成功 ──
-  const postDiscussUserComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const postDiscussUserComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     const current = ticketRef.current;
     if (!current?.ticket_id) return false;
     const tempId = tempIdRef.current;
@@ -696,19 +704,30 @@ export default function TicketDetailPage() {
     void startDiscussTurn(next.text, next.files, next.options);
   };
 
-  const startDiscussTurn = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
-    await postDiscussUserComment(text, files, options);
+  const startDiscussTurn = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
+    // 先占位 busy，让讨论区立刻进入 sending（输入框已清空），不要等 HTTP 流才 setAskingAI
+    aiBusyRef.current = true;
+    setAskingAI(true);
+    const posted = await postDiscussUserComment(text, files, options);
+    if (!posted) {
+      aiBusyRef.current = false;
+      setAskingAI(false);
+      Toast({ message: '评论发送失败，请重试', theme: 'error' });
+      return false;
+    }
     return runDiscussHttp(text, options);
   };
 
-  const runDiscussHttp = async (text: string, options?: { replyTo?: string | number }): Promise<boolean> => {
+  const runDiscussHttp = async (text: string, options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     const current = ticketRef.current;
     if (!current?.ticket_id) return false;
     const controller = new AbortController();
     aiAbortRef.current = controller;
     aiBusyRef.current = true;
     setAskingAI(true);
+    setAiStreamReply('');
     setAiEpoch((n) => n + 1);
+    let ok = false;
     try {
       const recentComments = (current.comments || []).slice(-10).map((c) => ({
         author: c.created_by_name || c.created_by || '?',
@@ -724,26 +743,33 @@ export default function TicketDetailPage() {
             content: quotedSrc.content,
           }
         : undefined;
-      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/discuss`, {
-        method: 'POST',
-        signal: controller.signal,
-        body: JSON.stringify({
+      await taskDiscussStream(
+        {
           task_id: String(current.ticket_id),
           query: text.replace(/\s*@U老师\s*/g, ' ').trim(),
           context: {
             recent_comments: recentComments,
             ...(quotedComment ? { quoted_comment: quotedComment } : {}),
             ...(options?.replyTo != null ? { reply_to: options.replyTo } : {}),
+            ...(options?.uspEnvId != null ? { usp_env_id: options.uspEnvId } : {}),
           },
-        }),
-      });
-      const data = await res.json();
-      if (data.code === 0) {
+        },
+        {
+          onToken: (tok) => {
+            if (!tok) return;
+            setAiStreamReply((prev) => prev + tok);
+          },
+          onRewrite: (full) => setAiStreamReply(full || ''),
+          onResult: () => { ok = true; },
+        },
+        controller.signal,
+      );
+      if (ok) {
         Toast({ message: 'AI 已回复', theme: 'success' });
         await fetchDetail(true);
         return true;
       }
-      Toast({ message: data.message || 'AI 回复失败', theme: 'error' });
+      Toast({ message: 'AI 回复失败', theme: 'error' });
       return false;
     } catch (err) {
       const aborted = err instanceof Error && err.name === 'AbortError';
@@ -755,13 +781,14 @@ export default function TicketDetailPage() {
       if (stillMine) {
         aiAbortRef.current = null;
         setAskingAI(false);
+        setAiStreamReply('');
         aiBusyRef.current = false;
         pumpDiscussQueue();
       }
     }
   };
 
-  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     if (!ticketRef.current?.ticket_id) return false;
     if (aiBusyRef.current) {
       if (discussQueueRef.current.length >= MAX_AI_DISCUSS_QUEUE) {
@@ -770,13 +797,13 @@ export default function TicketDetailPage() {
       }
       discussQueueRef.current.push({ text, files, options });
       bumpAiQueue();
-      Toast({ message: `已排队（${discussQueueRef.current.length}/${MAX_AI_DISCUSS_QUEUE}），轮到时再上评论区`, theme: 'success' });
+      Toast({ message: `已排到结束后跟进（${discussQueueRef.current.length}/${MAX_AI_DISCUSS_QUEUE}），本轮结束后再开始`, theme: 'success' });
       return true;
     }
     return startDiscussTurn(text, files, options);
   };
 
-  const handleInsertThisRound = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleInsertThisRound = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     const current = ticketRef.current;
     if (!current?.ticket_id) return false;
     if (aiBusyRef.current) {
@@ -826,7 +853,7 @@ export default function TicketDetailPage() {
 
   // 发送评论（附件上传 + POST /api/tasks/{ticket_id}/comments）；返回 true=成功（组件清空输入）
   // 检测 @U老师（任意位置，前缀或句尾均触发）：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
-  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     // 只要文本里含 @U老师（@ 在开头/中间/结尾都算）就走 AI 讨论；
     // 兼容"说完话后句尾手动@U老师"（否则会被当成普通评论发出、AI 不回复）
     if (text.includes('@U老师')) {
@@ -1053,29 +1080,33 @@ export default function TicketDetailPage() {
               )}
             </div>
             {/* 二次派单感知增强（M3）：未派到指定人时的完整情商话术（仅 matched_pref=false 时有） */}
-            {redispatchTipDetail && (
-              <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
-            )}
-            {/* 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可见，与系统任务详情页同源） */}
+            {redispatchTipDetail && (() => {
+              const { isAssignee, isReporter } = getCurrentUserRoles();
+              const tipLabel = isAssignee && !isReporter ? '接单提醒' : '派单提醒';
+              return <DispatchFold label={tipLabel} text={redispatchTipDetail} variant="tip" />;
+            })()}
+            {/* 派单原因：提单人有 tip 时不重复；接单人可同时看提醒与原因 */}
             {(() => {
-              if (!dispatchReason || redispatchTipDetail) return null;
-              const { isAssignee } = getCurrentUserRoles();
-              if (!isAssignee && !isAdmin) return null;
+              if (!dispatchReason) return null;
+              const { isAssignee, isReporter } = getCurrentUserRoles();
+              const canOperate = isAdmin || hasPermission('backend:tasks:operate');
+              if (!isAssignee && !isReporter && !canOperate) return null;
+              if (redispatchTipDetail && isReporter) return null;
               return <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />;
             })()}
           </div>
         )}
 
-        {/* 问题描述 */}
-        {ticket.description && (
-          <div className="detail-card">
-            <h4 className="detail-card__h">问题描述</h4>
-            <div style={{ whiteSpace: 'pre-wrap', color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>{ticket.description}</div>
+        {/* 问题描述：描述为空也渲染（标题行右侧常驻「详细问题文档」入口，不随描述有无变化） */}
+        <div className="detail-card">
+          <h4 className="detail-card__h detail-card__h--with-action">
+            问题描述
+            {ticket.id ? <SpecDocCard taskId={ticket.id} canEdit={canEdit} /> : null}
+          </h4>
+          <div style={{ whiteSpace: 'pre-wrap', color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>
+            {ticket.description || '无描述'}
           </div>
-        )}
-
-        {/* 问题文档：提单人结构化描述 + 接单人补充（md 在线编辑） */}
-        {ticket.id && <SpecDocCard taskId={ticket.id} canEdit={canEdit} />}
+        </div>
 
         {/* 工单阶段性处理（协商节点）：与系统任务详情页同源，抽到共享组件 StepNegotiationCard */}
         <StepNegotiationCard
@@ -1224,6 +1255,7 @@ export default function TicketDetailPage() {
           aiQueueItems={aiQueueItems}
           onInsertQueueItem={handleInsertQueueItem}
           onRemoveQueueItem={handleRemoveQueueItem}
+          aiStreamReply={aiStreamReply}
           disabled={!ticket?.ticket_id}
           enableAttach
           enableAI
@@ -1456,7 +1488,14 @@ export default function TicketDetailPage() {
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">重新指派</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
-          <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <UserSelect
+            value={reassignUser?.id ?? null}
+            onChange={setReassignUser}
+            placeholder="请选择处理人"
+            title="选择处理人"
+            pinUserId={ticket?.project_contact_person_id || null}
+            pinLabel="项目对接人"
+          />
           <div style={{ margin: '12px 0 8px', fontSize: '14px', color: 'var(--foreground)' }}>转派类型<span style={{ color: 'var(--danger)' }}> *</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
             {([

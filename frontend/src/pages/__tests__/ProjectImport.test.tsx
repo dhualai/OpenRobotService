@@ -1,22 +1,18 @@
-// 项目管理「项目导入」区的一键导入按钮：可见性（仅管理员/超级管理员）、
+// 项目管理「项目导入」区的一键导入按钮：可见性（全局角色 超级管理员 / 管理员权限）、
 // 二次确认、结果提示文案、失败提示。
 //
-// 判据与后端 get_current_admin_user 对齐：permissions 含 'admin'（与项目工单卡
-// 「配置阻滞权重」同一套），所以这里 mock 的 auth store 只提供 permissions。
+// 判据与后端 require_permission(PERM_PROJECT_LEDGER_IMPORT) 同一权限码：超级管理员那条
+// 是后端按全局角色名派生后随登录态下发的（前端拿不到角色名，只认码），admin 直通。
+// 所以这里 mock 的 auth store 提供 permissions 与同语义的 hasPermission。
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Toast } from 'tdesign-mobile-react';
 import ProjectImport from '../admin/ProjectImport';
 import { importAllProjectsLedgerApi, type ApiImportAllResult } from '@/api/infoNodes';
+import { useAuthStore } from '@/stores/auth';
 
 vi.mock('@/api/infoNodes', () => ({
   importAllProjectsLedgerApi: vi.fn(),
-}));
-
-const authState = vi.hoisted(() => ({ permissions: ['admin'] as string[] }));
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: (selector: (s: { permissions: string[] }) => unknown) =>
-    selector({ permissions: authState.permissions }),
 }));
 
 // Dialog.confirm 在真机上是弹层；测试里把 onConfirm 抓出来手动触发（与用户点「开始导入」等价）
@@ -52,15 +48,22 @@ const confirmImport = async () => {
 describe('项目管理 · 一键导入所有项目节点内容', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    authState.permissions = ['admin'];
+    // 真 auth store：admin 权限码直通（与线上 hasPermission 同一套判定）
+    useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
   });
 
-  it('管理员可见按钮；普通用户看不到（后端闸门同判据，这里不给点了就报错的入口）', () => {
+  it('管理员与超级管理员可见；普通用户看不到（后端闸门同判据，这里不给点了就报错的入口）', () => {
     const { unmount } = render(<ProjectImport />);
     expect(screen.getByRole('button', { name: '一键导入所有项目节点内容' })).toBeTruthy();
     unmount();
 
-    authState.permissions = ['frontend:admin:project-detail:show'];
+    // 全局角色「超级管理员」：后端派生出该权限码随登录态下发（2026-09-28 起也可见可点）
+    useAuthStore.setState({ permissions: ['frontend:admin:project-ledger-import:show'] });
+    const superAdmin = render(<ProjectImport />);
+    expect(screen.getByRole('button', { name: '一键导入所有项目节点内容' })).toBeTruthy();
+    superAdmin.unmount();
+
+    useAuthStore.setState({ permissions: ['frontend:admin:project-detail:show'] });
     render(<ProjectImport />);
     expect(screen.queryByRole('button', { name: '一键导入所有项目节点内容' })).toBeNull();
   });

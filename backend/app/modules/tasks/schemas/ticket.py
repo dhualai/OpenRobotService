@@ -4,6 +4,7 @@ from datetime import datetime
 
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
 from app.models.task import RelationType
+from app.modules.tasks.schemas.archive_report import ArchiveReportResponse
 
 # 附件可以是字符串（本平台手动上传流程存的是 object_path 字符串），
 # 也可以是字典（外部任务源/微信会话写入的 {path, size, filename} 结构）。
@@ -156,6 +157,9 @@ class TicketResponse(TicketBase):
     id: int
     status: TicketStatus
     redispatch: Optional[TicketRedispatch] = Field(None, description="最新一轮派单评估（无记录为 None）")
+    # 临时：详情页「重新指派」选人置顶用；无对接人则为 None
+    project_contact_person_id: Optional[str] = Field(None, description="所属项目对接人 users.id")
+    project_contact_person_name: Optional[str] = Field(None, description="所属项目对接人姓名")
     created_by: str
     created_by_name: Optional[str] = None
     assigned_to: Optional[str]
@@ -171,6 +175,8 @@ class TicketResponse(TicketBase):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
     deadline_at: Optional[datetime]
+    archived_by: Optional[str] = Field(None, description="归档审核人 users.id")
+    archived_at: Optional[datetime] = Field(None, description="归档完成时间")
     # --- 协商阶段（工单阶段性处理：当前节点 + 节点结束时间 + 回合）---
     curr_step_id: Optional[int] = Field(None, description="当前协商节点ID")
     curr_step_name: Optional[str] = Field(None, description="当前协商节点名称")
@@ -185,6 +191,7 @@ class TicketResponse(TicketBase):
     reply_count: int
     view_count: int
     comments: Optional[List[TicketCommentResponse]] = []
+    current_archive_report: Optional["ArchiveReportResponse"] = Field(None, description="当前最新一版归档报告（无则为 None）")
 
     class Config:
         from_attributes = True

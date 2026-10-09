@@ -43,6 +43,51 @@ export interface SpecDocSaveParams {
   source_files?: SpecDocSourceFile[];
 }
 
+// ---------------------------------------------------------------------------
+// AI 生成问题文档（POST /problem-doc/ai-generate）
+// ---------------------------------------------------------------------------
+
+/** 一条发言：会话场景填 role（user/assistant），讨论区场景填 author */
+export interface ProblemDocSourceItem {
+  role?: string;
+  author?: string;
+  content: string;
+  created_at?: string;
+}
+
+/** AI 生成结果（只返回文本，不落库） */
+export interface ProblemDocGenerateResult {
+  markdown: string;
+  model?: string | null;
+  /** 实际整理的发言条数 */
+  used: number;
+  /** 因超上限被省略的条数 */
+  dropped: number;
+  /** 正文是否被截断 */
+  truncated: boolean;
+}
+
+/**
+ * 把一段会话 / 讨论内容交给大模型，整理成结构化的「问题文档补充段」。
+ *
+ * 接口不绑定 task_id（提单阶段工单还不存在），素材由调用方传入；
+ * 只返回文本、不写库 —— 调用方必须先给用户预览确认，再自行写入
+ * （提单走 overrides.spec_doc，已建工单走 saveSpecDoc）。
+ */
+export const generateProblemDoc = (params: {
+  items: ProblemDocSourceItem[];
+  project_name?: string;
+  scene?: 'conversation' | 'discussion';
+}) =>
+  request<ProblemDocGenerateResult>('/problem-doc/ai-generate', {
+    method: 'POST',
+    body: JSON.stringify({
+      items: params.items,
+      project_name: params.project_name ?? null,
+      scene: params.scene ?? 'conversation',
+    }),
+  });
+
 /** 上传解析结果 */
 export interface SpecDocParseResult {
   content: string;

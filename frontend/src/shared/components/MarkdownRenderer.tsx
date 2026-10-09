@@ -11,11 +11,12 @@
  * 注意：不使用 DOMPurify 清洗 markdown 源码 —— react-markdown 输出的是
  * React 虚拟 DOM（非 raw HTML），不存在 XSS 注入路径。
  */
-import { Component, useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import { Component, useMemo, useState, useCallback, useEffect, useRef, createContext, useContext } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Link } from 'react-router-dom';
 import { appUrlTransform } from '@/shared/utils/markdown';
+import { encodePathSegment } from '@/shared/utils/attachmentPreview';
 import { WECHAT_EMOJI_URL_SET } from '@/shared/emoji/wechat';
 import { useAuthStore } from '@/stores/auth';
 import { ENV_PREFIX, RAW_BASE } from '@/config/api';
@@ -100,6 +101,21 @@ const TICKET_REF_RE = /@#(\d{1,8})/g;
 function preprocessTicketRef(text: string): string {
   if (!text) return text;
   return text.replace(TICKET_REF_RE, (_full, id) => `[@#${id}](/tasks/${id})`);
+}
+
+/** #clipboard(207行) → 可点击芯片链接，点击由 ClipboardRefContext 打开附件正文 */
+const CLIPBOARD_TOKEN_RE = /#clipboard\(([^)]+)\)/g;
+
+export const ClipboardRefContext = createContext<((filename: string) => void) | null>(null);
+
+function preprocessClipboardRef(text: string): string {
+  if (!text) return text;
+  return text.replace(CLIPBOARD_TOKEN_RE, (full, core, offset, src) => {
+    if (offset > 0 && src[offset - 1] === '[') return full;
+    const file = encodePathSegment(`clipboard(${core}).txt`);
+    // 尖括号保护目标：避免 markdown 在未编码的 ) 处截断链接。
+    return `[${full}](<clipboard:${file}>)`;
+  });
 }
 
 /**
@@ -711,6 +727,7 @@ function maskMediaForStreaming(text: string): string {
  *   天然不存在 XSS 注入路径，DOMPurify 反而会破坏 markdown 结构。
  */
 export default function MarkdownRenderer({ content, compact = false, streaming = false }: MarkdownRendererProps) {
+  const openClipboard = useContext(ClipboardRefContext);
   // @# 工单引用标题解析（streaming 期间不请求，定稿后才渲染标题）
   const titleById = useTicketRefTitles(streaming ? '' : content);
 
@@ -719,9 +736,9 @@ export default function MarkdownRenderer({ content, compact = false, streaming =
     const stripped = stripCodeFences(content);
     // 流式期间不识别/不渲染真实媒体；定稿后才走完整媒体管线
     if (streaming) {
-      return maskMediaForStreaming(preprocessTicketRef(stripped));
+      return maskMediaForStreaming(preprocessClipboardRef(preprocessTicketRef(stripped)));
     }
-    return preprocessMediaUrls(preprocessTicketRef(stripped));
+    return preprocessMediaUrls(preprocessClipboardRef(preprocessTicketRef(stripped)));
   }, [content, streaming]);
 
   return (
@@ -776,6 +793,29 @@ export default function MarkdownRenderer({ content, compact = false, streaming =
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             a({ href, children, ...props }: any) {
               const url: string = href || '';
+              if (url.startsWith('clipboard:')) {
+                let filename = url.slice('clipboard:'.length);
+                try {
+                  filename = decodeURIComponent(filename);
+                } catch {
+                  /* 保持未解码文件名 */
+                }
+                return (
+                  <a
+                    {...props}
+                    href="#clipboard-preview"
+                    className={[props.className, 'md-clipboard-ref'].filter(Boolean).join(' ')}
+                    title="查看粘贴正文"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openClipboard?.(filename);
+                    }}
+                  >
+                    {children}
+                  </a>
+                );
+              }
               const isExternal = /^https?:\/\//i.test(url);
               const isMediaUrl = IMAGE_EXT_RE.test(url) || VIDEO_EXT_RE.test(url);
 

@@ -619,7 +619,13 @@ export function visibleInfoNodes(nodes: ProjectInfoNode[]): ProjectInfoNode[] {
 export interface TagCompleteness {
   total: number;
   empty: number;
+  /** 只要有空的可填节点即视为不全（项目信息卡「!」角标的口径） */
   incomplete: boolean;
+  /**
+   * 「缺省超过一半」——比 incomplete 更严的提醒口径（提单页「问题共享文档设置」用）：
+   * 可填节点里空值过半才出感叹号，避免只差一两个字段也一路报警。
+   */
+  mostlyEmpty: boolean;
 }
 
 function isEmptyNodeValue(node: ProjectInfoNode): boolean {
@@ -695,7 +701,13 @@ export function computeInfoCompleteness(nodes: ProjectInfoNode[]): Map<string, T
   (byParent.get(null) ?? []).forEach((root) => {
     const acc = { total: 0, empty: 0 };
     walk(root, acc);
-    result.set(root.id, { total: acc.total, empty: acc.empty, incomplete: acc.total > 0 && acc.empty > 0 });
+    result.set(root.id, {
+      total: acc.total,
+      empty: acc.empty,
+      incomplete: acc.total > 0 && acc.empty > 0,
+      // 过半缺省：空值数 ×2 > 总数（15 个可填节点里空 8 个即算）
+      mostlyEmpty: acc.total > 0 && acc.empty * 2 > acc.total,
+    });
   });
 
   return result;

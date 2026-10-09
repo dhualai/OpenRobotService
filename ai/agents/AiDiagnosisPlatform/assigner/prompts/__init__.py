@@ -20,7 +20,6 @@ from ai.agents.AiDiagnosisPlatform.assigner.prompts.step1 import (
 )
 from ai.agents.AiDiagnosisPlatform.assigner.prompts.step3 import build_l1
 from ai.agents.AiDiagnosisPlatform.assigner.prompts.step6 import (
-    FEATURE_ROLE_ROUTING,
     IRON_RULES,
     JUDGE_HINTS,
     OUTPUT_CONTRACT,
@@ -40,7 +39,6 @@ __all__ = [
     "build_r2",
     "build_audit",
     "build_l1",
-    "FEATURE_ROLE_ROUTING",
     "IRON_RULES",
     "JUDGE_HINTS",
     "OUTPUT_CONTRACT",

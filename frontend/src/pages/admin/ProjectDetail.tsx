@@ -413,9 +413,12 @@ export default function ProjectDetail() {
               </div>
             </div>
             {/* 摘要为大模型输出的结构化 Markdown（## 小节 + - 要点），用 react-markdown 渲染为 React 元素（天然防 XSS） */}
-            <div className={`mac-ai__body${aiSummary ? (summaryExpanded ? '' : ' is-collapsed') : ' is-empty'}`}>
+            <div
+              className={`mac-ai__body${aiSummary ? (summaryExpanded ? '' : ' is-collapsed') : ' is-empty'}`}
+              data-testid="ai-summary-body"
+            >
               {aiSummary ? (
-                <div className="mac-ai__md">
+                <div className="mac-ai__md" data-testid="ai-summary-md">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiSummary}</ReactMarkdown>
                 </div>
               ) : '暂无数据'}
@@ -431,13 +434,14 @@ export default function ProjectDetail() {
           onMarkChange={() => setActivityToken((value) => value + 1)}
         />
 
+        {/* 项目动态（对照原型 ProjectActivityCard 的「关注节点变动」分组）：
+            被关注节点的最新一条变动，只展示变动内容（不带时间与人员）；新建模式下项目未落库，不渲染。
+            2026-10-09 用户口径：放在「项目工单」上面 */}
+        {!isNew && <ProjectActivityCard projectId={id} reloadToken={activityToken} />}
+
         {/* 项目工单（对照原型 ProjectTicketsCard）：总数/各状态数量 + 核心阻滞工单 +
             近 8 周变化趋势；新建模式下项目未落库（也没有工单），不渲染 */}
         {!isNew && <ProjectTicketsCard projectId={id} />}
-
-        {/* 项目动态（对照原型 ProjectActivityCard 的「关注节点变动」分组）：
-            被关注节点的最新一条变动，只展示变动内容（不带时间与人员）；新建模式下项目未落库，不渲染 */}
-        {!isNew && <ProjectActivityCard projectId={id} reloadToken={activityToken} />}
       </div>
 
       {/* 项目阶段 / 项目类别 —— 单选弹窗（真实枚举，与 backend 对应 Enum 一致） */}
@@ -559,7 +563,7 @@ function EditableField({ label, value, placeholder, multiline, type, title, meta
   // 概要卡 MetaRow（项目经理 / 对接人 / 内嵌项目编号）
   if (meta) {
     return (
-      <div className={`mac-meta-row${plain ? ' mac-meta-row--plain' : ''}`}>
+      <div className={`mac-meta-row${plain ? ' mac-meta-row--plain' : ''}`} data-testid="meta-row">
         <span className="mac-meta-row__label">{inlineLabel || label}{required && requiredMark}</span>
         {editing ? (
           <div style={{ flex: 1, minWidth: 0, marginLeft: 8 }}>

@@ -10,6 +10,7 @@
                   （project_id 为空）不强拦，放行给 Service 层回
                   「全局字段定义请在「详情模板」里修改」——那里给出的原因才是真的。
   详情模板      GET/POST /template → 模板权限码（全局角色 开发者/超级管理员派生）或 admin
+  一键导入全部项目 POST /ledger-sync/all → 一键导入权限码（全局角色 超级管理员派生）或 admin
   值写入        PUT /nodes/{id}/value → 仍是「登录即可」，本次没动
   增补信息      POST /projects/{id}/custom-nodes → 仍是「登录即可」，本次没动
                 （它也会给这棵树加节点，与 /projects/{id} 同性质却更松——是本次改动
@@ -26,7 +27,12 @@ from fastapi.testclient import TestClient
 
 from app.modules.admin.api.auth import get_current_active_user_from_token
 from app.modules.admin.api.info_nodes import info_node_router
-from app.services.permission_service import PERM_PROJECT_INFO_TEMPLATE, PermissionService
+from app.services.permission_service import (
+    PERM_PROJECT_INFO_TEMPLATE,
+    PERM_PROJECT_LEDGER_IMPORT,
+    PermissionService,
+)
+from app.modules.admin.services import info_node_ledger_sync_service
 from app.modules.admin.services.info_node_service import info_node_service
 from app.modules.admin.services.info_template_service import info_template_service
 
@@ -98,7 +104,15 @@ def template_svc(monkeypatch):
 
 
 @pytest.fixture
-def client(caller, member_calls, svc, template_svc, monkeypatch):
+def ledger_svc(monkeypatch):
+    """一键导入全部项目的 Service 同样打桩：用例只看闸门放不放行，不跑真批量。"""
+    mock = MagicMock(return_value={"project_total": 0})
+    monkeypatch.setattr(info_node_ledger_sync_service, "import_all_projects", mock)
+    return mock
+
+
+@pytest.fixture
+def client(caller, member_calls, svc, template_svc, ledger_svc, monkeypatch):
     app = FastAPI()
     app.include_router(info_node_router, prefix="/api/admin")
     app.dependency_overrides[get_current_active_user_from_token] = lambda: caller
@@ -235,3 +249,26 @@ def test_template_needs_the_derived_permission_code(client, caller):
 def test_template_admin_still_passes(client, caller):
     caller["permissions"] = ["admin"]
     assert client.get("/api/admin/info-nodes/template").status_code == 200
+
+
+# ── 一键导入全部项目：全局角色 超级管理员 或 admin ────────────
+
+def test_ledger_import_all_needs_the_derived_permission_code(client, ledger_svc, caller):
+    """2026-09-28 起：全局角色「超级管理员」也放行（此前闸门是 get_current_admin_user，只认 admin）。"""
+    denied = client.post("/api/admin/info-nodes/ledger-sync/all")
+    assert denied.status_code == 403
+
+    caller["permissions"] = []                               # 项目成员（哪怕项目再多）也不行
+    caller["roles"] = {"P1": ["role-x"]}
+    assert client.post("/api/admin/info-nodes/ledger-sync/all").status_code == 403
+
+    caller["permissions"] = [PERM_PROJECT_LEDGER_IMPORT]     # 后端按全局角色名派生后下发
+    assert client.post("/api/admin/info-nodes/ledger-sync/all").status_code == 200
+    ledger_svc.assert_called_once()
+    assert ledger_svc.call_args[1] == {"operator": "bob", "operator_name": "Bob"}
+
+
+def test_ledger_import_all_admin_still_passes(client, ledger_svc, caller):
+    caller["permissions"] = ["admin"]
+    assert client.post("/api/admin/info-nodes/ledger-sync/all").status_code == 200
+    ledger_svc.assert_called_once()

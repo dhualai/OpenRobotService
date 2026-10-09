@@ -2,7 +2,7 @@ import { Fragment, useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot } from 'lucide-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -33,7 +33,9 @@ import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canE
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
-import { fetchWithAuth } from '@/api/ai';
+import MDEditor from '@uiw/react-md-editor';
+import '@uiw/react-md-editor/markdown-editor.css';
+import { fetchWithAuth, taskDiscussStream } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
@@ -115,6 +117,9 @@ interface Comment { id: string; content: string; created_by_name?: string; creat
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
   ticket_type: string; project_name?: string; project_id?: string;
+  // 临时：重新指派选人置顶用
+  project_contact_person_id?: string | null;
+  project_contact_person_name?: string | null;
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
   reporter_name?: string; assignee_name?: string;
@@ -123,7 +128,7 @@ interface Ticket {
   // tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
   deadline_at?: string | null;
   // 二次派单感知增强（M3）：未派到指定人时的完整话术（详情页 redispatch.result.tip_detail）
-  // 二次派单感知增强：派单理由（为什么派给接单人，仅接单人/管理员可见 → redispatch.result.reasoning）
+  // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可见 → redispatch.result.reasoning）
   redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null;
   // 工单阶段性处理（协商节点）：当前节点 ID/名称/结束时间（naive UTC）
   curr_step_id?: number | null;
@@ -145,6 +150,27 @@ interface Ticket {
   proxy_principal_name?: string | null;
   is_proxy_agent?: boolean;
   is_principal?: boolean;
+  // ── 归档流程字段 ──
+  archived_by?: string | null;
+  archived_at?: string | null;
+  current_archive_report?: {
+    id: number;
+    task_id: number;
+    content: string;
+    version: number;
+    created_by: string;
+    created_by_name?: string | null;
+    updated_by?: string | null;
+    updated_by_name?: string | null;
+    created_at: string;
+    updated_at: string;
+    submit_status: 'draft' | 'submitted' | 'approved' | 'rejected';
+    reviewer?: string | null;
+    reviewer_name?: string | null;
+    reviewed_at?: string | null;
+    review_comment?: string | null;
+    revision: number;
+  } | null;
 }
 
 // 协商阶段模板步骤（GET /{task_id}/steps 返回）
@@ -179,7 +205,7 @@ export default function TaskDetailPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
-  // 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可看到，详情页 redispatch.result.reasoning）
+  // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可看到）
   const [dispatchReason, setDispatchReason] = useState<string>('');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; curr_step_endtime?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
@@ -211,13 +237,14 @@ export default function TaskDetailPage() {
   const [submittingDeadline, setSubmittingDeadline] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
+  const [aiStreamReply, setAiStreamReply] = useState('');
   const aiAbortRef = useRef<AbortController | null>(null);
   const [aiEpoch, setAiEpoch] = useState(0);
   const detailRef = useRef(detail);
   detailRef.current = detail;
   const diagnosingRef = useRef(false);
   const aiBusyRef = useRef(false);
-  const discussQueueRef = useRef<Array<{ text: string; files: File[]; options?: { replyTo?: string | number } }>>([]);
+  const discussQueueRef = useRef<Array<{ text: string; files: File[]; options?: { replyTo?: string | number; uspEnvId?: number } }>>([]);
   const [aiQueueItems, setAiQueueItems] = useState<string[]>([]);
   const MAX_AI_DISCUSS_QUEUE = 3;
 
@@ -236,6 +263,10 @@ export default function TaskDetailPage() {
   const [resolutionPolling, setResolutionPolling] = useState(false);
   // AI 判定当前无解决方案（仅占位提示，不填入输入框）
   const [resolutionNoSolution, setResolutionNoSolution] = useState(false);
+
+  // 请求暂停弹窗
+  const [showPausePopup, setShowPausePopup] = useState(false);
+  const [pauseReason, setPauseReason] = useState('');
   // 标记是否已"确认完成"成功（成功后关闭弹窗不应清除草稿；取消/遮罩关闭才清除）
   const resolveConfirmedRef = useRef(false);
   // 轮询停止标志：取消/关闭时置 true，让异步轮询循环及时退出（state 无法中断 while 循环）
@@ -257,6 +288,16 @@ export default function TaskDetailPage() {
   const [adjustName, setAdjustName] = useState('');
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+
+  // ── 归档流程 state ──
+  const [archiveEditorVisible, setArchiveEditorVisible] = useState(false);
+  const [archiveReportContent, setArchiveReportContent] = useState('');
+  const [archiveReportRevision, setArchiveReportRevision] = useState<number>(1);
+  const [archiveReportReviewer, setArchiveReportReviewer] = useState<string | null>(null);
+  const [archiveEditorMode, setArchiveEditorMode] = useState<'edit' | 'review'>('edit');
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveRejectReason, setArchiveRejectReason] = useState('');
+  const [showArchiveRejectPopup, setShowArchiveRejectPopup] = useState(false);
 
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
@@ -299,7 +340,7 @@ export default function TaskDetailPage() {
         setDetail(t);
         // 二次派单感知增强（M3）：未派到指定人时的完整话术
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
-        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        // 二次派单感知增强：派单理由（后端对接单人/提单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(t.redispatch?.result?.reasoning || '');
         // 代理关系（代他人提单）：独立接口，失败不阻断详情渲染（横幅缺失而已）
         getProxyRelations(detailId)
@@ -446,13 +487,32 @@ export default function TaskDetailPage() {
     if (!status) return [];
 
     const isClosed = status === 'closed';
+    const isArchiving = status === 'archiving';
+    const isArchived = status === 'archived';
     const isCanceled = status === 'canceled' || status === 'cancelled';
-    if (isClosed || isCanceled) return [];
+    if (isArchived || isCanceled) return [];
+    if (isClosed) {
+      // closed 状态：仅处理人（assignee）或有 operate 权限的人可见「开始归档」按钮
+      const { isAssignee: isAssigneeForArchive } = getCurrentUserRoles();
+      const canOperateArchive = hasPermission('backend:tasks:operate');
+      if (!isAssigneeForArchive && !canOperateArchive) return [];
+      const BTN_PRIMARY_ARCHIVE = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
+      return [
+        { label: '开始归档', nextStatus: 'archiving', theme: 'primary', actionType: 'archive', customStyle: BTN_PRIMARY_ARCHIVE },
+      ];
+    }
 
     const { isAssignee, isReporter, isPrincipal } = getCurrentUserRoles();
 
     // 拥有 backend:tasks:operate 权限的用户，对所有活跃状态工单均可见且可操作
     const canOperate = hasPermission('backend:tasks:operate');
+
+    // pending_requested：处理人已请求暂停，等待提单人确认——此时只有提单人侧（isReporter / isPrincipal）能操作
+    // 处理人和普通登录用户看不到按钮
+    if (status === 'pending_requested') {
+      if (!isReporter && !isPrincipal && !canOperate) return [];
+      // 管理员可以代替任何一方操作（运维兜底），但走和提单人侧一样的确认/驳回按钮
+    }
 
     const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
     if (assigneeOnlyStatuses.includes(status) && !isAssignee && !canOperate) return [];
@@ -466,10 +526,18 @@ export default function TaskDetailPage() {
     const actions: Record<string, { label: string; nextStatus: string; theme: string; actionType?: string; customStyle?: Record<string, string> }[]> = {
       // new 状态由处理人首次响应（协商节点时间/确认同意）自动转为 in_progress，不再提供「开始处理」按钮
       new: [],
-      in_progress: [
-        { label: '暂停任务', nextStatus: 'pending', theme: 'warning', customStyle: BTN_SECONDARY },
-        { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
-      ],
+      // 有步骤模板的工单 → "处理完成"由阶段性处理卡的「最末阶段结束」流程控制，顶部不再提供快捷入口
+      // 无步骤模板的工单 → 保留「处理完成」作为 fallback 解决途径
+      in_progress: detail?.curr_step_id
+        ? [
+            { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
+          ]
+        : [
+            { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
+            { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
+          ],
+      // 暂停请求中：确认/驳回按钮已移至「工单阶段性处理」卡内，顶部不再重复
+      pending_requested: [],
       pending: (isAssignee && isReporter)
         ? [
             // 工单退回发起人后：发起人可重新发起（继续处理）或关闭工单
@@ -481,21 +549,53 @@ export default function TaskDetailPage() {
         { label: '未解决', nextStatus: 'in_progress', theme: 'warning', actionType: 'reopen', customStyle: BTN_SECONDARY },
         { label: '确认关闭', nextStatus: 'closed', theme: 'default', customStyle: BTN_PRIMARY },
       ],
+      archiving: (() => {
+        const report = detail?.current_archive_report;
+        const canOperate2 = hasPermission('backend:tasks:operate');
+        const { isAssignee: isAssignee2 } = getCurrentUserRoles();
+        const username = localStorage.getItem('username') || '';
+        const reviewerMatch = report?.reviewer && (report.reviewer === username || report.reviewer === localStorage.getItem('user_id'));
+        const isReviewer = Boolean(reviewerMatch);
+
+        // 审核人视角：submitted 状态下显示通过/驳回
+        if (report?.submit_status === 'submitted' && (isReviewer || canOperate2)) {
+          const BTN_PRIMARY2 = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
+          const BTN_DANGER2 = { backgroundColor: 'var(--destructive)', color: 'var(--destructive-foreground)', borderRadius: '999px', border: 'none' };
+          return [
+            { label: '通过归档', nextStatus: 'archived', theme: 'primary', actionType: 'archive-approve', customStyle: BTN_PRIMARY2 },
+            { label: '驳回归档', nextStatus: 'archiving', theme: 'danger', actionType: 'archive-reject', customStyle: BTN_DANGER2 },
+          ];
+        }
+
+        // 处理人视角：draft / rejected 状态显示编辑入口
+        if (report && (report.submit_status === 'draft' || report.submit_status === 'rejected') && (isAssignee2 || canOperate2)) {
+          const BTN_PRIMARY3 = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
+          return [
+            { label: report.submit_status === 'rejected' ? '修改归档报告并重新提交' : '编辑归档报告', nextStatus: 'archiving', theme: 'primary', actionType: 'archive-edit', customStyle: BTN_PRIMARY3 },
+          ];
+        }
+
+        // submitted 状态（处理人视角）：无按钮，等审核
+        return [];
+      })(),
       canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary', customStyle: BTN_PRIMARY }],
     };
 
     return actions[status] || [];
   };
 
-  const handleStatusChange = async (action: { nextStatus: string }) => {
+  const handleStatusChange = async (action: { nextStatus: string; pauseReason?: string; rejectReason?: string }) => {
     if (!detail) return;
     // 清空前次阻塞提示
     setBlockedError(null);
-    
+
     try {
+      const bodyObj: Record<string, string> = { status: action.nextStatus };
+      if (action.pauseReason) bodyObj.pause_reason = action.pauseReason;
+      if (action.rejectReason) bodyObj.reject_reason = action.rejectReason;
       await request<Ticket>(`/${detail.id}/status`, {
         method: 'PATCH',
-        body: JSON.stringify({ status: action.nextStatus }),
+        body: JSON.stringify(bodyObj),
       });
       refreshTasks();
       const statusLabel = STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus;
@@ -510,6 +610,11 @@ export default function TaskDetailPage() {
           Toast({ message: `被 ${body.blocked.length} 个工单阻塞`, theme: 'error' });
           return;
         }
+      }
+      // 请求暂停理由必填（400）
+      if (err instanceof ApiError && err.statusCode === 400 && action.nextStatus === 'pending_requested') {
+        Toast({ message: err.message || '请填写暂停理由', theme: 'error' });
+        return;
       }
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
@@ -539,6 +644,126 @@ export default function TaskDetailPage() {
     } catch (err) {
       Toast({ message: `继续处理失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
+  };
+
+  // ── 开始归档（closed → archiving）──
+  const handleStartArchive = async () => {
+    if (!detail) return;
+    setArchiveLoading(true);
+    try {
+      const ticket: Ticket = await request<Ticket>(`/${detail.id}/archive-start`, { method: 'POST' });
+      setDetail(ticket);
+      setArchiveReportContent(ticket.current_archive_report?.content || '');
+      setArchiveReportRevision(ticket.current_archive_report?.revision || 1);
+      setArchiveEditorMode('edit');
+      setArchiveEditorVisible(true);
+      Toast({ message: '已开始归档，请编写归档报告', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `开始归档失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 保存归档草稿 ──
+  const handleSaveArchiveDraft = async () => {
+    const reportId = detail?.current_archive_report?.id;
+    if (!reportId) return;
+    setArchiveLoading(true);
+    try {
+      const report = await request(`/archive-reports/${reportId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
+      });
+      setArchiveReportRevision((report as { revision: number }).revision);
+      Toast({ message: '草稿已保存', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 提交归档报告审核 ──
+  const handleSubmitArchive = async () => {
+    const reportId = detail?.current_archive_report?.id;
+    if (!reportId || !archiveReportReviewer) {
+      Toast({ message: '请选择审核人', theme: 'warning' });
+      return;
+    }
+    setArchiveLoading(true);
+    try {
+      const ticket: Ticket = await request(`/archive-reports/${reportId}/submit`, {
+        method: 'POST',
+        body: JSON.stringify({ reviewer: archiveReportReviewer, content: archiveReportContent, revision: archiveReportRevision }),
+      });
+      setDetail(ticket);
+      setArchiveEditorVisible(false);
+      Toast({ message: '已提交归档报告，等待审核', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `提交失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 审核通过归档 ──
+  const handleArchiveApprove = async () => {
+    const reportId = detail?.current_archive_report?.id;
+    if (!reportId || !detail) return;
+    setArchiveLoading(true);
+    try {
+      const ticket: Ticket = await request(`/archive-reports/${reportId}/approve`, { method: 'POST' });
+      setDetail(ticket);
+      setArchiveEditorVisible(false);
+      Toast({ message: '归档审核通过', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 审核驳回归档 ──
+  const handleArchiveReject = async () => {
+    const reportId = detail?.current_archive_report?.id;
+    if (!reportId || !detail) return;
+    if (!archiveRejectReason.trim()) {
+      Toast({ message: '请填写驳回理由', theme: 'warning' });
+      return;
+    }
+    setArchiveLoading(true);
+    try {
+      const ticket: Ticket = await request(`/archive-reports/${reportId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ review_comment: archiveRejectReason }),
+      });
+      setDetail(ticket);
+      setShowArchiveRejectPopup(false);
+      setArchiveRejectReason('');
+      Toast({ message: '已驳回归档报告', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 打开归档编辑器（根据 submit_status 区分编辑/审核模式）──
+  const handleOpenArchiveEditor = () => {
+    const report = detail?.current_archive_report;
+    if (!report) {
+      Toast({ message: '归档报告未找到', theme: 'warning' });
+      return;
+    }
+    setArchiveReportContent(report.content || '');
+    setArchiveReportRevision(report.revision || 1);
+    if (report.submit_status === 'submitted') {
+      setArchiveEditorMode('review');
+    } else {
+      setArchiveEditorMode('edit');
+    }
+    setArchiveEditorVisible(true);
   };
 
   const handleEscalate = async (t: Ticket) => {
@@ -957,7 +1182,7 @@ export default function TaskDetailPage() {
   };
 
   // ── 普通评论：POST /api/tasks/{id}/comments；返回 true=成功（组件清空输入） ──
-  const handleAddComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleAddComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     if (!detail) {
       Toast({ message: '请输入评论内容', theme: 'warning' });
       return false;
@@ -1008,7 +1233,7 @@ export default function TaskDetailPage() {
   };
 
   // ── @U老师 讨论：先存用户消息 → 空闲立刻 discuss / 进行中入队；返回 true=成功 ──
-  const postDiscussUserComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const postDiscussUserComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     const current = detailRef.current;
     if (!current) return false;
     const tempId = generateTempId();
@@ -1041,12 +1266,21 @@ export default function TaskDetailPage() {
     void startDiscussTurn(next.text, next.files, next.options);
   };
 
-  const startDiscussTurn = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
-    await postDiscussUserComment(text, files, options);
+  const startDiscussTurn = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
+    // 先占位 busy，让讨论区立刻进入 sending（输入框已清空），不要等 HTTP 流才 setAskingAI
+    aiBusyRef.current = true;
+    setAskingAI(true);
+    const posted = await postDiscussUserComment(text, files, options);
+    if (!posted) {
+      aiBusyRef.current = false;
+      setAskingAI(false);
+      Toast({ message: '评论发送失败，请重试', theme: 'error' });
+      return false;
+    }
     return runDiscussHttp(text, options);
   };
 
-  const runDiscussHttp = async (text: string, options?: { replyTo?: string | number }): Promise<boolean> => {
+  const runDiscussHttp = async (text: string, options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     const current = detailRef.current;
     if (!current) return false;
     const controller = new AbortController();
@@ -1055,7 +1289,9 @@ export default function TaskDetailPage() {
     setDiagnosing(false);
     diagnosingRef.current = false;
     setAskingAI(true);
+    setAiStreamReply('');
     setAiEpoch((n) => n + 1);
+    let ok = false;
     try {
       const recentComments = (current.comments || []).slice(-10).map((c) => ({
         author: c.created_by_name || c.created_by || '?',
@@ -1071,26 +1307,33 @@ export default function TaskDetailPage() {
             content: quotedSrc.content,
           }
         : undefined;
-      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/discuss`, {
-        method: 'POST',
-        signal: controller.signal,
-        body: JSON.stringify({
+      await taskDiscussStream(
+        {
           task_id: String(current.id),
           query: text.replace(/\s*@U老师\s*/g, ' ').trim(),
           context: {
             recent_comments: recentComments,
             ...(quotedComment ? { quoted_comment: quotedComment } : {}),
             ...(options?.replyTo != null ? { reply_to: options.replyTo } : {}),
+            ...(options?.uspEnvId != null ? { usp_env_id: options.uspEnvId } : {}),
           },
-        }),
-      });
-      const data = await res.json();
-      if (data.code === 0) {
+        },
+        {
+          onToken: (tok) => {
+            if (!tok) return;
+            setAiStreamReply((prev) => prev + tok);
+          },
+          onRewrite: (full) => setAiStreamReply(full || ''),
+          onResult: () => { ok = true; },
+        },
+        controller.signal,
+      );
+      if (ok) {
         Toast({ message: 'AI 已回复', theme: 'success' });
         loadDetail();
         return true;
       }
-      Toast({ message: data.message || 'AI 回复失败', theme: 'error' });
+      Toast({ message: 'AI 回复失败', theme: 'error' });
       return false;
     } catch (err) {
       const aborted = err instanceof Error && err.name === 'AbortError';
@@ -1102,13 +1345,14 @@ export default function TaskDetailPage() {
       if (stillMine) {
         aiAbortRef.current = null;
         setAskingAI(false);
+        setAiStreamReply('');
         aiBusyRef.current = false;
         pumpDiscussQueue();
       }
     }
   };
 
-  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     if (!detailRef.current) return false;
     if (aiBusyRef.current || diagnosingRef.current) {
       if (discussQueueRef.current.length >= MAX_AI_DISCUSS_QUEUE) {
@@ -1117,13 +1361,13 @@ export default function TaskDetailPage() {
       }
       discussQueueRef.current.push({ text, files, options });
       bumpAiQueue();
-      Toast({ message: `已排队（${discussQueueRef.current.length}/${MAX_AI_DISCUSS_QUEUE}），轮到时再上评论区`, theme: 'success' });
+      Toast({ message: `已排到结束后跟进（${discussQueueRef.current.length}/${MAX_AI_DISCUSS_QUEUE}），本轮结束后再开始`, theme: 'success' });
       return true;
     }
     return startDiscussTurn(text, files, options);
   };
 
-  const handleInsertThisRound = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleInsertThisRound = async (text: string, files: File[] = [], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     const current = detailRef.current;
     if (!current) return false;
     if (aiBusyRef.current || diagnosingRef.current) {
@@ -1172,7 +1416,7 @@ export default function TaskDetailPage() {
   };
 
   // ── onSend：检测是否 @U老师（任意位置，前缀或句尾均触发）决定走普通评论还是 AI 讨论 ──
-  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number; uspEnvId?: number }): Promise<boolean> => {
     // 只要文本里含 @U老师（@ 在开头/中间/结尾都算）就走 AI 讨论；
     // 兼容"说完话后句尾手动@U老师"（否则会被当成普通评论发出、AI 不回复）
     if (text.includes('@U老师')) {
@@ -1258,7 +1502,7 @@ export default function TaskDetailPage() {
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
         // 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径）
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
-        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        // 二次派单感知增强：派单理由（后端对接单人/提单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(t.redispatch?.result?.reasoning || '');
       })
       .catch(() => {});
@@ -1349,9 +1593,22 @@ export default function TaskDetailPage() {
                         negotiation.setReopenStepId(firstStep ? firstStep.id : null);
                         negotiation.setReopenEndTime(null);
                         negotiation.setShowReopenPopup(true);
+                      } else if (action.actionType === 'archive') {
+                        handleStartArchive();
+                      } else if (action.actionType === 'archive-edit') {
+                        handleOpenArchiveEditor();
+                      } else if (action.actionType === 'archive-approve') {
+                        handleArchiveApprove();
+                      } else if (action.actionType === 'archive-reject') {
+                        setArchiveRejectReason('');
+                        setShowArchiveRejectPopup(true);
                       } else if (action.nextStatus === 'resolved') {
                         // 结束工单（→ resolved）→ 打开 "问题 + AI 解决方式" 确认弹窗
                         resolve.handleResolveClick();
+                      } else if (action.nextStatus === 'pending_requested') {
+                        // 请求暂停 → 先弹理由输入弹窗
+                        setPauseReason('');
+                        setShowPausePopup(true);
                       } else {
                         handleStatusChange(action);
                       }
@@ -1454,32 +1711,21 @@ export default function TaskDetailPage() {
           </div>
 
           {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
-          {redispatchTipDetail && (
-            <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
-          )}
+          {redispatchTipDetail && (() => {
+            const { isAssignee, isReporter } = getCurrentUserRoles();
+            const tipLabel = isAssignee && !isReporter ? '接单提醒' : '派单提醒';
+            return <DispatchFold label={tipLabel} text={redispatchTipDetail} variant="tip" />;
+          })()}
 
-          {/* 
-              ┌──────────────┬─────────────┬───────────────────┬──────────────────┬──────────────┐
-              │ 查看者/场景   │ dispatchReason│ redispatchTipDetail│ isAssignee/isAdmin│ 是否显示卡片  │
-              ├──────────────┼─────────────┼───────────────────┼──────────────────┼──────────────┤
-              │ 普通接单人   │ 空/有       │ 空(后端不返回 tip) │ isAssignee ✓      │ 仅看 reason │
-              │ (有理由)     │（按后端给）  │                   │                  │   → 显示     │
-              │ 接单人但无理由│ 空          │ 空                 │ isAssignee ✓      │  → 不显示    │
-              │ 提单人==接   │ 空/有       │ 空                 │ isAssignee ✓      │  → 显示      │
-              │ 单人(无 tip) │             │                   │                  │              │
-              │ 提单人==接   │ 有          │ 有                 │ isAssignee ✓      │  → 不显示    │
-              │ 单人(有 tip) │             │                   │                  │ (只显 tip)   │
-              │ 管理员       │ 有          │ 依工单而定          │ isAdmin ✓         │ tip 空→显示  │
-              │              │             │                   │                  │ tip 有→不显示│
-              │ 其它第三方   │ 空(后端过滤)│ 空                 │ 均 ✗              │  → 不显示    │
-              │ 老后端+第三方│ 有          │ —                 │ 均 ✗              │  → 不显示    │
-              │ (前端兜底防泄│             │                   │                  │ (角色兜底拦) │
-              │  露)         │             │                   │                  │              │
-              └──────────────┴─────────────┴───────────────────┴──────────────────┴──────────────┘ */}
+          {/* 派单原因：接单人 / 提单人 / 管理员 / 工单操作权限 可见。
+              提单人侧有 tip 时 tip 常已含说明，不重复展示 reason；
+              接单人可同时看「接单提醒」与「派单原因」。 */}
           {(() => {
-            if (!dispatchReason || redispatchTipDetail) return null;
-            const { isAssignee } = getCurrentUserRoles();
-            if (!isAssignee && !isAdmin) return null;
+            if (!dispatchReason) return null;
+            const { isAssignee, isReporter } = getCurrentUserRoles();
+            const canOperate = isAdmin || hasPermission('backend:tasks:operate');
+            if (!isAssignee && !isReporter && !canOperate) return null;
+            if (redispatchTipDetail && isReporter) return null;
             return (
               <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />
             );
@@ -1487,12 +1733,13 @@ export default function TaskDetailPage() {
         </div>
 
         <div className="detail-card">
-          <h4 className="detail-card__h">问题描述</h4>
+          {/* 标题行右侧常驻「详细问题文档」入口（问题描述为空也展示，弹窗内再判断有无文档/权限） */}
+          <h4 className="detail-card__h detail-card__h--with-action">
+            问题描述
+            <SpecDocCard taskId={detail.id} canEdit={canEditSpecDoc} />
+          </h4>
           <SafeHtml className="detail-card__body detail-card__body--pre" html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
-
-        {/* 问题文档：提单人结构化描述 + 接单人补充（md 在线编辑） */}
-        <SpecDocCard taskId={detail.id} canEdit={canEditSpecDoc} />
 
         {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用 */}
         <StepNegotiationCard
@@ -1514,6 +1761,7 @@ export default function TaskDetailPage() {
             setReassignReason('');
             setShowReassignPopup(true);
           }}
+          onPauseResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
         />
 
         {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
@@ -1568,6 +1816,50 @@ export default function TaskDetailPage() {
             </div>
           </div>
         )}
+
+        {/* 项目信息补充工单（提单人请他人补项目信息时生成）：列出待补充节点，给回项目信息树的入口。
+            数据来自建单时写入的 metadata_info.info_supplement；普通工单没有该字段，卡片不出现。 */}
+        {(() => {
+          const meta = detail.metadata_info || {};
+          const raw = meta.info_supplement as
+            | { project_id?: string; project_name?: string; nodes?: Array<{ id?: string; path?: string }> }
+            | undefined;
+          if (!raw || !Array.isArray(raw.nodes) || raw.nodes.length === 0) return null;
+          const paths = raw.nodes
+            .map((item) => (item && typeof item.path === 'string' ? item.path : ''))
+            .filter(Boolean);
+          if (!paths.length) return null;
+          const projectId = String(raw.project_id || '');
+          return (
+            <div className="detail-card">
+              <h4 className="detail-card__h" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <ClipboardList size={15} strokeWidth={2} />
+                项目信息补充
+              </h4>
+              <div style={{ fontSize: 13, color: 'var(--foreground)', lineHeight: 1.8 }}>
+                <div><strong>项目：</strong>{raw.project_name || projectId || '—'}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
+                  待补充 {paths.length} 项，补齐后他人提单即可自动带全背景信息：
+                </div>
+                <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  {paths.map((path, index) => (
+                    <li key={`${path}-${index}`}>{path}</li>
+                  ))}
+                </ul>
+              </div>
+              {projectId ? (
+                <Button
+                  block
+                  theme="primary"
+                  style={{ borderRadius: '999px', marginTop: 12, backgroundColor: 'var(--blue-3)', color: '#fff', border: 'none' }}
+                  onClick={() => navigate(`/app/admin/project-detail/${encodeURIComponent(projectId)}/edit`)}
+                >
+                  去补充项目信息
+                </Button>
+              ) : null}
+            </div>
+          );
+        })()}
 
         <TicketDynamicsCard taskId={detailId ?? ''} />
 
@@ -1709,6 +2001,7 @@ export default function TaskDetailPage() {
           aiQueueItems={aiQueueItems}
           onInsertQueueItem={handleInsertQueueItem}
           onRemoveQueueItem={handleRemoveQueueItem}
+          aiStreamReply={aiStreamReply}
           enableAI
           enableAttach
           mentionUsers={projectMembers}
@@ -1727,8 +2020,8 @@ export default function TaskDetailPage() {
 
         {(() => {
           const status = detail.status?.toLowerCase();
-          const isClosedOrCanceled = status === 'closed' || status === 'canceled' || status === 'cancelled';
-          if (isClosedOrCanceled) return null;
+          const isClosedOrCanceledOrArchivedOrArchiving = ['closed', 'canceled', 'cancelled', 'archived', 'archiving'].includes(status);
+          if (isClosedOrCanceledOrArchivedOrArchiving) return null;
 
           const { isAssignee, isReporter, isPrincipal } = getCurrentUserRoles();
           const canOperate = hasPermission('backend:tasks:operate');
@@ -1914,6 +2207,41 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
+      {/* 请求暂停弹窗：输入理由（提单人将看到） */}
+      <Popup visible={showPausePopup} onClose={() => { setShowPausePopup(false); setPauseReason(''); }} placement="bottom" showOverlay destroyOnClose>
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">请求暂停工单</h4>
+          <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            暂停理由将展示给提单人，对方据此决定是否同意暂停。
+          </p>
+          <Form initialData={{}}>
+            <FormItem label="暂停理由" name="pauseReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={pauseReason}
+                onChange={(v) => setPauseReason(String(v))}
+                placeholder="请说明为什么需要暂停工单（例如：需要外部协作 / 等待安全确认 / 资源调配中）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowPausePopup(false); setPauseReason(''); }}>取消</Button>
+            <Button
+              theme="primary"
+              disabled={!pauseReason.trim()}
+              onClick={async () => {
+                await handleStatusChange({ nextStatus: 'pending_requested', pauseReason: pauseReason.trim() });
+                setShowPausePopup(false);
+                setPauseReason('');
+              }}
+            >
+              提交暂停请求
+            </Button>
+          </div>
+        </div>
+      </Popup>
+
       {/* 结束工单确认弹窗：问题 + 工单解决方式（抽到 useResolveTicket） */}
       <Popup visible={resolve.showResolutionPopup} onClose={resolve.handleResolveCancel} placement="bottom" showOverlay>
         <div className="ticket-edit-form">
@@ -1993,7 +2321,14 @@ export default function TaskDetailPage() {
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">重新指派</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
-          <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <UserSelect
+            value={reassignUser?.id ?? null}
+            onChange={setReassignUser}
+            placeholder="请选择处理人"
+            title="选择处理人"
+            pinUserId={detail?.project_contact_person_id || null}
+            pinLabel="项目对接人"
+          />
           <div style={{ margin: '12px 0 8px', fontSize: '14px', color: 'var(--foreground)' }}>转派类型<span style={{ color: 'var(--danger)' }}> *</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
             {([
@@ -2252,6 +2587,67 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" disabled={approving} onClick={() => { setShowAdjustPopup(false); setAdjustName(''); }}>取消</Button>
             <Button theme="primary" loading={approving} onClick={handleAdjustApprove} disabled={!adjustName.trim()}>确认通过</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* ── 归档报告编辑器 Popup ── */}
+      <Popup visible={archiveEditorVisible} onClose={() => setArchiveEditorVisible(false)} placement="bottom" showOverlay>
+        <div className="ticket-edit-form">
+          <span className="ticket-edit-form__close" onClick={() => setArchiveEditorVisible(false)}>×</span>
+          <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
+            {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
+          </h4>
+          {archiveEditorMode === 'review' && detail?.current_archive_report?.review_comment && (
+            <div style={{ padding: '8px 12px', background: 'var(--destructive)/10%', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>
+              <strong style={{ color: 'var(--destructive)' }}>上一次驳回理由：</strong>
+              {detail.current_archive_report.review_comment}
+            </div>
+          )}
+          {archiveEditorMode === 'edit' ? (
+            <>
+              <MDEditor
+                height={320}
+                value={archiveReportContent}
+                onChange={(v) => setArchiveReportContent(v || '')}
+                preview="edit"
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
+                <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading}>保存草稿</Button>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>审核人：</span>
+                  <UserSelect value={archiveReportReviewer} onChange={(u) => setArchiveReportReviewer(u.id)} placeholder="选择审核人" />
+                  <Button size="small" theme="primary" onClick={handleSubmitArchive} loading={archiveLoading}>提交审核</Button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <MDEditor height={360} value={archiveReportContent} preview="preview" />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+                <Button size="small" theme="default" onClick={() => setArchiveEditorVisible(false)}>关闭</Button>
+                <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
+              </div>
+            </>
+          )}
+        </div>
+      </Popup>
+
+      {/* ── 驳回归档 Popup ── */}
+      <Popup visible={showArchiveRejectPopup} onClose={() => setShowArchiveRejectPopup(false)} placement="bottom" showOverlay>
+        <div className="ticket-edit-form">
+          <span className="ticket-edit-form__close" onClick={() => { setShowArchiveRejectPopup(false); setArchiveRejectReason(''); }}>×</span>
+          <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>驳回归档报告</h4>
+          <textarea
+            value={archiveRejectReason}
+            onChange={(e) => setArchiveRejectReason(e.target.value)}
+            placeholder="请填写驳回理由（必填）"
+            style={{ width: '100%', minHeight: 100, padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--background)', color: 'var(--foreground)', resize: 'vertical', boxSizing: 'border-box' }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+            <Button size="small" theme="default" onClick={() => { setShowArchiveRejectPopup(false); setArchiveRejectReason(''); }}>取消</Button>
+            <Button size="small" theme="danger" onClick={handleArchiveReject} loading={archiveLoading} disabled={!archiveRejectReason.trim()}>确认驳回</Button>
           </div>
         </div>
       </Popup>

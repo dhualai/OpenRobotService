@@ -21,7 +21,7 @@ export interface ClearableInputProps extends Omit<InputProps, 'clearable' | 'suf
 }
 
 const ClearableInput = forwardRef<InputRefProps, ClearableInputProps>(
-  function ClearableInput({ showClear = true, passwordToggle = false, onChange, ...rest }, ref) {
+  function ClearableInput({ showClear = true, passwordToggle = false, onChange, onFocus, ...rest }, ref) {
     const inputRef = useRef<InputRefProps | null>(null);
     const [visible, setVisible] = useState(false);
     const hasValue = rest.value != null && String(rest.value).length > 0;
@@ -49,6 +49,7 @@ const ClearableInput = forwardRef<InputRefProps, ClearableInputProps>(
         {...rest}
         type={inputType}
         onChange={onChange}
+        onFocus={onFocus}
         suffix={
           (showClear && hasValue) || passwordToggle ? (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>

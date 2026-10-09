@@ -39,7 +39,8 @@ class _DiagProgress:
         self._idx: dict[str, dict] = {}
 
     def snapshot(self) -> list[dict]:
-        return [dict(t) for t in self._todos]
+        from ai.agents.AiTaskPlatform.tracing import nest_progress_todos
+        return nest_progress_todos([dict(t) for t in self._todos])
 
     def seed(self, key: str, description: str, capability: str = "") -> None:
         """仅登记首个「进行中」待办项，不广播。
@@ -459,6 +460,16 @@ class DiagnoseFlow:
                     context.attachments,
                     task_id=getattr(context, "task_id", "") or "",
                 )
+                if log_paths:
+                    from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import order_logs_for_analysis
+                    log_paths = order_logs_for_analysis(
+                        log_paths,
+                        " ".join(filter(None, [
+                            context.problem_summary or "",
+                            context.title or "",
+                            (context.description or "")[:400],
+                        ])),
+                    )
 
                 # ── 并行任务定义 ──────────────────────────────────────────
                 async def _analyze_single_log(log_path: str, task_ctx: dict, question: str) -> tuple[bool, str, object]:
@@ -506,7 +517,30 @@ class DiagnoseFlow:
                     """日志分析：支持多日志文件并行分析，合并结果。返回 (has_logs, summary, primary_sub_result)。"""
                     if not log_paths:
                         return False, "", None
-                    task_ctx = build_task_ctx(context)
+                    _disc = ""
+                    try:
+                        from ai.agents.AiTaskPlatform.contexts.comments import load_ticket_discussion
+                        _disc = load_ticket_discussion(task_id)
+                    except Exception as _de:
+                        logger.warning(f"[diagnose] 读取讨论史失败: {_de}")
+                    _sums = []
+                    for _obj, _rec in (context.attachment_analysis or {}).items():
+                        if isinstance(_rec, dict):
+                            _sums.append(f"{_rec.get('filename') or _obj}: {_rec.get('summary') or ''}")
+                    _facts = ""
+                    try:
+                        from ai.agents.AiTaskPlatform.capabilities.tools.project_info import (
+                            site_facts_for_log,
+                        )
+                        _facts = site_facts_for_log(getattr(context, "project_id", "") or "")
+                    except Exception as _fe:
+                        logger.warning(f"[diagnose] 现场档案读取失败: {type(_fe).__name__}")
+                    task_ctx = build_task_ctx(
+                        context,
+                        discussion=_disc,
+                        attachment_summaries=_sums,
+                        project_facts=_facts,
+                    )
                     auto_question = f"日志分析，重点排查: {context.problem_summary}"
                     if context.hypotheses:
                         auto_question += f"，可能原因: {'/'.join(context.hypotheses)}"

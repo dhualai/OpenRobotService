@@ -63,6 +63,83 @@ def extract_directive_content(query: str) -> str:
     return content[:500]
 
 
+_EXTRACT_SYSTEM = (
+    "你是记忆写入门禁。判断用户是否真的要 U老师 长期记住某条约定/结论。"
+    "只输出一行 JSON，不要其它文字。"
+)
+_EXTRACT_PROMPT = """用户原话：
+{query}
+
+正则初抽内容：
+{candidate}
+
+判断规则：
+- 用户明确要求记住/记一下/以后都用 → should_save=true，content 写精炼后的记忆正文（去掉「记住」等指令前缀）
+- 「记住，不是这个 / 别记 / 不要记」或只是在讨论、没有要沉淀的约定 → should_save=false，content 空
+- content 不超过 200 字，一句话写清约定本身
+
+输出格式（严格）：
+{{"should_save": true或false, "content": "..."}}
+"""
+
+
+def _parse_extract_json(raw: str) -> tuple[Optional[bool], str]:
+    """从 LLM 输出里抠 should_save / content。解析失败返回 (None, "")。"""
+    import json
+
+    text = (raw or "").strip()
+    if not text:
+        return None, ""
+    # 允许包在代码块或前后废话里
+    m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+    if not m:
+        return None, ""
+    try:
+        obj = json.loads(m.group(0))
+    except Exception:
+        return None, ""
+    if not isinstance(obj, dict):
+        return None, ""
+    flag = obj.get("should_save")
+    if isinstance(flag, str):
+        flag = flag.strip().lower() in ("1", "true", "yes", "y")
+    elif not isinstance(flag, bool):
+        return None, ""
+    content = str(obj.get("content") or "").strip()[:500]
+    return bool(flag), content
+
+
+async def confirm_directive_with_llm(query: str, candidate: str) -> tuple[bool, str]:
+    """LLM 二次确认是否写入记忆。
+
+    Returns:
+        (should_save, content)。LLM 失败时 fail-open：信任正则 candidate。
+    """
+    cand = (candidate or "").strip()
+    if not cand:
+        return False, ""
+    try:
+        from ai.core import get_llm_client
+
+        llm = await get_llm_client()
+        raw = await llm.complete(
+            prompt=_EXTRACT_PROMPT.format(query=(query or "")[:800], candidate=cand[:500]),
+            system_prompt=_EXTRACT_SYSTEM,
+            max_tokens=200,
+            temperature=0.0,
+        )
+        flag, content = _parse_extract_json(raw or "")
+        if flag is None:
+            logger.warning("[memory] extract 解析失败，回退正则内容")
+            return True, cand
+        if not flag:
+            return False, ""
+        return True, (content or cand)[:500]
+    except Exception as e:
+        logger.warning(f"[memory] extract LLM 失败，回退正则: {e}")
+        return True, cand
+
+
 def format_memory_block(entries: list[dict]) -> str:
     """把召回条目做成独立 prompt 段；空列表返回空串。"""
     lines = []
@@ -140,6 +217,18 @@ class AgentMemoryService:
         rec["created_at"] = (rec.get("created_at") or "").strip()
         return rec
 
+    @staticmethod
+    def public_entry(rec: dict) -> dict:
+        """给管理界面看的字段，不含文件路径。"""
+        return {
+            "id": rec.get("id") or "",
+            "kind": rec.get("kind") or "directive",
+            "content": rec.get("content") or "",
+            "created_at": rec.get("created_at") or "",
+            "source": rec.get("source") or "",
+            "source_id": rec.get("source_id") or "",
+        }
+
     def list_entries(self, kind: Optional[str] = None, status: str = "active") -> list[dict]:
         out = []
         if not self.entries_dir.exists():
@@ -214,6 +303,26 @@ class AgentMemoryService:
         logger.info(f"[memory] stored id={mem_id} kind={kind} source={source}#{source_id}")
         return mem_id
 
+    async def update_content(self, mem_id: str, content: str) -> Optional[dict]:
+        """改一条仍生效的记忆正文，并重写向量。不存在或已作废时返回 None。"""
+        content = (content or "").strip()[:500]
+        if not content:
+            return None
+        path = self._entry_path(mem_id)
+        if not path.exists():
+            return None
+        rec = self._parse_entry(path.read_text(encoding="utf-8"))
+        if not rec or rec.get("status") != "active":
+            return None
+        rec["content"] = content
+        self._write_entry(rec)
+        self._rebuild_memory_md()
+        try:
+            await self._qdrant_upsert(rec)
+        except Exception as e:
+            logger.warning(f"[memory] 更新后 Qdrant 双写失败（Markdown 已改）: {e}")
+        return self.public_entry(rec)
+
     async def recall(self, query: str, top_k: int = 3, kinds: Optional[list[str]] = None) -> list[dict]:
         query = (query or "").strip()
         hits: list[dict] = []
@@ -247,14 +356,21 @@ class AgentMemoryService:
         except Exception:
             pass
 
-    async def delete(self, mem_id: str) -> None:
+    async def delete(self, mem_id: str) -> bool:
+        """删除一条记忆。文件不存在时返回 False。向量库删除失败只记日志。"""
         path = self._entry_path(mem_id)
-        if path.exists():
+        existed = path.exists()
+        if existed:
             path.unlink()
+            try:
+                self._rebuild_memory_md()
+            except Exception:
+                pass
         try:
-            self._rebuild_memory_md()
-        except Exception:
-            pass
+            await self._qdrant_delete(mem_id)
+        except Exception as e:
+            logger.warning(f"[memory] Qdrant 删除失败（Markdown 已处理）: {e}")
+        return existed
 
     async def _qdrant_upsert(self, rec: dict) -> None:
         from ai.config import get_active_collection_for
@@ -289,6 +405,21 @@ class AgentMemoryService:
             ids=[rec["id"]],
             payloads=[payload],
         )
+
+    async def _qdrant_delete(self, mem_id: str) -> None:
+        if not mem_id:
+            return
+        from ai.config import get_active_collection_for
+        col = get_active_collection_for("personal")
+        if not col:
+            return
+        from ai.core import get_retrieval_service
+        retriever = await get_retrieval_service()
+        qdrant = getattr(retriever, "_qdrant", None)
+        if qdrant is None:
+            return
+        client = await qdrant._ensure_client()
+        client.delete(collection_name=col, points_selector=[mem_id])
 
     async def _qdrant_search(self, query: str, top_k: int = 3) -> list[dict]:
         if not query:
@@ -337,7 +468,7 @@ def get_agent_memory_service(memory_dir: Optional[Path] = None) -> AgentMemorySe
 
 
 async def prepare_discuss_memory(query: str, task_id: str = "") -> tuple[str, str]:
-    """讨论入口：命中「记住」则写入；始终按问题召回。失败返回空，不抛。
+    """讨论入口：命中「记住」则经 LLM 门禁后写入；始终按问题召回。失败返回空，不抛。
 
     Returns:
         (memory_block, saved_content)  saved_content 非空表示本轮刚记住。
@@ -346,13 +477,24 @@ async def prepare_discuss_memory(query: str, task_id: str = "") -> tuple[str, st
     block = ""
     try:
         svc = get_agent_memory_service()
-        directive = extract_directive_content(query)
-        if directive:
-            mem_id = await svc.store(
-                content=directive, kind="directive", source="task", source_id=str(task_id or ""),
-            )
-            if mem_id:
-                saved = directive
+        candidate = extract_directive_content(query)
+        if candidate:
+            should_save, directive = await confirm_directive_with_llm(query or "", candidate)
+            if should_save and directive:
+                from ai.agents.AiTaskPlatform.capabilities.tools.memory_store import (
+                    MemoryStoreCapability,
+                )
+                stored = await MemoryStoreCapability()(
+                    content=directive,
+                    user_query=query or "",
+                    source_id=str(task_id or ""),
+                )
+                if stored.ok:
+                    saved = directive
+                elif (stored.meta or {}).get("approval") == "required":
+                    logger.info("[memory] 未通过审批，不写入")
+            elif candidate and not should_save:
+                logger.info("[memory] extract 判定不写入（should_save=false）")
         hits = await svc.recall(query or saved, top_k=3)
         block = format_memory_block(hits)
     except Exception as e:

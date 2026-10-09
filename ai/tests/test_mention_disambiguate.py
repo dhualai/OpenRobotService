@@ -145,6 +145,49 @@ def test_空输入():
     assert AiDiagnosisPlatform._ambiguous_project_candidates("", _POOL) == []
 
 
+# ---- 0930 普遍度闸（admin 小池「项目」二字唯一命中误收国铁实锤）----
+
+# 模拟全量项目表：「项目」「叉车」是大路词，实词（东昇/本川/智芯）稀有
+_GLOBAL = (
+    [{"name": f"测试客户{i}叉车搬运项目"} for i in range(10)]
+    + [{"name": "浙江杭州国铁项目"}, {"name": "某某仓储项目"},
+       {"name": "河南郑州东昇汽配厂潜伏车项目"}, {"name": "江苏南京本川XSC仓储项目"},
+       {"name": "浙江安吉中力智芯仓储物流园叉车搬运项目"}]
+)
+
+
+def test_0930_大路词证据小池不预填():
+    # 同事本地实锤复刻：原话是完整项目名但不在池内，旧逻辑靠「项目」二字
+    # 唯一命中误收国铁 → 普遍度闸判定「项目」为大路词，拒收不预填
+    pool = [
+        {"name": "浙江杭州国铁项目", "code": "gt1"},
+        {"name": "测试客户A", "code": "ta"},
+        {"name": "MMQ自测", "code": "mmq"},
+    ]
+    got = AiDiagnosisPlatform._match_project_mention(
+        "福建晋江穗柯恒安纸业叉车项目", pool, all_names=_names(_GLOBAL))
+    assert got is None
+
+
+def test_0930_稀有证据仍收():
+    # 实词证据（本川/东昇）在全量表里稀有 → 照常预填
+    pool = [
+        {"name": "南京本川XSC仓储项目", "code": "69"},
+        {"name": "浙江杭州国铁项目", "code": "gt1"},
+    ]
+    got = AiDiagnosisPlatform._match_project_mention(
+        "本川项目", pool, all_names=_names(_GLOBAL))
+    assert got and got["code"] == "69"
+
+    pool2 = [
+        {"name": "河南郑州东昇汽配厂潜伏车项目", "code": "p1"},
+        {"name": "浙江杭州国铁项目", "code": "gt1"},
+    ]
+    got2 = AiDiagnosisPlatform._match_project_mention(
+        "河南东昇那个潜伏车项目", pool2, all_names=_names(_GLOBAL))
+    assert got2 and got2["code"] == "p1"
+
+
 # ---- 收集轮项目捕捉（0829 印尼实锤：收集轮跳过规划器，服务端直接判定）----
 
 _YDN_POOL = [

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional, Tuple
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
@@ -13,6 +14,45 @@ from ai.agents.AiDiagnosisPlatform.assigner.filtering.product_keys import (
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
+
+YAOREMBA_PRODUCT = "摇人吧服务号"
+# 现场调度/车端才会写到的事实。不单用「调度」，避免摇人吧自己的派单页面被当成现场单。
+_FIELD_TEXT_MARKERS = (
+    "车号", "车端", "地图", "路径规划", "锁区", "任务下发",
+    "货叉", "现场任务", "雷达", "车辆",
+)
+_VEHICLE_ID = re.compile(r"[A-Za-z]{2,}-\d+")
+
+
+def is_yaorenba_field_entry(ticket, config: Optional[AssignerConfig] = None) -> bool:
+    """项目名被收成摇人吧，正文却是现场的车、地图或任务。
+
+    这种单仍按摇人吧收候选人。调用方只加提醒，不改派。
+    """
+    cfg = (config or AssignerConfig()).product_routing or {}
+    project = (getattr(ticket, "project_name", None) or "").replace(" ", "").replace("\u3000", "")
+    marked = False
+    for rule in cfg.get("projects") or []:
+        product = (rule.get("product") or "").strip()
+        if product != YAOREMBA_PRODUCT:
+            continue
+        for marker in rule.get("markers") or []:
+            if marker.replace(" ", "") and marker.replace(" ", "") in project:
+                marked = True
+                break
+    if not marked:
+        return False
+    if (getattr(ticket, "robot_type", None) or "").strip():
+        return True
+    if (getattr(ticket, "fault_code", None) or "").strip():
+        return True
+    text = "\n".join(
+        str(getattr(ticket, name, None) or "")
+        for name in ("title", "problem_description", "diagnosis_problem_summary", "location")
+    )
+    if _VEHICLE_ID.search(text):
+        return True
+    return any(marker in text for marker in _FIELD_TEXT_MARKERS)
 
 
 class ProductRouter:

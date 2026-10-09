@@ -201,21 +201,99 @@ class TraceBus:
         return [_walk(rid) for rid in self._roots if rid in self._spans]
 
 
-def nest_progress_todos(items: list) -> list:
-    """把日志分析子步骤（建索引 / R1..Rn）挂到所属能力下面，过程区呈 span 树。"""
+def _known_ids(items: list) -> set:
+    found = set()
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        if it.get("id") is not None:
+            found.add(str(it.get("id")))
+        found |= _known_ids(it.get("children") or [])
+    return found
+
+
+def _span_events_by_name(span_tree: list) -> dict:
+    grouped: dict = {}
+
+    def _walk(nodes: list) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            name = str(node.get("name") or "")
+            if name:
+                grouped.setdefault(name, []).extend(node.get("events") or [])
+            _walk(node.get("children") or [])
+
+    _walk(span_tree or [])
+    return grouped
+
+
+def _attach_span_events(todos: list, span_tree: list) -> list:
+    """把 span 事件挂到同名能力下面。过程区已经有的步骤 id 不重复挂。"""
+    grouped = _span_events_by_name(span_tree)
+    if not grouped:
+        return todos
+    known = _known_ids(todos)
+    out = []
+    for item in todos:
+        row = dict(item)
+        cap = str(row.get("capability") or "")
+        events = grouped.get(cap) or []
+        kids = list(row.get("children") or [])
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            attrs = ev.get("attributes") if isinstance(ev.get("attributes"), dict) else {}
+            eid = str(attrs.get("id") or "")
+            name = str(ev.get("name") or "").strip()
+            if not name or name == str(row.get("description") or ""):
+                continue
+            if eid and eid in known:
+                continue
+            status = str(attrs.get("status") or "completed")
+            if status in ("running", "in_progress"):
+                status = "in_progress"
+            else:
+                status = "completed"
+            child_id = eid or f"ev_{cap}_{ev.get('ts')}_{name}"
+            if child_id in known:
+                continue
+            known.add(child_id)
+            kids.append({
+                "id": child_id,
+                "description": name,
+                "status": status,
+                "capability": cap,
+            })
+        if kids:
+            row["children"] = kids
+        out.append(row)
+    return out
+
+
+def nest_progress_todos(items: list, span_tree: list | None = None) -> list:
+    """把子步骤挂到所属能力下面，并补上 span 事件，过程区呈父子树。"""
     rows = [dict(x) for x in (items or []) if isinstance(x, dict)]
     if not rows:
         return []
+    by_id = {str(it.get("id")): it for it in rows if it.get("id") is not None}
+    explicit = []
+    rest = []
+    for it in rows:
+        pid = it.get("parent_id")
+        if pid is not None and str(pid) in by_id and str(pid) != str(it.get("id")):
+            explicit.append(it)
+        else:
+            rest.append(it)
     parents: list = []
     children: list = []
-    for it in rows:
+    _child_prefixes = ("log_index", "log_r", "log_file_", "log_retry_")
+    for it in rest:
         iid = str(it.get("id") or "")
-        if iid == "log_index" or iid.startswith("log_r"):
+        if iid == "log_index" or iid.startswith(_child_prefixes):
             children.append(it)
         else:
             parents.append(it)
-    if not children:
-        return rows
     attached = False
     out = []
     for p in parents:
@@ -232,4 +310,15 @@ def nest_progress_todos(items: list) -> list:
         out.append(item)
     if not attached:
         out.extend(children)
+    if explicit:
+        placed = {str(it.get("id")) for it in out}
+        for kid in explicit:
+            parent = next((p for p in out if str(p.get("id")) == str(kid.get("parent_id"))), None)
+            if parent is None or str(kid.get("id")) in placed:
+                if str(kid.get("id")) not in placed:
+                    out.append(kid)
+                continue
+            parent.setdefault("children", []).append(kid)
+    if span_tree:
+        out = _attach_span_events(out, span_tree)
     return out

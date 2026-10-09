@@ -85,6 +85,13 @@ describe('appUrlTransform —— react-markdown urlTransform 统一出口', () =
     expect(appUrlTransform('http://example.com/b.zip')).toBe('http://example.com/b.zip');
   });
 
+  it('clipboard: 协议放行（讨论区粘贴引用芯片）', async () => {
+    vi.stubEnv('BASE_URL', '/');
+    const { appUrlTransform } = await loadModule();
+    const url = 'clipboard:clipboard%28207%E8%A1%8C%29.txt';
+    expect(appUrlTransform(url)).toBe(url);
+  });
+
   it('普通相对路径（如 SPA 路由 /tasks/1）不被改写', async () => {
     vi.stubEnv('BASE_URL', '/t/app/');
     const { appUrlTransform } = await loadModule();

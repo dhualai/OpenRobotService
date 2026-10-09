@@ -87,8 +87,22 @@ const CUSTOM_NODE_TYPES: ProjectInfoContentType[] = ['text', 'select', 'image', 
 /** 接口错误 → 提示文案（各写操作共用） */
 const errMsg = (err: unknown) => (err instanceof Error && err.message ? err.message : '请稍后重试');
 
-export default function ProjectInfoEdit() {
-  const { id = '' } = useParams<{ id: string }>();
+export interface ProjectInfoEditProps {
+  /** 嵌入模式（提单页右侧侧滑抽屉）由外层直接给项目 id，不再走路由参数 */
+  projectId?: string;
+  /** 嵌入模式：不渲染 Navbar、不做路由跳转；页面级入口传 false（默认）时行为完全不变 */
+  embedded?: boolean;
+  /** 每次树数据变化后回调（提单页据此实时重算共享文档与缺失提醒） */
+  onTreeChange?: (nodes: ProjectInfoNode[]) => void;
+}
+
+export default function ProjectInfoEdit({
+  projectId: embeddedProjectId,
+  embedded = false,
+  onTreeChange,
+}: ProjectInfoEditProps = {}) {
+  const { id: routeId = '' } = useParams<{ id: string }>();
+  const id = embeddedProjectId ?? routeId;
   const navigate = useNavigate();
   const username = useAuthStore((s) => s.username);
   // 结构类写接口的判据与后端 require_project_member 对齐：**在这个项目下的人**（或 admin）都能改本项目的树。
@@ -163,6 +177,12 @@ export default function ProjectInfoEdit() {
   }, [id]);
 
   useEffect(() => { void reload(); }, [reload]);
+
+  // 嵌入模式（提单页抽屉）：树一变就把最新节点交给外层，用于实时重算共享文档与缺失提醒。
+  // 回调外层用 useCallback 稳定引用，避免本 effect 每次渲染都触发。
+  useEffect(() => {
+    onTreeChange?.(nodes);
+  }, [nodes, onTreeChange]);
 
   useEffect(() => { saveCollapsedIds(id, collapsedIds); }, [id, collapsedIds]);
 
@@ -566,8 +586,11 @@ export default function ProjectInfoEdit() {
 
   return (
     <div>
-      <Navbar title="编辑项目信息" leftArrow onLeftClick={() => navigate(-1)} fixed />
-      <div style={{ padding: 16, paddingTop: 64 }}>
+      {/* 嵌入模式（提单页侧滑抽屉）不渲染 Navbar：顶部空间留给抽屉自己的标题栏 */}
+      {!embedded && (
+        <Navbar title="编辑项目信息" leftArrow onLeftClick={() => navigate(-1)} fixed />
+      )}
+      <div style={{ padding: 16, paddingTop: embedded ? 16 : 64 }}>
         <section className="mac-card mac-card--pad">
           <div className="mac-info__head mac-info__head--wrap">
             <div className="mac-info__title-wrap">
@@ -591,7 +614,8 @@ export default function ProjectInfoEdit() {
               )}
               {/* 一键清空：把本项目恢复成模板的样子（删掉导入/同步/增补的节点 + 清掉全部已填值）。
                   比填一个值重得多，与「同步」同门槛（能改这棵树的人），且必须先过确认弹层。 */}
-              {canEditTree && (
+              {/* 一键清空是毁灭性操作，抽屉（提单页补信息）里不给入口，页面级入口保持原样 */}
+              {canEditTree && !embedded && (
                 <button
                   type="button"
                   className="mac-btn mac-btn--outline mac-info__act"
@@ -601,7 +625,8 @@ export default function ProjectInfoEdit() {
                   <MacTrash2 size={13} />一键清空
                 </button>
               )}
-              {canEditTemplate && (
+              {/* 详情模板是独立页面（跳路由），抽屉里不出现 */}
+              {canEditTemplate && !embedded && (
                 <button
                   type="button"
                   className="mac-btn mac-btn--outline mac-info__act"
@@ -798,7 +823,7 @@ export default function ProjectInfoEdit() {
             </div>
           ) : historyMarkdown ? (
             /* 一级标签：整棵子树的变动按节点分组，用 react-markdown 渲染（真解析，动态文本已在生成时转义） */
-            <div className="mac-history__md">
+            <div className="mac-history__md" data-testid="history-md">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{historyMarkdown}</ReactMarkdown>
             </div>
           ) : (
@@ -871,13 +896,16 @@ export default function ProjectInfoEdit() {
         </div>
       </Popup>
 
-      {/* 一键回到顶部：滚动超过 200px 时出现在右下角（滚动容器是 MainLayout 的 .tabbar-shell__content） */}
-      <BackTop
-        container={() => document.querySelector('.tabbar-shell__content') as HTMLElement}
-        visibilityHeight={200}
-        theme="round"
-        style={{ bottom: 'calc(56px + env(safe-area-inset-bottom) + 12px)' }}
-      />
+      {/* 一键回到顶部：滚动超过 200px 时出现在右下角（滚动容器是 MainLayout 的 .tabbar-shell__content）。
+          嵌入抽屉时页面不在那层滚动容器里，container 会取到 null，故不渲染。 */}
+      {!embedded && (
+        <BackTop
+          container={() => document.querySelector('.tabbar-shell__content') as HTMLElement}
+          visibilityHeight={200}
+          theme="round"
+          style={{ bottom: 'calc(56px + env(safe-area-inset-bottom) + 12px)' }}
+        />
+      )}
     </div>
   );
 }
@@ -965,6 +993,7 @@ function InfoRow(props: InfoRowProps) {
           {(props.canEdit && props.editingId === node.id) ? (
             <input
               className="mac-info-row__input"
+              data-testid="info-row-input"
               autoFocus
               defaultValue={node.title}
               onBlur={(event) => {

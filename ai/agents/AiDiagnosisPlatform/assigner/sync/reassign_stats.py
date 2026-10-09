@@ -431,6 +431,7 @@ def build_dispatch_funnel(
     tickets: [{task_id, title, created_at}]
     ticket_flags: task_id -> {step0: bool, preferred_twice: bool, preferred_twice_attempts: int}
     倾向人×2：仅曝光、不从 AI 分母扣除。
+    按次顶层含未走 AI 的建单指派（每张计 1 次），再扣从未走过 AI，避免与「走过 AI」同宽。
     """
     created_ids = []
     titles: Dict[int, str] = {}
@@ -516,6 +517,9 @@ def build_dispatch_funnel(
         for tid in ai_pool_ids
     )
     attempt_union = mis_events + red_events
+    # 从未走 AI 的单仍有建单指派：每张计 1 次非 AI 派单，否则按次漏斗顶层与「走过 AI」同宽、扣除无意义
+    never_ai_attempts = len(never_ai_ids)
+    attempt_created = attempt_on_has_ai + never_ai_attempts
 
     ticket_mis = len(mis_only) + len(both)
     ticket_red = len(red_only) + len(both)
@@ -540,6 +544,7 @@ def build_dispatch_funnel(
             # 扣除顺序：从未 AI → Step0；倾向人×2 仅曝光
             "never_ai": {
                 "count": len(never_ai_ids),
+                "attempts": never_ai_attempts,
                 "status": "deduct",
                 "order": 1,
                 "label": "从未走过 AI",
@@ -572,6 +577,8 @@ def build_dispatch_funnel(
             "union": len(union_tickets),
         },
         "attempt_funnel": {
+            "created_attempts": attempt_created,
+            "never_ai_attempts": never_ai_attempts,
             "ai_assign_total": attempt_total,
             "after_never_ai_attempts": attempt_on_has_ai,
             "step0_attempts": attempt_step0,
@@ -603,6 +610,114 @@ def build_dispatch_funnel(
     }
 
 
+def _week_of(value) -> Optional[Tuple[str, str, str]]:
+    dt = _parse_created_at(value)
+    if not dt:
+        return None
+    return _iso_week_meta(dt)
+
+
+def _attempts_by_dispatch_time(
+    dispatch_rows: List[dict],
+    never_ai_ids: set,
+    events_in_week: List[dict],
+    ticket_flags: Dict[int, dict],
+    ever_ai: set,
+) -> dict:
+    """按次归到派单发生的那一周。
+
+    ai_assign 用日志时间。没走过 AI 的建单指派没有 ai_assign，记在工单创建周，每张 1 次。
+    Step0 命中的 ai_assign 从错派率分母扣除。错派事件按事件自己的时间归周，且只计走过 AI、非 Step0 的单。
+    """
+    flags = ticket_flags or {}
+    ai_counts: Dict[int, int] = defaultdict(int)
+    for row in dispatch_rows:
+        tid = row.get("task_id")
+        if tid is None:
+            continue
+        ai_counts[int(tid)] += 1
+
+    after_never = sum(ai_counts.values())
+    step0_attempts = sum(
+        n for tid, n in ai_counts.items() if (flags.get(tid) or {}).get("step0")
+    )
+    denominator = after_never - step0_attempts
+    preferred_attempts = sum(
+        n for tid, n in ai_counts.items()
+        if (flags.get(tid) or {}).get("preferred_twice") and not (flags.get(tid) or {}).get("step0")
+    )
+    never_ai_attempts = len(never_ai_ids)
+
+    mis_events = 0
+    red_events = 0
+    for ev in events_in_week:
+        tid = ev.get("task_id")
+        if tid is None:
+            continue
+        tid = int(tid)
+        if tid not in ever_ai or (flags.get(tid) or {}).get("step0"):
+            continue
+        ch = ev.get("channel") or event_channel(ev.get("detail") or {}, ev.get("description") or "")
+        kind = _norm_kind(ev.get("kind") or (ev.get("detail") or {}).get("kind"))
+        if ch == "signal" and kind == "misassign":
+            mis_events += 1
+        elif ch == "redispatch":
+            metric = ev.get("redispatch_metric") or redispatch_metric_kind(
+                ev.get("detail") or {}, ev.get("description") or "", channel=ch,
+            )
+            if metric == "inaccurate":
+                red_events += 1
+
+    union_events = mis_events + red_events
+    return {
+        "created_attempts": after_never + never_ai_attempts,
+        "never_ai_attempts": never_ai_attempts,
+        "ai_assign_total": denominator,
+        "after_never_ai_attempts": after_never,
+        "step0_attempts": step0_attempts,
+        "preferred_twice_attempts": preferred_attempts,
+        "denominator": denominator,
+        "misassign_events": mis_events,
+        "redispatch_inaccurate_events": red_events,
+        "union_events": union_events,
+    }
+
+
+def _apply_attempt_funnel(funnel: dict, attempt: dict) -> None:
+    funnel["attempt_funnel"] = attempt
+    den = int(attempt.get("denominator") or 0)
+    rates = funnel.setdefault("rates", {})
+    rates["attempt_misassign"] = _rate(int(attempt.get("misassign_events") or 0), den)
+    rates["attempt_redispatch"] = _rate(int(attempt.get("redispatch_inaccurate_events") or 0), den)
+    rates["attempt_union"] = _rate(int(attempt.get("union_events") or 0), den)
+    drops = funnel.get("drops") or {}
+    if drops.get("never_ai") is not None:
+        drops["never_ai"]["attempts"] = int(attempt.get("never_ai_attempts") or 0)
+    if drops.get("preferred_twice") is not None:
+        drops["preferred_twice"]["attempts"] = int(attempt.get("preferred_twice_attempts") or 0)
+
+
+def _sum_attempt_funnels(weekly: List[dict]) -> dict:
+    keys = (
+        "created_attempts",
+        "never_ai_attempts",
+        "ai_assign_total",
+        "after_never_ai_attempts",
+        "step0_attempts",
+        "preferred_twice_attempts",
+        "denominator",
+        "misassign_events",
+        "redispatch_inaccurate_events",
+        "union_events",
+    )
+    acc = {k: 0 for k in keys}
+    for row in weekly:
+        attempt = ((row.get("funnel") or {}).get("attempt_funnel") or {})
+        for k in keys:
+            acc[k] += int(attempt.get(k) or 0)
+    return acc
+
+
 def build_funnel_weekly(
     tickets: List[dict],
     ai_rows: List[dict],
@@ -611,16 +726,42 @@ def build_funnel_weekly(
     *,
     keep: int = WEEKLY_KEEP,
 ) -> List[dict]:
-    """按工单创建自然周切双漏斗。"""
+    """按单按工单创建周；按次按派单发生周。"""
     week_tickets: Dict[str, List[dict]] = defaultdict(list)
+    week_ai_time: Dict[str, List[dict]] = defaultdict(list)
+    week_ev_time: Dict[str, List[dict]] = defaultdict(list)
     week_meta: Dict[str, Tuple[str, str]] = {}
-    for t in tickets:
-        dt = _parse_created_at(t.get("created_at"))
-        if not dt:
-            continue
-        key, label, start = _iso_week_meta(dt)
+
+    def _touch(value) -> Optional[str]:
+        meta = _week_of(value)
+        if not meta:
+            return None
+        key, label, start = meta
         week_meta[key] = (label, start)
-        week_tickets[key].append(t)
+        return key
+
+    for t in tickets:
+        key = _touch(t.get("created_at"))
+        if key:
+            week_tickets[key].append(t)
+    for row in ai_rows:
+        key = _touch(row.get("created_at"))
+        if key:
+            week_ai_time[key].append(row)
+    for ev in events:
+        key = _touch(ev.get("created_at"))
+        if key:
+            week_ev_time[key].append(ev)
+
+    ai_by_ticket: Dict[int, List[dict]] = defaultdict(list)
+    for row in ai_rows:
+        if row.get("task_id") is not None:
+            ai_by_ticket[int(row["task_id"])].append(row)
+    ev_by_ticket: Dict[int, List[dict]] = defaultdict(list)
+    for ev in events:
+        if ev.get("task_id") is not None:
+            ev_by_ticket[int(ev["task_id"])].append(ev)
+    ever_ai = set(ai_by_ticket)
 
     keys = sorted(week_meta.keys(), key=lambda k: week_meta[k][1])
     if keep > 0:
@@ -628,10 +769,20 @@ def build_funnel_weekly(
     out = []
     for key in keys:
         label, start = week_meta[key]
-        week_tids = {int(t["task_id"]) for t in week_tickets[key] if t.get("task_id") is not None}
-        week_ai = [r for r in ai_rows if r.get("task_id") is not None and int(r["task_id"]) in week_tids]
-        week_ev = [e for e in events if e.get("task_id") is not None and int(e["task_id"]) in week_tids]
-        funnel = build_dispatch_funnel(week_tickets[key], week_ai, week_ev, ticket_flags)
+        created = week_tickets.get(key) or []
+        created_ids = {int(t["task_id"]) for t in created if t.get("task_id") is not None}
+        ai_for_created = [r for tid in created_ids for r in ai_by_ticket.get(tid, [])]
+        ev_for_created = [e for tid in created_ids for e in ev_by_ticket.get(tid, [])]
+        funnel = build_dispatch_funnel(created, ai_for_created, ev_for_created, ticket_flags)
+        never_ai_ids = {tid for tid in created_ids if tid not in ever_ai}
+        attempt = _attempts_by_dispatch_time(
+            week_ai_time.get(key) or [],
+            never_ai_ids,
+            week_ev_time.get(key) or [],
+            ticket_flags,
+            ever_ai,
+        )
+        _apply_attempt_funnel(funnel, attempt)
         out.append({
             "week": key,
             "label": label,
@@ -1165,6 +1316,7 @@ def summarize_reassign_stats() -> dict:
         tickets, ticket_flags = _load_funnel_inputs()
         funnel_weekly = build_funnel_weekly(tickets, ai_rows, events, ticket_flags)
         funnel = build_dispatch_funnel(tickets, ai_rows, events, ticket_flags)
+        _apply_attempt_funnel(funnel, _sum_attempt_funnels(funnel_weekly))
     except Exception as e:
         logger.warning(f"[转派统计] 构建漏斗失败: {e}", exc_info=True)
         funnel = {"error": str(e)}
@@ -1183,7 +1335,8 @@ def summarize_reassign_stats() -> dict:
         "unlabeled_groups": groups,
         "redispatch_items": _redispatch_items(events, names),
         "note": (
-            "双漏斗按工单创建周统计。扣除：从未 AI → Step0；倾向人×2 仅曝光。"
+            "按单按工单创建周。按次按派单发生周（ai_assign 日志时间；未走 AI 的建单指派记在创建周）。"
+            "扣除：从未 AI → Step0；倾向人×2 仅曝光。"
             "重派按方案 A：默认算不准确并进学习；倾向人×2、测试不算除外。"
             "开发者模式重派列表主要用于打「测试不算」剔除。"
             "错派两分支（派错了 / 重派不准确）分开标，重合单独显示。"

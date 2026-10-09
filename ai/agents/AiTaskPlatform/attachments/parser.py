@@ -597,41 +597,96 @@ async def _read_content(att: dict) -> str:
     return ""
 
 
-async def _read_bytes(att: dict) -> Optional[bytes]:
-    """读取附件为二进制。"""
-    path = att.get("path") or att.get("url", "")
-    if not path:
+def _minio_bytes_from_key(key: str) -> Optional[bytes]:
+    """按 bucket/object key 读 MinIO。禁止传入 http(s) URL。"""
+    key = (key or "").strip().replace("\\", "/")
+    if not key or "/" not in key:
         return None
-    path = path.replace("\\", "/")
+    if key.startswith("http://") or key.startswith("https://"):
+        return None
+    try:
+        from ai.core.minio_client import minio_client
+        bucket = key.split("/")[0]
+        object_name = "/".join(key.split("/")[1:])
+        object_name = minio_client.resolve_key(object_name)
+        data = minio_client.client.get_object(bucket, object_name)
+        return data.read()
+    except Exception as e:
+        logger.warning(f"MinIO 读取失败 {key}: {e}")
+        return None
+
+
+def _minio_bytes_from_url(url: str) -> Optional[bytes]:
+    """从预签名/直链 URL 解析 bucket/object 再读 MinIO（对齐 utils.materialize_path）。"""
+    import re
+    from urllib.parse import unquote, urlparse, urlunparse
 
     try:
-        if path.startswith("http://") or path.startswith("https://"):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-                resp = await client.get(path)
-                if resp.status_code == 200:
-                    return resp.content
+        from ai.config import get_ai_config
 
-        local = Path(path)
-        if local.is_absolute() and local.exists():
-            return local.read_bytes()
-
-        project_local = Path(__file__).resolve().parent.parent.parent / path
-        if project_local.exists():
-            return project_local.read_bytes()
-
-        # MinIO 对象路径
-        if "/" in path:
-            try:
-                from ai.core.minio_client import minio_client
-                bucket = path.split("/")[0]
-                object_name = "/".join(path.split("/")[1:])
-                object_name = minio_client.resolve_key(object_name)
-                data = minio_client.client.get_object(bucket, object_name)
-                return data.read()
-            except Exception as e:
-                logger.warning(f"MinIO 读取失败 {path}: {e}")
+        strip_path = url
+        prefix = (getattr(get_ai_config(), "minio_api_prefix", "") or "").strip("/")
+        if prefix:
+            u = urlparse(url)
+            segs = [s for s in u.path.split("/") if s]
+            if segs and segs[0] == prefix:
+                newpath = "/" + "/".join(segs[1:])
+                strip_path = urlunparse(u._replace(path=newpath))
+        m = re.match(r"https?://[^/]+/([^/]+)/(.+?)(?:\?|$)", strip_path)
+        if not m:
+            logger.warning(f"无法从 URL 解析 bucket/object: {url[:120]}")
+            return None
+        return _minio_bytes_from_key(f"{unquote(m.group(1))}/{unquote(m.group(2))}")
     except Exception as e:
-        logger.warning(f"读取附件 bytes 失败 {path}: {e}")
+        logger.warning(f"从 URL 解析 MinIO 失败 {url[:120]}: {e}")
+        return None
+
+
+async def _read_bytes(att: dict) -> Optional[bytes]:
+    """读取附件为二进制。
+
+    优先 object_path（MinIO key）；HTTP URL 先直连，失败再解析 bucket/object。
+    禁止把完整 URL 当 MinIO key 做 naive split（会得到 bucket=http:）。
+    """
+    if not isinstance(att, dict):
+        return None
+
+    candidates: List[str] = []
+    for key in ("object_path", "path", "url"):
+        v = str(att.get(key) or "").strip().replace("\\", "/")
+        if v and v not in candidates:
+            candidates.append(v)
+    if not candidates:
+        return None
+
+    try:
+        for path in candidates:
+            if path.startswith("http://") or path.startswith("https://"):
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                        resp = await client.get(path)
+                        if resp.status_code == 200:
+                            return resp.content
+                except Exception as e:
+                    logger.warning(f"HTTP 读取附件失败 {path[:120]}: {e}")
+                data = _minio_bytes_from_url(path)
+                if data is not None:
+                    return data
+                continue
+
+            local = Path(path)
+            if local.is_absolute() and local.exists():
+                return local.read_bytes()
+
+            project_local = Path(__file__).resolve().parent.parent.parent / path
+            if project_local.exists():
+                return project_local.read_bytes()
+
+            data = _minio_bytes_from_key(path)
+            if data is not None:
+                return data
+    except Exception as e:
+        logger.warning(f"读取附件 bytes 失败: {e}")
 
     return None
 

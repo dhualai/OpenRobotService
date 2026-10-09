@@ -61,6 +61,15 @@ export const PERMISSION_RESOURCE_DOWNLOAD = 'backend:resource:base:download';
  */
 export const PERM_PROJECT_INFO_TEMPLATE = 'frontend:admin:project-info-template:show';
 
+/**
+ * 「一键导入所有项目节点内容」（后台管理-项目管理页，全局批量写）的可见权限码。
+ *
+ * 与 PERM_PROJECT_INFO_TEMPLATE 同一套路：由**全局角色**「超级管理员」派生后随登录态下发
+ * （backend permission_service._GLOBAL_ROLE_DERIVED_PERMISSIONS），admin 直通；
+ * 后端 require_permission 与前端 hasPermission 读的是同一个码，两端判据不会漂。
+ */
+export const PERM_PROJECT_LEDGER_IMPORT = 'frontend:admin:project-ledger-import:show';
+
 export interface AuthState {
   isLoggedIn: boolean;
   username: string;

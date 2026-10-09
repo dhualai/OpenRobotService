@@ -13,9 +13,28 @@ PROFILE_MISSING_LABEL = {
     "responsibility_modules": "责任模块",
 }
 
+YAORENBA_FIELD_ENTRY_TIP = (
+    "工单目前挂在摇人吧服务号，但描述更像现场车辆、地图或任务问题。"
+    "建议之后提单改选真实对应的项目——平台与 AGV 现场的负责工程师不同，否则派单容易不准；"
+    "也可请当前接单人转派。"
+)
+
+# 接单人视角：说明候选池来自平台，现场问题容易派不准，建议转派
+YAORENBA_FIELD_ENTRY_ASSIGNEE_TIP = (
+    "本单内容更像现场车辆、地图或任务问题，并不属于摇人吧服务平台本身。"
+    "当前是按服务平台候选选出的接单人，容易不准确，建议转派给对应项目同事。"
+)
+
+
+def yaorenba_assignee_tip(prof: Optional[dict]) -> Optional[str]:
+    """接单人专用：摇人吧挂现场内容时的提醒。"""
+    if not isinstance(prof, dict) or not prof.get("yaorenba_field_entry"):
+        return None
+    return YAORENBA_FIELD_ENTRY_ASSIGNEE_TIP
+
 
 def clean_reasoning_for_display(reasoning_raw, log, user_map) -> str:
-    """把派单理由里的 users.id 换成姓名，给提单人 tip / 接单人「派单理由」共用。"""
+    """把派单理由里的 users.id 换成姓名，给提单人 tip / 接单人·提单人「派单原因」共用。"""
     if not isinstance(reasoning_raw, str) or not reasoning_raw.strip():
         return reasoning_raw if isinstance(reasoning_raw, str) else ""
     txt = reasoning_raw
@@ -92,6 +111,15 @@ def step0_blocks_redispatch(first_log) -> Optional[str]:
     return assigned or pref
 
 
+def _append_yaorenba_field_tip(tip: Optional[str], prof: dict) -> Optional[str]:
+    """现场内容挂在摇人吧上时，提醒跟在已有说明后面，不盖掉前面的句子。"""
+    if not prof.get("yaorenba_field_entry"):
+        return tip
+    if not tip:
+        return YAORENBA_FIELD_ENTRY_TIP
+    return f"{tip}；{YAORENBA_FIELD_ENTRY_TIP}"
+
+
 def build_redispatch_tip(log, user_map) -> Optional[str]:
     """派单结果提醒的唯一出口（列表 / 气泡 / 详情 tip_detail）。
 
@@ -109,15 +137,19 @@ def build_redispatch_tip(log, user_map) -> Optional[str]:
 
     # Step7 无人可派：不编接单人，但要让提单人看到失败说明（优先于其它分支）
     if prof.get("unassignable"):
-        return (
+        return _append_yaorenba_field_tip(
             "暂时无法派单：项目未配置对接人和项目经理，工单还没有接单人。"
-            "配置后系统会继续尝试。"
+            "配置后系统会继续尝试。",
+            prof,
         )
 
     # Step0 指定人找不到：没有 users.id，只记下指定名。
     # 智能派单有门槛，只有画像完整的人能进候选池，不会派到画像不全的人。
     if specified_name and not preferred_id:
-        return f"没找到您指定的【{specified_name}】，已按智能派单处理"
+        return _append_yaorenba_field_tip(
+            f"没找到您指定的【{specified_name}】，已按智能派单处理",
+            prof,
+        )
 
     # 倾向人画像不完整：首次护栏不准入智能派单，提醒可再次重派同一人
     if (
@@ -126,22 +158,26 @@ def build_redispatch_tip(log, user_map) -> Optional[str]:
         and preferred_id != log.assigned_id
         and prof.get("pref_incomplete_first_guard")
     ):
-        return (
+        return _append_yaorenba_field_tip(
             f"倾向处理人【{preferred_name or preferred_id}】画像不完整，"
             "系统保护首次将不纳入智能派单；"
             f"已按智能派单改派给【{assigned_name}】。"
-            "如真实需要指派请再次发起重新派单。"
+            "如真实需要指派请再次发起重新派单。",
+            prof,
         )
 
     # 重派未派到倾向人：详情模板，不再用「暂未采纳」短句
     if preferred_id and log.assigned_id and preferred_id != log.assigned_id:
-        return format_unmatched_preferred_tip(
-            preferred_name or preferred_id,
-            assigned_name,
-            reasoning=clean_reasoning_for_display(
-                getattr(log, "reasoning", None) or "", log, user_map,
+        return _append_yaorenba_field_tip(
+            format_unmatched_preferred_tip(
+                preferred_name or preferred_id,
+                assigned_name,
+                reasoning=clean_reasoning_for_display(
+                    getattr(log, "reasoning", None) or "", log, user_map,
+                ),
+                pref_missing_zh=_pref_missing_zh(log),
             ),
-            pref_missing_zh=_pref_missing_zh(log),
+            prof,
         )
 
     parts = []
@@ -178,7 +214,7 @@ def build_redispatch_tip(log, user_map) -> Optional[str]:
     if prof.get("no_dept_profile"):
         suffix = "没有部门画像，请到后台补充部门职责"
         tip = (f"{tip}；{suffix}") if tip else suffix
-    return tip
+    return _append_yaorenba_field_tip(tip, prof)
 
 
 async def build_redispatch_tip_detail(

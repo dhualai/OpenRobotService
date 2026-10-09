@@ -53,17 +53,54 @@ _LVL_HEAD = 4096            # 时间戳+级别一定落在行头
 _FIELD_SCAN = 16384         # 建索引时结构化字段只扫行头
 _SIGNAL_SCAN = 262144       # 建索引时信号词探测上限（256KB）
 _MSG_HEAD = 180             # 正文开头（事件名通常在这）
-_MSG_LIMIT = 420            # 回给 LLM 的单行正文上限
-_SUMMARY_LIMIT = 520
+_MSG_LIMIT = 2000           # 回给 LLM 的单行正文上限（聚焦时间窗内仍需多看一段原文）
+_SUMMARY_LIMIT = 2400
 _WIN_BEFORE = 40
 _WIN_AFTER = 80
-# 锁区/回调/状态机等关键词常埋在数 MB 的 repr 尾部，必须用 find 定位，不能截开头
+# 锁区/回调/状态机/可达性等关键词常埋在数 MB 的 repr 尾部，必须用 find 定位
 _KEEP_WORDS = (
     "锁区", "占用", "释放", "回调", "状态机", "强制完成", "取货", "送货",
     "lock_zone", "lockzone", "occupy", "Occupy", "OCCUPY",
     "release", "Release", "callback", "Callback",
     "state_machine", "StateMachine", "ABORTED", "CANCELED", "MAPF",
+    # 可达性 / 路径求解（常埋在超长 UPDATE 之后）
+    "不可达", "可达", "无解", "求解", "拓扑", "topo", "TOPO",
+    "unreachable", "Unreachable", "UNREACHABLE",
+    "no solution", "NO_SOLUTION", "no_path", "NO_PATH", "NoSolutionFound",
+    "路径规划", "path plan", "PathPlan", "planning fail", "路径规划中",
+    "MAPF", "MAPF-T", "下发路径", "路径下发", "求解成功",
+    "路径规划失败", "路径规划超时", "路径规划异常", "路径规划结果为空",
+    "路径规划开始", "路径规划结束", "新任务-----",
+    "LOCATE FAILED", "LOCATE ERROR", "LOCATE SUCCESS", "Locate Robot",
+    "目标点", "goal", "Goal", "mapId", "map_id", "地图层",
+    "不在当前所有地图层上", "前置点", "路径拒收", "DMAP已接收路径",
+    "接收到TMS路径", "路径校验通过",
+    "新任务-----", "求解成功", "非强连通",
+    "原始地图单车路径无解", "TRAFFIC_LOCK", "blocked_edges", "障碍物",
 )
+
+# 行头像「刷状态/更新」的 INFO 大行：体内常嵌历史 error_code，不能当 ERROR 行
+_BULK_UPDATE_MARKERS = (
+    "更新Robots", "Update Robots", "update robots", "UPDATE ROBOTS",
+    "更新休息点", "更新充电", "更新任务池", "更新车辆",
+    "更新 Robots", "sync robots", "Sync Robots",
+)
+
+
+def _norm_ts_bound(raw: Optional[str], *, end: bool = False) -> str:
+    """把查询时间界规范到与 ``_ts_idx`` 键（``YYYY-MM-DD HH:MM:SS``）可比较。
+
+    LLM 常给分钟精度 ``YYYY-MM-DD HH:MM``。若 end 直接用该串做 ``<=``，
+    会把同分钟内 ``:01``~``:59`` 的行全部排除（故障秒常在末尾），导致假 0 命中。
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if len(s) >= 19:
+        return s[:19]
+    if len(s) == 16 and s[10] == " ":
+        return s + (":59" if end else ":00")
+    return s
 
 
 def _clip(line: str, n: int) -> str:
@@ -128,6 +165,12 @@ def normalize_msg_phrase(line: str) -> str:
     return body[:60]
 
 
+def _is_bulk_update_line(line: str) -> bool:
+    """行头是否像车辆/休息点状态刷屏（超长 UPDATE，体内常嵌历史 error_code）。"""
+    head = _clip(line, 480)
+    return any(m in head for m in _BULK_UPDATE_MARKERS)
+
+
 def extract_fields(line: str) -> Dict:
     """结构化字段只扫行头。超长 repr 里的词留给 evidence_body 用 find 取窗口。"""
     head = _clip(line, _FIELD_SCAN)
@@ -141,6 +184,7 @@ def extract_fields(line: str) -> Dict:
     for m in _RE_ROBOT.finditer(head): robots.add(m.group(1))
     for m in _RE_ROBOT2.finditer(head): robots.add(m.group(1))
     for m in _RE_ROBOT3.finditer(head): robots.add(m.group(1))
+    for m in _RE_AGV_ID.finditer(head): robots.add(m.group(0))
     if robots: fld["robots"] = sorted(robots)
 
     tasks = set()
@@ -150,8 +194,11 @@ def extract_fields(line: str) -> Dict:
     for m in _RE_TASK4.finditer(head): tasks.add(m.group(1))
     if tasks: fld["tasks"] = sorted(tasks)
 
-    m = _RE_ERROR.search(head)
-    if m: fld["error"] = m.group(1)
+    # error_code 只认行头短窗口，避免 UPDATE 大包体内嵌历史 error_code 污染
+    early = _clip(line, 768)
+    m = _RE_ERROR.search(early)
+    if m and not _is_bulk_update_line(line):
+        fld["error"] = m.group(1)
 
     paths = set()
     for m in _RE_PATH.finditer(head): paths.add(m.group(1))
@@ -169,11 +216,25 @@ def extract_fields(line: str) -> Dict:
     if m: fld["mapf_t"] = float(m.group(1))
     m = _RE_WAIT_T.search(head)
     if m: fld["wait_t"] = float(m.group(1))
+    # 可达性/一致性信号：扫更深，但不因此把 INFO 更新行标成 ERROR
     probe = _clip(line, _SIGNAL_SCAN)
-    if "一致性超过update阈值" in probe:
-        fld["error"] = fld.get("error", "") + " 一致性超阈值-路径截断"
-    elif "一致性不满足" in probe or "current Task一致性" in probe:
-        fld["error"] = fld.get("error", "") + " 一致性校验失败"
+    reach_hits = []
+    for w in (
+        "不可达", "unreachable", "Unreachable", "无解", "NO_SOLUTION",
+        "no solution", "NoSolutionFound", "不在当前所有地图层上",
+        "前置点不可达", "求解失败", "路径规划失败", "路径规划超时",
+        "路径规划异常", "LOCATE FAILED", "LOCATE ERROR", "DPP规划",
+        "路径拒收", "非强连通",
+    ):
+        if w in probe:
+            reach_hits.append(w)
+    if reach_hits:
+        fld["reach_signal"] = ",".join(reach_hits[:4])
+    if not _is_bulk_update_line(line):
+        if "一致性超过update阈值" in probe:
+            fld["error"] = (fld.get("error") or "") + " 一致性超阈值-路径截断"
+        elif "一致性不满足" in probe or "current Task一致性" in probe:
+            fld["error"] = (fld.get("error") or "") + " 一致性校验失败"
     return fld
 
 
@@ -191,6 +252,8 @@ def fields_summary(fld: Dict, line: str = "") -> str:
             for v in fld[k]:
                 parts.append("{}={}".format(pfx, v[-24:] if k=="paths" else v[-16:]))
     if "error" in fld: parts.append("ERR={}".format(fld["error"]))
+    if fld.get("reach_signal"):
+        parts.append("REACH={}".format(fld["reach_signal"]))
     extra = []
     body = evidence_body(line) if line else (fld.get("msg") or "")
     if body:
@@ -264,7 +327,15 @@ class LogIndex:
                 for r in fld.get("robots", []): self._robot_idx.setdefault(r, []).append(n)
                 for t in fld.get("tasks", []): self._task_idx.setdefault(t, []).append(n)
                 for p in fld.get("paths", []): self._path_idx.setdefault(p, []).append(n)
-                is_err = fld.get("level") in ("ERROR","WARN","WARNING","FATAL") or "error" in fld
+                # 真实 ERROR/WARN 级别才进错误索引。
+                # 禁止：INFO「更新Robots」大包体内嵌历史 error_code → 假 5000+ 错误淹没求解信号。
+                lv_up = (lv or "").upper()
+                is_err = lv_up in ("ERROR", "WARN", "WARNING", "FATAL")
+                if fld.get("reach_signal"):
+                    self._signal_lines.append(n)
+                    if ts:
+                        minute = ts[:16]
+                        self._signal_minute[minute] = self._signal_minute.get(minute, 0) + 1
                 if is_err:
                     self._err_lines.append(n)
                     _lvl = fld.get("level", "")
@@ -316,26 +387,32 @@ class LogIndex:
                         minute = ts[:16]
                         self._err_minute[minute] = self._err_minute.get(minute, 0) + 1
                 probe = _clip(line, _SIGNAL_SCAN)
-                # 路径状态异常也是错误信号
-                if "ABORTED" in probe or "CANCELED" in probe:
-                    self._err_lines.append(n)
-                    if ts:
-                        minute = ts[:16]
-                        self._err_minute[minute] = self._err_minute.get(minute, 0) + 1
-                # 一致性校验失败 / 路径截断 / MAPF耗时
-                _SIGNAL_KW = ("一致性超过update阈值", "一致性不满足", "MAPF-T:", "WAIT-T:", "等待时间超限")
-                if any(kw in probe for kw in _SIGNAL_KW):
-                    self._err_lines.append(n)
-                    self._signal_lines.append(n)
-                    if ts:
-                        minute = ts[:16]
-                        self._signal_minute[minute] = self._signal_minute.get(minute, 0) + 1
+                # 路径状态异常也是错误信号（跳过 UPDATE 刷屏体内的历史状态串）
+                if not _is_bulk_update_line(line):
+                    if "ABORTED" in probe or "CANCELED" in probe:
+                        self._err_lines.append(n)
+                        if ts:
+                            minute = ts[:16]
+                            self._err_minute[minute] = self._err_minute.get(minute, 0) + 1
+                    # 一致性校验失败 / 路径截断 / MAPF耗时
+                    _SIGNAL_KW = ("一致性超过update阈值", "一致性不满足", "MAPF-T:", "WAIT-T:", "等待时间超限")
+                    if any(kw in probe for kw in _SIGNAL_KW):
+                        self._err_lines.append(n)
+                        self._signal_lines.append(n)
+                        if ts:
+                            minute = ts[:16]
+                            self._signal_minute[minute] = self._signal_minute.get(minute, 0) + 1
                 if n % 50000 == 0:
                     logger.info("{:,} lines indexed ({:.0f}s)".format(n, _time.perf_counter()-t0))
         elapsed = _time.perf_counter() - t0
-        logger.info("{:,} lines | {} ts | {} robots | {} tasks | {} errors ({:.0f}s)"
-              .format(self._total, len(self._ts_idx), len(self._robot_idx),
-                      len(self._task_idx), len(self._err_lines), elapsed))
+        logger.info(
+            "{:,} lines | {} ts | {} robots | {} tasks | {} errors | {} reach_signals ({:.0f}s)"
+            .format(
+                self._total, len(self._ts_idx), len(self._robot_idx),
+                len(self._task_idx), len(self._err_lines),
+                len(self._signal_lines), elapsed,
+            )
+        )
         self._built = True
         return self
 
@@ -381,6 +458,7 @@ class LogIndex:
         facts = {
             "lines": self._total,
             "errors": len(set(self._err_lines)),
+            "reach_signals": len(set(self._signal_lines)),
             "time_start": time_start,
             "time_end": time_end,
             "top_robots": _top(self._robot_idx),
@@ -421,9 +499,11 @@ class LogIndex:
         """统计时间窗口 [time_start, time_end] 内索引到的行数（用于太宽查询拦截）。"""
         if not (time_start and time_end):
             return 0
+        t0 = _norm_ts_bound(time_start, end=False)
+        t1 = _norm_ts_bound(time_end, end=True)
         cnt = 0
         for ts, lines in self._ts_idx.items():
-            if time_start <= ts <= time_end:
+            if t0 <= ts <= t1:
                 cnt += len(lines)
         return cnt
 
@@ -431,10 +511,12 @@ class LogIndex:
         if not self._built: self.build()
 
         filters = []
-        if q.time_start and q.time_end:
+        t0 = _norm_ts_bound(q.time_start, end=False)
+        t1 = _norm_ts_bound(q.time_end, end=True)
+        if t0 and t1:
             s = set()
             for ts, lines in self._ts_idx.items():
-                if q.time_start <= ts <= q.time_end:
+                if t0 <= ts <= t1:
                     s.update(lines)
             filters.append(s)
         for fval, idx in [(q.robot_filter, self._robot_idx),
@@ -455,14 +537,25 @@ class LogIndex:
             cand = set(self._err_lines[:q.max_results])
 
         if not cand:
+            # 车号过滤器本身是否命中索引（与「车号∩任务∩错误∩时间」交集为空区分开）
+            robot_keys = []
             if q.robot_filter:
+                robot_keys = [k for k in self._robot_idx if q.robot_filter in k]
+            if q.robot_filter and not robot_keys:
                 known = ",".join(list(self._robot_idx)[:8]) or "none"
                 return "(no match: robot={} 不在本日志; known={})".format(q.robot_filter, known)
-            # 降级：把时间窗口行 + 错误行合并，给 LLM 一些数据
-            if q.time_start and q.time_end:
+            # 交集为空：放宽为时间窗内该车（或全窗）行，避免假报「车不在日志」
+            if t0 and t1:
                 for ts, lines in self._ts_idx.items():
-                    if q.time_start <= ts <= q.time_end:
+                    if t0 <= ts <= t1:
                         cand.update(lines)
+                if robot_keys:
+                    rob_lines = set()
+                    for k in robot_keys:
+                        rob_lines.update(self._robot_idx.get(k) or [])
+                    narrowed = cand & rob_lines
+                    if narrowed:
+                        cand = narrowed
             if not cand:
                 cand = set(range(1, min(self._total + 1, 200)))
             if not cand:

@@ -11,8 +11,10 @@ export interface ProjectItem {
   status?: string;
 }
 
-// 模糊搜索项目（keyword 为空时返回全量，默认 200 条）
-export async function getProjects(keyword = '', skip = 0, limit = 200): Promise<ProjectItem[]> {
+// 模糊搜索项目（keyword 为空时返回全量，默认 200 条）。
+// includePending=true 时把台账里「待定」（未承接）的项目一并返回：后端默认只给已承接项目，
+// 录入信息页的选择器要能选到全部台账项目（2026-09-30）。
+export async function getProjects(keyword = '', skip = 0, limit = 200, includePending = false): Promise<ProjectItem[]> {
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '项目服务');
   const params = new URLSearchParams({
     skip: String(skip),
@@ -20,6 +22,7 @@ export async function getProjects(keyword = '', skip = 0, limit = 200): Promise<
     include_analysis: 'false',
   });
   if (keyword.trim()) params.set('keyword', keyword.trim());
+  if (includePending) params.set('include_pending', 'true');
   const data = await request<ProjectItem[]>(`/projects/?${params.toString()}`);
   return Array.isArray(data) ? data : [];
 }

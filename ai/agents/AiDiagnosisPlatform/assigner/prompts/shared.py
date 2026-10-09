@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     COLLECTED_TO_TICKET,
@@ -62,6 +62,13 @@ def dept_product_map() -> str:
         "报障/缺陷：工单现象、产品归属、部门画像一起看，互相收束。\n"
         "  「车不动」可能对上硬件、车端软件或调度，用【负责】【不负责】和工单证据一起判断，不要只认一层。\n"
         "  不要因为发生在车上就判硬件，也不要因为提到「调度/定位」就越过画像边界。\n"
+        "【多义现象·证据优先级】（「车不动 / 走不了 / 无路径」等，按硬证据收束，勿凭表面字眼）：\n"
+        "  1) 调度/锁区侧硬证据优先 → 智能规划研究院：\n"
+        "     NO_SOLUTION、路径无解、路径规划失败/超时、锁区、TRAFFIC_LOCK、blocked_edges、\n"
+        "     路径拒收、DPP、不在当前所有地图层、拓扑边被封。\n"
+        "  2) 车端软件硬证据 → 智能移动研究院：定位丢失、SLAM、雷达异常、控制器报错、车上通信断。\n"
+        "  3) 硬件硬证据 → 机器人事业部：电机/电池/轮子/货叉等硬件故障码或可拧部件损坏。\n"
+        "  只有笼统「车不动」且无上述证据时，再综合画像，交叉单仍只留一个主导。\n"
         "需求/咨询：产品/项目与部门画像一起对照，归管理该产品且职责对口的部门。\n"
         "交叉单只留一个主导：用户最痛、证据最硬的那一头给 0.80+，另一头 0.3~0.5。"
     )
@@ -71,6 +78,8 @@ def dept_common_guardrails() -> str:
     """假设不可信、表面字眼、部门名原样抄、reason 要证据。"""
     return (
         "Agent假设仅供参考，不是答案；与描述或【不负责】冲突时，以描述和画像为准。\n"
+        "界面或描述里的状态「路径规划中」是调度 USP 的任务状态，部门是智能规划研究院。"
+        "描述中的「AI排查方向」是推测，不能据此把部门改到车端软件或硬件。\n"
         "标题/描述里的表面字眼（定位、电池、调度等）不等于该部门；"
         "先核对【不负责】，排除「看似A实则B」。\n"
         "部门 name 必须从清单里「部门：」后的名称原样复制，禁止自造或简称。\n"
@@ -139,10 +148,14 @@ def ticket_fields_block(ticket: TicketContext) -> str:
         extra.append(hint)
     extra_text = ("\n".join(extra) + "\n") if extra else ""
 
+    step_name = (getattr(ticket, "curr_step_name", None) or "").strip()
+    step_line = f"当前阶段：{step_name}\n" if step_name else ""
+
     return (
         "【工单】\n"
         f"工单类型：{ticket_type_key(ticket)}\n"
-        f"标题：{ticket.title or ''}\n"
+        + step_line
+        + f"标题：{ticket.title or ''}\n"
         f"描述：{ticket.problem_description or ''}\n"
         + extra_text
         + f"项目：{ticket.project_name or '无'}\n"
@@ -171,12 +184,26 @@ def ticket_type_person_guidance(ticket: TicketContext) -> str:
     )
 
 
-def feature_role_routing_guidance() -> str:
+# 需求单 task_steps 模板。前四步还在和产品对齐，后四步已经进入交付。
+_FEATURE_STAGE_SIDE = {
+    "需求澄清": "产品经理",
+    "评审": "产品经理",
+    "排期": "产品经理",
+    "设计": "产品经理",
+    "开发": "对口研发",
+    "测试": "对口研发",
+    "验收": "对口研发",
+    "发布": "对口研发",
+}
+
+
+def feature_role_routing_guidance(ticket: Optional[TicketContext] = None) -> str:
     """需求单专属：产品澄清 vs 已对齐可实施（prompt 判断，非关键词硬规则）。
 
     报障/缺陷/明显非需求时模型应忽略本段。Step3 画像与 Step6 仲裁共用。
+    提单记下的当前阶段只辅助，正文与重派备注仍然优先。
     """
-    return (
+    text = (
         "【仅需求单·产品/研发分流】（仅当判定本单是需求时适用；"
         "报障/缺陷/运维故障忽略本段，仍按现象对口研发）\n"
         "先理解正文与重派备注，判断需求处于哪个阶段，再选人——靠语义理解，"
@@ -190,6 +217,17 @@ def feature_role_routing_guidance() -> str:
         "  3) 阶段仍模糊、名单里产品与研发都像能接 → 默认倾向产品经理做分流澄清。\n"
         "有 [倾向接单人] / 用户明确点名时，仍优先尊重用户选择（与公共铁律一致）。"
     )
+    name = (getattr(ticket, "curr_step_name", None) or "").strip() if ticket else ""
+    side = _FEATURE_STAGE_SIDE.get(name)
+    if not side:
+        return text
+    return (
+        text
+        + f"\n提单人记下的当前阶段是「{name}」，辅助偏向{side}。"
+        "需求澄清、评审、排期、设计辅助偏向产品经理；"
+        "开发、测试、验收、发布辅助偏向对口研发。"
+        "阶段与正文相反时，仍以正文的 1) 2) 为准，不要只按阶段名硬派。"
+    )
 
 
 def person_anti_hallucination() -> str:
@@ -199,6 +237,7 @@ def person_anti_hallucination() -> str:
         "但依据必须落在该人卡片上已写出的责任模块、负责内容、职责上；"
         "禁止编造、脑补、补全其未写明的负责内容；"
         "禁止把别人的模块或职责安到此人头上。"
+        "Agent假设仅供参考；与标题/描述冲突时，以正文现象为准，不要按假设改派。"
     )
 
 

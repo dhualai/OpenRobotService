@@ -87,6 +87,12 @@ async def _heartbeat_agen(agen, interval: float = _HEARTBEAT_SEC):
 # ============================================================
 qa_router = APIRouter(prefix="/api/ai/qa", tags=["AI诊断"])
 
+# 车型定制模式（扫码入口，XQE 试点）：/mode/confirm 路由挂载，逻辑全在
+# ai/api/vehicle_mode.py——常规链路零改动，定制模式以 session
+# metadata["vehicle_mode"] 存在为唯一开关（不调接口的会话不受任何影响）。
+from ai.api.vehicle_mode import register_vehicle_mode_routes
+register_vehicle_mode_routes(qa_router)
+
 
 class QAAskRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=128, description="会话 ID")
@@ -313,24 +319,31 @@ async def ask_question_stream(
                             acc = ""
                             last_persist = time.perf_counter()
                     elif ev_type == "result":
-                        # 项目选择题：候选持久化到消息 metadata_（前端切会话/刷新后
+                        # 选择题候选持久化到消息 metadata_（前端切会话/刷新后
                         # 仍可渲染按钮；md 对话记录渲染成编号列表文字）。
+                        # project_choices=项目题（0827）/ vehicle_choices=车型
+                        # 追问气泡（0930），同一会话互斥出现。
                         # fire-and-forget：不阻塞 result 事件转发，失败仅告警。
                         # 必须用独立 session：与 _do_persist 并发共享 db 会撞
                         # SQLAlchemy session 并发限制（commit() can't be called
                         # here / _prepare_impl already in progress），0911 测试环境
                         # 出题轮 metadata 全部写入失败即此因。
-                        choices = (event.get('data') or {}).get("project_choices")
-                        if persist_msg_id is not None and isinstance(choices, list) and choices:
+                        for _meta_key in ("project_choices", "vehicle_choices"):
+                            _meta_vals = (event.get('data') or {}).get(_meta_key)
+                            if persist_msg_id is None or not (isinstance(_meta_vals, list) and _meta_vals):
+                                continue
+                            _key = _meta_key
+                            _vals = _meta_vals
+
                             async def _persist_choices_meta():
                                 session = AsyncSessionLocal()
                                 try:
                                     await MessageService.update_message(
                                         session, persist_msg_id,
-                                        MessageUpdate(metadata_={"project_choices": choices}))
+                                        MessageUpdate(metadata_={_key: _vals}))
                                 except Exception as e:
                                     logger.warning(
-                                        f"[sse] 项目题候选落 metadata 失败 "
+                                        f"[sse] {_key} 落 metadata 失败 "
                                         f"sid={qa_req.session_id[:8]} msg_id={persist_msg_id}: {e}")
                                 finally:
                                     try:
@@ -1627,6 +1640,7 @@ class TaskDiscussRequest(BaseModel):
 class TaskDiscussInjectRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
     text: str = Field(default="", description="插入当前排查轮次的补充文字")
+    lane: str = Field(default="steer", description="steer=插入本轮；followup=结束后跟进，不进入当前排查")
 
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
 async def task_diagnose(body: TaskDiagnoseRequest, request: Request) -> dict:
@@ -1690,6 +1704,98 @@ async def task_discuss(body: TaskDiscussRequest, request: Request) -> dict:
         return {"code": 1, "message": str(e)}
 
 
+@task_agent_router.post("/discuss/stream", summary="@U老师 讨论（流式）")
+async def task_discuss_stream(body: TaskDiscussRequest, request: Request):
+    """@U老师 讨论 SSE：先排查（过程区仍走 WS），再流式吐最终答复正文。
+
+    事件：
+      event: token   data: {"token": "..."}
+      event: rewrite data: {"reply": "完整改写正文"}
+      event: result  data: {"task_id","reply",...}  （评论已落库）
+      event: error   data: {"message": "..."}
+      event: done    data: {"total_ms": N}
+    """
+    import asyncio
+    import json
+    import logging
+    import time
+    from fastapi.responses import StreamingResponse
+
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = time.perf_counter()
+    query_preview = (body.query or "")[:60]
+    username, _ = _current_user(request)
+    if not username:
+        username = (body.username or "").strip()
+    logger.info(
+        f"[discuss.stream] 入口: task_id={body.task_id}, query={query_preview}, user={username}"
+    )
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_token(tok: str) -> None:
+        await queue.put(("token", tok))
+
+    async def on_rewrite(full: str) -> None:
+        await queue.put(("rewrite", full))
+
+    async def _run() -> None:
+        try:
+            from ai.agents.AiTaskPlatform import get_task_agent
+            agent = await get_task_agent()
+            result = await agent.discuss(
+                task_id=body.task_id,
+                query=body.query,
+                context=body.context,
+                username=username,
+                is_cancelled=request.is_disconnected,
+                on_token=on_token,
+                on_rewrite=on_rewrite,
+            )
+            await queue.put(("result", result if isinstance(result, dict) else {"reply": str(result)}))
+        except Exception as e:
+            logger.exception(
+                f"[discuss.stream] 失败: task_id={body.task_id}, query={query_preview}"
+            )
+            await queue.put(("error", str(e)))
+        finally:
+            await queue.put(("done", None))
+
+    async def sse():
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                kind, payload = await queue.get()
+                if kind == "token":
+                    yield f"event: token\ndata: {json.dumps({'token': payload}, ensure_ascii=False)}\n\n"
+                elif kind == "rewrite":
+                    yield f"event: rewrite\ndata: {json.dumps({'reply': payload}, ensure_ascii=False)}\n\n"
+                elif kind == "result":
+                    data = dict(payload or {})
+                    # 体量控制：reasoning_trace / _trace 不进 SSE
+                    data.pop("reasoning_trace", None)
+                    data.pop("_trace", None)
+                    yield f"event: result\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                elif kind == "error":
+                    yield f"event: error\ndata: {json.dumps({'message': payload}, ensure_ascii=False)}\n\n"
+                elif kind == "done":
+                    total_ms = round((time.perf_counter() - t_start) * 1000)
+                    logger.info(
+                        f"[discuss.stream] 完成: task_id={body.task_id}, elapsed={total_ms}ms"
+                    )
+                    yield f"event: done\ndata: {json.dumps({'total_ms': total_ms})}\n\n"
+                    break
+        except asyncio.CancelledError:
+            logger.info(f"[discuss.stream] 客户端断连 task_id={body.task_id}")
+            raise
+        finally:
+            if not task.done():
+                # 不断开后台 discuss：断连后仍写评论（与非流式一致）
+                pass
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
 @task_agent_router.post("/discuss/inject", summary="@U老师 插入本轮")
 async def task_discuss_inject(body: TaskDiscussInjectRequest, request: Request) -> dict:
     """分析进行中把工程师补充写入当前排查邮箱，不新开一轮、不断开当前请求。"""
@@ -1701,7 +1807,8 @@ async def task_discuss_inject(body: TaskDiscussInjectRequest, request: Request) 
         return {"code": 1, "message": "task_id 与 text 不能为空"}
     try:
         from ai.agents.AiTaskPlatform.runtime.inject_mailbox import put
-        await put(body.task_id, query)
+        lane = "followup" if (body.lane or "").strip() == "followup" else "steer"
+        await put(body.task_id, query, lane=lane)
         logger.info(f"[discuss.inject] task_id={body.task_id}, text={query[:60]}")
         return {"code": 0, "data": {"ok": True}}
     except Exception as e:
@@ -1766,6 +1873,36 @@ async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
         # logger.exception 自动打印完整 traceback（含异常类型与堆栈），便于定位根因
         logger.exception(f"[summarize] 失败: elapsed={elapsed:.0f}ms")
         return {"code": 1, "message": str(e)}
+
+
+class TaskMemoryUpdateRequest(BaseModel):
+    content: str = Field(..., description="改写后的记忆正文")
+
+
+@task_agent_router.get("/memory", summary="列出 U老师 长期记忆")
+async def task_memory_list() -> dict:
+    from ai.agents.AiTaskPlatform.memory.agent_memory_service import get_agent_memory_service
+    svc = get_agent_memory_service()
+    items = [svc.public_entry(r) for r in svc.list_entries(status="active")]
+    return {"code": 0, "data": {"items": items}}
+
+
+@task_agent_router.put("/memory/{mem_id}", summary="改写一条长期记忆")
+async def task_memory_update(mem_id: str, body: TaskMemoryUpdateRequest) -> dict:
+    from ai.agents.AiTaskPlatform.memory.agent_memory_service import get_agent_memory_service
+    updated = await get_agent_memory_service().update_content(mem_id, body.content)
+    if not updated:
+        raise HTTPException(status_code=404, detail="没有这条记忆，或正文为空")
+    return {"code": 0, "data": updated}
+
+
+@task_agent_router.delete("/memory/{mem_id}", summary="删除一条长期记忆")
+async def task_memory_delete(mem_id: str) -> dict:
+    from ai.agents.AiTaskPlatform.memory.agent_memory_service import get_agent_memory_service
+    removed = await get_agent_memory_service().delete(mem_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="没有这条记忆")
+    return {"code": 0, "data": {"id": mem_id}}
 
 
 @task_agent_router.get("/health", summary="健康检查")
@@ -1862,3 +1999,122 @@ async def wecom_health() -> dict:
         return {"status": "ok", "configured": configured}
     except Exception:
         return {"status": "ok", "configured": False}
+
+
+# ── 通用子表接口（后端「企业微信表格管理」用）────────────────────
+# 与 /projects 那组固定表格接口的区别：docid / sheet_id 由调用方传入，
+# 因此后端新增一张表无需改本文件、无需改 ai/config.py。
+# 缺省（不传）时回退到 ai/config.py 的 wecom_docid / wecom_sheet_id，兼容旧调用。
+
+
+@wecom_router.get("/sheets/sample", summary="试连子表并取列名样例")
+async def wecom_sheet_sample(
+    docid: str = Query("", description="文档 ID，留空则用配置默认"),
+    sheet_id: str = Query("", description="子表 ID，留空则用配置默认"),
+    limit: int = Query(3, ge=1, le=20, description="样例条数"),
+) -> dict:
+    """给管理页面「测试连接」用：拉少量记录，返回真实列名 + 样例行。
+
+    列名取自实际返回值而不是表结构接口——企微没有稳定的字段元信息接口，
+    且页面要的就是「用户真实会看到的列标题」。
+    """
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient(docid=docid, sheet_id=sheet_id)
+        data = await client.pull(limit=limit, offset=0)
+        records = data.get("records", [])
+        columns: list[str] = []
+        for r in records:
+            for k in (r.get("values") or {}):
+                if k not in columns:
+                    columns.append(k)
+        return {
+            "code": 0,
+            "data": {
+                "total": data.get("total", len(records)),
+                "columns": columns,
+                "records": records,
+            },
+        }
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom sheet_sample 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"读取表格失败: {str(e)}"}
+
+
+@wecom_router.get("/sheets/records", summary="拉取子表全量记录")
+async def wecom_sheet_records(
+    docid: str = Query("", description="文档 ID，留空则用配置默认"),
+    sheet_id: str = Query("", description="子表 ID，留空则用配置默认"),
+) -> dict:
+    """全量拉取（内部自动翻页），返回已拍扁的记录。"""
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient(docid=docid, sheet_id=sheet_id)
+        records = await client.pull_all()
+        return {"code": 0, "data": {"total": len(records), "records": records}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom sheet_records 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"拉取表格失败: {str(e)}"}
+
+
+# ── 建表：唯一能拿到 API docid 的途径 ────────────────────────
+# 手工在企微里新建的智能表格，浏览器链接路径段是 s3_xxx（URL ID），不是 docid，
+# 拿去调 get_records 会报 301085。因此新增一张可同步的表必须从这里开始：
+# create_doc → 拿到 docid（仅此一次返回）→ 落库 wecom_sheet_source.docid。
+
+
+class WecomCreateDocRequest(BaseModel):
+    doc_name: str = Field(..., description="文档名，最多 255 字符")
+    spaceid: str = Field("", description="空间 spaceid，留空则建到默认位置")
+    fatherid: str = Field("", description="父目录 fileid；根目录时填 spaceid")
+    admin_users: list[str] = Field(default_factory=list, description="文档管理员 userid")
+
+
+@wecom_router.post("/docs/create", summary="新建智能表格并返回 docid")
+async def wecom_create_doc(body: WecomCreateDocRequest) -> dict:
+    """新建一张智能表格（doc_type=10）。
+
+    返回 {docid, url, doc_name, sheets}。docid 只在创建时返回一次，
+    调用方（backend 的 wecom_sheet_source）必须立刻落库。
+    sheets 是该文档下的子表列表，拿它填 sheet_id，省去从浏览器 URL 抠 tab 参数。
+    """
+    try:
+        from ai.integrations.wecom import WecomDocClient
+        client = WecomDocClient()
+        doc = await client.create_smart_sheet(
+            doc_name=body.doc_name,
+            spaceid=body.spaceid,
+            fatherid=body.fatherid,
+            admin_users=body.admin_users,
+        )
+        sheets = []
+        try:
+            sheets = await client.list_sheets(doc["docid"])
+        except Exception as e:      # 子表查不到不影响建表结果，页面上可手填
+            logger.warning(f"wecom create_doc 后查询子表失败: {e}")
+        return {"code": 0, "data": {**doc, "sheets": sheets}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom create_doc 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"新建智能表格失败: {str(e)}"}
+
+
+@wecom_router.get("/docs/sheets", summary="查询智能表格下的子表")
+async def wecom_doc_sheets(
+    docid: str = Query(..., description="文档 docid"),
+) -> dict:
+    """返回 [{"sheet_id", "title"}]，用于页面上选择要同步哪个子表。"""
+    try:
+        from ai.integrations.wecom import WecomDocClient
+        sheets = await WecomDocClient().list_sheets(docid)
+        return {"code": 0, "data": {"docid": docid, "sheets": sheets}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom doc_sheets 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"查询子表失败: {str(e)}"}

@@ -171,6 +171,7 @@ export default function MainLayout() {
               type="button"
               data-testid={`nav-item-${tab}`}
               className={`app-bottom-nav__item ${activeTab === tab ? 'is-active' : ''}`}
+              aria-current={activeTab === tab ? 'page' : undefined}
               onClick={() => handleChange(tab)}
             >
               <span className="app-bottom-nav__icon">

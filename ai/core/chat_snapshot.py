@@ -243,26 +243,50 @@ def _expand_project_choices(turn: dict, content: str) -> str:
     """项目题轮：metadata_.project_choices 渲染成编号列表文字——前端按钮的文字版，
     md 附件里能看到候选内容（对话界面的按钮不进文字流）。content 按第一个空行
     切 head/tail（与前端按钮插入位置一致），列表插中间；无空行退尾部。"""
-    meta = turn.get("metadata_")
-    if not meta:
+    listing = _choices_listing(
+        turn, "project_choices",
+        lambda c, i: f"{c.get('index', i + 1)}. {c.get('name', '')}".rstrip()
+        if isinstance(c, dict) else "")
+    if listing is None:
         return content
-    try:
-        v = json.loads(meta)
-        if isinstance(v, str):
-            v = json.loads(v)  # safe_json_dumps 二次编码
-        choices = v.get("project_choices") if isinstance(v, dict) else None
-    except Exception:
-        return content
-    if not isinstance(choices, list) or not choices:
-        return content
-    listing = "\n".join(
-        f"{c.get('index', i + 1)}. {c.get('name', '')}".rstrip()
-        for i, c in enumerate(choices) if isinstance(c, dict))
     split_at = content.find("\n\n")
     if split_at < 0:
         return f"{content}\n\n{listing}" if content.strip() else listing
     return (content[:split_at] + "\n\n" + listing + "\n\n"
             + content[split_at + 2:]).strip()
+
+
+def _expand_vehicle_choices(turn: dict, content: str) -> str:
+    """车型追问轮（0930）：metadata_.vehicle_choices 渲染成编号选项 + 提示语
+    文字，与前端气泡按钮组同构。"""
+    listing = _choices_listing(
+        turn, "vehicle_choices", lambda c, i: c if isinstance(c, str) else "")
+    if listing is None:
+        return content
+    listing += "\n（若是其他情况，请在输入框描述）"
+    split_at = content.find("\n\n")
+    if split_at < 0:
+        return f"{content}\n\n{listing}" if content.strip() else listing
+    return (content[:split_at] + "\n\n" + listing + "\n\n"
+            + content[split_at + 2:]).strip()
+
+
+def _choices_listing(turn: dict, key: str, fmt) -> Optional[str]:
+    """从 metadata_ 取指定 choices 列表并逐项格式化；无该 key/空 → None。"""
+    meta = turn.get("metadata_")
+    if not meta:
+        return None
+    try:
+        v = json.loads(meta)
+        if isinstance(v, str):
+            v = json.loads(v)  # safe_json_dumps 二次编码
+        choices = v.get(key) if isinstance(v, dict) else None
+    except Exception:
+        return None
+    if not isinstance(choices, list) or not choices:
+        return None
+    lines = [fmt(c, i) for i, c in enumerate(choices)]
+    return "\n".join(ln for ln in lines if ln) or None
 
 
 def _turns_to_markdown(
@@ -308,6 +332,7 @@ def _turns_to_markdown(
             continue
         if role == "assistant":
             content = _expand_project_choices(turn, content)
+            content = _expand_vehicle_choices(turn, content)
         if _prev == (role, content):
             continue  # 相邻重复（如上传后的重复回执），跳过
         _prev = (role, content)
