@@ -271,6 +271,30 @@
   color: var(--muted-foreground, #999);
 }
 
+/* 带入标签（只读）：系统段里 `### ` 一级标签，一眼看出这份文档带了哪几块项目背景信息。
+   纯浅底胶囊、无图标，改动勾选仍回提单流程（详情页只做展示）。 */
+.spec-sheet__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 0;
+}
+
+.spec-sheet__tags-label {
+  font-size: 12px;
+  color: var(--muted-foreground, #999);
+}
+
+.spec-sheet__tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--blue-5, #eef4fb);
+  color: var(--blue-2, #2f6ea5);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 /* 操作条：可编辑者的「AI 汇总讨论内容 + 编辑补充/编写」。
    移动端底部弹层宽度有限，统一放在内容顶部（不塞头部，避免窄屏折行） */
 .spec-sheet__actions {

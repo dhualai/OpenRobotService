@@ -48,6 +48,9 @@ export const SHARE_DOC_SECTION_TEMPLATE = [
 /** 文档正文标题（与设计稿一致） */
 export const SHARE_DOC_TITLE = '问题共享文档';
 
+/** 系统段里项目背景信息章节的标题（生成系统段与解析带入标签两处共用，避免口径漂移） */
+export const SHARE_DOC_BACKGROUND_HEADING = '## 项目背景信息';
+
 export interface ShareDocBuildOptions {
   /**
    * 是否连空节点一起写入文档（空值标注「（未填写）」/「（未选择）」）。
@@ -114,7 +117,7 @@ export function buildProjectBackgroundMarkdown(
   const lines: string[] = [`# ${SHARE_DOC_TITLE}`, ''];
   const name = (options.projectName ?? projectName ?? '').trim();
   if (name) lines.push(`> 项目：${name}`, '');
-  lines.push('## 项目背景信息', '');
+  lines.push(SHARE_DOC_BACKGROUND_HEADING, '');
 
   const emit = (node: ProjectInfoNode, depth: number) => {
     const children = byParent.get(node.id) ?? [];
@@ -157,6 +160,36 @@ export function splitShareDoc(doc: string): { system: string; user: string } {
     }
   }
   return { system: '', user: text };
+}
+
+/**
+ * 文档里**实际带入的一级标签**（`## 项目背景信息` 章节下的 `### ` 标题，即提单勾选后展开的根标签）。
+ *
+ * 详情页「详细问题文档」弹窗用它做只读展示（零后端改动）：让人一眼看到这份文档带了哪几块
+ * 项目背景信息，要改勾选得回提单流程。
+ *
+ * 用 `## 项目背景信息` 作锚点、而非 `splitShareDoc`：提单后没写补充内容时系统段后面**没有分隔线**
+ * （composeShareDoc 的约定），那种最常见的文档整篇都会被 splitShareDoc 当成补充段。
+ * 口径与 buildProjectBackgroundMarkdown 的 emit 对齐（根标签写 `###`，往下逐级 +1），
+ * 所以 `#### ` 及更深的子节点不会被误收；手写 / 上传文档没有这个章节 → 空数组，调用方整块不渲染。
+ */
+export function listShareDocRootTags(doc: string): string[] {
+  const lines = (doc ?? '').split('\n');
+  const start = lines.findIndex((line) => line.trim() === SHARE_DOC_BACKGROUND_HEADING);
+  if (start < 0) return [];
+  const titles: string[] = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    // 遇到分隔线或下一个二级标题（如 `## 问题描述`）就是补充段了，章节结束；
+    // `### 标签` 不会被误判（`\s` 不匹配 `#`）
+    if (line === SHARE_DOC_DIVIDER || /^##\s+\S/.test(line)) break;
+    const matched = /^###\s+(.+?)\s*$/.exec(line);
+    if (!matched) continue;
+    const title = matched[1].trim();
+    // 去重保序：同一标签正常只 emit 一次，这里防手改正文写重
+    if (title && !titles.includes(title)) titles.push(title);
+  }
+  return titles;
 }
 
 /**

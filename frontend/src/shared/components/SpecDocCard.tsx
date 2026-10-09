@@ -18,7 +18,7 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { isPC } from '@/shared/utils/device';
 import { getSpecDoc, saveSpecDoc, type SpecDoc, type ProblemDocSourceItem } from '@/api/specDoc';
-import { replaceUserSection, splitShareDoc } from '@/shared/utils/shareDoc';
+import { listShareDocRootTags, replaceUserSection, splitShareDoc } from '@/shared/utils/shareDoc';
 // 自带样式：弹窗（.spec-sheet）与入口按钮（.detail-card__h-action）用到的都在这里
 // （SpecDocEditor 也 import 了本文件，幂等）
 import '@/shared/styles/specDoc.css';
@@ -128,6 +128,8 @@ export default function SpecDocCard({ taskId, canEdit }: SpecDocCardProps) {
   const exists = doc?.exists === true;
   const docContent = doc?.content ?? '';
   const sourceFiles = doc?.source_files ?? [];
+  /** 系统段里实际带入的一级标签（只读；上传/手写文档解析为空 → 整块不渲染） */
+  const rootTags = listShareDocRootTags(docContent);
   /** 副标题：谁更新过 · 修订号（都为空则不渲染这一行） */
   const meta = [
     doc?.updated_by_name ? `${doc.updated_by_name} 更新` : '',
@@ -173,6 +175,19 @@ export default function SpecDocCard({ taskId, canEdit }: SpecDocCardProps) {
             {/* 唯一滚动容器：正文 / 附件都在这里滚，避免与详情页双滚动条 */}
             <div className="spec-sheet__body">
               {meta ? <div className="spec-sheet__meta">{meta}</div> : null}
+
+              {/* 带入的项目背景信息标签（只读）：来自系统段 `### ` 一级标题，
+                  让人不点「编辑补充」也知道这份文档带了哪几块；改动勾选仍回提单流程 */}
+              {rootTags.length > 0 && (
+                <div className="spec-sheet__tags" data-testid="spec-sheet-tags">
+                  <span className="spec-sheet__tags-label">带入标签</span>
+                  {rootTags.map((tag) => (
+                    <span key={tag} className="spec-sheet__tag">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
 
               {canEdit && (
                 <div className="spec-sheet__actions">
