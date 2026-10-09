@@ -24,6 +24,7 @@ from app.modules.admin.api.info_nodes import info_node_router
 from app.modules.admin.api.project_tickets import project_tickets_router
 from app.modules.admin.api.task_policy import router as task_policy_router
 from app.modules.admin.api.qrcode import router as qrcode_router
+from app.modules.admin.api.wecom_sheets import admin_router as wecom_sheets_router
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -48,3 +49,4 @@ admin_router.include_router(info_node_router)
 admin_router.include_router(project_tickets_router)
 admin_router.include_router(task_policy_router)
 admin_router.include_router(qrcode_router)
+admin_router.include_router(wecom_sheets_router)

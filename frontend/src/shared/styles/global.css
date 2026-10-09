@@ -10346,3 +10346,79 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 .task-policy-footer { margin-top: 16px; padding: 10px 12px; border-radius: 10px; background: var(--mac-secondary); font-size: 11px; line-height: 1.65; color: var(--mac-muted-fg); }
 
 .admin-no-perm { padding: 60px 20px; text-align: center; color: var(--mac-muted-fg); font-size: 14px; }
+
+/* —— 企业微信表格数据源管理（WecomSheetManage）——
+   沿用马卡龙蓝阶：主色 --mac-blue-1/2，禁用态走灰阶，不引新色相 */
+.wsm-wrap { padding: 58px 14px 30px; max-width: 760px; margin: 0 auto; }
+.wsm-hint { margin: 0 0 12px; font-size: 11.5px; line-height: 1.7; color: var(--mac-muted-fg); }
+
+.wsm-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+
+.wsm-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 32px; padding: 0 12px; border: 1px solid transparent; border-radius: 8px;
+  font-size: 12.5px; cursor: pointer; transition: opacity 0.15s, background 0.15s;
+}
+.wsm-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.wsm-btn--primary { background: var(--mac-blue-1); color: #fff; }
+.wsm-btn--secondary { background: var(--mac-blue-2); color: #fff; }
+.wsm-btn--ghost { background: #fff; color: var(--mac-muted-fg); border-color: var(--mac-border); }
+
+.wsm-list { display: flex; flex-direction: column; gap: 10px; }
+.wsm-card {
+  padding: 12px 14px; border-radius: 12px; background: #fff;
+  border: 1px solid var(--mac-border); box-shadow: var(--mac-shadow-soft);
+}
+.wsm-card__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wsm-card__title { font-size: 13.5px; font-weight: 600; color: var(--mac-fg); }
+.wsm-card__meta { margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--mac-muted-fg); overflow-wrap: anywhere; }
+.wsm-card__meta code { background: var(--mac-secondary); padding: 0 5px; border-radius: 4px; font-size: 10.5px; }
+.wsm-card__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+.wsm-badge { flex-shrink: 0; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; background: var(--mac-secondary); color: var(--mac-muted-fg); }
+.wsm-badge.is-on { background: var(--mac-blue-soft); color: var(--mac-blue-1); }
+
+.wsm-error { margin-top: 6px; padding: 7px 9px; border-radius: 8px; background: #fff7e6; border: 1px solid #ffd591; color: #ad6800; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+
+/* 表单：两列栅格，备注与整行字段占满 */
+.wsm-form { margin-bottom: 14px; }
+.wsm-form__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.wsm-field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--mac-muted-fg); }
+.wsm-field--full { grid-column: 1 / -1; }
+.wsm-field--check { flex-direction: row; align-items: center; gap: 6px; align-self: end; padding-bottom: 8px; }
+.wsm-input {
+  width: 100%; box-sizing: border-box; min-height: 34px; padding: 6px 8px;
+  border: 1px solid var(--mac-border); border-radius: 8px; background: #fff;
+  font-size: 12.5px; color: var(--mac-fg); outline: none; resize: vertical;
+}
+.wsm-input:focus { box-shadow: 0 0 0 1px var(--mac-blue-2); }
+.wsm-form__actions { display: flex; gap: 8px; margin-top: 12px; }
+
+/* 测试连接结果：列名 chips + 样例表 */
+.wsm-preview { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--mac-border); }
+.wsm-preview__head { font-size: 11.5px; font-weight: 600; color: var(--mac-blue-1); }
+.wsm-preview__cols { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.wsm-chip { padding: 2px 8px; border-radius: 999px; background: var(--mac-blue-soft); color: var(--mac-blue-1); font-size: 11px; }
+.wsm-preview__sample { margin-top: 10px; overflow-x: auto; }
+
+.wsm-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.wsm-table th, .wsm-table td { padding: 6px 8px; border: 1px solid var(--mac-border); text-align: left; vertical-align: top; color: var(--mac-fg); overflow-wrap: anywhere; }
+.wsm-table th { background: var(--mac-secondary); font-weight: 600; white-space: nowrap; }
+.wsm-table__id { width: 96px; color: var(--mac-muted-fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.wsm-search { display: flex; gap: 8px; margin-top: 10px; }
+.wsm-search .wsm-input { flex: 1; }
+.wsm-records__scroll { margin-top: 8px; max-height: 46vh; overflow-y: auto; }
+
+.wsm-loading { padding: 30px 0; text-align: center; }
+.wsm-empty { padding: 30px 0; text-align: center; font-size: 12.5px; color: var(--mac-muted-fg); }
+
+.wsm-help { font-size: 10.5px; line-height: 1.5; color: #ad6800; }
+.wsm-hint--sm { margin: 8px 0 0; font-size: 11px; }
+.wsm-createdoc { margin-top: 12px; padding: 10px; border: 1px dashed var(--mac-border); border-radius: 8px; }
+.wsm-createdoc__result {
+  margin-top: 10px; padding: 7px 9px; border-radius: 8px;
+  background: var(--mac-blue-soft); color: var(--mac-blue-1);
+  font-size: 11px; line-height: 1.6; overflow-wrap: anywhere;
+}
+.wsm-createdoc__result a { color: var(--mac-blue-1); text-decoration: underline; }
