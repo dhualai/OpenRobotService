@@ -3,6 +3,7 @@ import {
   buildProjectBackgroundMarkdown,
   collectMissingInfoNodes,
   composeShareDoc,
+  listShareDocRootTags,
   loadShareDocTags,
   mergeShareDoc,
   missingSelectedTags,
@@ -222,5 +223,66 @@ describe('勾选记忆（按项目存本机）', () => {
     expect([...loadShareDocTags('P1')].sort()).toEqual(['r1', 'r2']);
     // 按项目隔离
     expect(loadShareDocTags('P2').size).toBe(0);
+  });
+});
+
+describe('系统段带入标签解析（详情页只读展示用）', () => {
+  it('取 `### ` 一级标签，忽略 `## ` 章节标题与更深的子节点（没写补充内容、无分隔线时也能解析）', () => {
+    const content = [
+      '# 问题共享文档',
+      '',
+      '> 项目：江苏常州多摩川混场项目',
+      '',
+      '## 项目背景信息',
+      '',
+      '### 车端软件',
+      '',
+      '#### 软件版本',
+      '',
+      'v2.3.1',
+      '',
+      '### 调度软件',
+      '',
+      'v1.0.0',
+      '',
+      '## 问题描述',
+      '',
+    ].join('\n');
+    expect(listShareDocRootTags(content)).toEqual(['车端软件', '调度软件']);
+  });
+
+  it('补充段里的 ### 标题不算带入标签', () => {
+    const content = '## 项目背景信息\n\n### 车端软件\n\nv2.3.1\n\n---\n\n### 用户自己加的标题\n\n正文\n';
+    expect(listShareDocRootTags(content)).toEqual(['车端软件']);
+  });
+
+  it('无系统段（上传/手写文档）与空文档都返回空数组', () => {
+    expect(listShareDocRootTags('### 手写小节的标题\n\n正文\n')).toEqual([]);
+    expect(listShareDocRootTags('')).toEqual([]);
+  });
+
+  it('同一标签重复出现只保留一次（去重保序）', () => {
+    const content = '## 项目背景信息\n\n### 车端软件\n\nv2.3.1\n\n### 车端软件\n\nv2.3.2\n';
+    expect(listShareDocRootTags(content)).toEqual(['车端软件']);
+  });
+
+  it('章节后面写了别的二级标题（补充段）时，后面手写的 ### 不再计入', () => {
+    const content = [
+      '## 项目背景信息',
+      '',
+      '### 车端软件',
+      '',
+      'v2.3.1',
+      '',
+      '---',
+      '',
+      '## 问题描述',
+      '',
+      '### 现场处置步骤',
+      '',
+      '正文',
+      '',
+    ].join('\n');
+    expect(listShareDocRootTags(content)).toEqual(['车端软件']);
   });
 });

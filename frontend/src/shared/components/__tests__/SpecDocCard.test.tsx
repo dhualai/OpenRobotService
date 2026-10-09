@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import SpecDocCard from '../SpecDocCard';
 import { getSpecDoc, saveSpecDoc, generateProblemDoc } from '@/api/specDoc';
 
@@ -155,5 +155,47 @@ describe('详细问题文档入口（工单详情，标题行按钮 + 弹窗，A
     await waitFor(() => expect(vi.mocked(saveSpecDoc)).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(saveSpecDoc).mock.calls[0][1];
     expect(payload.content).toContain('AI 汇总：车启动不了，报故障码 P0701');
+  });
+
+  it('弹窗顶部只读展示系统段带入的一级标签；无系统段（手写文档）不渲染这一行', async () => {
+    const first = render(<SpecDocCard taskId={9527} canEdit />);
+    await openSheet();
+
+    const tags = await screen.findByTestId('spec-sheet-tags');
+    // 系统段里 `### 车端软件`（`## 项目背景信息` 是章节标题，不算标签）
+    expect(within(tags).getByText('车端软件')).toBeTruthy();
+    expect(within(tags).queryByText('项目背景信息')).toBeNull();
+    first.unmount();
+
+    // 提单后没写补充内容 → 文档没有分隔线（整篇都是系统段），标签同样要展示
+    vi.mocked(getSpecDoc).mockResolvedValue({
+      ...DOC,
+      content: [
+        '# 问题共享文档',
+        '',
+        '> 项目：江苏常州多摩川混场项目',
+        '',
+        '## 项目背景信息',
+        '',
+        '### 车端软件',
+        '',
+        'v2.3.1',
+        '',
+      ].join('\n'),
+    });
+    const second = render(<SpecDocCard taskId={9527} canEdit />);
+    await openSheet();
+    expect(within(await screen.findByTestId('spec-sheet-tags')).getByText('车端软件')).toBeTruthy();
+    second.unmount();
+
+    // 无系统段（上传 / 手写文档）→ 整块不渲染
+    vi.mocked(getSpecDoc).mockResolvedValue({
+      ...DOC,
+      content: '## 问题描述\n\n（手写的补充内容）',
+    });
+    render(<SpecDocCard taskId={9527} canEdit />);
+    await openSheet();
+    expect(await screen.findByTestId('md-render')).toBeTruthy();
+    expect(screen.queryByTestId('spec-sheet-tags')).toBeNull();
   });
 });
