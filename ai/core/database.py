@@ -71,6 +71,8 @@ class Task(Base):
     resolved_at = Column(DateTime, nullable=True, comment="解决时间")
     canceled_at = Column(DateTime, nullable=True, comment="取消时间")
     closed_at = Column(DateTime, nullable=True, comment="关闭时间")
+    archived_by = Column(String(50), nullable=True, index=True, comment="归档审核人")
+    archived_at = Column(DateTime, nullable=True, comment="归档完成时间")
     deadline_at = Column(DateTime, nullable=True, comment="截止时间")
     tags = Column(JSON, nullable=True, comment="标签列表")
     metadata_info = Column(JSON, nullable=True, comment="扩展元数据")
@@ -395,3 +397,22 @@ class Vehicle(Base):
     __table_args__ = (
         Index("idx_vehicle_model_project", "model", "project_name"),
     )
+
+
+class ArchiveReport(Base):
+    """归档报告表（仅查询，字段对齐 backend/app/models/task.py ArchiveReport）"""
+    __tablename__ = "archive_reports"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    task_id = Column(BigInteger, nullable=False, index=True)
+    content = Column(Text, nullable=False, default="", comment="归档报告正文（markdown）")
+    version = Column(Integer, nullable=False, server_default="1", default=1, comment="版本号")
+    created_by = Column(String(50), nullable=False, index=True)
+    updated_by = Column(String(50), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+    submit_status = Column(String(20), nullable=False, default="draft", index=True, comment="draft / submitted / approved / rejected")
+    reviewer = Column(String(50), nullable=True, index=True, comment="审核人")
+    reviewed_at = Column(DateTime, nullable=True)
+    review_comment = Column(Text, nullable=True)
+    revision = Column(Integer, nullable=False, server_default="1", default=1, comment="乐观锁")

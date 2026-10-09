@@ -81,6 +81,8 @@ STATUS_LABEL = {
     "resolved": "已解决",
     "canceled": "已取消",
     "closed": "已关闭",
+    "archiving": "归档中",
+    "archived": "已归档",
 }
 
 # 附件按扩展名分类（用于操作日志"添加了图片/视频/..."的描述）

@@ -28,11 +28,13 @@ FRONTEND_STATUS_MAP: Dict[str, TaskStatus] = {
     "resolved": TaskStatus.RESOLVED,
     "closed": TaskStatus.CLOSED,
     "cancelled": TaskStatus.CANCELED,
+    "archiving": TaskStatus.ARCHIVING,
+    "archived": TaskStatus.ARCHIVED,
 }
 
 # 仪表盘「工单状态监测」监控的状态（含 new：待处理工单计入工单总数与解决率分母，
 # 与前端 TICKET_STATUS_LIST 保持一致；超时/待处理口径不含 new，见 OPEN_STATUSES）
-MONITORED_STATUS_KEYS = ["new", "in_progress", "pending_requested", "paused", "resolved", "closed", "cancelled"]
+MONITORED_STATUS_KEYS = ["new", "in_progress", "pending_requested", "paused", "resolved", "closed", "cancelled", "archiving", "archived"]
 MONITORED_STATUSES = [FRONTEND_STATUS_MAP[key] for key in MONITORED_STATUS_KEYS]
 PENDING_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
 

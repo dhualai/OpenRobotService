@@ -1424,9 +1424,11 @@ class TicketService:
             ticket.resolved_at = func.now()
         elif status == TicketStatus.CLOSED:
             ticket.closed_at = func.now()
+        elif status == TicketStatus.ARCHIVED:
+            ticket.archived_at = func.now()
 
-        # 工单进入最终态（已解决/已关闭）→ 后台清理该工单的日志附件缓存（AI 侧）
-        if status in (TicketStatus.RESOLVED, TicketStatus.CLOSED):
+        # 工单进入最终态（已解决/已关闭/已归档）→ 后台清理该工单的日志附件缓存（AI 侧）
+        if status in (TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.ARCHIVED):
             spawn_log_cache_cleanup(ticket_id)
 
         # 结束工单（resolved）时，若带解决方式，则写入 metadata_info.resolution_summary

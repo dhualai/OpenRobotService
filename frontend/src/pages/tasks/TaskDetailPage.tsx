@@ -33,6 +33,8 @@ import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canE
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
+import MDEditor from '@uiw/react-md-editor';
+import '@uiw/react-md-editor/markdown-editor.css';
 import { fetchWithAuth, taskDiscussStream } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
@@ -148,6 +150,27 @@ interface Ticket {
   proxy_principal_name?: string | null;
   is_proxy_agent?: boolean;
   is_principal?: boolean;
+  // ── 归档流程字段 ──
+  archived_by?: string | null;
+  archived_at?: string | null;
+  current_archive_report?: {
+    id: number;
+    task_id: number;
+    content: string;
+    version: number;
+    created_by: string;
+    created_by_name?: string | null;
+    updated_by?: string | null;
+    updated_by_name?: string | null;
+    created_at: string;
+    updated_at: string;
+    submit_status: 'draft' | 'submitted' | 'approved' | 'rejected';
+    reviewer?: string | null;
+    reviewer_name?: string | null;
+    reviewed_at?: string | null;
+    review_comment?: string | null;
+    revision: number;
+  } | null;
 }
 
 // 协商阶段模板步骤（GET /{task_id}/steps 返回）
@@ -265,6 +288,16 @@ export default function TaskDetailPage() {
   const [adjustName, setAdjustName] = useState('');
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+
+  // ── 归档流程 state ──
+  const [archiveEditorVisible, setArchiveEditorVisible] = useState(false);
+  const [archiveReportContent, setArchiveReportContent] = useState('');
+  const [archiveReportRevision, setArchiveReportRevision] = useState<number>(1);
+  const [archiveReportReviewer, setArchiveReportReviewer] = useState<{ id: string; name?: string } | null>(null);
+  const [archiveEditorMode, setArchiveEditorMode] = useState<'edit' | 'review'>('edit');
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveRejectReason, setArchiveRejectReason] = useState('');
+  const [showArchiveRejectPopup, setShowArchiveRejectPopup] = useState(false);
 
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
@@ -454,8 +487,20 @@ export default function TaskDetailPage() {
     if (!status) return [];
 
     const isClosed = status === 'closed';
+    const isArchiving = status === 'archiving';
+    const isArchived = status === 'archived';
     const isCanceled = status === 'canceled' || status === 'cancelled';
-    if (isClosed || isCanceled) return [];
+    if (isArchived || isCanceled) return [];
+    if (isClosed) {
+      // closed 状态：仅处理人（assignee）或有 operate 权限的人可见「开始归档」按钮
+      const { isAssignee: isAssigneeForArchive } = getCurrentUserRoles();
+      const canOperateArchive = hasPermission('backend:tasks:operate');
+      if (!isAssigneeForArchive && !canOperateArchive) return [];
+      const BTN_PRIMARY_ARCHIVE = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
+      return [
+        { label: '开始归档', nextStatus: 'archiving', theme: 'primary', actionType: 'archive', customStyle: BTN_PRIMARY_ARCHIVE },
+      ];
+    }
 
     const { isAssignee, isReporter, isPrincipal } = getCurrentUserRoles();
 
@@ -504,6 +549,35 @@ export default function TaskDetailPage() {
         { label: '未解决', nextStatus: 'in_progress', theme: 'warning', actionType: 'reopen', customStyle: BTN_SECONDARY },
         { label: '确认关闭', nextStatus: 'closed', theme: 'default', customStyle: BTN_PRIMARY },
       ],
+      archiving: (() => {
+        const report = detail?.current_archive_report;
+        const canOperate2 = hasPermission('backend:tasks:operate');
+        const { isAssignee: isAssignee2 } = getCurrentUserRoles();
+        const username = localStorage.getItem('username') || '';
+        const reviewerMatch = report?.reviewer && (report.reviewer === username || report.reviewer === localStorage.getItem('user_id'));
+        const isReviewer = Boolean(reviewerMatch);
+
+        // 审核人视角：submitted 状态下显示通过/驳回
+        if (report?.submit_status === 'submitted' && (isReviewer || canOperate2)) {
+          const BTN_PRIMARY2 = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
+          const BTN_DANGER2 = { backgroundColor: 'var(--destructive)', color: 'var(--destructive-foreground)', borderRadius: '999px', border: 'none' };
+          return [
+            { label: '通过归档', nextStatus: 'archived', theme: 'primary', actionType: 'archive-approve', customStyle: BTN_PRIMARY2 },
+            { label: '驳回归档', nextStatus: 'archiving', theme: 'danger', actionType: 'archive-reject', customStyle: BTN_DANGER2 },
+          ];
+        }
+
+        // 处理人视角：draft / rejected 状态显示编辑入口
+        if (report && (report.submit_status === 'draft' || report.submit_status === 'rejected') && (isAssignee2 || canOperate2)) {
+          const BTN_PRIMARY3 = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
+          return [
+            { label: report.submit_status === 'rejected' ? '修改归档报告并重新提交' : '编辑归档报告', nextStatus: 'archiving', theme: 'primary', actionType: 'archive-edit', customStyle: BTN_PRIMARY3 },
+          ];
+        }
+
+        // submitted 状态（处理人视角）：无按钮，等审核
+        return [];
+      })(),
       canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary', customStyle: BTN_PRIMARY }],
     };
 
@@ -570,6 +644,126 @@ export default function TaskDetailPage() {
     } catch (err) {
       Toast({ message: `继续处理失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
+  };
+
+  // ── 开始归档（closed → archiving）──
+  const handleStartArchive = async () => {
+    if (!detail) return;
+    setArchiveLoading(true);
+    try {
+      const ticket: Ticket = await request<Ticket>(`/${detail.id}/archive-start`, { method: 'POST' });
+      setDetail(ticket);
+      setArchiveReportContent(ticket.current_archive_report?.content || '');
+      setArchiveReportRevision(ticket.current_archive_report?.revision || 1);
+      setArchiveEditorMode('edit');
+      setArchiveEditorVisible(true);
+      Toast({ message: '已开始归档，请编写归档报告', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `开始归档失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 保存归档草稿 ──
+  const handleSaveArchiveDraft = async () => {
+    const reportId = detail?.current_archive_report?.id;
+    if (!reportId) return;
+    setArchiveLoading(true);
+    try {
+      const report = await request(`/archive-reports/${reportId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
+      });
+      setArchiveReportRevision(report.revision);
+      Toast({ message: '草稿已保存', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 提交归档报告审核 ──
+  const handleSubmitArchive = async () => {
+    const reportId = detail?.current_archive_report?.id;
+    if (!reportId || !archiveReportReviewer) {
+      Toast({ message: '请选择审核人', theme: 'warning' });
+      return;
+    }
+    setArchiveLoading(true);
+    try {
+      const ticket: Ticket = await request(`/archive-reports/${reportId}/submit`, {
+        method: 'POST',
+        body: JSON.stringify({ reviewer: archiveReportReviewer.id, content: archiveReportContent, revision: archiveReportRevision }),
+      });
+      setDetail(ticket);
+      setArchiveEditorVisible(false);
+      Toast({ message: '已提交归档报告，等待审核', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `提交失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 审核通过归档 ──
+  const handleArchiveApprove = async () => {
+    const reportId = detail?.current_archive_report?.id;
+    if (!reportId || !detail) return;
+    setArchiveLoading(true);
+    try {
+      const ticket: Ticket = await request(`/archive-reports/${reportId}/approve`, { method: 'POST' });
+      setDetail(ticket);
+      setArchiveEditorVisible(false);
+      Toast({ message: '归档审核通过', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 审核驳回归档 ──
+  const handleArchiveReject = async () => {
+    const reportId = detail?.current_archive_report?.id;
+    if (!reportId || !detail) return;
+    if (!archiveRejectReason.trim()) {
+      Toast({ message: '请填写驳回理由', theme: 'warning' });
+      return;
+    }
+    setArchiveLoading(true);
+    try {
+      const ticket: Ticket = await request(`/archive-reports/${reportId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ review_comment: archiveRejectReason }),
+      });
+      setDetail(ticket);
+      setShowArchiveRejectPopup(false);
+      setArchiveRejectReason('');
+      Toast({ message: '已驳回归档报告', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  // ── 打开归档编辑器（根据 submit_status 区分编辑/审核模式）──
+  const handleOpenArchiveEditor = () => {
+    const report = detail?.current_archive_report;
+    if (!report) {
+      Toast({ message: '归档报告未找到', theme: 'warning' });
+      return;
+    }
+    setArchiveReportContent(report.content || '');
+    setArchiveReportRevision(report.revision || 1);
+    if (report.submit_status === 'submitted') {
+      setArchiveEditorMode('review');
+    } else {
+      setArchiveEditorMode('edit');
+    }
+    setArchiveEditorVisible(true);
   };
 
   const handleEscalate = async (t: Ticket) => {
@@ -1390,6 +1584,15 @@ export default function TaskDetailPage() {
                         negotiation.setReopenStepId(firstStep ? firstStep.id : null);
                         negotiation.setReopenEndTime(null);
                         negotiation.setShowReopenPopup(true);
+                      } else if (action.actionType === 'archive') {
+                        handleStartArchive();
+                      } else if (action.actionType === 'archive-edit') {
+                        handleOpenArchiveEditor();
+                      } else if (action.actionType === 'archive-approve') {
+                        handleArchiveApprove();
+                      } else if (action.actionType === 'archive-reject') {
+                        setArchiveRejectReason('');
+                        setShowArchiveRejectPopup(true);
                       } else if (action.nextStatus === 'resolved') {
                         // 结束工单（→ resolved）→ 打开 "问题 + AI 解决方式" 确认弹窗
                         resolve.handleResolveClick();
@@ -1804,8 +2007,8 @@ export default function TaskDetailPage() {
 
         {(() => {
           const status = detail.status?.toLowerCase();
-          const isClosedOrCanceled = status === 'closed' || status === 'canceled' || status === 'cancelled';
-          if (isClosedOrCanceled) return null;
+          const isClosedOrCanceledOrArchivedOrArchiving = ['closed', 'canceled', 'cancelled', 'archived', 'archiving'].includes(status);
+          if (isClosedOrCanceledOrArchivedOrArchiving) return null;
 
           const { isAssignee, isReporter, isPrincipal } = getCurrentUserRoles();
           const canOperate = hasPermission('backend:tasks:operate');
@@ -2371,6 +2574,68 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" disabled={approving} onClick={() => { setShowAdjustPopup(false); setAdjustName(''); }}>取消</Button>
             <Button theme="primary" loading={approving} onClick={handleAdjustApprove} disabled={!adjustName.trim()}>确认通过</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* ── 归档报告编辑器 Popup ── */}
+      <Popup visible={archiveEditorVisible} onClose={() => setArchiveEditorVisible(false)} placement="bottom" showOverlay>
+        <div className="ticket-edit-form">
+          <span className="ticket-edit-form__close" onClick={() => setArchiveEditorVisible(false)}>×</span>
+          <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
+            {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
+          </h4>
+          {archiveEditorMode === 'review' && detail?.current_archive_report?.review_comment && (
+            <div style={{ padding: '8px 12px', background: 'var(--destructive)/10%', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>
+              <strong style={{ color: 'var(--destructive)' }}>上一次驳回理由：</strong>
+              {detail.current_archive_report.review_comment}
+            </div>
+          )}
+          {archiveEditorMode === 'edit' ? (
+            <>
+              <MDEditor
+                height={320}
+                value={archiveReportContent}
+                onChange={(v) => setArchiveReportContent(v || '')}
+                preview="edit"
+                placeholder="编写归档报告（支持 Markdown）..."
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
+                <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading}>保存草稿</Button>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>审核人：</span>
+                  <UserSelect value={archiveReportReviewer} onChange={setArchiveReportReviewer} placeholder="选择审核人" />
+                  <Button size="small" theme="primary" onClick={handleSubmitArchive} loading={archiveLoading}>提交审核</Button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <MDEditor height={360} value={archiveReportContent} preview="preview" />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+                <Button size="small" theme="default" onClick={() => setArchiveEditorVisible(false)}>关闭</Button>
+                <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
+              </div>
+            </>
+          )}
+        </div>
+      </Popup>
+
+      {/* ── 驳回归档 Popup ── */}
+      <Popup visible={showArchiveRejectPopup} onClose={() => setShowArchiveRejectPopup(false)} placement="bottom" showOverlay>
+        <div className="ticket-edit-form">
+          <span className="ticket-edit-form__close" onClick={() => { setShowArchiveRejectPopup(false); setArchiveRejectReason(''); }}>×</span>
+          <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>驳回归档报告</h4>
+          <textarea
+            value={archiveRejectReason}
+            onChange={(e) => setArchiveRejectReason(e.target.value)}
+            placeholder="请填写驳回理由（必填）"
+            style={{ width: '100%', minHeight: 100, padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--background)', color: 'var(--foreground)', resize: 'vertical', boxSizing: 'border-box' }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+            <Button size="small" theme="default" onClick={() => { setShowArchiveRejectPopup(false); setArchiveRejectReason(''); }}>取消</Button>
+            <Button size="small" theme="danger" onClick={handleArchiveReject} loading={archiveLoading} disabled={!archiveRejectReason.trim()}>确认驳回</Button>
           </div>
         </div>
       </Popup>

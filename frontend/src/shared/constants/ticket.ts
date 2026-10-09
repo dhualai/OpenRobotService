@@ -7,6 +7,8 @@ export const STATUS_DISPLAY_MAP: Record<string, string> = {
   resolved: '已解决',
   canceled: '已取消',
   closed: '已关闭',
+  archiving: '归档中',
+  archived: '已归档',
 };
 
 export const STATUS_VALUE_MAP: Record<string, string> = {
@@ -17,6 +19,8 @@ export const STATUS_VALUE_MAP: Record<string, string> = {
   '已解决': 'resolved',
   '已取消': 'canceled',
   '已关闭': 'closed',
+  '归档中': 'archiving',
+  '已归档': 'archived',
 };
 
 export const PRIORITY_VALUE_MAP: Record<string, string> = {
@@ -94,7 +98,7 @@ export type TicketStatusLike = string | null | undefined;
 /** 处理中（仅该状态可上报） */
 const REPORTABLE_STATUSES = new Set(['in_progress']);
 /** 终态（操作按钮整体不显示） */
-const TERMINAL_STATUSES = new Set(['resolved', 'canceled', 'cancelled', 'closed']);
+const TERMINAL_STATUSES = new Set(['resolved', 'canceled', 'cancelled', 'closed', 'archived']);
 /** 撤回可用状态：待处理 / 待派单 / 已派单 / 暂停请求中 / 已挂起 / 处理中 */
 const CANCELABLE_STATUSES = new Set(['new', 'pending_dispatch', 'dispatched', 'pending_requested', 'pending', 'in_progress']);
 
@@ -163,6 +167,8 @@ export const STATUS_COLOR_MAP: Record<string, string> = {
   closed: '#999999',
   canceled: '#d54941',
   cancelled: '#d54941',
+  archiving: '#7c5cb4',
+  archived: '#999999',
 };
 
 export const getStatusColor = (status: string): string => {
