@@ -307,7 +307,11 @@ async def main():
             # 重考一遍」——直接提单/直答正确保留（历史事实），未直答/未覆盖重判
             # （缺口复查：补的知识有没有生效）。直答率上升只来自新段真实表现 +
             # 老缺口真实补齐，不会被批量补充知识刷高。KB 没变（kb 同）→ 全复用。
-            if old.get("kb") != KB_TAG and old.get("pre") not in ("直接提单", "直答正确"):
+            # 通过段的判定字段：新行叫 pre，历史产物行（0929 前落盘）叫 lab——
+            # 只读 pre 会把历史通过段全判成未通过，kb 一变就整批重考（1009 实锤：
+            # company 指针更新后 479 段全量重跑，174 个通过段陪葬）
+            _old_pass = (old.get("pre") or old.get("lab")) in ("直接提单", "直答正确")
+            if old.get("kb") != KB_TAG and not _old_pass:
                 reexam_old[(str(old["cid"]), int(old["astart"]))] = old
                 continue
             if not done_keys.get((str(old["cid"]), int(old["astart"]))):
@@ -391,7 +395,7 @@ async def main():
             _rx = reexam_old.get((str(seg["cid"]), int(seg["astart"])))
             if _rx:  # 缺口复查段：漏斗口径 pre 保历史值（组合段写入），重考走 reexam_pre
                 r["reexam"] = True
-                r["pre_hist"] = _rx.get("pre")
+                r["pre_hist"] = _rx.get("pre") or _rx.get("lab")
             try:
                 ctx = await retrieve_ctx(seg, q0)
                 # 资料给全：ctx 已是线上装配结果（每块 ≤1500 字、最多 8 块、整串不截断），
