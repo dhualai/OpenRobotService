@@ -1997,3 +1997,122 @@ async def wecom_health() -> dict:
         return {"status": "ok", "configured": configured}
     except Exception:
         return {"status": "ok", "configured": False}
+
+
+# ── 通用子表接口（后端「企业微信表格管理」用）────────────────────
+# 与 /projects 那组固定表格接口的区别：docid / sheet_id 由调用方传入，
+# 因此后端新增一张表无需改本文件、无需改 ai/config.py。
+# 缺省（不传）时回退到 ai/config.py 的 wecom_docid / wecom_sheet_id，兼容旧调用。
+
+
+@wecom_router.get("/sheets/sample", summary="试连子表并取列名样例")
+async def wecom_sheet_sample(
+    docid: str = Query("", description="文档 ID，留空则用配置默认"),
+    sheet_id: str = Query("", description="子表 ID，留空则用配置默认"),
+    limit: int = Query(3, ge=1, le=20, description="样例条数"),
+) -> dict:
+    """给管理页面「测试连接」用：拉少量记录，返回真实列名 + 样例行。
+
+    列名取自实际返回值而不是表结构接口——企微没有稳定的字段元信息接口，
+    且页面要的就是「用户真实会看到的列标题」。
+    """
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient(docid=docid, sheet_id=sheet_id)
+        data = await client.pull(limit=limit, offset=0)
+        records = data.get("records", [])
+        columns: list[str] = []
+        for r in records:
+            for k in (r.get("values") or {}):
+                if k not in columns:
+                    columns.append(k)
+        return {
+            "code": 0,
+            "data": {
+                "total": data.get("total", len(records)),
+                "columns": columns,
+                "records": records,
+            },
+        }
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom sheet_sample 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"读取表格失败: {str(e)}"}
+
+
+@wecom_router.get("/sheets/records", summary="拉取子表全量记录")
+async def wecom_sheet_records(
+    docid: str = Query("", description="文档 ID，留空则用配置默认"),
+    sheet_id: str = Query("", description="子表 ID，留空则用配置默认"),
+) -> dict:
+    """全量拉取（内部自动翻页），返回已拍扁的记录。"""
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient(docid=docid, sheet_id=sheet_id)
+        records = await client.pull_all()
+        return {"code": 0, "data": {"total": len(records), "records": records}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom sheet_records 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"拉取表格失败: {str(e)}"}
+
+
+# ── 建表：唯一能拿到 API docid 的途径 ────────────────────────
+# 手工在企微里新建的智能表格，浏览器链接路径段是 s3_xxx（URL ID），不是 docid，
+# 拿去调 get_records 会报 301085。因此新增一张可同步的表必须从这里开始：
+# create_doc → 拿到 docid（仅此一次返回）→ 落库 wecom_sheet_source.docid。
+
+
+class WecomCreateDocRequest(BaseModel):
+    doc_name: str = Field(..., description="文档名，最多 255 字符")
+    spaceid: str = Field("", description="空间 spaceid，留空则建到默认位置")
+    fatherid: str = Field("", description="父目录 fileid；根目录时填 spaceid")
+    admin_users: list[str] = Field(default_factory=list, description="文档管理员 userid")
+
+
+@wecom_router.post("/docs/create", summary="新建智能表格并返回 docid")
+async def wecom_create_doc(body: WecomCreateDocRequest) -> dict:
+    """新建一张智能表格（doc_type=10）。
+
+    返回 {docid, url, doc_name, sheets}。docid 只在创建时返回一次，
+    调用方（backend 的 wecom_sheet_source）必须立刻落库。
+    sheets 是该文档下的子表列表，拿它填 sheet_id，省去从浏览器 URL 抠 tab 参数。
+    """
+    try:
+        from ai.integrations.wecom import WecomDocClient
+        client = WecomDocClient()
+        doc = await client.create_smart_sheet(
+            doc_name=body.doc_name,
+            spaceid=body.spaceid,
+            fatherid=body.fatherid,
+            admin_users=body.admin_users,
+        )
+        sheets = []
+        try:
+            sheets = await client.list_sheets(doc["docid"])
+        except Exception as e:      # 子表查不到不影响建表结果，页面上可手填
+            logger.warning(f"wecom create_doc 后查询子表失败: {e}")
+        return {"code": 0, "data": {**doc, "sheets": sheets}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom create_doc 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"新建智能表格失败: {str(e)}"}
+
+
+@wecom_router.get("/docs/sheets", summary="查询智能表格下的子表")
+async def wecom_doc_sheets(
+    docid: str = Query(..., description="文档 docid"),
+) -> dict:
+    """返回 [{"sheet_id", "title"}]，用于页面上选择要同步哪个子表。"""
+    try:
+        from ai.integrations.wecom import WecomDocClient
+        sheets = await WecomDocClient().list_sheets(docid)
+        return {"code": 0, "data": {"docid": docid, "sheets": sheets}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom doc_sheets 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"查询子表失败: {str(e)}"}
