@@ -293,7 +293,7 @@ export default function TaskDetailPage() {
   const [archiveEditorVisible, setArchiveEditorVisible] = useState(false);
   const [archiveReportContent, setArchiveReportContent] = useState('');
   const [archiveReportRevision, setArchiveReportRevision] = useState<number>(1);
-  const [archiveReportReviewer, setArchiveReportReviewer] = useState<{ id: string; name?: string } | null>(null);
+  const [archiveReportReviewer, setArchiveReportReviewer] = useState<string | null>(null);
   const [archiveEditorMode, setArchiveEditorMode] = useState<'edit' | 'review'>('edit');
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveRejectReason, setArchiveRejectReason] = useState('');
@@ -675,7 +675,7 @@ export default function TaskDetailPage() {
         method: 'PUT',
         body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
       });
-      setArchiveReportRevision(report.revision);
+      setArchiveReportRevision((report as { revision: number }).revision);
       Toast({ message: '草稿已保存', theme: 'success' });
     } catch (err) {
       Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -695,7 +695,7 @@ export default function TaskDetailPage() {
     try {
       const ticket: Ticket = await request(`/archive-reports/${reportId}/submit`, {
         method: 'POST',
-        body: JSON.stringify({ reviewer: archiveReportReviewer.id, content: archiveReportContent, revision: archiveReportRevision }),
+        body: JSON.stringify({ reviewer: archiveReportReviewer, content: archiveReportContent, revision: archiveReportRevision }),
       });
       setDetail(ticket);
       setArchiveEditorVisible(false);
@@ -2611,13 +2611,12 @@ export default function TaskDetailPage() {
                 value={archiveReportContent}
                 onChange={(v) => setArchiveReportContent(v || '')}
                 preview="edit"
-                placeholder="编写归档报告（支持 Markdown）..."
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
                 <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading}>保存草稿</Button>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>审核人：</span>
-                  <UserSelect value={archiveReportReviewer} onChange={setArchiveReportReviewer} placeholder="选择审核人" />
+                  <UserSelect value={archiveReportReviewer} onChange={(u) => setArchiveReportReviewer(u.id)} placeholder="选择审核人" />
                   <Button size="small" theme="primary" onClick={handleSubmitArchive} loading={archiveLoading}>提交审核</Button>
                 </div>
               </div>
