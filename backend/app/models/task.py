@@ -32,6 +32,8 @@ class TaskStatus(str, enum.Enum):
     RESOLVED = "resolved"
     CANCELED = "canceled"
     CLOSED = "closed"
+    ARCHIVING = "archiving"   # 归档中（已关闭，处理人正在提交归档报告）
+    ARCHIVED = "archived"     # 已归档（终态，归档审核通过）
 
 
 class TaskPriority(str, enum.Enum):
@@ -62,6 +64,10 @@ class OperationType(str, enum.Enum):
     VIEW = "view"                  # 查看工单
     AI_DIAGNOSE = "ai_diagnose"    # AI 诊断
     AI_ASSIGN = "ai_assign"        # AI 派单
+    ARCHIVE_START = "archive_start"              # 开始归档（closed → archiving）
+    ARCHIVE_REPORT_SUBMIT = "archive_report_submit"  # 归档报告提交审核
+    ARCHIVE_APPROVE = "archive_approve"          # 归档审核通过（archiving → archived）
+    ARCHIVE_REJECT = "archive_reject"            # 归档审核驳回（保持 archiving）
 
 
 class Task(Base):
@@ -96,6 +102,8 @@ class Task(Base):
     resolved_at = Column(DateTime, nullable=True, comment="解决时间")
     canceled_at = Column(DateTime, nullable=True, comment="取消时间")
     closed_at = Column(DateTime, nullable=True, comment="关闭时间")
+    archived_by = Column(String(50), nullable=True, index=True, comment="归档审核人ID（users.id）")
+    archived_at = Column(DateTime, nullable=True, comment="归档完成时间")
     deadline_at = Column(DateTime, nullable=True, comment="截止时间")
 
     tags = Column(JSON, nullable=True, comment="标签列表")
@@ -156,6 +164,19 @@ class Task(Base):
     @property
     def is_closed(self) -> bool:
         return self.status == TaskStatus.CLOSED
+
+    @property
+    def is_archiving(self) -> bool:
+        return self.status == TaskStatus.ARCHIVING
+
+    @property
+    def is_archived(self) -> bool:
+        return self.status == TaskStatus.ARCHIVED
+
+    @property
+    def is_terminal(self) -> bool:
+        """终态：不可再流转按钮"""
+        return self.status in (TaskStatus.CANCELED, TaskStatus.CLOSED, TaskStatus.ARCHIVED)
 
 
 class TaskComment(Base):
@@ -454,3 +475,43 @@ class SystemConfig(Base):
 
     def __repr__(self):
         return f"<SystemConfig(key={self.config_key}, value={self.config_value})>"
+
+
+class ArchiveReport(Base):
+    """工单归档报告：一任务可有多版（version 自增），草稿可反复编辑，submit 后进入审核。
+
+    独立于 tasks 表的原因：
+      - 报告正文是 LONGTEXT markdown，存 metadata_info 会被 AI 侧 upsert 覆盖
+      - 版本历史需要独立表来保留多版对比（后续报告管理中心用）
+      - 审核状态机（draft → submitted → approved / rejected）不属于工单主状态流
+
+    约束：同一 task 的 draft 最多一条（前端保证）；submit 每次 version +1。
+    """
+    __tablename__ = "archive_reports"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="报告ID")
+    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"),
+                     nullable=False, index=True, comment="任务ID")
+    content = Column(Text().with_variant(LONGTEXT, "mysql"), nullable=False, default="",
+                     comment="归档报告正文（markdown）")
+    version = Column(Integer, nullable=False, server_default="1", default=1,
+                     comment="版本号（每次 submit +1，draft 内编辑不递增）")
+    created_by = Column(String(50), nullable=False, index=True,
+                        comment="创建人（处理人 users.id）")
+    updated_by = Column(String(50), nullable=True, comment="最近编辑者ID")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="创建时间")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(),
+                        nullable=False, comment="更新时间")
+    submit_status = Column(String(20), nullable=False, default="draft", index=True,
+                           comment="状态：draft / submitted / approved / rejected")
+    reviewer = Column(String(50), nullable=True, index=True,
+                      comment="审核人 users.id（submit 时指定，approve/reject 后保留最后审核人）")
+    reviewed_at = Column(DateTime, nullable=True, comment="审核时间")
+    review_comment = Column(Text, nullable=True, comment="驳回理由（rejected 时填）")
+    revision = Column(Integer, nullable=False, server_default="1", default=1,
+                      comment="乐观锁（保存草稿时比对，不一致返回 409）")
+
+    task = relationship("Task", backref="archive_reports")
+
+    def __repr__(self):
+        return f"<ArchiveReport(id={self.id}, task_id={self.task_id}, version={self.version}, status={self.submit_status})>"

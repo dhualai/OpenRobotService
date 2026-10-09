@@ -48,6 +48,7 @@ from app.models.task import (
     TaskRelation,
     RelationType,
     SystemConfig,
+    ArchiveReport,
 )
 
 # 任务派单日志（二次派单感知增强）
@@ -130,7 +131,7 @@ __all__ = [
     "ProjectBlockingConfig",
     # task
     "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping", "TaskStep",
-    "TaskRelation", "RelationType", "SystemConfig",
+    "TaskRelation", "RelationType", "SystemConfig", "ArchiveReport",
     # task dispatch log
     "TaskDispatchLog",
     # task proxy relation
