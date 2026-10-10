@@ -446,8 +446,11 @@ def _user_profile_block(state: "AgentState") -> str:
     return "\n".join(lines) + "\n"
 
 
-def _vehicle_mode_block(memory) -> str:
+def _vehicle_mode_block(memory, query: str = "") -> str:
     """【车辆】扫码定制模式块（XQE 试点，0929；0930 选项引导规则）。
+
+    query：本轮用户输入原文，用于判定「上一轮选项是否已被作答」——见 last_choices
+    段落。不传（默认空串）时按「尚未回答」处理，与旧行为一致。
 
     会话经模式确认接口（/mode/confirm）注册 metadata["vehicle_mode"] 后，
     三套 prompt（全量诊断/收集/快路径）均注入本块：车型信息已确认，
@@ -476,15 +479,28 @@ def _vehicle_mode_block(memory) -> str:
     ]
     last = vm.get("last_choices") or []
     if last:
-        lines.append(
-            "【车辆】上一轮你已给出选项（" + "／".join(last) + "）且用户尚未回答："
-            "不要重复给出选项；用户以选项原文回应时，按该选项的含义理解并继续处理。")
+        _q = (query or "").strip()
+        if _q and _q in [str(c).strip() for c in last]:
+            # 用户点了选项原文作答——前提「尚未回答」不再成立。此时若照旧注入
+            # 「不要重复给出选项」，模型会把**下一层**的新分叉一起压住（0930 实机：
+            # 点「报识别超时」后沿树继续下钻的方向被摊成正文段落，不出气泡）。
+            # 选项原文另有一层用途：气泡不进 message 正文，模型只能靠这里还原
+            # 「用户答的是哪一项」。
+            lines.append(
+                "【车辆】上一轮你给出的选项是（" + "／".join(last) + "），用户已选择「"
+                + _q + "」：按该选项的含义继续处理。若该方向下知识库仍有明确互斥的"
+                "分支、需再确认属于哪种才能继续，照常输出 vehicle_choices 出下一层选项。")
+        else:
+            lines.append(
+                "【车辆】上一轮你已给出选项（" + "／".join(last) + "）且用户尚未回答："
+                "不要重复给出选项；用户以选项原文回应时，按该选项的含义理解并继续处理。")
     lines.append(
         "【车辆】选项引导：当且仅当知识库检索内容对当前问题存在明确互斥的分支、"
         "需要确认用户属于哪种分支才能继续处理时，在输出 JSON 顶层增加 "
         "vehicle_choices 字段（字符串数组），填 2~3 个分支的简短短语——选项必须"
-        "来自知识库检索内容，不得编造；此时 message 只写一句引导问题，不要在正文"
-        "里罗列选项或编号。以下情形一律不输出该字段：知识库内容没有明确分支、"
+        "来自知识库检索内容，不得编造；分支多于 3 个时只给常见程度最高的 3 个，"
+        "并按该顺序排列，其余分支由用户自行描述；此时 message 只写一句引导"
+        "问题，不要在正文里罗列选项或编号。以下情形一律不输出该字段：知识库内容没有明确分支、"
         "问题可以直接回答、需要用户开放描述、应当转工单、上一轮已给出选项尚未"
         "回答、当前在收集工单信息。用户问的是故障码时不出选项，引导其直接输入"
         "完整故障码即可。")
@@ -512,7 +528,7 @@ def _session_state_block(state: "AgentState", memory) -> str:
         lines.extend(_up.splitlines())
     # 车辆定制模式块（XQE 试点）：扫码绑定会话的车型事实，先于工单事实；
     # 常规会话空串零开销
-    _vm = _vehicle_mode_block(memory)
+    _vm = _vehicle_mode_block(memory, getattr(state, "original_query", "") or "")
     if _vm:
         lines.extend(_vm.splitlines())
     _lt = state.last_submitted_ticket or {}
@@ -1862,7 +1878,7 @@ class AiDiagnosisPlatform:
         _user_block = _user_profile_block(state)
         # 车辆定制模式块（XQE 试点）：收集/快路径 prompt 不走 _session_state_block，
         # 在此与【用户】块同位注入——三套 prompt 都知道车型已绑定
-        _vehicle_block = _vehicle_mode_block(memory)
+        _vehicle_block = _vehicle_mode_block(memory, getattr(state, "original_query", "") or "")
         # 工单填写模式（对话路径 ticket_collecting / 按钮路径 prepare not_ready）
         if state.ticket_collecting:
             fields = "、".join(state.ticket_collecting)
@@ -5416,10 +5432,13 @@ class AiDiagnosisPlatform:
 
     @staticmethod
     def _validate_vehicle_choices(parsed: dict) -> Optional[List[str]]:
-        """车型追问选项机械校验（0930）：整体丢弃制，不部分挽救。
+        """车型追问选项机械校验（0930）：超标截断，救不到下限才整批丢弃。
 
-        通过条件：2~3 个非空字符串、单条 ≤30 字、去重后不变少。
-        任何不满足 → None（当普通回复处理——正文从不含选项，前端零变化）。
+        清洗链：丢非字符串/空串/超 30 字/重复 → 不足 2 条整批丢弃 → 超 3 条截前 3。
+        截断而不整批丢弃：车辆块明令"不要在正文里罗列选项或编号"，丢弃时用户
+        既没按钮也没清单，等于彻底卡死；截断至少给出 3 条 + 输入框「其他」兜底，
+        正好落回分叉树「1/2/3/其他」的设计。截断取模型给的顺序（prompt 已要求
+        取最常见的 3 个），服务端不做语义判断，全是机械操作。
         submit（话术已被服务端接管）由调用侧先行丢弃。
         """
         vc = parsed.get("vehicle_choices")
@@ -5428,13 +5447,19 @@ class AiDiagnosisPlatform:
         clean = []
         for x in vc:
             if not isinstance(x, str):
-                return None
+                continue
             s = x.strip()
-            if not s or len(s) > 30:
-                return None
+            if not s or len(s) > 30 or s in clean:
+                continue
             clean.append(s)
-        if not (2 <= len(clean) <= 3) or len(set(clean)) != len(clean):
+        if len(clean) < 2:
+            # 一条选项不成题，无可展示——此时只能整批丢弃（正文里本就没有列表）
+            logger.info(f"[vehicle_mode] 车辆选项清洗后不足 2 条，整批丢弃: {vc}")
             return None
+        if len(clean) > 3:
+            # 截断只少分支，丢弃是零可选——取模型排过序的前 3，其余走输入框
+            logger.info(f"[vehicle_mode] 车辆选项超上限({len(clean)}条)，截前 3: {clean}")
+            clean = clean[:3]
         return clean
 
     # ================================================================
@@ -5725,6 +5750,17 @@ class AiDiagnosisPlatform:
             # 与草稿守卫同理：挂着就回落主循环。
             _pending_proj_ask = bool(getattr(state, "project_candidates", None))
 
+            # 车型会话（XQE 试点）必须走主循环。车辆选项引导规则
+            # （_vehicle_mode_block）和出选项的唯一出口（主循环 JSON 顶层
+            # vehicle_choices → _validate_vehicle_choices → _finalize_diagnosis
+            # → result.vehicle_choices）都只挂在主循环上；单轮分支和工具循环
+            # 分支是纯文本流式，既拿不到那条规则也没有能携带选项的字段。一旦
+            # 落进去，模型只能把分叉树整个摊平在正文里（0930 实锤：卸货/放货
+            # 异常整张 A~G 表直出，前端一个气泡都拿不到）。与 _has_draft /
+            # _pending_proj_ask 守卫同理：缺协议的分支不进。
+            _in_vehicle_mode = bool(
+                (memory.metadata.get("vehicle_mode") or {}).get("model"))
+
             if _intent == "ticket":
                 # 提单意图 → 不需要知识库检索。
                 reference_docs = "（提单轮跳过检索）"
@@ -5774,7 +5810,9 @@ class AiDiagnosisPlatform:
                     _prefetch_decide.add_done_callback(_swallow_prefetch)
                     logger.info(f"[stream] decide 预跑已启动(与主LLM并行): "
                                 f"session={request.session_id}")
-            elif _intent == "diagnosis" and os.getenv("AI_DIAGNOSIS_TOOL_LOOP", "") == "1":
+            elif (_intent == "diagnosis"
+                  and os.getenv("AI_DIAGNOSIS_TOOL_LOOP", "") == "1"
+                  and not _in_vehicle_mode):
                 # 诊断意图 → 走诊断工具循环（search_kb + submit_ticket）。
                 # LLM 自主决定：查不查知识库、查什么、查几次，再生成回答；
                 # 也可顺势提单（submit_ticket 也在工具列表里）。
@@ -5792,7 +5830,8 @@ class AiDiagnosisPlatform:
                 # 项目题挂着未答同理（见 _pending_proj_ask 注释）：序号/名称回答
                 # 需要主协议还原，单轮分支没有候选也没有协议。
                 _has_draft = bool(memory.metadata.get("ticket_draft"))
-                if not _needs_kb and not _has_draft and not _pending_proj_ask:
+                if (not _needs_kb and not _has_draft and not _pending_proj_ask
+                        and not _in_vehicle_mode):
                     # 诊断但无需知识库（续接轮/通用对话）：单轮分支自带最近 8 轮对话
                     # + 省略式追问承接规则，靠上文即可作答，省下 rerank 等检索尾延。
                     # plan-execute 开时以规划器为准：它判了工具就执行（判无工具 → 空，
@@ -5809,10 +5848,20 @@ class AiDiagnosisPlatform:
                     return
                 # 诊断单轮：等资料（plan-execute=执行规划工具；否则并发检索）
                 # → 小 prompt 1 次 LLM 直接回答（无工具往返）
-                reference_docs = await _get_reference_docs()
-                if _has_draft or _pending_proj_ask:
-                    logger.info(f"[stream] 草稿/项目题挂着，诊断意图回落主循环"
-                                f"（防序号回答掉进无候选无协议的单轮分支）: "
+                # 车型会话的 nokb 轮仍要回落主循环（出选项的协议只在那儿），但
+                # 沿用 nokb 的省检索纪律：续接语的检索词本身就是噪声，召回的无关
+                # 内容反而会污染选项；plan-execute 开时照旧执行规划工具
+                # （lookup_ticket 等要挂 state）。
+                if _in_vehicle_mode and not _needs_kb and _plan_task is None:
+                    reference_docs = ""
+                    _cancel_prefetch()
+                    logger.info(f"[stream] 车型会话 nokb 轮回落主循环（跳过检索）: "
+                                f"session={request.session_id}")
+                else:
+                    reference_docs = await _get_reference_docs()
+                if _has_draft or _pending_proj_ask or _in_vehicle_mode:
+                    logger.info(f"[stream] 草稿/项目题/车型会话挂着，诊断意图回落主循环"
+                                f"（防序号回答或车辆选项掉进无候选无协议的单轮分支）: "
                                 f"session={request.session_id}")
                 else:
                     logger.info(f"[stream] 诊断走单轮分支（服务端检索+1次LLM）: session={request.session_id}")
@@ -5826,9 +5875,13 @@ class AiDiagnosisPlatform:
                 # 「已取消草稿」而草稿根本没删。守卫：有待确认草稿时不走闲聊
                 # 分支，回落主循环（草稿轮铁律在那，取消/补充由 LLM 结构化判定）。
                 # 项目题挂着未答同理：答序号/「好的」要主协议还原或重新引导。
-                if memory.metadata.get("ticket_draft") or _pending_proj_ask:
-                    logger.info(f"[stream] 草稿/项目题挂着，闲聊意图回落主循环"
-                                f"（防取消话术/序号回答掉进无处理能力的单轮分支）: "
+                # 车型会话同理：短回复（选完选项后的「好的」「知道了」）常被判成
+                # 闲聊，落单轮分支就没有车辆块了，上一轮 last_choices 的承接规则
+                # 一并丢失，用户再追问一嘴分叉又得整张表直出。
+                if (memory.metadata.get("ticket_draft") or _pending_proj_ask
+                        or _in_vehicle_mode):
+                    logger.info(f"[stream] 草稿/项目题/车型会话挂着，闲聊意图回落主循环"
+                                f"（防取消话术/序号回答/车辆选项掉进无处理能力的单轮分支）: "
                                 f"session={request.session_id}")
                     reference_docs = await _get_reference_docs()
                 else:
@@ -5848,13 +5901,17 @@ class AiDiagnosisPlatform:
                         yield ev
                     return
             else:
-                # 兜底（意图识别失败按 diagnosis 处理）：等资料 → 单轮分支
+                # 兜底（意图识别失败按 diagnosis 处理）：等资料 → 单轮分支。
+                # 车型会话回落主循环（车辆选项协议只在那儿）。
                 reference_docs = await _get_reference_docs()
-                logger.info(f"[stream] 意图兜底走单轮分支: session={request.session_id}")
-                async for ev in self._diagnosis_oneshot_branch(
-                        request, state, memory, reference_docs, fill_problem_summary=True):
-                    yield ev
-                return
+                if _in_vehicle_mode:
+                    logger.info(f"[stream] 车型会话兜底回落主循环: session={request.session_id}")
+                else:
+                    logger.info(f"[stream] 意图兜底走单轮分支: session={request.session_id}")
+                    async for ev in self._diagnosis_oneshot_branch(
+                            request, state, memory, reference_docs, fill_problem_summary=True):
+                        yield ev
+                    return
 
         t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
         logger.info(f"[stream] 检索完成: {t_stream['retrieve']}ms, docs_len={len(reference_docs)}"

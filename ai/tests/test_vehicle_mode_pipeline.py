@@ -10,6 +10,7 @@
 - 检索域换成车型域优先配额
 """
 import pytest
+from unittest.mock import AsyncMock
 
 from ai.agents.AiDiagnosisPlatform.pipeline import (
     AiDiagnosisPlatform,
@@ -54,6 +55,9 @@ def test_vehicle_block_renders_fields():
     # 0930 选项引导规则
     assert "vehicle_choices" in out
     assert "不得编造" in out
+    # 超上限时只给最常见的 3 个（与 _validate_vehicle_choices 的截断配套：
+    # 截断取前 3，所以 prompt 必须要求模型自己排好序）
+    assert "常见程度最高的 3 个" in out
 
 
 def test_vehicle_block_last_choices():
@@ -65,6 +69,65 @@ def test_vehicle_block_last_choices():
     assert "行驶途中停下" in out
     # 无 last_choices 不注入该段
     assert "上一轮你已给出选项" not in _vehicle_mode_block(_memory(_VM))
+
+
+# ---- 选项已作答（0930 修 B：下一层分叉被「不要重复给出选项」压住）----
+# last_choices 是**上一轮结束时**写的，本轮构建 prompt 时它还在；文案却断言
+# 「用户尚未回答」。用户点了选项原文后该前提已不成立，而「不要重复给出选项」
+# 会连**下一层**的新分叉一起压住（实机：点「报识别超时」沿树下钻的方向被摊
+# 成正文段落、不出气泡）。判定依据＝本轮 query 是否为选项原文。
+
+def test_vehicle_block_answered_choice_drops_stale_rule():
+    vm = dict(_VM, last_choices=["报识别超时", "反复调整后任务失败"])
+    out = _vehicle_mode_block(_memory(vm), "报识别超时")
+    assert "用户已选择「报识别超时」" in out
+    assert "且用户尚未回答" not in out
+    assert "不要重复给出选项" not in out
+    # 必须放行下一层选项：多层的分叉（1.1 行驶途中停下 → 界面提示 → A~F）才走得下去
+    assert "出下一层选项" in out
+
+
+def test_vehicle_block_answered_choice_tolerates_whitespace():
+    vm = dict(_VM, last_choices=["报识别超时"])
+    assert "用户已选择「报识别超时」" in _vehicle_mode_block(_memory(vm), "  报识别超时 ")
+
+
+def test_vehicle_block_unanswered_keeps_stale_rule():
+    """用户这轮没答选项（问的是别的）→ 保持旧规则，防重复出题。"""
+    vm = dict(_VM, last_choices=["报识别超时", "反复调整后任务失败"])
+    out = _vehicle_mode_block(_memory(vm), "这台车现在在几号库位")
+    assert "尚未回答" in out
+    assert "不要重复给出选项" in out
+    assert "用户已选择" not in out
+
+
+def test_vehicle_block_no_query_backward_compatible():
+    """不传 query（旧调用形态）按尚未回答处理，行为零变化。"""
+    vm = dict(_VM, last_choices=["报识别超时"])
+    assert "尚未回答" in _vehicle_mode_block(_memory(vm))
+
+
+def test_session_state_passes_query_to_vehicle_block(make_state):
+    """集成：_session_state_block 是本轮 query 的透传口（主循环 prompt 的注入口）。"""
+    state = make_state(original_query="报识别超时")
+    mem = _memory(dict(_VM, last_choices=["报识别超时", "反复调整后任务失败"]))
+    out = _session_state_block(state, mem)
+    assert "用户已选择「报识别超时」" in out
+    assert "且用户尚未回答" not in out
+
+
+def test_collect_prompt_passes_query_to_vehicle_block():
+    """收集/快路径 prompt（另一注入点）同样透传——三套 prompt 必须一致，
+    否则收集轮里用户点了选项又会被当成新分叉压住。"""
+    from ai.agents.AiDiagnosisPlatform.pipeline import AgentState as _AS
+
+    p = AiDiagnosisPlatform()
+    mem = _memory(dict(_VM, last_choices=["报识别超时", "反复调整后任务失败"]))
+    state = _AS(session_id="s-vm", phase="idle",
+                original_query="报识别超时", problem_summary="报识别超时")
+    out = p._build_diagnosis_prompt(state, mem, "")
+    assert "用户已选择「报识别超时」" in out
+    assert "且用户尚未回答" not in out
 
 
 def test_vehicle_block_minimal_fields():
@@ -222,17 +285,30 @@ def test_validate_vehicle_choices_ok():
     assert p._validate_vehicle_choices({"vehicle_choices": [" a ", "b"]}) == ["a", "b"]
 
 
+def test_validate_vehicle_choices_truncates():
+    """超上限截前 3 而不是整批丢弃：分叉树节点最多 7 个分支，全丢 = 用户零可选
+    （正文里明令不许列选项，连清单都没有），截断只少分支且输入框「其他」兜底。"""
+    p = AiDiagnosisPlatform()
+    got = p._validate_vehicle_choices(
+        {"vehicle_choices": ["识别超时", "反复调整后失败", "货物滑动倒塌", "空库位报有物料"]})
+    assert got == ["识别超时", "反复调整后失败", "货物滑动倒塌"]
+    assert len(p._validate_vehicle_choices(
+        {"vehicle_choices": [f"分支{i}" for i in range(7)]})) == 3
+    # 清洗 + 去重后仍够 2 条 → 照样可展示（截断取模型给的顺序）
+    assert p._validate_vehicle_choices(
+        {"vehicle_choices": ["a", "a", "b", "c", "d"]}) == ["a", "b", "c"]
+
+
 def test_validate_vehicle_choices_rejects():
-    # 整体丢弃制：任一不满足 → None（当普通回复处理）
+    """只有机械挽救后不足 2 条才整批丢弃——一条选项不成题，无从展示。"""
     p = AiDiagnosisPlatform()
     bad = [
         None, [],                       # 非法/空
         ["只有一项"],                    # <2
-        ["a", "b", "c", "d"],           # >3
-        ["a", 123],                     # 非字符串元素
-        ["a", "   "],                   # 空串
-        ["x" * 31, "y"],                # 单条超 30 字
-        ["同", "同"],                    # 去重变少
+        ["同", "同"],                    # 去重后只剩 1 条
+        ["a", 123],                     # 非字符串被清洗掉 → 1 条
+        ["a", "   "],                   # 空串被清洗掉 → 1 条
+        ["x" * 31, "y"],                # 超 30 字被清洗掉 → 1 条
     ]
     for vc in bad:
         assert p._validate_vehicle_choices({"vehicle_choices": vc}) is None, vc
@@ -351,3 +427,162 @@ async def _boom_async(*a, **k):
 async def _boom_stream(*a, **k):
     raise AssertionError("故障码短接不应调用 LLM")
     yield  # pragma: no cover
+
+
+# ================================================================
+# 车型会话必须走主循环（0930 修复 A）
+#
+# 病根：车辆选项引导规则只注入主循环 prompt（_vehicle_mode_block），出选项的唯一
+# 出口也只挂在主循环（JSON 顶层 vehicle_choices → _validate_vehicle_choices →
+# _finalize_diagnosis → result.vehicle_choices → 前端气泡）。诊断意图默认落单轮
+# 分支——纯文本流式，既没有那条规则也没有能携带选项的字段，模型只能把分叉树整张
+# 表摊平在正文里（实锤：卸货/放货异常 A~G 全表直出，前端零气泡）。
+# 本组用例走真实入口 _agent_think_stream，断言路由分流与 result 取数口。
+# ================================================================
+
+async def _route_probe(platform, monkeypatch, query, *, vehicle):
+    """真实入口跑一轮，返回三分支各自的进入次数。"""
+    from ai.agents.AiDiagnosisPlatform.pipeline import AgentState
+
+    calls = {"oneshot": 0, "mainloop": 0, "tool_loop": 0}
+
+    async def _oneshot_spy(*a, **k):
+        calls["oneshot"] += 1
+        return
+        yield  # pragma: no cover
+
+    async def _tool_loop_spy(*a, **k):
+        calls["tool_loop"] += 1
+        return
+        yield  # pragma: no cover
+
+    _orig_build = platform._build_diagnosis_prompt
+
+    def _build_spy(*a, **k):
+        calls["mainloop"] += 1
+        return _orig_build(*a, **k)
+
+    async def _dual(q, domain, top_k=8, query_filter=None):
+        return [], []
+
+    monkeypatch.setattr(platform, "_diagnosis_oneshot_branch", _oneshot_spy)
+    monkeypatch.setattr(platform, "_diagnosis_tool_loop_branch", _tool_loop_spy)
+    monkeypatch.setattr(platform, "_build_diagnosis_prompt", _build_spy)
+    platform._retriever.retrieve_domain_dual = _dual
+
+    sid = f"route-{'vm' if vehicle else 'normal'}-{hash(query) & 0xffff}"
+    mem = await platform._memory_manager.get_memory(sid)
+    if vehicle:
+        mem.metadata["vehicle_mode"] = dict(_VM, opening_choices=list(_OPEN_CATS))
+    state = AgentState(session_id=sid, phase="idle",
+                       original_query=query, problem_summary=query)
+    request = type("R", (), {})()
+    request.session_id = sid
+    request.query = query
+    request.skip_retrieval = False
+    request.created_by = "tester"
+    async for _ev in platform._agent_think_stream(request, state, mem):
+        pass
+    return calls
+
+
+async def test_vehicle_session_goes_main_loop(platform, monkeypatch):
+    """车型会话：点开场类目后追问分叉，必须回落主循环（车辆块+选项协议只在那儿）。
+    查询串就是开场气泡的原文（= 用户点按钮发出的那条），与实机复现同形。"""
+    calls = await _route_probe(platform, monkeypatch, "堆垛失败", vehicle=True)
+    assert calls["mainloop"] == 1, "车型会话必须构建主循环 prompt"
+    assert calls["oneshot"] == 0, "车型会话不得落单轮分支（无车辆块、无选项字段）"
+
+
+async def test_normal_session_keeps_oneshot(platform, monkeypatch):
+    """常规会话同一问题仍走单轮分支——守卫不得外溢影响既有路径。"""
+    calls = await _route_probe(platform, monkeypatch, "堆垛失败", vehicle=False)
+    assert calls["oneshot"] == 1, "常规会话默认路径零变化"
+    assert calls["mainloop"] == 0
+
+
+async def test_vehicle_session_ignores_diagnosis_tool_loop(platform, monkeypatch):
+    """诊断工具循环开关开着也不接管车型会话（那里同样没有选项协议）。"""
+    monkeypatch.setenv("AI_DIAGNOSIS_TOOL_LOOP", "1")
+    calls = await _route_probe(platform, monkeypatch, "车辆停着不动", vehicle=True)
+    assert calls["tool_loop"] == 0, "车型会话不得进工具循环"
+    assert calls["mainloop"] == 1
+
+
+async def test_vehicle_session_choices_reach_result_event(platform, monkeypatch):
+    """出题轮的 vehicle_choices 必须随 result 下发并记 last_choices——
+    这是前端唯一的气泡来源，也是本修复的最终产物断言。"""
+    import json as _json
+    from ai.agents.AiDiagnosisPlatform.pipeline import AgentState
+
+    async def _dual(q, domain, top_k=8, query_filter=None):
+        return [], []
+
+    platform._retriever.retrieve_domain_dual = _dual
+    _choices = ["货放歪/没对准", "卸货报识别超时"]
+    platform._llm_client.complete = AsyncMock(side_effect=lambda *a, **k: (
+        '```json\n' + _json.dumps({
+            "thinking": "知识库有互斥分支",
+            "action": "answer",
+            "message": "具体是什么表现？",
+            "vehicle_choices": _choices,
+        }, ensure_ascii=False) + '\n```'))
+
+    sid = "vm-choices-result"
+    mem = await platform._memory_manager.get_memory(sid)
+    mem.metadata["vehicle_mode"] = dict(_VM, opening_choices=list(_OPEN_CATS))
+    state = AgentState(session_id=sid, phase="idle",
+                       original_query="堆垛失败", problem_summary="堆垛失败")
+    request = type("R", (), {})()
+    request.session_id = sid
+    request.query = "堆垛失败"
+    request.skip_retrieval = False
+    request.created_by = "tester"
+    result = None
+    async for ev in platform._agent_think_stream(request, state, mem):
+        if ev["event"] == "result":
+            result = ev["data"]
+    assert result is not None, "必须发出 result 事件"
+    assert result.get("vehicle_choices") == _choices, "选项必须随 result 下发到前端"
+    assert mem.metadata["vehicle_mode"]["last_choices"] == _choices, \
+        "出题轮必须记 last_choices（下一轮不重复出题）"
+
+
+async def test_vehicle_session_over_limit_still_gets_buttons(platform, monkeypatch):
+    """端到端兜住最坏情形：模型照抄 4 个分支（分叉树常见）→ 截前 3 下发。
+    回归「用户看到一句没按钮的空问题」——那条路径上正文里没有列表，
+    选项一旦被整批丢掉，用户就彻底无从选择。"""
+    import json as _json
+    from ai.agents.AiDiagnosisPlatform.pipeline import AgentState
+
+    async def _dual(q, domain, top_k=8, query_filter=None):
+        return [], []
+
+    platform._retriever.retrieve_domain_dual = _dual
+    # ## 4. 堆叠/堆垛失败 的 A~D 四个分支，模型原样照抄
+    _branches = ["报识别超时", "反复调整后任务失败", "堆垛后货物滑动/倒塌", "空库位报识别到物料"]
+    platform._llm_client.complete = AsyncMock(side_effect=lambda *a, **k: (
+        '```json\n' + _json.dumps({
+            "thinking": "知识库有四个互斥分支",
+            "action": "answer",
+            "message": "具体是什么表现？",
+            "vehicle_choices": _branches,
+        }, ensure_ascii=False) + '\n```'))
+
+    sid = "vm-choices-over-limit"
+    mem = await platform._memory_manager.get_memory(sid)
+    mem.metadata["vehicle_mode"] = dict(_VM, opening_choices=list(_OPEN_CATS))
+    state = AgentState(session_id=sid, phase="idle",
+                       original_query="堆垛失败", problem_summary="堆垛失败")
+    request = type("R", (), {})()
+    request.session_id = sid
+    request.query = "堆垛失败"
+    request.skip_retrieval = False
+    request.created_by = "tester"
+    result = None
+    async for ev in platform._agent_think_stream(request, state, mem):
+        if ev["event"] == "result":
+            result = ev["data"]
+    assert result is not None
+    assert result.get("vehicle_choices") == _branches[:3], \
+        "超上限必须截前 3 下发，不得整批丢失（丢了用户就没按钮了）"
