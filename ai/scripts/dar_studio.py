@@ -142,6 +142,14 @@ def ensure_tunnel() -> bool:
                  SSH_HOST],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("ssh DB 隧道启动：13306→3306（独立进程，挂了不影响主隧道）")
+            # 0929：等端口就绪再返回——跑流程的子进程几秒内就要连 13306
+            # （检索链路读用户画像），Popen 后立即返回有竞态。超时不阻塞
+            # （流程照跑，只是 DB 依赖的环节会各自报错）。
+            for _ in range(24):
+                if _port_open(13306):
+                    print("ssh DB 隧道就绪：13306→3306")
+                    break
+                time.sleep(0.25)
     return _tunnel["ready"]
 
 
@@ -513,6 +521,10 @@ async def run(req: RunReq):
             raise HTTPException(400, "env 取值 test|prod")
         if not req.steps:
             raise HTTPException(400, "steps 为空（dar 运行必须带步骤）")
+        # 0929 实锤：重启进程后直接点 L3 → DB 隧道（13306）没起 → retrieval
+        # 走真实 pipeline 读用户画像时 pymysql 2003 拒绝。隧道懒启动只在登录/
+        # 走查展开时触发，跑流程必须自己拉起（主隧道 retrieval 连 qdrant 也要）。
+        ensure_tunnel()
         args = [sys.executable, os.path.join(HERE, "dar_weekly.py"), "--env", req.env]
         if req.note:
             args += ["--note", req.note]
@@ -683,54 +695,46 @@ def _weekly_files(env: str):
 
 
 def _realtime_rates(env: str):
-    """三口径即时读各步产物算（不依赖周报）：L1←l1 汇总、L3←judge 预标分布、
-    L2←人工标注文件（保存到工作台即出）。周报（第五步吸收）出同分母口径后
-    以周报为准，实时值只是过程口径。"""
-    from collections import Counter as _Ctr
-    proc = os.path.join(DATA_ROOT, env, "processed")
+    """三口径实时值（0929 统一）：L2/L3 与漏斗同源同分母——漏斗 qa 四层段
+    （真实咨询已判定，人工优先取 eff），L2=直答正确段（=漏斗直答率同数），
+    L3=同分母下 AI 预标直答正确。L1=l1 汇总全量上界，口径独立标注。"""
     rt = {}
-    fs = sorted(glob.glob(os.path.join(proc, "direct_answer_summary_*.json")))
+    # L2/L3：漏斗同源——分母=漏斗「已判定口径」三层（answered/unanswered/
+    # uncovered；undetermined 无结论不进，与漏斗 direct_rate 严格同数）
+    rows, meta = _seg_rows(env)
+    if rows:
+        qa = [r for r in rows if r["layer"] in ("answered", "unanswered",
+                                                "uncovered")]
+        if qa:
+            l2_ok = sum(1 for r in qa if r["eff"] == "直答正确")
+            pre_by = {}
+            fj = sorted(glob.glob(os.path.join(proc_dir(env), "l3_judge_all_*.json")))
+            if fj:
+                for r in json.load(open(fj[-1], encoding="utf-8")):
+                    pre_by[(str(r.get("cid")), r.get("astart"))] = r.get("pre")
+            l3_ok = sum(1 for r in qa
+                        if pre_by.get((str(r["cid"]), r["astart"])) == "直答正确")
+            rt["L2_人工"] = (
+                f"端到端 {l2_ok / len(qa) * 100:.1f}%（{l2_ok}/{len(qa)}）"
+                f"｜与漏斗同口径（真实咨询已判定，人工优先·AI 兜底）")
+            rt["L3_AI同段"] = (
+                f"端到端 {l3_ok / len(qa) * 100:.1f}%（{l3_ok}/{len(qa)}）"
+                f"｜与 L2 同分母（AI 预标直答正确，judge 偏宽）")
+    # L1：l1 汇总全量上界
+    fs = sorted(glob.glob(os.path.join(proc_dir(env), "direct_answer_summary_*.json")))
     if fs:
         s = json.load(open(fs[-1], encoding="utf-8"))
         ms = [v for k, v in (s.get("stats") or {}).items() if k.startswith("真实组|")]
-        sq, st = (sum(m.get("segs_q", 0) for m in ms),
-                  sum(m.get("segs_ticket", 0) for m in ms))
+        sq = sum(m.get("segs_q", 0) for m in ms)
+        st = sum(m.get("segs_ticket", 0) for m in ms)
         if sq:
             rt["L1_段级"] = (f"话题级 {(1 - st / sq) * 100:.1f}%（{sq - st}/{sq}）"
-                            "上界近似（未吸收标注）")
-    fj = sorted(glob.glob(os.path.join(proc, "l3_judge_all_*.json")))
-    if fj:
-        rows = json.load(open(fj[-1], encoding="utf-8"))
-        sub = [r for r in rows if r.get("grp") == "真实组" and r.get("pre")]
-        p = _Ctr(r["pre"] for r in sub)
-        ok, bad, unc = p.get("直答正确", 0), p.get("未直答", 0), p.get("未覆盖", 0)
-        if ok + bad:
-            rt["L3_AI同段"] = (
-                f"端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
-                f"｜确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
-                f"｜全段 {len(sub)}（未吸收标注）")
-    mp = _manual_path(env)
-    split = os.path.join(proc, "conversations_split.jsonl")
-    if os.path.exists(mp) and os.path.exists(split):
-        man = json.load(open(mp, encoding="utf-8"))
-        convs = {}
-        with open(split, encoding="utf-8") as fh:
-            for line in fh:
-                if line.strip():
-                    c = json.loads(line)
-                    convs[str(c["conversation_id"])] = c
-        legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
-        c = _Ctr(legacy.get(v, v)
-                 for cid, lm in (man.get("labels") or {}).items()
-                 if not (convs.get(cid) or {}).get("is_tester")
-                 for v in lm.values())
-        ok, bad, unc = c["直答正确"], c["未直答"], c["未覆盖"]
-        if ok + bad:
-            rt["L2_人工"] = (
-                f"端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
-                f"｜确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
-                f"｜已标 {ok + bad + unc} 段（标注即出，未跑吸收）")
+                            f"｜分母=全部真实咨询段（含提单段），上界（未吸收标注）")
     return rt
+
+
+def proc_dir(env: str):
+    return os.path.join(DATA_ROOT, env, "processed")
 
 
 def _realtime_small(env: str):
@@ -758,7 +762,7 @@ def _realtime_small(env: str):
     if not (os.path.exists(mp) and os.path.exists(split) and fj):
         return small
     try:
-        legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+        legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
         man = json.load(open(mp, encoding="utf-8"))
         labs_man = {}
         for cid, lm in (man.get("labels") or {}).items():
@@ -875,15 +879,21 @@ def metrics(env: str = "prod"):
 
     hero, small = [], []
     same = rep.get("dar_rates_same_base") or {}
-    # hero 优先级：本环境周报同分母口径 > 本环境过程产物实时值（各步跑完
-    # 即时刷新，不等第五步）；两者皆无才落到回退环境的数
+    # hero 优先级（0929 用户实锤「一直是最久之前的数据」）：实时值优先（l1r/
+    # 预标/人工标注跑完即刷，不等 report 步），周报同分母口径退居 sub 对照——
+    # 周报每周才出一次，旧周报压着新产物的展示不合理
     zh = {"L1_段级": ("L1 机器信号", "未出单即算直答（上界）"),
           "L2_人工": ("L2 人工标注", "端到端真实口径（未覆盖计入分母）· 真值"),
           "L3_AI同段": ("L3 AI 预标", "端到端含未覆盖 · 以 L2 为真值评估 · judge 偏宽仅供参考")}
     for k, (label, sub) in zh.items():
-        v = same.get(k) or rt.get(k)
+        v, vsrc = ((rt.get(k), "实时") if rt.get(k)
+                   else (same.get(k), "周报") if same.get(k) else (None, ""))
         if v:
-            hero.append({"label": label, "value": _pct(v), "sub": f"{v} · {sub}"})
+            extra = f" · {vsrc}口径" if vsrc else ""
+            if vsrc == "实时" and same.get(k):
+                extra += f"（上周周报 {same.get(k)}）"
+            hero.append({"label": label, "value": _pct(v),
+                         "sub": f"{v} · {sub}{extra}"})
     # 小卡即时算（KB 缺口/标注进度/precision/召回——产物到哪算到哪）；
     # 平均解决轮次依赖第五步吸收 review，仍由周报出
     small = _realtime_small(env if src == env else src)
@@ -965,7 +975,7 @@ def _seg_rows(env):
     """全量段级清单（漏斗六层数据源）：SPLIT 段边界 × L1 cls × L3/人工有效判定。
 
     layer 判定顺序：tester（会话级）→ chitchat（段内无 q=true）→ ticket
-    （eff=直接提单/建议转单）→ answered/unanswered/uncovered（eff）→
+    （eff=直接提单）→ answered/unanswered/uncovered（eff）→
     undetermined（无任何判定，AI 未判到且未人工标注）。
     返回 (rows, meta)；rows 每段一行。"""
     proc = os.path.join(DATA_ROOT, env, "processed")
@@ -995,7 +1005,7 @@ def _seg_rows(env):
     mp = _manual_path(env)
     if os.path.exists(mp):
         man = json.load(open(mp, encoding="utf-8"))
-        legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+        legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
         for cid, lm in (man.get("labels") or {}).items():
             labs_man[str(cid)] = {int(k): legacy.get(v, v) for k, v in lm.items()
                                   if str(k).isdigit()}
@@ -1082,14 +1092,14 @@ def _seg_rows(env):
                     # fresh import 只有 seg_ticketed 没预标 → 归 undetermined
                     # （0915 用户反馈：今天新导入的进了直接提单——没判定不应进已判定层）
                     layer = "ticket"
-                elif man and eff in ("直接提单", "建议转单"):
+                elif man and eff == "直接提单":
                     # 人工确认是提单类——归转工单层
                     layer = "ticket"
                 # L1 无咨询信号判寒暄——但有人工标签时标签优先（走查发现误判，
                 # 点任一标签即从寒暄层捞进对应层）
                 elif not any(s.get("q") for s in seg_cls) and not man:
                     layer = "chitchat"
-                elif eff in ("直接提单", "建议转单"):
+                elif eff == "直接提单":
                     # L3 预标 + 未人工确认——不归 ticket，归 undetermined 待走查
                     layer = "undetermined"
                 elif eff == "直答正确":
@@ -1164,29 +1174,29 @@ def _funnel_layers(rows):
         "total": total, "tester": tester, "chitchat": chitchat, "ticket": ticket,
         "suggested": suggested,
         "qa": qa, "answered": answered, "unanswered": unanswered,
-        "uncovered": uncovered, "undetermined": undet,
+        "uncovered": uncovered, "undetermined": undet, "judged": judged,
         "direct_rate": round(answered / judged * 100, 1) if judged else None,
         "manual_rate": round(m_ok / (m_ok + m_bad) * 100, 1) if (m_ok + m_bad) else None,
         "manual_judged": m_ok + m_bad,
-        "reviewed": sum(1 for r in rows if r["src"] == "manual"),
+        "reviewed": sum(1 for r in rows if r["src"] == "manual"
+                        and r["layer"] in ("answered", "unanswered",
+                                           "uncovered", "undetermined")),
         "consistent": qa == answered + unanswered + uncovered + undet,
     }
 
 
-def _week_stats(rows: list, unprocessed: list | None = None) -> dict:
-    """本周（自然周，周一起）直答率：与漏斗同源同口径，人工标注后即刷。
+def _week_stats(rows: list, unprocessed: list | None = None,
+                anchor: str = "") -> dict:
+    """本轮直答率（0929 用户定调：不按自然周，按走查批次滚动——前端时间范围
+    选择器把起算日存 localStorage（wk_anchor，默认 9/21 上次运行日）随
+    /api/funnel 的 anchor 传入；锚点之后的段=本轮增量，人工标注后即刷。"""
+    def _norm(s):
+        return (s or "").replace("T", " ")[:16]
 
-    大字=周直答率（本周 qa 四层中直答正确占比）；小字=周新增段/已判定/直答数。
-    tester/suggested/chitchat/ticket 层的段计入"周新增"，不计入直答率分母。
-    0920：走查进度分母改「可标注段」=qa 四层已判定+未标注（本周）——tester/寒暄/
-    猜你想问/提单层本就无需人工标签，按全量新增算分母会让进度永不到 100
-    （用户实锤：全标完仍显示 36%）。"""
-    from datetime import datetime, timedelta
-    today = datetime.now()
-    monday = (today - timedelta(days=today.weekday())).strftime("%Y-%m-%d")
+    anchor_n = _norm(anchor)
     n_new = n_ans = n_unans = n_uncov = n_undet = n_sug_mix = 0
     for r in rows:
-        if (r.get("at") or "")[:10] < monday:
+        if anchor_n and _norm(r.get("at")) <= anchor_n:
             continue
         n_new += 1
         layer = r.get("layer")
@@ -1206,9 +1216,9 @@ def _week_stats(rows: list, unprocessed: list | None = None) -> dict:
             n_undet += 1
     judged = n_ans + n_unans + n_uncov + n_undet
     n_pending = sum(1 for i in (unprocessed or [])
-                    if (i.get("at") or "")[:10] >= monday)
+                    if not anchor_n or _norm(i.get("at")) > anchor_n)
     labelable = judged + n_pending + n_sug_mix
-    return {"monday": monday, "new_total": n_new, "judged": judged,
+    return {"monday": anchor_n[:10] or "", "new_total": n_new, "judged": judged,
             "answered": n_ans, "unanswered": n_unans, "uncovered": n_uncov,
             "undetermined": n_undet, "pending": n_pending, "sug_mix": n_sug_mix,
             "labelable": labelable,
@@ -1217,17 +1227,19 @@ def _week_stats(rows: list, unprocessed: list | None = None) -> dict:
 
 
 @app.get("/api/funnel")
-def funnel(env: str = "prod"):
+def funnel(env: str = "prod", anchor: str = ""):
     """漏斗六层计数 + 直答率（已判定口径）+ 复核进度 + 层守恒。
     unprocessed：fresh import + 无判定段（不进漏斗，独立可点的"未处理"模块）。
-    week：本周（自然周）直答率——人工标注后即刷，与漏斗同源同口径。"""
+    week：滚动窗口直答率——anchor=用户选的起算日（前端时间范围选择器），
+    锚点之后的段=本轮增量，人工标注后即刷。"""
     if env not in ("test", "prod"):
         raise HTTPException(400, "env 取值 test|prod")
     rows, meta = _seg_rows(env)
     if rows is None:
         return {"found": False, **meta}
     return {"found": True, "layers": _funnel_layers(rows),
-            "week": _week_stats(rows, meta.get("unprocessed", [])),
+            "week": _week_stats(rows, meta.get("unprocessed", []),
+                                anchor=anchor),
             "unprocessed": meta.get("unprocessed", []),
             "unprocessed_count": len(meta.get("unprocessed", [])),
             "meta": meta}
@@ -1265,7 +1277,7 @@ class LabelSegReq(BaseModel):
     label: str
 
 
-_LABELS_VALID = ("直答正确", "未直答", "未覆盖", "直接提单", "建议转单", "寒暄", "猜你想问")
+_LABELS_VALID = ("直答正确", "未直答", "未覆盖", "直接提单", "寒暄", "猜你想问")
 
 
 @app.post("/api/label_seg")
@@ -1650,7 +1662,7 @@ def layer_page(env: str = "prod", layer: str = ""):
                 f'<div class="turn"><div class="uq"><b>用户</b> · {esc(rr.get("at", ""))[:19]}'
                 f'<div>{esc(rr.get("q", ""))}</div>{imgs}</div>{acts}{ans}</div>')
         lbls = [("直答正确", "#2e9e5b"), ("未直答", "#d9534f"), ("未覆盖", "#d9534f"),
-                ("直接提单", "#d97706"), ("建议转单", "#d97706"), ("寒暄", "#98a2b3"),
+                ("直接提单", "#d97706"), ("寒暄", "#98a2b3"),
                 ("猜你想问", "#b45309")]
         # 标签只属于真实咨询层+猜你想问层（0916 定调真实层走查改判；0920 补
         # suggested——自动归层误判时就地改判，含「猜你想问」人工标签）。
@@ -1829,12 +1841,22 @@ def progress(env: str = "prod"):
 
 
 @app.get("/label_tool")
-def label_tool(env: str = "test"):
+def label_tool(env: str = "test", kind: str = "label"):
+    """kind=label 服务标注版 segmentation_tool.html（绿色界面）；
+    kind=bounds 服务切题版 segmentation_tool_bounds.html（蓝色界面）。
+    两文件 0920 拆分互不覆写——0929 实锤向导 tool0「生成并打开」仍硬编码
+    标注版，跑完切题打开的是上周旧标注页。"""
     if env not in ("test", "prod"):
         raise HTTPException(400, "env 取值 test|prod")
-    p = os.path.join(DATA_ROOT, env, "processed", "segmentation_tool.html")
+    if kind not in ("label", "bounds"):
+        raise HTTPException(400, "kind 取值 label|bounds")
+    fname = ("segmentation_tool_bounds.html" if kind == "bounds"
+             else "segmentation_tool.html")
+    p = os.path.join(DATA_ROOT, env, "processed", fname)
     if not os.path.exists(p):
-        raise HTTPException(404, "标注工具未生成（先运行「生成标注工具」步骤）")
+        hint = ("先运行第 3 步「人工切题」生成切题工具" if kind == "bounds"
+                else "先运行「生成标注工具」步骤")
+        raise HTTPException(404, f"{fname} 不存在（{hint}）")
     # no-cache：0909 实锤浏览器缓存旧页面——导数后重开工具还看到前天的会话与旧预标
     return FileResponse(p, headers={"Cache-Control": "no-cache"})
 

@@ -18,7 +18,7 @@ cls_all = {j["conversation_id"]: j["cls"] for j in
            (json.loads(l) for l in open(CLS, encoding="utf-8"))}
 man = json.load(open(MANUAL, encoding="utf-8"))
 bounds, labels = man.get("bounds") or {}, man.get("labels") or {}
-legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
 
 # ---- 1. 切分对比：AI topic vs 人工 bounds ----
 n_same_segs = n_diff_segs = n_same_bounds = n_moved = 0
