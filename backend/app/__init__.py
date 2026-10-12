@@ -30,6 +30,10 @@ from app.wechat.services.user_statistics_snapshot import (
     start_user_statistics_scheduler,
     stop_user_statistics_scheduler,
 )
+from app.services.notification_outbox_worker import (
+    start_notification_outbox_worker,
+    stop_notification_outbox_worker,
+)
 security = HTTPBearer()
 
 app = FastAPI(
@@ -88,11 +92,15 @@ async def startup_event():
     # 每个整点拉取昨日用户增减数据，并覆盖为该日期最新渠道明细
     start_user_statistics_scheduler()
 
+    # 通知排程投递：按接收人工作时间把 Outbox 中的待发提醒投递出去
+    start_notification_outbox_worker()
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     stop_user_info_snapshot_scheduler()
     stop_user_statistics_scheduler()
+    stop_notification_outbox_worker()
 
 app.add_middleware(
     CORSMiddleware,

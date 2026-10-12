@@ -11,7 +11,7 @@ import { Loading, Navbar } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
 import {
   MacUsers, MacTags, MacKeyRound, MacUserCog, MacShuffle, MacScrollText, MacClipboardList,
-  MacTable2,
+  MacTable2, MacCalendarDays,
 } from '@/shared/components/macaronIcons';
 import ReactECharts from '@/shared/components/ReactECharts';
 import { fetchBatchUserInfo, fetchUserSummary, USER_SOURCE_LABELS } from '@/api/wechat';
@@ -21,6 +21,7 @@ import { PERM_DISPATCH_DEV } from '@/shared/constants/dispatchDev';
 import { PERM_TASK_POLICY } from '@/pages/admin/TaskPolicyPage';
 // 权限常量放在 api 模块，避免入口页为拿一个字符串把整页拖进本包
 import { PERM_WECOM_SHEETS } from '@/api/wecomSheets';
+import { PERM_WORK_CALENDAR } from '@/api/workCalendar';
 
 interface Entry { path: string; label: string; desc: string; icon: ReactNode; tone: string; }
 
@@ -90,12 +91,14 @@ const adminEntries: Entry[] = [
   { path: '/admin/qrcode-manage', label: '二维码管理', desc: '带参数二维码批量创建、发布、状态流转', icon: <MacScrollText />, tone: 'blue-3' },
   { path: '/admin/operation-logs', label: '操作记录', desc: '操作日志审计与追溯', icon: <MacScrollText />, tone: 'blue-4' },
   { path: '/admin/wecom-sheets', label: '企微表格', desc: '企微智能表格接入、测试连接、定时同步', icon: <MacTable2 />, tone: 'blue-2' },
+  { path: '/admin/work-calendar', label: '工作日历', desc: '公司工作时间、法定节假日与调休（工单提醒按此推送）', icon: <MacCalendarDays />, tone: 'blue-3' },
   { path: '/admin/dispatch-dev', label: '开发者模式', desc: '派单调试、界面图鉴、可达环境、长期记忆', icon: <MacClipboardList />, tone: 'blue-4' },
 ];
 
 const DEV_ENTRY_PATH = '/admin/dispatch-dev';
 const TASK_POLICY_ENTRY_PATH = '/admin/task-policy';
 const WECOM_SHEETS_ENTRY_PATH = '/admin/wecom-sheets';
+const WORK_CALENDAR_ENTRY_PATH = '/admin/work-calendar';
 
 export default function AdminEntries() {
   const navigate = useNavigate();
@@ -103,11 +106,13 @@ export default function AdminEntries() {
   const canShowDispatchDev = useAuthStore((s) => s.hasPermission(PERM_DISPATCH_DEV));
   const canShowTaskPolicy = useAuthStore((s) => s.hasPermission(PERM_TASK_POLICY));
   const canShowWecomSheets = useAuthStore((s) => s.hasPermission(PERM_WECOM_SHEETS));
+  const canShowWorkCalendar = useAuthStore((s) => s.hasPermission(PERM_WORK_CALENDAR));
   const visibleEntries = adminEntries.filter(
     (e) =>
       (e.path !== DEV_ENTRY_PATH || canShowDispatchDev) &&
       (e.path !== TASK_POLICY_ENTRY_PATH || canShowTaskPolicy) &&
-      (e.path !== WECOM_SHEETS_ENTRY_PATH || canShowWecomSheets),
+      (e.path !== WECOM_SHEETS_ENTRY_PATH || canShowWecomSheets) &&
+      (e.path !== WORK_CALENDAR_ENTRY_PATH || canShowWorkCalendar),
   );
 
   // ── 用户统计：时间筛选默认最近 5 天（不含当天；微信数据 T+1 延迟，最早可查昨日） ──

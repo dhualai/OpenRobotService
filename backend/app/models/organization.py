@@ -23,6 +23,14 @@ class Company(Base):
     approved_at = Column(DateTime, nullable=True)
     reject_reason = Column(String(255), nullable=True, comment="驳回原因")
 
+    # === 工作日历（通知按接收人工作时间推送用）===
+    # 仅公司级，不做部门/用户级覆盖；按日的例外（法定节假日/调休）见 CompanyHoliday。
+    # 时段为**接收人本地时间**（HH:MM），由 services/working_time_service.py 解释。
+    work_start = Column(String(5), nullable=True, server_default="09:00", comment="工作开始时间 HH:MM（本地时间）")
+    work_end = Column(String(5), nullable=True, server_default="18:00", comment="工作结束时间 HH:MM（本地时间）")
+    workdays = Column(String(20), nullable=True, server_default="1,2,3,4,5",
+                      comment="工作日（ISO 星期，1=周一，逗号分隔）")
+
 
 class Department(Base):
     __tablename__ = "departments"

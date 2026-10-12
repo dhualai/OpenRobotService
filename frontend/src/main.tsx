@@ -125,6 +125,7 @@ const DispatchDev = lazyImport(() => import('@/pages/admin/DispatchDev'));
 const TaskPolicyPage = lazyImport(() => import('@/pages/admin/TaskPolicyPage'));
 const QrcodeManage = lazyImport(() => import('@/pages/admin/QrcodeManage'));
 const WecomSheetManage = lazyImport(() => import('@/pages/admin/WecomSheetManage'));
+const WorkCalendarManage = lazyImport(() => import('@/pages/admin/WorkCalendarManage'));
 const AdminLayout = lazyImport(() => import('@/shared/components/AdminLayout'));
 
 // 仪表盘下钻明细
@@ -245,6 +246,8 @@ const router = createBrowserRouter([
                   { path: 'qrcode-manage', element: <QrcodeManage /> },
                   // 企业微信表格数据源：新增表格 / 测试连接 / 立即同步 / 查看镜像
                   { path: 'wecom-sheets', element: <WecomSheetManage /> },
+                  // 公司工作日历：工作时间 + 法定节假日/调休（工单提醒按接收人工作时间推送）
+                  { path: 'work-calendar', element: <WorkCalendarManage /> },
                   // { path: 'progress', element: <ProgressBoard /> },       // 已并入 ProjectProgress
                   // { path: 'personnel', element: <PersonnelBoard /> },     // 已从导航移除
                   { path: 'project-edit/:id?', element: <ProjectEdit /> },

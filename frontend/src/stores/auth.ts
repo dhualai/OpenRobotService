@@ -1,6 +1,7 @@
 // Zustand 认证状态管理 - 合并 HelpDesk AuthContext + BackgroundService auth.js
 import { create } from 'zustand';
 import { createRequest, setToken as setApiToken, clearToken as clearApiToken, setLoggingOut } from '@/api/client';
+import { syncTimezone } from '@/api/profile';
 import API_CONFIG from '@/config/api';
 import {
   clearAllAuth,
@@ -250,6 +251,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
         writeStored('PROJECT_IDS', JSON.stringify(projectIds));
       } catch { /* SSR safe */ }
+      // 静默上报浏览器时区（「按接收人工作时间推送」用）；用户已锁定或值相同则不动
+      void syncTimezone();
       return hasAdminRole;
     } catch {
       set({ isAdmin: false });

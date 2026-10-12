@@ -316,6 +316,11 @@ class TicketCuibanNotification(BaseModel):
     notify_type: int = Field(..., description="通知类型")
     assigned_to: Optional[str] = Field(None, description="处理者ID")
     to_admin: Optional[bool] = Field(False, description="是否通知管理员")
+    # 紧急通道：为 True 时绕过接收人工作时间排程，立即推送（仅管理员可用）
+    force: Optional[bool] = Field(False, description="是否强制立即发送（跳过工作时间排程）")
+    # 触发次序标识：同一工单同一类型的第 N 次触发（如逾期第 2 天）用不同的 occurrence，
+    # 否则会被幂等键合并、只发一次
+    occurrence: Optional[str] = Field(None, description="触发次序标识，用于幂等去重（如 day2 / warn24h）")
 
 
 class TicketCreateNotificationRequest(BaseModel):

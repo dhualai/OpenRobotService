@@ -91,6 +91,12 @@ from app.models.organization import (
     Department,
 )
 
+# 公司工作日历（法定节假日 / 调休补班）
+from app.models.work_calendar import CompanyHoliday
+
+# 通知排程（Outbox）
+from app.models.notification import NotificationOutbox
+
 # 「产品→界面→功能」责任模块树（DB 主数据，导出到 config 供 AI Assigner）
 from app.models.module_tree import ModuleTree
 from app.models.module_tree_edit import ModuleTreeEdit
@@ -146,6 +152,10 @@ __all__ = [
     "Resource", "ResourceFolder", "ResourceType", "ResourceStatus", "StorageType",
     # organization
     "Company", "Department",
+    # work calendar
+    "CompanyHoliday",
+    # notification outbox
+    "NotificationOutbox",
     # module tree
     "ModuleTree", "ModuleTreeEdit", "ModuleTreeNode",
     # ui atlas

@@ -110,6 +110,10 @@ class IdentityService:
                     'duty_text': getattr(db_user, 'duty_text', None),
                     'supervisor_id': getattr(db_user, 'supervisor_id', None),
                     'phone': getattr(db_user, 'phone', None),
+                    'timezone': getattr(db_user, 'timezone', None),
+                    'timezone_locked': bool(getattr(db_user, 'timezone_locked', 0)),
+                    'timezone_source': getattr(db_user, 'timezone_source', None),
+                    'timezone_updated_at': getattr(db_user, 'timezone_updated_at', None),
                 }
             return None
         finally:
@@ -148,6 +152,10 @@ class IdentityService:
                     'duty_text': getattr(db_user, 'duty_text', None),
                     'supervisor_id': getattr(db_user, 'supervisor_id', None),
                     'phone': getattr(db_user, 'phone', None),
+                    'timezone': getattr(db_user, 'timezone', None),
+                    'timezone_locked': bool(getattr(db_user, 'timezone_locked', 0)),
+                    'timezone_source': getattr(db_user, 'timezone_source', None),
+                    'timezone_updated_at': getattr(db_user, 'timezone_updated_at', None),
                 }
             return None
         finally:
