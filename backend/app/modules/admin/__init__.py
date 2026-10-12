@@ -29,6 +29,7 @@ from app.modules.admin.api.task_policy import router as task_policy_router
 from app.modules.admin.api.qrcode import router as qrcode_router
 from app.modules.admin.api.wecom_sheets import admin_router as wecom_sheets_router
 from app.modules.admin.api.announcement import router as announcement_router
+from app.modules.admin.api.work_calendar import router as work_calendar_router
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 admin_router.include_router(knowledge_router)
@@ -58,3 +59,4 @@ admin_router.include_router(task_policy_router)
 admin_router.include_router(qrcode_router)
 admin_router.include_router(wecom_sheets_router)
 admin_router.include_router(announcement_router)
+admin_router.include_router(work_calendar_router)

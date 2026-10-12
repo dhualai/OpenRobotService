@@ -1,23 +1,29 @@
-"""工单截止时间预警 + 逾期通知 DAG（无状态版，无去重文件）。
+"""工单截止时间预警 + 逾期通知 DAG（排程版）。
 
-定期扫描处于 NEW / IN_PROGRESS / PENDING 状态的工单，按截止时间匹配规则发送通知。
-DAG 每整点执行，所有判断纯靠"当前时间"与"截止时间"的差值，无需持久化去重记录。
+定期扫描处于 NEW / IN_PROGRESS / PENDING_REQUESTED 状态的工单，识别「需要提醒」的逻辑事件，
+交给后端 **按接收人所在时区的工作时间** 排程发送（Outbox），DAG 本身不再直接推送。
 
 规则 1 — 临期预警（未逾期，不区分优先级，每单预警两次）：
-  - 第一次预警：距离截止时间 24~25 小时 → notify_type=9
-  - 第二次预警：距离截止时间 60~120 分钟 → notify_type=9
-  - 每个窗口宽 1 小时，DAG 每小时执行 1 次，天然每窗口最多命中 1 次，无需去重
+  - 第一次预警：距离截止时间 24~25 小时 → notify_type=9（occurrence=warn24h）
+  - 第二次预警：距离截止时间 60~120 分钟 → notify_type=9（occurrence=warn1h）
+  - 每个窗口宽 1 小时，DAG 每小时执行 1 次，天然每窗口最多命中 1 次
+  - 若触发时已错过「截止前最后一个工作时段末尾」，后端不再补发（status=skipped），
+    交由截止后的逾期提醒接管——例：周五 23:00 截止，warn24h 排到周五 17:30 发出，
+    warn1h 在周五 22:00 触发时该时刻已过，跳过
 
 规则 2 — 逾期（now >= deadline_at）：
-  - 逾期天数 = floor(逾期小时数 / 24)
-  - 逾期天数 = 0（0~24h）：通知受理人 → notify_type=6（模板6：工单逾期提醒）
+  - 逾期天数 N = floor(逾期小时数 / 24)
+  - 命中窗口：逾期小时数 ∈ [24N, 24N+1)，保证每个逾期天只命中一次
+  - 逾期天数 = 0（0~24h）：通知受理人 → notify_type=6
   - 逾期天数 ≥ 1（≥24h）：通知 受理人 + 受理人上级（user.supervisor_id）→ notify_type=6
-  - 触发时刻 = deadline_at 向上取整到整点（整点不变，非整点进位到下一整点）+ N天
-    DAG 在该整点执行时触发，每个逾期天只在 1 个整点触发，天然不重复，无需去重
-    例：deadline=17:00 → 17:00 触发；deadline=17:01 → 18:00 触发
+  - occurrence=day{N}，后端据此做幂等去重
 
-通知对象：
-  - cuiban-notification 接口支持前端传 assigned_to 指定通知对象；逾期升级时额外查 supervisor
+发送时机由后端决定（working_time_service），规则：
+  - 临期预警：截止在非工作时间 → 提前到「截止前最后一个工作时段末尾 -30min」
+    例：周五 23:00 截止 → 周五 17:30 发
+  - 逾期提醒：截止后 → 顺延到「截止后第一个工作时段开始」
+    例：周五 23:00 截止且已逾期 → 周一 09:00 发
+  - 节假日命中 → 顺延到节后首个工作日
 """
 from __future__ import annotations
 
@@ -44,8 +50,8 @@ NORMAL_MAX_HOURS = 25
 URGENT_MIN_MINUTES = 60
 URGENT_MAX_MINUTES = 120
 
-# 需要扫描的工单状态
-ACTIVE_STATUSES = "new,in_progress"
+# 需要扫描的工单状态（已挂起 pending 不参与提醒；暂停请求中仍持续计时）
+ACTIVE_STATUSES = "new,in_progress,pending_requested"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -88,23 +94,45 @@ def _get_user_supervisor(token: str, username: str) -> str | None:
         return None
 
 
-def _send_cuiban(token: str, ticket_id: int, notify_type: int, target_user: str | list[str] | None = None) -> bool:
-    """调用 cuiban-notification 接口；target_user 为 None 时自动用工单处理人"""
+def _send_cuiban(
+    token: str,
+    ticket_id: int,
+    notify_type: int,
+    target_user: str | list[str] | None = None,
+    occurrence: str | None = None,
+) -> str:
+    """调用 cuiban-notification 接口；target_user 为 None 时自动用工单处理人。
+
+    返回 "ok" / "skipped" / "error"：
+      - ok      ：已受理并排程
+      - skipped ：后端判定该提醒已错过有效时点（如临期预警的「最后一个工作时段末尾」
+                  已过），不予补发，交由截止后的逾期提醒接管
+      - error   ：调用失败
+    """
     if isinstance(target_user, list):
-        # 逐个发，保证每个都能收到
-        ok = True
-        for u in target_user:
-            if not _send_cuiban_single(token, ticket_id, notify_type, u):
-                ok = False
-        return ok
-    return _send_cuiban_single(token, ticket_id, notify_type, target_user)
+        results = [
+            _send_cuiban_single(token, ticket_id, notify_type, u, occurrence)
+            for u in target_user
+        ]
+        if "ok" in results:
+            return "ok"
+        return "skipped" if results and all(r == "skipped" for r in results) else "error"
+    return _send_cuiban_single(token, ticket_id, notify_type, target_user, occurrence)
 
 
-def _send_cuiban_single(token: str, ticket_id: int, notify_type: int, assigned_to: str | None) -> bool:
+def _send_cuiban_single(
+    token: str,
+    ticket_id: int,
+    notify_type: int,
+    assigned_to: str | None,
+    occurrence: str | None = None,
+) -> str:
     try:
         body: dict = {"ticket_id": ticket_id, "notify_type": notify_type}
         if assigned_to:
             body["assigned_to"] = assigned_to
+        if occurrence:
+            body["occurrence"] = occurrence
         resp = requests.post(
             f"{API_BASE_URL}/api/tasks/cuiban-notification",
             headers={"Authorization": f"Bearer {token}"},
@@ -112,15 +140,21 @@ def _send_cuiban_single(token: str, ticket_id: int, notify_type: int, assigned_t
             timeout=30,
         )
         if resp.status_code == 200:
-            return True
+            try:
+                scheduled = resp.json().get("scheduled") or []
+                if scheduled and all(s.get("status") == "skipped" for s in scheduled):
+                    return "skipped"
+            except Exception:
+                pass
+            return "ok"
         logger.error(
             f"工单 {ticket_id} notify_type={notify_type} assigned_to={assigned_to} "
             f"发送失败: {resp.status_code} {resp.text}"
         )
-        return False
+        return "error"
     except Exception as e:
         logger.error(f"工单 {ticket_id} notify_type={notify_type} 发送异常: {e}")
-        return False
+        return "error"
 
 
 # ── DAG 定义 ──────────────────────────────────────────
@@ -173,15 +207,19 @@ def ticket_deadline_notification_dag():
 
     @task
     def check_and_notify(token: str, tasks: list[dict]) -> dict:
-        """检查每条工单，分别处理临期预警 + 逾期升级（无状态，无去重文件）"""
+        """检查每条工单，识别「临期预警 / 逾期」事件并交给后端排程发送。
+
+        DAG 只负责**识别事件**，不再判断具体几点发送——发送时刻由后端按接收人
+        所在时区的工作时间计算（working_time_service），重复与否由 occurrence 幂等键保证。
+        """
         now = datetime.now(TZ_SHANGHAI)
-        # 当前整点（去掉分钟/秒），用于逾期触发判断
-        now_hour_floor = now.replace(minute=0, second=0, microsecond=0)
 
         stats = {
             "warning_sent": 0,
+            "warning_skipped": 0,
             "overdue_assignee": 0,
             "overdue_escalate": 0,
+            "overdue_skipped": 0,
             "skipped_no_deadline": 0,
         }
 
@@ -201,46 +239,40 @@ def ticket_deadline_notification_dag():
             minutes_to_deadline = (deadline - now).total_seconds() / 60
 
             # ──────── 1) 临期预警（未逾期，不区分优先级，每单预警两次） ────────
-            # 窗口宽 1 小时，DAG 每小时执行 1 次，每窗口天然最多命中 1 次，无需去重
+            # 窗口宽 1 小时，DAG 每小时执行 1 次，每窗口天然最多命中 1 次
             if minutes_to_deadline > 0:
                 hours_to_deadline = minutes_to_deadline / 60
                 # 两个窗口：24~25h（第一次）、60~120min（第二次）
                 windows = [
-                    ("24h", NORMAL_MIN_HOURS <= hours_to_deadline < NORMAL_MAX_HOURS),
-                    ("1h", URGENT_MIN_MINUTES <= minutes_to_deadline < URGENT_MAX_MINUTES),
+                    ("warn24h", NORMAL_MIN_HOURS <= hours_to_deadline < NORMAL_MAX_HOURS),
+                    ("warn1h", URGENT_MIN_MINUTES <= minutes_to_deadline < URGENT_MAX_MINUTES),
                 ]
-                for win_tag, in_window in windows:
+                for occurrence, in_window in windows:
                     if not in_window:
                         continue
-                    if _send_cuiban(token, ticket_id, 9):
+                    result = _send_cuiban(token, ticket_id, 9, None, occurrence)
+                    if result == "ok":
                         stats["warning_sent"] += 1
                         logger.info(
-                            f"[预警-{win_tag}] 工单 {ticket_id} "
-                            f"距截止 {minutes_to_deadline:.0f} 分钟，已通知"
+                            f"[预警-{occurrence}] 工单 {ticket_id} "
+                            f"距截止 {minutes_to_deadline:.0f} 分钟，已排程"
+                        )
+                    elif result == "skipped":
+                        stats["warning_skipped"] += 1
+                        logger.info(
+                            f"[预警-{occurrence}] 工单 {ticket_id} "
+                            f"已过最后工作时段末尾，跳过（由逾期提醒接管）"
                         )
 
             # ──────── 2) 逾期（now >= deadline，即 minutes_to_deadline <= 0） ────────
-            # 触发时刻 = deadline 向上取整到整点（整点不变，非整点进位到下一整点）+ N天
-            # DAG 在该整点执行时触发，每个逾期天只在 1 个整点触发，天然不重复
             else:
                 overdue_hours = -minutes_to_deadline / 60
                 overdue_day = int(overdue_hours // 24)
                 escalated = overdue_day >= 1
 
-                # deadline 向上取整到整点：
-                #   deadline=17:00 → 17:00（整点不变）
-                #   deadline=17:01 → 18:00（进位到下一整点）
-                deadline_truncated = deadline.replace(minute=0, second=0, microsecond=0)
-                if deadline.minute > 0 or deadline.second > 0 or deadline.microsecond > 0:
-                    deadline_ceil = deadline_truncated + timedelta(hours=1)
-                else:
-                    deadline_ceil = deadline_truncated
-
-                # 逾期第 N 天的触发时刻 = deadline_ceil + N天
-                notify_hour = deadline_ceil + timedelta(days=overdue_day)
-
-                # DAG 整点执行，当前整点 == 触发时刻才发送
-                if notify_hour != now_hour_floor:
+                # 每个逾期天只在其 [24N, 24N+1) 小时窗口内命中一次；
+                # 配合 occurrence=day{N} 幂等键，重复执行不会重复提醒
+                if not (24 * overdue_day <= overdue_hours < 24 * overdue_day + 1):
                     continue
 
                 notify_targets: list[str] = []
@@ -255,16 +287,18 @@ def ticket_deadline_notification_dag():
                 if not notify_targets:
                     continue
 
-                sent = _send_cuiban(token, ticket_id, 6, notify_targets)
-                if sent:
+                result = _send_cuiban(token, ticket_id, 6, notify_targets, f"day{overdue_day}")
+                if result == "ok":
                     if escalated:
                         stats["overdue_escalate"] += 1
                     else:
                         stats["overdue_assignee"] += 1
                     logger.info(
                         f"[逾期{'升级' if escalated else ''} day={overdue_day}] 工单 {ticket_id} "
-                        f"逾期 {overdue_hours:.1f}h，通知对象: {notify_targets}"
+                        f"逾期 {overdue_hours:.1f}h，已排程，通知对象: {notify_targets}"
                     )
+                elif result == "skipped":
+                    stats["overdue_skipped"] += 1
 
         logger.info(f"DAG 执行完成: {stats}")
         return stats

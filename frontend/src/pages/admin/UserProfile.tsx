@@ -17,6 +17,7 @@ import { useAuthStore } from '@/stores/auth';
 import {
   getMyProfile, getProfileOptions, generateUspUsername, updateMyProfile,
   uploadAvatar, avatarUrl, submitNewCompany, submitNewDepartment,
+  getMyTimezone, updateMyTimezone, detectTimezone,
   type MyProfile, type OrgOption, type ProfileFieldOptions,
 } from '@/api/profile';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
@@ -25,6 +26,33 @@ import { buildWechatAuthUrl, buildStateFromPath } from '@/shared/utils/url';
 
 // 防止「首次进入 → 微信 OAuth → 回跳」死循环：标记本次会话已尝试过一次
 const WECHAT_PROFILE_OAUTH_KEY = 'profile_wechat_oauth_attempted';
+
+// 通知时区候选：浏览器检测值置顶 + 常用 IANA 时区（工单提醒按此时区的工作时间推送）
+const COMMON_TIMEZONES = [
+  'Asia/Shanghai',
+  'Asia/Hong_Kong',
+  'Asia/Tokyo',
+  'Asia/Singapore',
+  'Europe/London',
+  'Europe/Berlin',
+  'Europe/Paris',
+  'America/New_York',
+  'America/Los_Angeles',
+  'Australia/Sydney',
+];
+
+/** 时区来源展示文案；null/未设置表示仍走后端系统默认时区 */
+const SOURCE_LABEL: Record<string, string> = {
+  browser: '设备自动上报',
+  manual: '手动设置',
+  system: '系统默认',
+};
+
+/** 后端返回的是 UTC 时间字符串，按本地时区渲染 */
+function formatTime(raw: string): string {
+  const d = new Date(raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`);
+  return Number.isNaN(d.getTime()) ? raw : d.toLocaleString();
+}
 
 export default function UserProfile() {
   const navigate = useNavigate();
@@ -67,13 +95,33 @@ export default function UserProfile() {
   const [loading, setLoading] = useState(true);
   const [avatarError, setAvatarError] = useState(false);
 
+  // 通知时区（决定工单提醒按哪个时区的工作时间推送）
+  const [tzDraft, setTzDraft] = useState('');
+  const [tzLocked, setTzLocked] = useState(false);
+  const [tzSaving, setTzSaving] = useState(false);
+  const [tzOptions, setTzOptions] = useState<string[]>(COMMON_TIMEZONES);
+  const [tzSource, setTzSource] = useState<string | null>(null);
+  const [tzUpdatedAt, setTzUpdatedAt] = useState<string | null>(null);
+
   useEffect(() => {
     (async () => {
       try {
-        const [profile, options] = await Promise.all([
+        const [profile, options, tzInfo] = await Promise.all([
           getMyProfile(),
           getProfileOptions().catch(() => ({ companies: [], departments_by_company: {}, my_pending: { companies: [], departments: [] } }) as ProfileFieldOptions),
+          getMyTimezone().catch(() => null),
         ]);
+        // 通知时区：未设置时展示后端系统兜底值；浏览器检测值置顶方便一键切回
+        setTzDraft(tzInfo?.timezone || tzInfo?.system_default || 'Asia/Shanghai');
+        setTzLocked(!!tzInfo?.locked);
+        setTzSource(tzInfo?.source ?? null);
+        setTzUpdatedAt(tzInfo?.updated_at ?? null);
+        const detected = detectTimezone();
+        setTzOptions(
+          detected
+            ? [detected, ...COMMON_TIMEZONES.filter((t) => t !== detected)]
+            : COMMON_TIMEZONES,
+        );
         // 仅刷新昵称；头像 id 已由登录/刷新时 fetchUserDetails 写入 store，
         // 与 /auth/me 同源，无需重复覆盖（避免接口缺字段时把头像弄丢）。
         setProfile({ name: profile.name || '' });
@@ -195,6 +243,38 @@ export default function UserProfile() {
     if (uspPasswordDraft || uspPasswordConfirmDraft) return true;
     return false;
   }, [nameDraft, companyIdDraft, departmentIdDraft, uspUsernameDraft, uspPasswordDraft, uspPasswordConfirmDraft, original]);
+
+  // 保存通知时区（保留当前锁定状态）
+  const handleSaveTimezone = useCallback(async () => {
+    if (!tzDraft) return;
+    setTzSaving(true);
+    try {
+      const res = await updateMyTimezone(tzDraft, tzLocked);
+      setTzLocked(!!res?.locked);
+      setTzSource('manual');
+      setTzUpdatedAt(new Date().toISOString());
+      Toast({ message: '时区已保存', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setTzSaving(false);
+    }
+  }, [tzDraft, tzLocked]);
+
+  // 切换锁定：锁定后登录时不再按设备时区自动覆盖
+  const handleToggleTimezoneLock = useCallback(async () => {
+    const next = !tzLocked;
+    setTzSaving(true);
+    try {
+      const res = await updateMyTimezone(tzDraft, next);
+      setTzLocked(!!res?.locked);
+      Toast({ message: next ? '已锁定时区' : '已解除锁定', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setTzSaving(false);
+    }
+  }, [tzDraft, tzLocked]);
 
   // 打开「添加」弹窗
   const openAddDialog = useCallback((field: 'company' | 'department') => {
@@ -496,6 +576,47 @@ export default function UserProfile() {
                 添加部门
               </Button>
             )}
+          </div>
+        </Field>
+      </div>
+
+      <div style={{ background: '#fff', borderRadius: 12, padding: 16, marginTop: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: '#333', marginBottom: 4 }}>
+          通知时区
+        </div>
+        <div style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
+          决定工单逾期/临期提醒按哪个时区的工作时间推送
+        </div>
+
+        <Field label="时区" hint="默认取当前设备时区，可手动选择">
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <FilterableSelect
+              value={tzDraft}
+              onChange={(v) => setTzDraft(String(v))}
+              options={tzOptions}
+              placeholder="选择时区"
+              title="选择时区"
+              searchPlaceholder="搜索时区…"
+            />
+            <Button
+              theme="primary"
+              variant="outline"
+              loading={tzSaving}
+              onClick={handleSaveTimezone}
+              style={{ flexShrink: 0 }}
+            >
+              应用
+            </Button>
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: '#888', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span>{tzLocked ? '已锁定：登录时不再自动更新' : '未锁定：登录时按当前设备时区自动更新'}</span>
+            <Button theme="primary" variant="text" size="small" onClick={handleToggleTimezoneLock}>
+              {tzLocked ? '解除锁定' : '锁定'}
+            </Button>
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: '#aaa' }}>
+            {`来源：${SOURCE_LABEL[tzSource] || '未设置（按系统默认 Asia/Shanghai）'}`}
+            {tzUpdatedAt ? ` · 更新于 ${formatTime(tzUpdatedAt)}` : ''}
           </div>
         </Field>
       </div>

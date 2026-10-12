@@ -7,7 +7,7 @@
 - users / roles / permissions / projects
 - role_permissions / user_project_roles
 """
-from sqlalchemy import Column, String, Text, ForeignKey, Table, Integer
+from sqlalchemy import Column, String, Text, ForeignKey, Table, Integer, DateTime
 from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy import JSON
 
@@ -83,3 +83,13 @@ class UserDB(Base):
     # === 企业微信通知 ===
     # 用户手机号，用于企业微信群机器人 mentioned_mobile_list @ 指定成员。
     phone = Column(String(20), nullable=True, index=True, comment="用户手机号（企业微信通知 @ 人用）")
+
+    # === 通知时区（按接收人工作时间推送用）===
+    # IANA 时区名，如 Asia/Shanghai / Europe/Berlin。
+    # 来源优先级：用户上报或手工设置 > 系统默认（services/working_time_service.py）。
+    timezone = Column(String(64), nullable=True, comment="用户时区（IANA，如 Asia/Shanghai）")
+    # 锁定后前端自动上报（P0-2）不再覆盖，适用于外派/长期跨时区办公人员。
+    timezone_locked = Column(TINYINT, nullable=False, default=0, server_default="0",
+                             comment="时区锁定：1=锁定，前端自动上报失效")
+    timezone_source = Column(String(16), nullable=True, comment="时区来源：browser/manual/system")
+    timezone_updated_at = Column(DateTime, nullable=True, comment="时区最近更新时间")

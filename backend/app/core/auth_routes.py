@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from typing import Dict, Any
 from pydantic import BaseModel
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import uuid
 
 from app.core.database import db_manager, get_user_with_roles
@@ -10,6 +12,7 @@ from app.core.auth_service import AuthService, AuthServiceError
 from app.schemas.token import Token, RefreshToken
 from app.schemas.user import User, UserLogin, UserCreate
 from app.schemas.response import SuccessResponse
+from app.services.working_time_service import WorkingTimeService
 
 router = APIRouter()
 
@@ -174,4 +177,81 @@ async def get_current_user(request: Request):
         return User(**result)
     except AuthServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+def _resolve_user_id(current_user: Dict[str, Any]) -> str:
+    """当前用户 users.id：token 载荷形态不一，统一回查一次。"""
+    user_id = current_user.get("id") or current_user.get("user_id")
+    if user_id:
+        return user_id
+    username = current_user.get("username")
+    user = db_manager.get_user(username) if username else None
+    if not user:
+        raise HTTPException(status_code=400, detail="无法定位当前用户")
+    return user["id"]
+
+
+class TimezoneUpdate(BaseModel):
+    """用户自助更新时区。
+
+    locked=True 表示锁定，锁定后前端自动上报（每次登录检测不一致就覆盖）不再生效，
+    适用于外派/长期跨时区办公人员。
+
+    source 用于溯源：浏览器静默上报为 browser，用户在个人中心手工选择为 manual。
+    """
+    timezone: str
+    locked: bool = False
+    source: str = "manual"
+
+
+@router.patch("/me/timezone", summary="更新当前用户时区（可锁定）")
+async def update_my_timezone(
+    data: TimezoneUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    tz_name = (data.timezone or "").strip()
+    if not tz_name:
+        raise HTTPException(status_code=400, detail="时区不能为空")
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"非法时区: {tz_name}")
+
+    source = (data.source or "manual").strip().lower()
+    if source not in ("browser", "manual", "system"):
+        source = "manual"
+
+    user_id = _resolve_user_id(current_user)
+    ok = db_manager.update_user(
+        user_id,
+        timezone=tz_name,
+        timezone_locked=1 if data.locked else 0,
+        timezone_source=source,
+        timezone_updated_at=datetime.utcnow(),
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="更新时区失败")
+
+    return {
+        "code": 200,
+        "message": "时区已更新",
+        "timezone": tz_name,
+        "locked": bool(data.locked),
+    }
+
+
+@router.get("/me/timezone", summary="获取当前用户时区设置")
+async def get_my_timezone(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    user_id = _resolve_user_id(current_user)
+    user = db_manager.get_user_by_id(user_id) if user_id else None
+    return {
+        "timezone": (user or {}).get("timezone"),
+        "locked": bool((user or {}).get("timezone_locked")),
+        "source": (user or {}).get("timezone_source"),
+        "updated_at": (user or {}).get("timezone_updated_at"),
+        "system_default": WorkingTimeService.SYSTEM_DEFAULT_TIMEZONE,
+        "detected": None,
+    }
 
