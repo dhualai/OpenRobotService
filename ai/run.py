@@ -486,4 +486,12 @@ if __name__ == "__main__":
     import uvicorn
     # 优先读 ai/.env 中的 PORT（由 ai/config.py 的 load_dotenv 注入），缺省回退 8401
     port = get_ai_config().port
-    uvicorn.run("ai.run:app", host="0.0.0.0", port=port, reload=True, reload_dirs=["ai"], log_level="info")
+    # 热重载默认关闭（1015）：reload=True 时 WatchFiles 在部署拷文件期间反复重启
+    # 服务，健康检查窗口极易撞上重载空窗；且与 backend（reload=False）不一致。
+    # 本地开发需要热重载时在 ai/.env 设 AI_RELOAD=1
+    reload = os.getenv("AI_RELOAD", "").strip().lower() in ("1", "true", "yes", "on")
+    if reload:
+        uvicorn.run("ai.run:app", host="0.0.0.0", port=port, reload=True,
+                    reload_dirs=["ai"], log_level="info")
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

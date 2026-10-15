@@ -531,10 +531,15 @@ class DiscussFlow:
         # 用户在质疑此前的结论时，强制重读日志并让 Supervisor 重走 log_analyze
         # （复用缓存索引，只重跑推理，不重建索引）。
         #
-        # 判据用**并集**：意图分类的语义判断（_llm_challenge）+ 关键词兜底。
+        # 判据用**并集**：意图分类的语义判断（_llm_challenge，下面 3.2b 的 Router 填）
+        # + 关键词兜底。
         # - 语义判断能接住关键词表接不住的换说法（"你这结论站不住"），这是原来缺的；
         # - 关键词表**故意保留**作为兜底：分类失败/低置信时 _llm_challenge 是 None，
         #   而「用户在质疑就必须真重跑」是产品承诺，不能因为一次分类抖动就失守。
+        #
+        # ⚠️ 初始化必须在**这里**（用到它的地方之上）：Router 那段在下面 3.2b。
+        #    放后面会 UnboundLocalError —— 每一次 @U老师 都会炸（2026-10-15 生产踩过）。
+        _llm_challenge: bool | None = None
         _kw_reanalyze = bool(
             query
             and any(kw in query for kw in ("重新分析", "再分析", "重新看", "再看一下", "分析是错的", "分析错了", "不对吧", "之前分析", "重新查"))
@@ -672,8 +677,7 @@ class DiscussFlow:
         #      不派生任何工具/子 Agent，省一次 Supervisor 调度 + token。
         is_pure_chat = False
         # 意图分类顺带判「用户是否在质疑此前的结论」—— 不再单靠关键词表。
-        # None = 分类没跑成（调用失败/低置信）→ 下面由关键词兜底。
-        _llm_challenge: bool | None = None
+        # _llm_challenge 在上面 3.0（_ask_reanalyze_log 之前）已初始化，这里只赋值。
         if query:
             try:
                 from ai.agents.AiTaskPlatform.capabilities import Router

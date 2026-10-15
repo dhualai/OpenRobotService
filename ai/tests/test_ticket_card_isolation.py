@@ -68,7 +68,11 @@ def make_service(monkeypatch, collections=()):
     svc._embed_client = FakeEmbed()
     svc._qdrant = FakeQdrant(collections)
     svc._reranker = FakeReranker()
-    svc._to_thread = staticmethod(lambda f, *a, **kw: f(*a, **kw))
+    # 注：这里**故意不再给 svc 塞 `_to_thread`**。以前塞了一个 lambda，
+    # 等于替实现补了一个 `RetrievalService` 上根本不存在的成员 —— 于是
+    # `ensure_task_resolutions_collection` 里 4 处 `self._to_thread(...)`
+    # 的 AttributeError 被这行测试掩盖了两个月（生产 2026-10-15 才炸）。
+    # 线程池调用应当走 `self._qdrant._to_thread`（FakeQdrant 里有）。
 
     async def ensure_clients():
         return None

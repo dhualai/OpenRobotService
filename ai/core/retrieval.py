@@ -1438,13 +1438,13 @@ class RetrievalService:
             # company 检索切到测试卡集合上）
             try:
                 client = await self._qdrant._ensure_client()
-                if await self._to_thread(client.collection_exists, override):
+                if await self._qdrant._to_thread(client.collection_exists, override):
                     return override
                 await self._ensure_clients()
                 vec_dim = await self._embed_client.get_dimension()
                 from qdrant_client.models import (Distance, VectorParams,
                                                   SparseVectorParams, SparseIndexParams)
-                await self._to_thread(
+                await self._qdrant._to_thread(
                     client.create_collection,
                     collection_name=override,
                     vectors_config={
@@ -1465,7 +1465,7 @@ class RetrievalService:
         if tr_col:
             try:
                 client = await self._qdrant._ensure_client()
-                if await self._to_thread(client.collection_exists, tr_col):
+                if await self._qdrant._to_thread(client.collection_exists, tr_col):
                     return tr_col
             except Exception:
                 pass
@@ -1479,7 +1479,7 @@ class RetrievalService:
             # dense + sparse——否则 BM25 稀疏检索路在建出的集合上永远空转
             from qdrant_client.models import (Distance, VectorParams,
                                               SparseVectorParams, SparseIndexParams)
-            await self._to_thread(
+            await self._qdrant._to_thread(
                 client.create_collection,
                 collection_name=name,
                 vectors_config={
@@ -1629,7 +1629,7 @@ class RetrievalService:
         flt = Filter(must=[FieldCondition(
             key="task_id", match=MatchValue(value=str(task_id)))])
         # limit 64 足够覆盖单工单的历史重复索引
-        points, _next = await self._to_thread(
+        points, _next = await self._qdrant._to_thread(
             client.scroll, collection_name=col, scroll_filter=flt,
             limit=64, with_payload=True, with_vectors=False)
         return list(points)
@@ -1659,7 +1659,7 @@ class RetrievalService:
             if not points:
                 return False
             client = await self._qdrant._ensure_client()
-            await self._to_thread(
+            await self._qdrant._to_thread(
                 client.set_payload, collection_name=col, payload=payload,
                 points=[p.id for p in points])
             logger.info(f"[retrieval] 已更新方案卡 payload task_id={task_id} "

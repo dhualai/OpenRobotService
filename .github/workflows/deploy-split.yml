@@ -580,6 +580,8 @@ jobs:
             if [ "$ENV_NAME" = "prod" ]; then schema_mode="check"; else schema_mode="sync"; fi
           fi
           echo "数据库结构模式：$schema_mode"
+          # 健康检查窗口放宽到 40 × 5s = 200s：AI 启动含嵌入模型加载 + 外部服务探测 +
+          # 启动期知识沉淀调用，实测可达 100s+，原 20 × 3s = 60s 会误判为未就绪而自动回滚。
           python3 _artifacts/deploy/deploy.py \
             --from-artifacts _artifacts \
             -e "$ENV_NAME" -c "$COMPONENTS" \
@@ -588,8 +590,8 @@ jobs:
             --git-commit "$GIT_SHA" \
             --backup-keep "$BACKUP_KEEP" \
             --health-urls "$HEALTH_URLS" \
-            --health-retries 20 \
-            --health-interval 3 \
+            --health-retries 40 \
+            --health-interval 5 \
             --schema-mode "$schema_mode" 2>&1 | tee deploy.log
           rc=$?
           backup_id=$(grep -oE 'DEPLOY_BACKUP_ID=[0-9a-z-]+' deploy.log | tail -n1 | cut -d= -f2 || true)
@@ -749,6 +751,7 @@ jobs:
       - name: Rollback to backup
         run: |
           set -o pipefail
+          # 与部署一致：回滚后同样要等 AI 起来，窗口放宽到 40 × 5s = 200s。
           python3 "${{ steps.locate.outputs.script }}" \
             --rollback "$BACKUP_ID" \
             -e "$ENV_NAME" \
@@ -756,8 +759,8 @@ jobs:
             --remote-tmp "$DEPLOY_REMOTE_TMP" \
             --yes --no-sudo \
             --health-urls "$HEALTH_URLS" \
-            --health-retries 20 \
-            --health-interval 3 2>&1 | tee rollback.log
+            --health-retries 40 \
+            --health-interval 5 2>&1 | tee rollback.log
           rc=$?
           exit "$rc"
 

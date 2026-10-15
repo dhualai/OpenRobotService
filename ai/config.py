@@ -518,10 +518,19 @@ def _parse_log_manuals(raw: str) -> dict:
     return out
 
 
+_HEALTHCHECK_TIMEOUT = 8.0  # 单项连通检查硬超时（测试可 patch 调快）
+
+
 async def validate_ai_config() -> dict:
     """
     启动时连通性检查（失败不阻止启动）
+
+    每项检查包 _HEALTHCHECK_TIMEOUT 硬超时（1015）：deepseek 检查是真实 LLM
+    请求（complete 内层 3 次重试 × 30s 读超时 ≈ 95s+），服务崩时会把 FastAPI
+    lifespan 拖到部署健康检查窗口（原 60s）之外 → 部署失败。检查只为报状态，
+    不值得拖启动。
     """
+    import asyncio
     from ai.core import get_llm_client, QdrantClientWrapper, get_memory_manager
 
     results = {
@@ -530,27 +539,34 @@ async def validate_ai_config() -> dict:
         "redis": {"status": "pending", "message": ""},
     }
 
-    try:
+    async def _bounded(name: str, coro):
+        try:
+            await asyncio.wait_for(coro, timeout=_HEALTHCHECK_TIMEOUT)
+        except asyncio.TimeoutError:
+            results[name] = {"status": "error", "message": "连通检查超时——服务可能不可用"}
+        except Exception as e:
+            results[name] = {"status": "error", "message": str(e)}
+
+    async def _check_deepseek():
         llm = await get_llm_client()
         await llm.complete("你好", max_tokens=5)
         results["deepseek"] = {"status": "ok", "message": "连接成功"}
-    except Exception as e:
-        results["deepseek"] = {"status": "error", "message": str(e)}
 
-    try:
+    async def _check_qdrant():
         qdrant = await QdrantClientWrapper.from_config()
         collections = await qdrant.list_collections()
         results["qdrant"] = {"status": "ok", "message": f"已连接，集合: {collections}"}
-    except Exception as e:
-        results["qdrant"] = {"status": "error", "message": str(e)}
 
-    try:
+    async def _check_redis():
         redis_mgr = await get_memory_manager()
         if await redis_mgr.health_check():
             results["redis"] = {"status": "ok", "message": "连接成功"}
         else:
             results["redis"] = {"status": "error", "message": "连接超时，使用内存/MySQL降级"}
-    except Exception as e:
-        results["redis"] = {"status": "error", "message": str(e)}
 
+    await asyncio.gather(
+        _bounded("deepseek", _check_deepseek()),
+        _bounded("qdrant", _check_qdrant()),
+        _bounded("redis", _check_redis()),
+    )
     return results
