@@ -3,6 +3,7 @@ import json
 import copy
 import logging
 import uuid
+import time
 from pathlib import Path
 from datetime import datetime
 import yaml
@@ -94,6 +95,19 @@ def _split_template(project_type: Optional[str] = None) -> tuple[dict, list]:
 
 
 _PROJECT_COLUMNS = {c.key for c in inspect(Project).mapper.column_attrs}
+
+# 项目在线状态阈值（秒）：超过此时间未收到心跳视为离线
+def _compute_online_status(last_heartbeat_at: float | None) -> str:
+    """根据最近心跳时间戳计算在线状态。
+
+    - online: 最近心跳在阈值内
+    - offline: 最近心跳超过阈值
+    - unknown: 从未收到过心跳
+    """
+    if last_heartbeat_at is None:
+        return "unknown"
+    from app.core.config import settings
+    return "online" if (time.time() - last_heartbeat_at) <= settings.PROJECT_ONLINE_THRESHOLD_SECONDS else "offline"
 
 
 class ProjectConflictError(Exception):
@@ -346,6 +360,12 @@ class ProjectService:
             # 只取 overview+activity 部分；info_nodes 走独立表，不在 ext_info 里。
             "ext_info": project.ext_info or _split_template(project.project_type)[0],
             "version": project.version or 1,
+            # 项目在线状态（心跳判定，见 /api/health?project_code=xxx）
+            "last_heartbeat_at": getattr(project, "last_heartbeat_at", None),
+            "online_status": _compute_online_status(getattr(project, "last_heartbeat_at", None)),
+            # 授权包版本号（licence/人员变动自动+1，导出时携带）
+            "export_version": getattr(project, "export_version", 0) or 0,
+            "export_version_updated_at": getattr(project, "export_version_updated_at", None),
         }
         return project_dict
     
@@ -866,6 +886,8 @@ class ProjectService:
                 "max_vehicles": db_license.max_vehicles,
                 "created_at": db_license.created_at
             }
+            # 新增 licence → 授权包版本 +1
+            self.bump_export_version(db_license.project_code)
             return license_dict
         finally:
             db.close()
@@ -879,9 +901,28 @@ class ProjectService:
             license = db.query(ProjectLicense).filter(ProjectLicense.id == license_id).first()
             if not license:
                 return False
+            project_code = license.project_code
             db.delete(license)
             db.commit()
+
+            # 撤销 licence → 授权包版本 +1
+            self.bump_export_version(project_code)
             return True
+        finally:
+            db.close()
+
+    def bump_export_version(self, project_code: str) -> None:
+        """项目 licence/人员变更时 +1 授权包版本号并刷新变更时间（独立事务，失败静默）。"""
+        import time as _time
+        db = SessionLocal()
+        try:
+            db.query(Project).filter(Project.code == project_code).update({
+                Project.export_version: Project.export_version + 1,
+                Project.export_version_updated_at: _time.time(),
+            })
+            db.commit()
+        except Exception:
+            db.rollback()
         finally:
             db.close()
 

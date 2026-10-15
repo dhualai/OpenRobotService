@@ -22,7 +22,9 @@ import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_
 import { formatDateTime } from '@/shared/utils/url';
 // 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
-import { Search, Calendar, SlidersHorizontal, ChevronDown, Star, Check } from 'lucide-react';
+import { Search, Calendar, SlidersHorizontal, ChevronDown, Star, Check, Plus, Minus, ArrowDown } from 'lucide-react';
+import type { DepRef, RelationRow } from './task-graph';
+import { buildFlatRefs, buildRelationRows, parentIds } from './task-graph';
 import PersonArrow from '@/shared/components/PersonArrow';
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { avatarUrl } from '@/api/profile';
@@ -66,6 +68,11 @@ interface Ticket {
   is_principal?: boolean;
   /** 我是本单接单人：可见「谁代谁提单」胶囊（后端下发，前端不自行判定） */
   is_proxy_assignee?: boolean;
+  // ── 关系列表字段（后端 TaskListItemResponse 下发，暂为可选） ──
+  parent_id?: number;
+  predecessor_ids?: number[];
+  child_count?: number;
+  child_done?: number;
 }
 
 /** username / user_id → avatar_resource_id 的查找表；缺失时回退为首字母头像 */
@@ -113,12 +120,19 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     const parsed = rawType.split(',').map((s) => s.trim()).filter(Boolean);
     typeFilter = parsed.length > 0 ? parsed : [...ALL_TYPE_VALUES];
   }
+  // 归档分类在 URL 中出现时，也默认覆盖 statusFilter，与面板行为一致
+  const rawRelevance = params.get('relevance') || 'mine';
+  if (rawRelevance === 'archive_mine' && rawStatus === null) {
+    statusFilter = ['archiving', 'archived'];
+  } else if (rawRelevance === 'archive_review' && rawStatus === null) {
+    statusFilter = ['archiving'];
+  }
   return {
     search: params.get('q') || '',
     statusFilter,
     priorityFilter,
     typeFilter,
-    relevanceFilter: params.get('relevance') || 'mine',
+    relevanceFilter: rawRelevance,
     // 项目过滤：空数组表示「全部」（不过滤）；URL 为逗号分隔项目 id（兼容旧的单 id）
     projectFilter: (params.get('project') || '').split(',').map((s) => s.trim()).filter(Boolean),
     // 处理人过滤：空字符串表示「全部」（不过滤）；值为处理人 username
@@ -278,7 +292,7 @@ const buildFilterParams = (filter: {
 // 头像统一灰底白字（无头像时）/ 圆形头像图片（有 avatar_resource_id 时），
 // 信息层级靠字号与字重区分（参考 macaron-minimal-ui 设计）。
 // memo 包装：轮询回包数据不变时（sameTicketItems 复用旧引用）跳过卡片重渲染。
-const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserId, currentUsername, onToggleFollow, onLocateParticipant }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap; currentUserId?: string; currentUsername?: string; onToggleFollow?: (id: string, follow: boolean) => void; onLocateParticipant?: (id: string, p: ParticipantItem) => void }) {
+const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserId, currentUsername, onToggleFollow, onLocateParticipant, dep, toggle, childSummary }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap; currentUserId?: string; currentUsername?: string; onToggleFollow?: (id: string, follow: boolean) => void; onLocateParticipant?: (id: string, p: ParticipantItem) => void; dep?: DepRef<Ticket> | null; toggle?: { expanded: boolean; onToggle: () => void }; childSummary?: { done: number; total: number } }) {
   const creator = t.created_by_name || t.created_by || '-';
   const assignee = t.assigned_to_name || t.assigned_to || '-';
   const participants = (t.participants || []).filter(Boolean);
@@ -305,8 +319,75 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
 
   return (
     <div data-testid={`task-card-${t.id}`} className="task-card2" onClick={() => onOpen(t.id)}>
-      <div className="task-card2__head">
-        <div className="task-card2__head-tags">
+      <div className="task-card2__head" style={dep ? { position: 'relative' } : undefined}>
+        {/* 依赖引用行：水平居中在 status 标签与 type/star 之间 */}
+        {dep && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+              display: 'flex', alignItems: 'center', gap: 3,
+              minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap',
+              fontSize: 11, color: 'var(--text-muted)',
+              pointerEvents: 'auto',
+              maxWidth: '40%',
+            }}
+            aria-label="依赖关系"
+          >
+            {dep.prevMore && <span style={{ opacity: 0.6 }}>…</span>}
+            {dep.prev && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onOpen(dep.prev!.id); }}
+                style={{
+                  padding: '0 3px', border: 'none', background: 'transparent',
+                  color: 'var(--brand)', fontWeight: 600, cursor: 'pointer',
+                  fontFamily: 'inherit', fontSize: 'inherit',
+                }}
+              >
+                #{String(dep.prev.id).slice(0, 8)}
+              </button>
+            )}
+            {(dep.prev || dep.prevMore) && <span style={{ opacity: 0.6 }}>→</span>}
+            <span style={{ fontWeight: 700, color: 'var(--brand)' }}>#{String(t.id).slice(0, 8)}</span>
+            {(dep.next || dep.nextMore) && <span style={{ opacity: 0.6 }}>→</span>}
+            {dep.next && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onOpen(dep.next!.id); }}
+                style={{
+                  padding: '0 3px', border: 'none', background: 'transparent',
+                  color: 'var(--brand)', fontWeight: 600, cursor: 'pointer',
+                  fontFamily: 'inherit', fontSize: 'inherit',
+                }}
+              >
+                #{String(dep.next.id).slice(0, 8)}
+              </button>
+            )}
+            {dep.nextMore && <span style={{ opacity: 0.6 }}>…</span>}
+          </div>
+        )}
+        <div className="task-card2__head-tags" style={dep ? { flex: '0 0 auto', width: '45%', minWidth: 0 } : undefined}>
+          {/* 展开/折叠子工单按钮（仅关系视图 + 有子工单时出现） */}
+          {toggle && (
+            <button
+              type="button"
+              aria-expanded={toggle.expanded}
+              aria-label={toggle.expanded ? `收起 ${t.id} 的子工单` : `展开 ${t.id} 的子工单`}
+              onClick={(e) => { e.stopPropagation(); toggle.onToggle(); }}
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 22, height: 22, flexShrink: 0,
+                marginRight: 4, borderRadius: 4,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-card)',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+              }}
+            >
+              {toggle.expanded ? <Minus size={14} strokeWidth={2.4} /> : <Plus size={14} strokeWidth={2.4} />}
+            </button>
+          )}
           <span className="task-card2__status-tag" data-status={(t.status || '').toLowerCase()}>
             {normalizeStatus(t.status)}
           </span>
@@ -344,20 +425,22 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
             </span>
           )}
         </div>
-        <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
-        {/* 关注星标：stopPropagation 阻止冒泡到卡片 onClick（避免误开详情）；乐观更新由父层处理 */}
-        {onToggleFollow && (
-          <button
-            type="button"
-            className={`task-card2__star${t.is_followed ? ' is-followed' : ''}`}
-            aria-label={t.is_followed ? '取消关注' : '添加关注'}
-            title={t.is_followed ? '取消关注' : '添加关注'}
-            aria-pressed={!!t.is_followed}
-            onClick={(e) => { e.stopPropagation(); onToggleFollow(t.id, !t.is_followed); }}
-          >
-            <Star size={17} strokeWidth={2} fill={t.is_followed ? 'currentColor' : 'none'} />
-          </button>
-        )}
+        <div style={dep ? { width: '45%', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexShrink: 0, minWidth: 0 } : { display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
+          {/* 关注星标：stopPropagation 阻止冒泡到卡片 onClick（避免误开详情）；乐观更新由父层处理 */}
+          {onToggleFollow && (
+            <button
+              type="button"
+              className={`task-card2__star${t.is_followed ? ' is-followed' : ''}`}
+              aria-label={t.is_followed ? '取消关注' : '添加关注'}
+              title={t.is_followed ? '取消关注' : '添加关注'}
+              aria-pressed={!!t.is_followed}
+              onClick={(e) => { e.stopPropagation(); onToggleFollow(t.id, !t.is_followed); }}
+            >
+              <Star size={17} strokeWidth={2} fill={t.is_followed ? 'currentColor' : 'none'} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="task-card2__title">
@@ -410,6 +493,11 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
       <div className="task-card2__meta">
         <span className="task-card2__meta-id">#{String(t.id).slice(0, 8)}</span>
         {t.project_name && <span className="task-card2__meta-project">{t.project_name}</span>}
+        {childSummary && (
+          <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+            子工单 {childSummary.done}/{childSummary.total} 已完成
+          </span>
+        )}
         <span className="task-card2__meta-date">
           <Calendar size={12} strokeWidth={2} />
           {formatDateTime(t.created_at).slice(0, 10)}
@@ -418,6 +506,73 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
     </div>
   );
 });
+
+/** 关系列表渲染：按 buildRelationRows 缩进 + 相邻依赖箭头 + 子工单展开/折叠 */
+function RelationList({
+  rows,
+  collapsed,
+  onToggle,
+  onOpen,
+  avatarMap,
+  currentUserId,
+  currentUsername,
+  onToggleFollow,
+  onLocateParticipant,
+}: {
+  rows: RelationRow<Ticket>[];
+  collapsed: Set<string>;
+  onToggle: (id: string) => void;
+  onOpen: (id: string) => void;
+  avatarMap?: AvatarMap;
+  currentUserId?: string;
+  currentUsername?: string;
+  onToggleFollow?: (id: string, follow: boolean) => void;
+  onLocateParticipant?: (id: string, p: ParticipantItem) => void;
+}) {
+  return (
+    <div style={{ marginTop: 4 }}>
+      {rows.map((r) => {
+        const depth = Math.min(r.depth, 4);
+        return (
+          <div
+            key={r.ticket.id}
+            style={{ marginLeft: depth * 24 }}
+          >
+            {r.arrowFromPrev ? (
+              <div
+                style={{
+                  display: 'flex', height: 20, alignItems: 'center', justifyContent: 'center',
+                  color: 'var(--text-muted)',
+                }}
+                aria-label="前置工单 → 后置工单"
+              >
+                <ArrowDown size={14} strokeWidth={2} />
+              </div>
+            ) : (
+              <div style={{ height: 12 }} />
+            )}
+            <TicketCard
+              t={r.ticket}
+              onOpen={onOpen}
+              avatarMap={avatarMap}
+              currentUserId={currentUserId}
+              currentUsername={currentUsername}
+              onToggleFollow={onToggleFollow}
+              onLocateParticipant={onLocateParticipant}
+              dep={r.ref}
+              toggle={
+                r.childCount
+                  ? { expanded: !collapsed.has(String(r.ticket.id)), onToggle: () => onToggle(String(r.ticket.id)) }
+                  : undefined
+              }
+              childSummary={r.childCount ? { done: r.childDone, total: r.childCount } : undefined}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // 「待我处理」原先按日期分组的时间轴已移除：所有分类统一走扁平卡片列表，
 // 排序完全由 fetchTickets 中的 sortBy/sortOrder 决定，快捷排序对所有分类生效。
@@ -689,6 +844,7 @@ export default function TasksView() {
   const initialFilter = useRef(parseFilterFromUrl(searchParams));
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [relatedTickets, setRelatedTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
   // 搜索双 state：searchInput 即时反映输入（URL 同步），search 防抖 400ms 后提交（触发列表请求）
   const [searchInput, setSearchInput] = useState(() => initialFilter.current.search);
@@ -749,6 +905,39 @@ export default function TasksView() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [syncing, setSyncing] = useState(false);
+
+  // ── 关系列表视图状态 ──
+  const [view, setView] = useState<'flat' | 'relation'>('relation');
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // 关系视图时把后端补查的关联工单也纳入，让父子缩进/子工单行跨页可见
+  const allTickets = useMemo(() => {
+    if (view !== 'relation') return tickets;
+    const seen = new Set(tickets.map((t) => String(t.id)));
+    const merged = [...tickets];
+    for (const rt of relatedTickets) if (!seen.has(String(rt.id))) merged.push(rt);
+    return merged;
+  }, [tickets, relatedTickets, view]);
+
+  const allParents = useMemo(() => parentIds(allTickets), [allTickets]);
+  const toggleIn = (set: Set<string>, id: string) => {
+    const n = new Set(set);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  };
+  const handleToggleCollapse = useCallback((id: string) => {
+    setCollapsed((prev) => toggleIn(prev, id));
+  }, []);
+  const handleExpandAll = useCallback(() => setCollapsed(new Set()), []);
+  const handleCollapseAll = useCallback(() => setCollapsed(new Set(allParents)), [allParents]);
+
+  // 关系图构建（graph 内已做 number→string id 归一、DONE 终态判断）
+  // flatRefs 只用于扁平视图，用当前页 tickets；rows 用于关系视图，all + visible 都用合并后的 allTickets
+  const flatRefs = useMemo(() => buildFlatRefs(tickets, tickets), [tickets]);
+  const rows = useMemo(
+    () => buildRelationRows(allTickets, allTickets, collapsed),
+    [allTickets, collapsed],
+  );
 
   // username / user_id → avatar_resource_id 查找表：用于工单卡片创建人/处理人头像渲染。
   // 缺失权限（backend:user:base:read）或网络失败时静默回退为首字母头像。
@@ -893,9 +1082,15 @@ export default function TasksView() {
       }
       filters.push({ or: searchConditions });
     }
-    // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
+    // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件。
+    // 归档分类（archive_mine / archive_review）自动纳入 archiving / archived 状态，
+    // 避免默认 statusFilter 只含进行中状态、把归档工单挡掉。
     if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
-      filters.push({ field: 'status', op: 'in', value: statusFilter });
+      const archiveRelated = relevanceFilter === 'archive_mine' || relevanceFilter === 'archive_review';
+      const effectiveStatus = archiveRelated
+        ? Array.from(new Set([...statusFilter, 'archiving', 'archived']))
+        : statusFilter;
+      filters.push({ field: 'status', op: 'in', value: effectiveStatus });
     }
     // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
     if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
@@ -942,7 +1137,7 @@ export default function TasksView() {
       filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
     }
     return filters;
-  }, [search, statusFilter, priorityFilter, typeFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd]);
+  }, [search, statusFilter, priorityFilter, typeFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, relevanceFilter]);
 
   const fetchTickets = useCallback(async (silent = false) => {
     if (isFetchingRef.current) return;
@@ -966,13 +1161,14 @@ export default function TasksView() {
       };
       const sorts = [{ field: sortFieldMap[sortBy] || 'updatedAt', direction: sortOrder }];
 
-      const data = await request<{ items: Ticket[]; total: number }>('/filter', {
+      const data = await request<{ items: Ticket[]; total: number; related_tickets?: Ticket[] }>('/filter', {
         method: 'POST',
         body: JSON.stringify({
           filters,
           sorts,
           page,
           size: pageSize,
+          with_relations: view === 'relation',
         }),
         skipCache: true,
       });
@@ -981,6 +1177,7 @@ export default function TasksView() {
       const items = data.items || [];
       setTickets((prev) => (sameTicketItems(prev, items) ? prev : items));
       setTotal(data.total || 0);
+      setRelatedTickets(data.related_tickets ?? []);
     } catch (err) {
       if (!silent) {
         Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -989,7 +1186,7 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
+  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks, view]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -1092,6 +1289,8 @@ export default function TasksView() {
       { value: 'mine', label: '待我处理' },
       { value: 'related', label: '与我相关' },
       { value: 'followed', label: '我关注的' },
+      { value: 'archive_mine', label: '我归档的' },
+      { value: 'archive_review', label: '待我审核' },
       // 代他人提单：他人代我提交、仍待我确认的单（pending）；有量时才出现，避免空分类占位
       ...(followupCount > 0 ? [{ value: 'followup', label: '待我跟进' }] : []),
     ];
@@ -1110,10 +1309,23 @@ export default function TasksView() {
       const queries = relevanceOptions.map((option) => {
         // 「全部」无权限时按项目维度计数，与列表回退口径一致
         const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
+
+        // archive_mine / archive_review 分类自动把 status 扩展到 archiving / archived
+        // （listExtraFilters 里 status 默认不含这两个状态，会把归档工单挡掉）
+        let extraFilters = listExtraFilters;
+        if (key === 'archive_mine' || key === 'archive_review') {
+          extraFilters = listExtraFilters.map((f) => {
+            if (f.field === 'status' && Array.isArray(f.value)) {
+              return { ...f, value: Array.from(new Set([...f.value, 'archiving', 'archived'])) };
+            }
+            return f;
+          });
+        }
+
         return {
           filters: [
             ...buildRelevanceFilters(key, userId || username, projectIds),
-            ...listExtraFilters,
+            ...extraFilters,
           ],
           sorts: [],
           page: 1,
@@ -1163,7 +1375,18 @@ export default function TasksView() {
   ];
 
   const handleRelevanceChange = (value: string) => {
+    const prevArchiveRelated = relevanceFilter === 'archive_mine' || relevanceFilter === 'archive_review';
+    const nextArchiveRelated = value === 'archive_mine' || value === 'archive_review';
     setRelevanceFilter(value);
+    // 归档分类同步覆盖状态筛选，保持筛选面板状态与查询一致
+    if (value === 'archive_mine') {
+      setStatusFilter(['archiving', 'archived']);
+    } else if (value === 'archive_review') {
+      setStatusFilter(['archiving']);
+    } else if (prevArchiveRelated && !nextArchiveRelated) {
+      // 从归档分类切回普通分类时，恢复默认状态筛选，避免归档状态把普通查询结果清空
+      setStatusFilter([...DEFAULT_STATUS_VALUES]);
+    }
     setPage(1);
   };
 
@@ -1742,14 +1965,102 @@ export default function TasksView() {
           </div>
         </div>
 
+      {/* 视图切换：普通列表 / 关系列表 */}
+      <div
+        className="tasks-view__view-toggle"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          marginTop: 8, marginBottom: 4, padding: '0 4px',
+        }}
+      >
+        <div
+          style={{
+            display: 'inline-flex', padding: 3, borderRadius: 999,
+            background: 'var(--bg-muted)', border: '1px solid var(--border)',
+          }}
+        >
+          {([
+            { value: 'flat', label: '普通列表' },
+            { value: 'relation', label: '关系列表' },
+          ] as const).map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setView(opt.value)}
+              style={{
+                padding: '4px 12px', fontSize: 12, fontWeight: 600,
+                borderRadius: 999, border: 'none', cursor: 'pointer',
+                fontFamily: 'inherit',
+                background: view === opt.value ? 'var(--bg-card)' : 'transparent',
+                color: view === opt.value ? 'var(--text)' : 'var(--text-muted)',
+                boxShadow: view === opt.value ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
+                transition: 'background 0.15s',
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {view === 'relation' && allParents.size > 0 && (
+          <div style={{ display: 'inline-flex', gap: 4 }}>
+            <button
+              type="button"
+              onClick={handleExpandAll}
+              style={{
+                padding: '4px 10px', fontSize: 12,
+                borderRadius: 6, border: '1px solid var(--border)',
+                background: 'var(--bg-card)', color: 'var(--text-muted)',
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              全部展开
+            </button>
+            <button
+              type="button"
+              onClick={handleCollapseAll}
+              style={{
+                padding: '4px 10px', fontSize: 12,
+                borderRadius: 6, border: '1px solid var(--border)',
+                background: 'var(--bg-card)', color: 'var(--text-muted)',
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              全部折叠
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* 工单卡片列表：唯一滚动区 */}
       <div className="tasks-list-section">
         <div className="tasks-cards">
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>
+          ) : view === 'relation' ? (
+            <RelationList
+              rows={rows}
+              collapsed={collapsed}
+              onToggle={handleToggleCollapse}
+              onOpen={openDetail}
+              avatarMap={avatarMap}
+              currentUserId={userId}
+              currentUsername={username}
+              onToggleFollow={handleToggleFollow}
+              onLocateParticipant={openParticipantDiscussion}
+            />
           ) : (
             tickets.map((t) => (
-              <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} currentUserId={userId} currentUsername={username} onToggleFollow={handleToggleFollow} onLocateParticipant={openParticipantDiscussion} />
+              <TicketCard
+                key={t.id}
+                t={t}
+                onOpen={openDetail}
+                avatarMap={avatarMap}
+                currentUserId={userId}
+                currentUsername={username}
+                onToggleFollow={handleToggleFollow}
+                onLocateParticipant={openParticipantDiscussion}
+                dep={flatRefs.get(t.id) ?? null}
+              />
             ))
           )}
           <Pagination current={page} total={total} pageSize={pageSize} onChange={setPage} />

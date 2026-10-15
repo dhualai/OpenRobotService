@@ -105,7 +105,7 @@ export interface TaskDiscussStreamBody {
 export interface TaskDiscussStreamHandlers {
   /** 正文增量 token */
   onToken?: (token: string) => void;
-  /** Evaluator/附录改写后的完整正文（替换草稿） */
+  /** 附录（澄清建议/记忆标记）追加后的完整正文（替换草稿） */
   onRewrite?: (reply: string) => void;
   /** 评论已落库后的结果 */
   onResult?: (data: { task_id?: string; reply?: string; [k: string]: unknown }) => void;
@@ -176,6 +176,93 @@ export async function taskDiscussStream(
           throw new Error(msg);
         } else if (ev === 'done') {
           handlers.onDone?.(obj as { total_ms?: number });
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export interface ArchiveGenerateHandlers {
+  /** 阶段提示（收集素材/总结中/保存初稿） */
+  onStatus?: (msg: string) => void;
+  /** 报告标题（先生成完） */
+  onTitle?: (text: string) => void;
+  /** 正文增量 */
+  onDelta?: (text: string) => void;
+  /** 生成完成并已写入草稿 */
+  onDone?: (data: { report_id: number; version: number; chars: number }) => void;
+  /** 生成失败（可直接手写） */
+  onError?: (message: string) => void;
+  /** 处理人已手写，AI 初稿不覆盖 */
+  onSkipped?: (message: string) => void;
+}
+
+/**
+ * POST /archive/generate/stream —— 归档报告 AI 初稿（SSE）。
+ * 事件：status / title / delta / done / error / skipped。
+ * 生成与连接解耦：中途断开后台仍会写回，前端可刷新或直接手写。
+ */
+export async function archiveGenerateStream(
+  body: { task_id: number },
+  handlers: ArchiveGenerateHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetchWithAuth(`${BASE}/archive/generate/stream`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal,
+    headers: { Accept: 'text/event-stream' },
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const j = await res.json();
+      detail = typeof j?.detail === 'string' ? j.detail : (typeof j?.message === 'string' ? j.message : '');
+    } catch { /* ignore */ }
+    throw new Error(detail || `服务异常（HTTP ${res.status}）`);
+  }
+  if (!res.body) throw new Error('流式响应无 body');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep = buffer.indexOf('\n\n');
+      while (sep !== -1) {
+        const rawEvent = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        sep = buffer.indexOf('\n\n');
+        const lines = rawEvent.split('\n');
+        const evLine = lines.find((l) => l.startsWith('event:'));
+        const dataLine = lines.find((l) => l.startsWith('data:'));
+        if (!dataLine) continue;
+        const ev = (evLine ? evLine.slice('event:'.length).trim() : 'message') || 'message';
+        const dataStr = dataLine.slice('data:'.length).trim();
+        if (!dataStr) continue;
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(dataStr) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (ev === 'status') {
+          handlers.onStatus?.(String(obj.msg ?? ''));
+        } else if (ev === 'title') {
+          handlers.onTitle?.(String(obj.text ?? ''));
+        } else if (ev === 'delta') {
+          handlers.onDelta?.(String(obj.text ?? ''));
+        } else if (ev === 'done') {
+          handlers.onDone?.(obj as { report_id: number; version: number; chars: number });
+        } else if (ev === 'error') {
+          handlers.onError?.(String(obj.msg ?? '生成失败'));
+        } else if (ev === 'skipped') {
+          handlers.onSkipped?.(String(obj.msg ?? '报告已有内容，AI 初稿未覆盖'));
         }
       }
     }
@@ -349,6 +436,8 @@ export interface AiTicketBrief {
   source?: string;
   // 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null/undefined）
   redispatch_tip?: string | null;
+  // 当前登录用户是否已关注本工单（卡片星标）：由后端按 viewer 回填，未传 viewer 时恒为 false
+  is_followed?: boolean;
   // 代他人提单（代理提单）：关系状态 + 当前用户视角标记 + 参与人姓名。
   // 视角标记由后端按 token 身份判定（前端不自行拼判定）；姓名对非参与人为 null。
   proxy_relation_status?: 'pending' | 'acknowledged' | 'declined' | null;
@@ -376,6 +465,8 @@ export interface AiTicketListFilters {
   keyword?: string;         // 模糊搜索标题/描述
   username?: string;        // 按创建者用户名过滤
   exclude_status?: string;  // 排除的状态，逗号分隔（如 closed）
+  viewer?: string;          // 当前登录用户 username：关注态回填 +「我关注的」筛选（与 username 解耦）
+  followed?: boolean;       // 只看 viewer 关注的工单（「我关注的」）
 }
 
 /** 历史工单列表（GET /api/ai/memory/tickets/all） */
@@ -386,6 +477,8 @@ export const qaListTickets = (skip = 0, limit = 50, filters?: AiTicketListFilter
   if (filters?.keyword) params.keyword = filters.keyword;
   if (filters?.username) params.username = filters.username;
   if (filters?.exclude_status) params.exclude_status = filters.exclude_status;
+  if (filters?.viewer) params.viewer = filters.viewer;
+  if (filters?.followed) params.followed = 'true';
   return aiGet<{
     code: number;
     data?: {
@@ -417,19 +510,22 @@ export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispat
 export interface VehicleModeConfirmPayload {
   /** 会话 ID：先有会话再绑模式；同一 session 重复调用=覆盖重注册（幂等） */
   session_id: string;
-  /** 车型（如 XQE），取 wechat_qrcodes 录入信息行的 vehicle_model */
+  /** 扫码场景值（= str(wechat_qrcodes.id)，纯数字）：后端据此精确取扫的那一行录入信息 */
+  scene: string;
+  /** 车型（如 XQE）：弹窗展示值；后端以库内 vehicle_model 为准，此处仅作兜底 */
   model: string;
   project_name?: string;
   customer_name?: string;
-  /** 唯一车号：扫码链路只有 scene（proj_ 随机串）不是车号，故留空，走后端 model + project_name 匹配 */
+  /** 唯一车号：扫码链路无用（scene 才是车体身份），保留字段兼容其他调用方 */
   vehicle_code?: string;
 }
 
 /**
  * 车型定制模式确认：把当前会话注册为车型定制模式（该车型的 SOP / 故障分叉树引导）。
  *
- * code=0 注册成功，data 带回该车型的手册文档清单；code=1 表示车型未建档或不在服务范围，
- * message 面向用户（实验阶段明确不降级为常规模式，前端提示后由用户确认扫码信息）。
+ * code=0 注册成功，data 带回该车型的手册文档清单；code=1 表示二维码不可用（查无此码 /
+ * 非已发布 / scene 非法 / 未录车型），message 面向用户（实验阶段明确不降级为常规模式，
+ * 前端提示后由用户联系管理员）。
  */
 export const qaModeConfirm = (payload: VehicleModeConfirmPayload) =>
   aiPost<{
@@ -440,12 +536,20 @@ export const qaModeConfirm = (payload: VehicleModeConfirmPayload) =>
       model: string;
       domain: string;
       manual_docs: Array<{ title: string; path: string; url: string }>;
-      /** 开场大方向引导题（0930）：服务端直出（分叉树顶层随机 5 + 故障码保底），
-       *  无分叉树知识库时为 null（退化为纯输入框）。 */
+      /** 开场大方向引导题（0930）：服务端直出（分叉树顶层），无分叉树知识库时为
+       *  null（退化为纯输入框）。1012 起拆两段：choices=常驻 4（故障码保底优先），
+       *  collapsed_choices=折叠剩余（九大类全部可达而首屏不爆，前端「展开全部」补渲染）。 */
       opening?: {
         question: string;
         choices: Array<string>;
+        collapsed_choices?: Array<string>;
         hint: string;
+      } | null;
+      /** 车型资料引导（1012，独立于故障题）：扫车型目录下型号详情页（XQE122.md
+       *  形态）生成的按钮组，点击=发送「{型号} 车型介绍」走检索。无型号详情页为 null。 */
+      vehicle_guide?: {
+        question: string;
+        choices: Array<string>;
       } | null;
     };
   }>('/qa/mode/confirm', payload);

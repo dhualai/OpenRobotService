@@ -62,6 +62,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import History
 from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
     ExpertiseRecall, invalidate_expertise_cache,
 )
+from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dialogue import DispatchDialogue
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
 )
@@ -219,6 +220,7 @@ class DispatchFlow:
         desc_preview = (ticket_context.problem_description or "")[:100].replace("\n", " ")
         # 统一派单日志前缀（工单编号置前）：便于按工单关联整条派单链路日志
         ltag = f"[派单:{ticket_context.id}]"
+        dialogue = DispatchDialogue()
         logger.info(
             f"{ltag} 开始派单 | 工单={ticket_context.title[:50]!r} "
             f"| 描述={desc_preview!r} "
@@ -232,7 +234,7 @@ class DispatchFlow:
 
         # ── Step 0: 提单人指定（LLM 识别是否指定期望接单人）──
         preferred, specified_unresolved = await self._detect_preferred_assignee(
-            ticket_context, engineer_profiles,
+            ticket_context, engineer_profiles, dialogue,
         )
         if preferred is not None:
             logger.info(
@@ -305,7 +307,7 @@ class DispatchFlow:
 
         # ── Step 1: 候选收紧（部门 → 产品 → 模块）──
         tighten: TightenResult = await self._tightener.tighten(
-            ticket=ticket_context, engineers=engineer_profiles,
+            ticket=ticket_context, engineers=engineer_profiles, dialogue=dialogue,
         )
         self._last_tighten = tighten
         candidates = tighten.candidates
@@ -317,6 +319,13 @@ class DispatchFlow:
             f"部门={tighten.dept.mode}({tighten.dept.primary_dept or '-'}) | "
             f"产品={tighten.product.product or '-'} | 模块层=已移除(不收紧)"
         )
+        dialogue.note(
+            "Step1 收紧",
+            f"部门={tighten.dept.mode}（{tighten.dept.primary_dept or '未定'}）"
+            f" {tighten.dept.reasoning or ''}\n"
+            f"产品={tighten.product.product or '未定'}\n"
+            f"候选人 {tighten.before_count}→{tighten.after_count}",
+        )
 
         # ── Step 2: 解析身份 ID（打标在 Step4 Ranker；此处只解析 + 模糊截断）──
         creator_id = self._resolve_creator_id(ticket_context)
@@ -325,6 +334,19 @@ class DispatchFlow:
             logger.info(f"{ltag} Step2 提单人={creator_id}（打标，不踢人）")
         if prev_assignee_id:
             logger.info(f"{ltag} Step2 原接单人={prev_assignee_id}（在候选则打标避开，不加回）")
+        identity_lines = []
+        if creator_id:
+            identity_lines.append(f"提单人={creator_id}")
+        if contact_assignee_id:
+            identity_lines.append(f"项目对接人={contact_name}({contact_assignee_id})")
+        if preferred_assignee_id:
+            identity_lines.append(f"倾向接单人={pref_name}({preferred_assignee_id})")
+        if prev_assignee_id:
+            identity_lines.append(f"原接单人={prev_assignee_id}")
+        if specified_unresolved:
+            identity_lines.append(f"指定了但未匹配={specified_unresolved}")
+        if identity_lines:
+            dialogue.note("Step2 身份", "\n".join(identity_lines))
         skip_recall = match_vague_strong_signal(ticket_context, self._config)
         if skip_recall:
             logger.info(f"{ltag} Step2 模糊强信号(dispatch_hint=severe) → 跳过 Step3–6，进 Step7")
@@ -371,7 +393,12 @@ class DispatchFlow:
         sim_fb: Dict[str, Dict[str, str]] = {}
         try:
             l1_fut, sim_fut, clu_fut = await asyncio.gather(
-                self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
+                self._llm_recall.arecall(
+                    ticket=ticket_context,
+                    engineers=candidates,
+                    dialogue=dialogue,
+                    product=getattr(tighten.product, "product", "") or "",
+                ),
                 self._history_recall.arecall(ticket=ticket_context, feedback=sim_fb),
                 self._expertise_recall.arecall(ticket=ticket_context),
                 return_exceptions=True,
@@ -415,6 +442,11 @@ class DispatchFlow:
             )
         if not recall_result.cluster_recall:
             logger.info(f"{ltag} Step3 问题簇: 空")
+        dialogue.note(
+            "Step3 相似工单与问题簇",
+            f"相似工单命中 {len(recall_result.similar_recall)} 人；"
+            f"问题簇命中 {len(recall_result.cluster_recall)} 人",
+        )
 
         # ── Step 4: 精排 + 职级折扣（对接人只打标；倾向人 max(分, preferred_floor)）──
         ranked_scores = self._ranker.rank(
@@ -442,6 +474,13 @@ class DispatchFlow:
                 f"{ltag} Step4 并集补入 {extra.name}({eid})（不在收紧名单，历史捞回）"
             )
         self._log_ranked(ltag, ranked_scores, candidates, prefix="Step4 精排Top")
+        rank_lines = []
+        for rank, (eid, detail) in enumerate(list(ranked_scores.items())[:5], 1):
+            if not isinstance(detail, dict):
+                continue
+            name = next((e.name for e in candidates if e.id == eid), eid)
+            rank_lines.append(f"#{rank} {name} 总分={float(detail.get('total_score') or 0):.2f}")
+        dialogue.note("Step4 精排", "\n".join(rank_lines) or "没有可排的人")
 
         # ── Step 6: LLM 综合决策 ──
         result: Optional[AssignmentResult] = None
@@ -451,6 +490,7 @@ class DispatchFlow:
                 ticket=ticket_context, engineers=candidates,
                 recall_result=recall_result, ranked_scores=ranked_scores,
                 product=getattr(tighten.product, "product", "") or "",
+                dialogue=dialogue,
             )
             if llm_result is not None:
                 result = llm_result
@@ -1058,12 +1098,13 @@ class DispatchFlow:
         name: str,
         engineers: List[EngineerProfile],
         reason_prefix: str,
+        dialogue=None,
     ):
         """匹配一个指定名：精确 → 拼音 → 全量用户兜底。找不到返回 None。"""
         matches, pinyin_hit = self._match_engineer_with_pinyin(name, engineers)
         if matches:
             winner, llm_reason, collision_random = await self._pick_collision(
-                ticket, name, matches,
+                ticket, name, matches, dialogue,
             )
             collision = len(matches) > 1
             reason = f"{reason_prefix}{name} → 匹配 {winner.name}"
@@ -1079,7 +1120,7 @@ class DispatchFlow:
         if not stubs:
             return None
         winner, llm_reason, collision_random = await self._pick_collision(
-            ticket, name, stubs,
+            ticket, name, stubs, dialogue,
         )
         collision = len(stubs) > 1
         reason = (
@@ -1093,7 +1134,7 @@ class DispatchFlow:
         return winner, everyone_py, collision, collision_random, reason, stubs
 
     async def _detect_preferred_assignee(
-        self, ticket: TicketContext, engineers: List[EngineerProfile],
+        self, ticket: TicketContext, engineers: List[EngineerProfile], dialogue=None,
     ) -> Tuple[Optional[AssignmentResult], Optional[str]]:
         """识别提单人是否明确指定了期望接单人。
 
@@ -1115,7 +1156,7 @@ class DispatchFlow:
             specified_multi = len(strong_names) >= 2
             for idx, strong_name in enumerate(strong_names):
                 resolved = await self._resolve_preferred_name(
-                    ticket, strong_name, engineers, "提单人指定: ",
+                    ticket, strong_name, engineers, "提单人指定: ", dialogue,
                 )
                 if resolved is None:
                     continue
@@ -1162,7 +1203,10 @@ class DispatchFlow:
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
-            response = await llm.complete(prompt, max_tokens=250, temperature=0.1)
+            if dialogue is not None:
+                response = await dialogue.complete(llm, prompt, max_tokens=250, temperature=0.1)
+            else:
+                response = await llm.complete(prompt, max_tokens=250, temperature=0.1)
         except Exception as e:
             logger.warning(f"[派单:{ticket.id}] Step0 LLM 识别失败: {e}")
             return None, None
@@ -1180,7 +1224,7 @@ class DispatchFlow:
             return None, None
 
         resolved = await self._resolve_preferred_name(
-            ticket, preferred_name, engineers, "提单人指定接单人: ",
+            ticket, preferred_name, engineers, "提单人指定接单人: ", dialogue,
         )
         if resolved is not None:
             winner, pinyin_hit, collision, collision_random, reason, matches = resolved
@@ -1381,6 +1425,7 @@ class DispatchFlow:
 
     async def _pick_collision(
         self, ticket: TicketContext, pref_name: str, matches: List[EngineerProfile],
+        dialogue=None,
     ) -> tuple:
         """二次派单感知增强（M5/D6b）：同名多人抉择。
 
@@ -1412,7 +1457,10 @@ class DispatchFlow:
             llm = await get_llm_client()
             from ai.agents.AiDiagnosisPlatform.assigner.prompts.step0 import build_collision
             prompt = build_collision(ticket, pool)
-            resp = await llm.complete(prompt, max_tokens=200, temperature=0.1)
+            if dialogue is not None:
+                resp = await dialogue.complete(llm, prompt, max_tokens=200, temperature=0.1)
+            else:
+                resp = await llm.complete(prompt, max_tokens=200, temperature=0.1)
             data = self._loads_llm_json(resp)
             if data:
                 # prompt 约定无法区分时输出 can_determine:false

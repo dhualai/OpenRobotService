@@ -10,10 +10,10 @@
 """
 
 import re
-from typing import Optional
 
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.schemas import TaskContext
+from ai.agents.AiTaskPlatform.runtime import report_cache
 
 logger = get_logger("TASK_AGENT")
 
@@ -23,6 +23,8 @@ logger = get_logger("TASK_AGENT")
 _REF_PATTERN = re.compile(r"@#(\d{1,8})")
 # @# 引用某工单时，最多注入该工单最近多少条讨论评论（非完整历史，仅供参考）
 MAX_REF_DISCUSSION_ITEMS = 10
+# @# 引用时注入的报告上限（报告通常 1-3KB，超过说明异常，截断防 prompt 膨胀）
+MAX_REF_REPORT_CHARS = 6000
 
 def extract_referenced_task_ids(text: str) -> list:
     """从一段文本（讨论 query）中提取被 @# 引用的工单编号列表（去重、保序）。
@@ -53,8 +55,10 @@ def format_referenced_tickets(ref_ids: list) -> str:
         + 该工单的讨论区评论(load_discussion，discuss 内容已落库，含 U老师 分析)。
       - ★ 最有价值：最终解决方案（solution，单独字段，存于 metadata_info.diagnosis.solution）——
         工程师确认方案后写入，只有已提交方案的工单有；直接就是"怎么解决"的结论。
-      - 不入库、拿不到：任务 Agent「帮我分析」生成的完整诊断报告
-        （diagnose 即时生成不落库）；故不注入、也让 LLM 不要假装看到了它。
+      - 不入库、但同进程内可能拿到：「帮我分析」生成的完整诊断报告
+        （diagnose 即时生成不落库，靠 runtime/report_cache 留短时快照）。
+        拿不到时注入明确口径，让 LLM 如实说明"报告不落库、只能重新点一次『帮我分析』"，
+        不许编造或假装看过。
 
     若某个编号读不到（不存在/非 AI 源），保留一条可读占位（外层不因单条失败而中断）。
     """
@@ -102,10 +106,26 @@ def format_referenced_tickets(ref_ids: list) -> str:
             parts.append(f"  AI 摘要: {ctx.ai_summary}")
         if discussion:
             parts.append(f"  该工单近期讨论（最近 {MAX_REF_DISCUSSION_ITEMS} 条，非完整历史）:\n{discussion}")
+        parts.append(_format_ref_report(report_cache.get(rid)))
         blocks.append("\n".join(parts))
     # 标签明确标注这是 AI 从数据库读取的「已结束工单权威记录」，其中的「解决方式」
     # 是工程师结束工单时填写的最终结论，应直接采信为事实，不得声称"无法核实"。
     return "## 引用的历史工单上下文（@# 引用，AI从数据库读取的已结束工单记录）\n" + "\n".join(blocks)
+
+
+def _format_ref_report(report) -> str:
+    """被引用工单的「帮我分析」报告段。
+
+    报告不落库，只有同一进程内生成过快照才拿得到；拿不到时给 LLM 一条明确口径，
+    让它如实说明"报告不落库、只能重新点一次『帮我分析』"，而不是编造或假装看过。
+    """
+    if report:
+        text = report if len(report) <= MAX_REF_REPORT_CHARS else report[:MAX_REF_REPORT_CHARS] + "\n…（报告过长，已截断）"
+        return f"  「帮我分析」完整报告（本次进程内快照，未落库）:\n{text}"
+    return (
+        "  「帮我分析」完整报告: （该工单的报告不落库，本进程内也没留快照，确实拿不到。"
+        "用户若问起请如实说明：只能请他在那个工单上重新点一次「帮我分析」；不要编造报告内容）"
+    )
 
 
 def _format_solution(solution) -> str:

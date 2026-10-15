@@ -14,8 +14,12 @@ class ArchiveReportSaveRequest(BaseModel):
 
 
 class ArchiveReportSubmitRequest(BaseModel):
-    """提交审核（POST /archive-reports/{report_id}/submit）"""
-    reviewer: str = Field(..., min_length=1, description="审核人 users.id")
+    """提交审核（POST /archive-reports/{report_id}/submit）
+
+    审核人由系统按问题领域 + 在审负荷概率派审，不再依赖调用方传 reviewer。
+    reviewer 字段保留兼容旧前端，服务端忽略。
+    """
+    reviewer: Optional[str] = Field(None, description="已废弃：系统派审，忽略此字段")
     content: Optional[str] = Field(None, description="可选：提交时顺便保存最新 content")
     revision: Optional[int] = Field(None, description="乐观锁版本号")
 

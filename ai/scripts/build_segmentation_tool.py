@@ -139,9 +139,10 @@ def main():
             e = starts[tid + 1] if tid + 1 < len(starts) else len(rounds)
             if (man_labels.get(cid) or {}).get(str(s)):
                 continue
-            if s in {int(x) for x in (pre.get(cid) or {})
-                     if str(x).isdigit() or isinstance(x, int)}:
-                continue
+            # 0929 修复：不再按「有 AI 预标」过滤——向导第 5 步「回车采纳预标」
+            # 的对象就是预标段（有预标未人工标 = 待复核）；0920 对齐漏斗时误加
+            # 的这条把复核职能砍没了（l3 全量预标后工具直接空白，用户实锤）。
+            # 待标注 = 无人工标签的段（老会话已标段照旧排除）。
             # 0920 口径（与漏斗 _seg_rows 同）：段内须有「提问且 AI 有回答」的
             # 回合——纯寒暄、AI 未回答/回答全空的服务异常段都不可标注
             if not any(cls[i].get("q") and any(a.strip() for a in (rounds[i].get("a") or []))
@@ -237,8 +238,14 @@ def main():
                          ensure_ascii=False).replace("</", "<\\/")
     html = tpl.replace("__DATA__", payload)
     # 切题版（--bounds-only）写独立文件：与标注版互不覆写（0920 实锤：l3 后
-    # 重跑 tool0 会把标注版工具冲回切分页）。「打开标注工具」永远指向标注版
-    path = os.path.join(OUT, "segmentation_tool_bounds.html" if args.bounds_only
+    # 重跑 tool0 会把标注版工具冲回切分页）。title 按模式区分——两版同模板
+    # 同 title 时浏览器标签页无法分辨开的是哪版（0929 向导错开旧标注页实锤）。
+    is_bounds = args.bounds_only
+    html = html.replace(
+        "<title>话题切分审核</title>",
+        "<title>话题切分审核（切题版·蓝）</title>" if is_bounds
+        else "<title>话题切分审核（标注版·绿）</title>")
+    path = os.path.join(OUT, "segmentation_tool_bounds.html" if is_bounds
                         else "segmentation_tool.html")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(html)

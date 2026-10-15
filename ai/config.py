@@ -25,6 +25,101 @@ from pydantic import BaseModel, Field
 _ENV_FILE = Path(__file__).resolve().parent / ".env"
 load_dotenv(_ENV_FILE, override=False)
 
+
+# ── 热生效的环境变量读取 ───────────────────────────────────
+# load_dotenv 只在模块导入时跑一次，所以改 ai/.env 默认要**重启**才生效
+# （issues.md 基线里记着这条）。少数开关需要在运行中改，走 fresh_env：
+# 按 TTL 重读 .env 文件，省得每次都碰磁盘。
+_HOT_ENV_TTL = 5.0
+_hot_env_cache: dict[str, tuple[float, str]] = {}
+
+
+def fresh_env(key: str, default: str = "") -> str:
+    """读环境变量的**当前**值（带 TTL 缓存，改 .env 后最多 5 秒生效）。
+
+    优先读 ai/.env（改了不必重启）；文件里没有该键时退回进程环境变量
+    （部署时直接设 env、不放 .env 的情况）。
+    """
+    import time
+    now = time.time()
+    hit = _hot_env_cache.get(key)
+    if hit is not None and now - hit[0] < _HOT_ENV_TTL:
+        return hit[1]
+
+    value = None
+    try:
+        if _ENV_FILE.exists():
+            for line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, _, v = s.partition("=")
+                if k.strip() == key:
+                    value = v.strip().strip('"').strip("'")
+                    break
+    except Exception:
+        value = None
+    if value is None:
+        value = os.getenv(key, default)
+
+    _hot_env_cache[key] = (now, value)
+    return value
+
+
+def _hot_bool(key: str, default: bool) -> bool:
+    return fresh_env(key, "1" if default else "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _hot_int(key: str, default: int) -> int:
+    try:
+        return int(fresh_env(key, str(default)).strip())
+    except (TypeError, ValueError):
+        # 配置写成非数字不能让 get_ai_config 炸掉整条链路
+        return default
+
+
+# ── 工单 Agent 状态的运行时开关 ─────────────────────────────
+# ⚠️ 判断"现在开没开"请用下面这三个函数，**不要**读 cfg.enable_agent_state ——
+# `get_ai_config()` 是 @lru_cache 的，整份配置在进程内只构造一次，
+# 读字段拿到的是**启动快照**，改了 .env 也不会变（这正是本轮踩到的坑）。
+
+
+def agent_state_enabled() -> bool:
+    """工单 Agent 状态是否启用（热生效，最多 5 秒）。"""
+    return _hot_bool("ENABLE_AGENT_STATE", True)
+
+
+def agent_state_raw_window() -> int:
+    """进 prompt 的「最近讨论原文」条数（热生效）。"""
+    return _hot_int("AGENT_STATE_RAW_WINDOW", 10)
+
+
+def discuss_quoted_context_k() -> int:
+    """引用某条评论时前后各取几条（热生效）。"""
+    return _hot_int("DISCUSS_QUOTED_CONTEXT_K", 5)
+
+
+def supervisor_max_run_seconds() -> int:
+    """一次 Supervisor.run 的**墙上时钟硬上限**（热生效，默认 300 秒）。
+
+    注意它是**安全阀**，不是预算：只该在病态情况（某个能力卡住、多轮叠加）
+    兜住，不参与日常调优。超时后**不再开始新的一轮**，把已拿到的结果返回，
+    并在正文里说明是超时收束 —— 不打断已经在跑的能力（那会丢证据）。
+
+    真要把预算调紧，请先看 `[supervisor] 本轮耗时` 那条日志的分布再定，
+    别凭想象设一个数。
+    """
+    return _hot_int("SUPERVISOR_MAX_RUN_SECONDS", 300)
+
+
+def agent_state_debug_dump() -> bool:
+    """是否把状态块原文打进日志（热生效，**默认关**）。
+
+    排查用：想知道「状态到底写了什么、有没有进 prompt」时打开它，
+    日志里会出现 `[discuss] 状态块原文 task=...`。含工单讨论内容，别长期开着。
+    """
+    return _hot_bool("AGENT_STATE_DEBUG_DUMP", False)
+
 # .md 源文件目录（OpenRobotService_Data/kb/）
 _KB_DIR = (Path(__file__).resolve().parent.parent.parent / "OpenRobotService_Data" / "kb").resolve()
 
@@ -33,8 +128,8 @@ _POINTER_DIR = (Path(__file__).resolve().parent / "kb").resolve()
 
 # 五层 domain 架构：industry / company / team / project / personal
 # 另加 "dispatch"：派单模块历史工单向量库（L3-A 路，独立集合，避免与诊断方案混用）
-# 车型知识不建独立域：kb/company/{车型}/（如 XQE）入库归 company 域，payload
-# sub_domain="{车型}/manual"；检索按会话 vehicle_mode 以 sub_domain 过滤（0930）
+# 车型知识不建独立域：kb/company/{车型}/（如 XQE）平铺入库归 company 域，payload
+# sub_domain="{车型}"；检索按会话 vehicle_mode 以 sub_domain 过滤（0930，1010 平铺去 manual 层）
 KB_DOMAINS = ["industry", "company", "team", "project", "personal", "dispatch"]
 
 _KB_POINTERS = {
@@ -85,6 +180,11 @@ class AIConfig(BaseModel):
     qdrant_timeout: float = Field(default=5.0)
     qdrant_local_path: str = Field(default="", description="本地模式路径，非空时忽略 host/port")
 
+    ticket_card_collection: str = Field(
+        default="", description="工单卡独立集合（测试环境隔离，如 test_ticket_resolutions；"
+        "空=随 company 域指针。非空时工单卡读写全部走该集合，与 company_* 指针脱钩——"
+        "carry_over 只扫 company_ 前缀，测试卡物理上不可能被搬进生产集合）")
+
     # ========== Redis ==========
     redis_url: str = Field(default="redis://localhost:6379/0")
     redis_max_context_turns: int = Field(default=3)
@@ -127,6 +227,30 @@ class AIConfig(BaseModel):
     resolution_worker_queue: str = Field(default="ors:resolution", description="解决方式总结任务队列（Redis List）")
     resolution_worker_wait_timeout: float = Field(default=30.0, description="BROP 阻塞等待秒数 / LLM 单轮超时秒数")
     resolution_empty_text: str = Field(default="", description="无任何内容时返回的空串（占位提示由前端 placeholder 控制）")
+
+    # ========== 工单 Agent 状态（讨论区「记得之前发生了什么」）==========
+    # 以下三项**热生效**：从 ai/.env 重读（5 秒 TTL），改完不用重启服务。
+    enable_agent_state: bool = Field(
+        default=True,
+        description="工单 Agent 状态总开关：默认开。关时节选中 comment_lines 完全不动"
+                    "（行为与改造前逐字一致），可随时回滚",
+    )
+    agent_state_raw_window: int = Field(
+        default=10,
+        description="进 prompt 的「最近讨论原文」条数；更早的折叠进结构化状态",
+    )
+    agent_state_worker_concurrency: int = Field(
+        default=4, description="工单状态刷新 Worker 最大并行数"
+    )
+    agent_state_worker_queue: str = Field(
+        default="ors:agent_state", description="工单状态刷新任务队列（Redis List）"
+    )
+    # 注：BRPOP 的阻塞时长**不作为配置项** —— 它必须是短的（1s）且超时按「空轮询」
+    # 处理，见 agent_state_worker._consumer 的说明。给成可调只会让它又被当成异常。
+    discuss_quoted_context_k: int = Field(
+        default=5,
+        description="用户引用某条评论再 @U老师 时，前后各取几条作为语境注入",
+    )
 
     # ========== MinIO 对象存储（附件图片读取）==========
     minio_endpoint: str = Field(default="localhost:9000")
@@ -303,6 +427,7 @@ def get_ai_config() -> AIConfig:
         qdrant_collection_name=os.getenv("QDRANT_COLLECTION", "operation_docs"),
         qdrant_timeout=float(os.getenv("QDRANT_TIMEOUT", "5.0")),
         qdrant_local_path=os.getenv("QDRANT_LOCAL_PATH", ""),
+        ticket_card_collection=os.getenv("TICKET_CARD_COLLECTION", ""),
         # Redis
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         redis_max_context_turns=int(os.getenv("REDIS_MAX_CONTEXT_TURNS", "3")),
@@ -324,6 +449,12 @@ def get_ai_config() -> AIConfig:
         # 诊断服务
         diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
         enable_knowledge_sink=os.getenv("ENABLE_KNOWLEDGE_SINK", "0").strip().lower() in ("1", "true", "yes", "on"),
+        # 工单 Agent 状态（开关 + 两个可调参数）。⚠️ 这里是**启动快照**（本函数被
+        # @lru_cache 包着）。运行时判断请用 agent_state_enabled() / agent_state_raw_window()
+        # / discuss_quoted_context_k() —— 那三个是热生效的。
+        enable_agent_state=os.getenv("ENABLE_AGENT_STATE", "1").strip().lower() in ("1", "true", "yes", "on"),
+        agent_state_raw_window=int(os.getenv("AGENT_STATE_RAW_WINDOW", "10") or 10),
+        discuss_quoted_context_k=int(os.getenv("DISCUSS_QUOTED_CONTEXT_K", "5") or 5),
         # 派单后台
         assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "120")),
         # Debug

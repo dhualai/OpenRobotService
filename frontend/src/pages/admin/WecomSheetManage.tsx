@@ -76,6 +76,10 @@ export default function WecomSheetManage() {
   const [creating, setCreating] = useState(false);
   const [createdDoc, setCreatedDoc] = useState<{ docid: string; url: string } | null>(null);
 
+  // 「拉取子表」拿到的全部子表，用于点选 sheet_id（企微手工新建的子表也能拉到）
+  const [sheetTabs, setSheetTabs] = useState<WecomDocSheet[]>([]);
+  const [picking, setPicking] = useState(false);
+
   // 镜像数据查看
   const [viewId, setViewId] = useState<number | null>(null);
   const [viewName, setViewName] = useState('');
@@ -108,6 +112,7 @@ export default function WecomSheetManage() {
     setPreview(null);
     setShowCreateDoc(false);
     setCreatedDoc(null);
+    setSheetTabs([]);
     setShowForm(true);
   };
 
@@ -125,6 +130,7 @@ export default function WecomSheetManage() {
     setPreview(null);
     setShowCreateDoc(false);
     setCreatedDoc(null);
+    setSheetTabs([]);
     setShowForm(true);
   };
 
@@ -184,16 +190,21 @@ export default function WecomSheetManage() {
       Toast({ message: '先填 docid', theme: 'warning' });
       return;
     }
+    setPicking(true);
     try {
       const sheets: WecomDocSheet[] = await fetchWecomDocSheets(form.docid.trim());
       if (!sheets.length) {
+        setSheetTabs([]);
         Toast({ message: '没查到子表，请手动填 sheet_id', theme: 'warning' });
         return;
       }
-      setField('sheet_id', sheets[0].sheet_id);
-      Toast({ message: `已选子表 ${sheets[0].title || sheets[0].sheet_id}`, theme: 'success' });
+      setSheetTabs(sheets);
+      // 只有一个子表时直接选中；多个时必须让用户自己挑（手工新建的子表往往不是第一个）
+      if (sheets.length === 1) setField('sheet_id', sheets[0].sheet_id);
     } catch (e) {
       Toast({ message: `查子表失败: ${e instanceof Error ? e.message : ''}`, theme: 'error' });
+    } finally {
+      setPicking(false);
     }
   };
 
@@ -364,8 +375,8 @@ export default function WecomSheetManage() {
               <button type="button" className="wsm-btn wsm-btn--secondary" onClick={() => setShowCreateDoc((v) => !v)}>
                 {showCreateDoc ? '收起建表' : '新建智能表格'}
               </button>
-              <button type="button" className="wsm-btn wsm-btn--ghost" onClick={() => void pickSheets()}>
-                拉取子表
+              <button type="button" className="wsm-btn wsm-btn--ghost" disabled={picking} onClick={() => void pickSheets()}>
+                {picking ? '拉取中…' : '拉取子表'}
               </button>
               <button type="button" className="wsm-btn wsm-btn--secondary" disabled={previewing} onClick={() => void testConnection()}>
                 {previewing ? '连接中…' : '测试连接'}
@@ -375,6 +386,30 @@ export default function WecomSheetManage() {
               </button>
               <button type="button" className="wsm-btn wsm-btn--ghost" disabled={busy} onClick={() => setShowForm(false)}>取消</button>
             </div>
+
+            {sheetTabs.length > 0 ? (
+              <div className="wsm-sheets">
+                <div className="wsm-sheets__head">
+                  该文档共 {sheetTabs.length} 个子表，点一下选中
+                  <span>（在企微里手工新建的子表也在里面，随时可以再点「拉取子表」刷新）</span>
+                </div>
+                {sheetTabs.map((s) => {
+                  const active = form.sheet_id === s.sheet_id;
+                  return (
+                    <button
+                      key={s.sheet_id}
+                      type="button"
+                      className={`wsm-sheets__item${active ? ' is-active' : ''}`}
+                      onClick={() => setField('sheet_id', s.sheet_id)}
+                    >
+                      <span className="wsm-sheets__title">{s.title || '(未命名子表)'}</span>
+                      <code className="wsm-sheets__id">{s.sheet_id}</code>
+                      {active ? <span className="wsm-sheets__tag">已选</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
 
             {showCreateDoc ? (
               <div className="wsm-createdoc">
@@ -389,12 +424,12 @@ export default function WecomSheetManage() {
                     />
                   </label>
                   <label className="wsm-field">
-                    文档管理员 userid（逗号分隔，可留空）
+                    管理员 userid（选填，必须是通讯录 userid，不是姓名）
                     <input
                       className="wsm-input"
                       value={cdAdmins}
                       onChange={(e) => setCdAdmins(e.target.value)}
-                      placeholder="zhangsan,lisi"
+                      placeholder="留空：创建者自动成为管理员"
                     />
                   </label>
                 </div>

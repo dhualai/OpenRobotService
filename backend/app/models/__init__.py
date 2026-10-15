@@ -114,6 +114,16 @@ from app.models.usp_env import UspEnv
 # 企业微信表格数据源 + 记录镜像
 from app.models.wecom_sheet import WecomSheetSource, ExternalRecord
 
+# 微信支付（奖励记录 + 转账单 + 回调流水）
+from app.models.wxpay import (
+    RewardRecord,
+    RewardStatus,
+    TransferBill,
+    TransferBillState,
+    WxpayNotifyLog,
+    derive_reward_status,
+)
+
 __all__ = [
     "Base",
     # identity
@@ -160,4 +170,7 @@ __all__ = [
     "UspEnv",
     # wecom sheet source / mirror
     "WecomSheetSource", "ExternalRecord",
+    # wxpay
+    "RewardRecord", "RewardStatus", "TransferBill", "TransferBillState",
+    "WxpayNotifyLog", "derive_reward_status",
 ]

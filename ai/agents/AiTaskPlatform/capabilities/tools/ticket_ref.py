@@ -15,7 +15,6 @@ Supervisor 主动派发的主路径（避免重复注入）。
 
 from __future__ import annotations
 
-from typing import Optional
 
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability, CapabilityResult

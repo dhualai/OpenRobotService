@@ -3,18 +3,20 @@
 MIGRATION.md 阶段 3：从 `app/modules/das/api/export.py` 搬迁而来，
 路由前缀从 `/api/DAS/export` 迁移到 `/api/admin/export`。
 """
-from fastapi import APIRouter, Depends, Query, HTTPException, Request, Body
+from fastapi import APIRouter, Depends, Query, HTTPException, Request, Body, Header
 from typing import Any, Optional, Dict, List
 from pydantic import BaseModel
+from app.core.config import settings
 from app.modules.admin.utils_das.config import security, DEBUG_MODE, AUTH_SERVICE_BASE_URL
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.mqtt import publish_to_mqtt
 from app.modules.admin.api.auth import (
     require_permission,
-    get_current_active_user_from_token,
     has_permission_code,
 )
+from app.core.security import decode_token
+from app.core.database import get_user_with_roles
 from fastapi.responses import StreamingResponse
 import gzip
 import io
@@ -30,30 +32,70 @@ PERM_USER_EXPORT = "backend:project:user:export"
 PERM_LICENSE_APPLY = "backend:project:license:apply"
 
 
-@export_router.post("/project/{project_code}", summary="导出项目数据")
-async def export_project(
-    project_code: str,
-    type: str = Query(..., description="导出类型: license, users, all"),
-    credentials: Optional = Depends(security),
-    request: Request = None,
-    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
-):
-    if type not in ["license", "users", "all"]:
-        raise HTTPException(status_code=400, detail="type参数必须是 'license', 'users' 或 'all'")
+def _verify_export_auth(
+    request: Request,
+    x_api_key: str = "",
+    require_license: bool = True,
+    require_users: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """两种鉴权通道任选其一：
+    1. X-API-Key 内部服务鉴权（配置 USP_PROJECT_SYNC_KEY）→ 跳过权限码
+    2. JWT 用户鉴权 → 需通过对应 export 权限码
 
-    # 基于权限代码管控：license 导出需 PERM_LICENSE_EXPORT，
-    # users 导出需 PERM_USER_EXPORT，all 需两者皆有
+    返回 current_user（内部通道时为 None），鉴权失败直接抛 HTTPException。
+    """
+    internal_auth = bool(settings.USP_PROJECT_SYNC_KEY and x_api_key == settings.USP_PROJECT_SYNC_KEY)
+    if internal_auth:
+        return None
+
+    # JWT 通道
+    token = request.headers.get("Authorization", "")
+    if token.startswith("Bearer "):
+        token = token[7:]
+    if not token:
+        token = request.query_params.get("token", "")
+    payload = decode_token(token) if token else None
+    current_user = None
+    if payload and payload.get("sub"):
+        current_user = get_user_with_roles(payload["sub"])
+
+    if not current_user:
+        raise HTTPException(status_code=401, detail="未认证，请携带 JWT Token 或 X-API-Key")
+
     required_perms: List[str] = []
-    if type in ("license", "all"):
+    if require_license:
         required_perms.append(PERM_LICENSE_EXPORT)
-    if type in ("users", "all"):
+    if require_users:
         required_perms.append(PERM_USER_EXPORT)
     for perm in required_perms:
         if not has_permission_code(current_user, perm):
             raise HTTPException(status_code=403, detail=f"权限不足: 缺少 {perm}")
 
+    return current_user
+
+
+@export_router.post("/project/{project_code}", summary="导出项目数据")
+async def export_project(
+    request: Request,
+    project_code: str,
+    type: str = Query("all", description="导出类型: license, users, all；不传默认 all"),
+    x_api_key: str = Header(default="", alias="X-API-Key"),
+):
+    if type not in ["license", "users", "all"]:
+        raise HTTPException(status_code=400, detail="type参数必须是 'license', 'users' 或 'all'")
+
+    _verify_export_auth(
+        request, x_api_key,
+        require_license=(type in ("license", "all")),
+        require_users=(type in ("users", "all")),
+    )
+
     export_data = {"project_code": project_code}
-    
+
+    # 导出授权包版本号（licence/人员变动自动 +1）
+    project = project_service.get_project(project_code)
+    export_data["version"] = str(project.get("export_version", 0) if project else 0)
+
     if type == "license" or type == "all":
         licenses = project_service.get_licenses_by_project_code(project_code, "all")
         if licenses:
@@ -85,6 +127,30 @@ async def export_project(
             "Content-Disposition": f"attachment; filename={filename}"
         }
     )
+
+
+@export_router.get("/project/{project_code}/meta", summary="查询项目导出授权包元信息")
+async def export_project_meta(
+    request: Request,
+    project_code: str,
+    x_api_key: str = Header(default="", alias="X-API-Key"),
+) -> Dict[str, Any]:
+    """轻量查询：只返回版本号和最近变更时间，用于项目侧判断是否需要重新拉取完整授权包。
+
+    鉴权与 POST /project/{project_code} 完全相同。
+    """
+    _verify_export_auth(request, x_api_key, require_license=True, require_users=True)
+
+    project = project_service.get_project(project_code)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    result: Dict[str, Any] = {"version": str(project.get("export_version", 0) or 0)}
+    ts = project.get("export_version_updated_at")
+    if ts:
+        from datetime import datetime, timezone
+        result["updated_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return result
 
 
 @export_router.post("/apply_project_license", summary="申请项目授权")

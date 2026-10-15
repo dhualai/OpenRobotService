@@ -594,6 +594,7 @@ async def get_tasks(
     closed_at_end: Optional[datetime] = Query(None, description="关闭时间结束"),
     deadline_at_start: Optional[datetime] = Query(None, description="截止时间起始"),
     deadline_at_end: Optional[datetime] = Query(None, description="截止时间结束"),
+    with_relations: bool = Query(False, description="是否同时返回关联工单完整数据（解决父子工单跨页问题）"),
     db: AsyncSession = Depends(get_db)
 ):
     import logging
@@ -646,6 +647,7 @@ async def get_tasks(
             closed_at_end=closed_at_end,
             deadline_at_start=deadline_at_start,
             deadline_at_end=deadline_at_end,
+            with_relations=with_relations,
         )
         logger.debug(f"查询参数构建完成, query_params={query_params}")
 
@@ -677,10 +679,11 @@ async def filter_tasks(
         auth_header = request.headers.get("Authorization")
         token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
-        # 当前用户 username：供「我关注的」(followedBy) 过滤与列表 is_followed 回填
+        # 当前用户：username 供「我关注的」等过滤；user_id 供归档过滤（ArchiveReport.created_by/reviewer 存 user_id）
         current_username = actor_username(current_user)
+        current_user_id = str(current_user.get("id") or current_user.get("user_id") or "") if isinstance(current_user, dict) else ""
 
-        result = await TicketService.filter_tickets(db, filter_request, token, current_username)
+        result = await TicketService.filter_tickets(db, filter_request, token, current_username, current_user_id)
         logger.debug(f"复合过滤查询任务列表成功, total={result.get('total', 0)}")
         return result
     except Exception as e:
@@ -704,12 +707,13 @@ async def filter_tasks_counts(
         auth_header = request.headers.get("Authorization")
         token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
-        # 当前用户 username：供「我关注的」(followedBy) 角标计数
+        # 当前用户：username 供「我关注的」角标；user_id 供归档角标
         current_username = actor_username(current_user)
+        current_user_id = str(current_user.get("id") or current_user.get("user_id") or "") if isinstance(current_user, dict) else ""
 
         totals = []
         for q in batch_request.queries:
-            totals.append(await TicketService.count_tickets(db, q, token, current_username))
+            totals.append(await TicketService.count_tickets(db, q, token, current_username, current_user_id))
         return totals
     except Exception as e:
         logger = logging.getLogger(__name__)
@@ -1033,6 +1037,7 @@ async def get_task(
         except Exception as contact_err:
             logger.warning(f"回填项目对接人失败 task_id={task_id}: {contact_err}")
 
+        # current_archive_report 已由 TicketService.get_ticket_by_id 填充
         return ticket
     except HTTPException:
         raise
@@ -1042,19 +1047,92 @@ async def get_task(
 
 
 def _similar_item_from_task(t) -> dict:
+    status = t.status.value if hasattr(t.status, "value") else str(t.status)
     return {
         "task_id": t.id,
         "title": (t.title or "")[:80] or f"工单#{t.id}",
-        "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+        "status": status,
         "project_name": getattr(t, "project_name", "") or "",
+        "archived": status == "archived",
     }
 
 
-async def _hydrate_similar_from_db(db: AsyncSession, items: list, exclude_id: int, limit: int) -> list:
-    """按向量检索顺序把 task_id 回表，只保留已解决/已关闭。"""
-    from app.modules.tasks.models.ticket import Task, TaskStatus
+async def _attach_reports(db: AsyncSession, items: list) -> None:
+    """scope=review：为每条补该工单最新一版「已通过」归档报告 + 审核人显示名。
+
+    相似工单可能没走过归档（无 approved 报告），此时 report 置 None。
+    """
+    from app.models.task import ArchiveReport
+    from app.models.identity import UserDB
+
+    ids = []
+    for it in items:
+        try:
+            ids.append(int(it.get("task_id")))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return
+
+    rows = (await db.execute(
+        select(ArchiveReport)
+        .where(ArchiveReport.task_id.in_(ids))
+        .where(ArchiveReport.submit_status == "approved")
+        .order_by(ArchiveReport.task_id.asc(), ArchiveReport.version.desc())
+    )).scalars().all()
+    latest: Dict[int, Any] = {}
+    for row in rows:
+        latest.setdefault(row.task_id, row)  # 同单取最高 version
+
+    reviewer_ids = {r.reviewer for r in latest.values() if r.reviewer}
+    name_map: Dict[str, str] = {}
+    if reviewer_ids:
+        result = await db.execute(
+            select(UserDB.id, UserDB.username, UserDB.name).where(UserDB.id.in_(reviewer_ids))
+        )
+        for row in result.all():
+            name_map[row.id] = row.name or row.username or row.id
+
+    for it in items:
+        try:
+            report = latest.get(int(it.get("task_id")))
+        except (TypeError, ValueError):
+            report = None
+        if not report:
+            it["report"] = None
+            continue
+        reviewed_at = report.reviewed_at
+        it["report"] = {
+            "content": report.content or "",
+            "version": report.version,
+            "reviewer": report.reviewer,
+            "reviewer_name": name_map.get(report.reviewer) if report.reviewer else None,
+            "reviewed_at": (
+                reviewed_at.isoformat() if hasattr(reviewed_at, "isoformat")
+                else (reviewed_at or None)
+            ),
+        }
+
+
+async def _hydrate_similar_from_db(
+    db: AsyncSession,
+    items: list,
+    exclude_id: int,
+    limit: int,
+    min_score: Optional[float] = None,
+) -> list:
+    """按向量检索顺序把 task_id 回表，补 status/project_name，并带上相似度分数。
+
+    分数来自 AI 侧 ticket_resolutions 检索（RRF 融合分，见
+    ai/core/retrieval.py:rank_similar_tickets），用于排序与阈值过滤；
+    **不是 0~1 的余弦相似度**，别当余弦读。
+    向量召回本身已闸在 review_status=approved，故这里不再按工单状态过滤。
+    min_score 给定时先过滤再截断。
+    """
+    from app.modules.tasks.models.ticket import Task
     ids = []
     seen = set()
+    src_by_tid: Dict[int, dict] = {}
     for it in items or []:
         if not isinstance(it, dict):
             continue
@@ -1067,91 +1145,81 @@ async def _hydrate_similar_from_db(db: AsyncSession, items: list, exclude_id: in
             continue
         seen.add(tid)
         ids.append(tid)
+        src_by_tid[tid] = it
     if not ids:
         return []
     stmt = select(Task).where(Task.id.in_(ids), Task.id != exclude_id)
     rows = (await db.execute(stmt)).scalars().all()
     by_id = {t.id: t for t in rows}
-    done = {TaskStatus.RESOLVED, TaskStatus.CLOSED}
     out = []
     for tid in ids:
         t = by_id.get(tid)
-        if not t or t.status not in done:
+        if not t:
             continue
-        out.append(_similar_item_from_task(t))
+        src = src_by_tid.get(tid) or {}
+        item = _similar_item_from_task(t)
+        item["score"] = round(float(src.get("score") or 0), 4)
+        item["verified"] = src.get("verified") or "unknown"
+        if min_score is not None and item["score"] < min_score:
+            continue
+        out.append(item)
         if len(out) >= limit:
             break
     return out
 
 
-async def _similar_by_keywords(db: AsyncSession, task_id: int, query_text: str, limit: int) -> list:
-    """Qdrant 不可用或尚未沉淀时的 SQL 关键词兜底。"""
-    import re as _re
-    from sqlalchemy import or_
-    from app.modules.tasks.models.ticket import Task, TaskStatus
-
-    kws = set(_re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9]{2,}", query_text or ""))
-    kws.discard("问题")
-    kws.discard("解决")
-    if not kws:
-        return []
-
-    conditions = []
-    for kw in kws:
-        pat = f"%{kw}%"
-        conditions.append(Task.title.ilike(pat))
-        conditions.append(Task.description.ilike(pat))
-    stmt = (
-        select(Task)
-        .where(Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED]))
-        .where(Task.id != task_id)
-        .where(or_(*conditions))
-        .order_by(Task.created_at.desc())
-        .limit(limit * 3)
-    )
-    rows = (await db.execute(stmt)).scalars().all()
-    scored = []
-    for t in rows:
-        title = t.title or ""
-        desc = t.description or ""
-        score = 0
-        for kw in kws:
-            if kw in title:
-                score += 3
-            if kw in desc:
-                score += 1
-        scored.append((score, t))
-    scored.sort(key=lambda x: (-x[0], (x[1].created_at or datetime.min)))
-    similar = []
-    for score, t in scored[:limit]:
-        if score <= 0:
-            continue
-        similar.append(_similar_item_from_task(t))
-    return similar
-
-
 @router.get("/{task_id}/similar", response_model=dict)
 async def get_similar_tasks(
     task_id: int,
-    limit: int = Query(10, description="返回相似工单条数上限"),
+    limit: int = Query(10, description="返回相似工单条数上限（按数量取前 N 条）"),
+    min_score: float = Query(
+        0.0, ge=0.0,
+        description="相似度阈值：低于该分的相似工单不返回（0=不过滤）。作用于 score（RRF 融合分）"),
+    scope: str = Query("remind", description="返回深度：remind=轻量列表；review=附带归档报告与审核人/时间"),
     db: AsyncSession = Depends(get_db),
 ):
-    """@# 相似工单：优先 Qdrant 向量（已沉淀方案），失败或空结果回退 SQL 关键词。
+    """相似工单（供审核页 / 讨论区 @# 用）：单一出口 —— Qdrant 已沉淀卡的向量召回。
 
-    仅用于 @# 引用「找相似」弹列表。返回 [{task_id, title, status, project_name}]。
-    跨项目、无权限过滤（工单可分享）；排除自身；只含已解决/已关闭。
+    出参 `similar` 按相似度降序，每项：
+
+    ```
+    {
+      "task_id": 456,
+      "title": "充电桩无法启动",
+      "status": "archived",      // 工单当前状态
+      "project_name": "XX项目",
+      "archived": true,          // status == archived 的便捷位
+      "score": 0.0328,           // 相似度（RRF 融合分，仅排序/阈值用，非余弦 0~1）
+      "verified": "confirmed",   // confirmed / rejected / recurred / unknown
+      "report": {                // 仅 scope=review 且该单有 approved 归档报告时存在
+        "content": "## 问题…", "version": 2,
+        "reviewer": "u1001", "reviewer_name": "张三",
+        "reviewed_at": "2026-10-14T10:00:00"
+      }
+    }
+    ```
+
+    - `limit`：按数量取前 N 条（默认 10，上限 30）。
+    - `min_score`：按阈值过滤（先过滤再截断）；0 表示不过滤。
+    - `scope=remind`（默认）不带 `report`；`scope=review` 带上。
+    - 已沉淀 = Qdrant 里 review_status=approved 的卡（人工放行 + 归档审核通过）；
+      Qdrant 不可用即返回空列表，不用 MySQL 兜底。排除自身、跨项目可分享。
     """
     import logging
     import httpx
     from app.modules.tasks.models.ticket import Task
     logger = logging.getLogger(__name__)
+    scope_norm = (scope or "remind").strip().lower()
+    if scope_norm not in ("remind", "review"):
+        scope_norm = "remind"
     try:
         cur = await db.get(Task, task_id)
         if not cur:
             raise HTTPException(status_code=404, detail="任务未找到")
-        query_text = " ".join(filter(None, [cur.title or "", cur.description or ""]))
         cap = max(1, min(int(limit or 10), 30))
+        floor = float(min_score or 0) or None
 
+        items: list = []
         try:
             url = f"{settings.AI_SERVICE_URL.rstrip('/')}/api/ai/task/tickets/similar"
             async with httpx.AsyncClient(timeout=12.0) as client:
@@ -1160,15 +1228,15 @@ async def get_similar_tasks(
                 payload = resp.json() if resp.content else {}
                 if int(payload.get("code") or 0) == 0:
                     data = payload.get("data") or {}
-                    items = data.get("similar") or []
-                    hydrated = await _hydrate_similar_from_db(db, items, task_id, cap)
-                    if hydrated:
-                        return {"task_id": task_id, "similar": hydrated}
+                    items = await _hydrate_similar_from_db(
+                        db, data.get("similar") or [], task_id, cap, min_score=floor)
         except Exception as e:
-            logger.warning(f"相似工单向量检索不可用，回退 SQL: task_id={task_id}, error={e}")
+            logger.warning(f"相似工单向量检索不可用，返回空: task_id={task_id}, error={e}")
 
-        similar = await _similar_by_keywords(db, task_id, query_text, cap)
-        return {"task_id": task_id, "similar": similar}
+        if scope_norm == "review":
+            await _attach_reports(db, items)
+
+        return {"task_id": task_id, "scope": scope_norm, "similar": items[:cap]}
     except HTTPException:
         raise
     except Exception as e:

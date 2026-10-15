@@ -9,7 +9,7 @@ description: >-
 # 智能派单功能分支 Git
 
 长期功能分支：`ai-feature-dispatch`（旧名 `feature/smart-dispatch` 已弃用）。  
-合入目标：`test`。合入方式：**Create a merge commit**，不要 squash。
+合入目标：`test`。代用户点击合并时用 merge commit，不要 squash。创建 PR 时不要把这句话说给用户，也不要写进 PR 正文。
 
 ## 命名规范（团队）
 
@@ -101,6 +101,6 @@ git push -u origin HEAD
 gh pr create --base test --head ai-feature-dispatch --title "feature（ORS-xxx）：…" --body "…"
 ```
 
-创建后把 PR URL 回给用户，并提醒 GitHub 上合入选 **Create a merge commit**。
+创建后只把 PR URL 回给用户。不要提醒合入方式，不要说 Create a merge commit，也不要说不要 squash。PR 的 Summary 和 Test plan 里同样不要写这句。
 
 人手清单见 [README.md](README.md)。

@@ -114,6 +114,34 @@ async def debug_cluster_params(payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail=f"保存簇门槛失败: {e}")
 
 
+@assigner_router.get("/debug/archive-reviewers")
+async def debug_archive_reviewers_get():
+    """开发者模式：读取归档审核人（问题领域 → 多人）。"""
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.debug_views import (
+            debug_get_archive_reviewers as _get,
+        )
+        return _ok(_get())
+    except Exception as e:
+        logger.exception("读取归档审核人失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"读取归档审核人失败: {e}")
+
+
+@assigner_router.put("/debug/archive-reviewers")
+async def debug_archive_reviewers_put(payload: dict = Body(...)):
+    """开发者模式：保存归档审核人到 runtime_overrides。"""
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.debug_views import (
+            debug_save_archive_reviewers as _save,
+        )
+        return _ok(_save(payload or {}))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("保存归档审核人失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"保存归档审核人失败: {e}")
+
+
 @assigner_router.post("/debug/ui-atlas/scan")
 async def debug_ui_atlas_scan(payload: dict = Body(...)):
     """开发者模式：对标准界面图只标难懂控件并提问（可带已有框做增量）。"""

@@ -21,7 +21,10 @@ def lookup_user(raw: Optional[str]) -> Optional[Dict[str, Any]]:
 
 
 def identity_keys(raw: Optional[str]) -> List[str]:
-    """任意 username 或 users.id → [原值, id, username]，去重保序。查不到人则只返回原值。"""
+    """任意 username / users.id / wechat_openid → [原值, id, username, openid]，去重保序。
+
+    查不到人则只返回原值。
+    """
     value = (raw or "").strip()
     if not value:
         return []
@@ -31,10 +34,13 @@ def identity_keys(raw: Optional[str]) -> List[str]:
         return keys
     uid = (user.get("id") or "").strip()
     uname = (user.get("username") or "").strip()
+    openid = (user.get("wechat_openid") or "").strip()
     if uid and uid not in keys:
         keys.append(uid)
     if uname and uname not in keys:
         keys.append(uname)
+    if openid and openid not in keys:
+        keys.append(openid)
     return keys
 
 

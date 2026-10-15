@@ -152,6 +152,15 @@ class Project(Base):
     # 防止 ext_info 整文档读改写模式下多人同时编辑互相覆盖。
     version = Column(Integer, nullable=False, default=1, server_default='1', comment='乐观锁版本号')
 
+    # 项目在线状态：项目服务定期调 /api/health?project_code=xxx 心跳，
+    # 后端以此时间戳判定在线/离线（超过 PROJECT_ONLINE_THRESHOLD_SECONDS 未更新视为离线）。
+    last_heartbeat_at = Column(Float, nullable=True, comment='最近一次心跳时间戳(Unix秒)')
+
+    # 导出授权包版本号（project_code + license_code + user_list 的快照版本）：
+    # 新增/撤销 licence 或增删项目人员时自动 +1，导出时携带以便识别是否需要重新拉取。
+    export_version = Column(Integer, nullable=False, default=0, server_default='0', comment='导出授权包版本号')
+    export_version_updated_at = Column(Float, nullable=True, comment='export_version 最后一次变更时间戳(Unix秒)')
+
     __table_args__ = (
         Index('idx_project_code', 'code', unique=True),
         Index('idx_project_status', 'status'),

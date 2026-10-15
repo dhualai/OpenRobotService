@@ -26,7 +26,7 @@ logger = get_logger("AI")
 # 用户名下项目列表缓存：{username: (拉取时间戳, [{"name","code"}, ...])}
 # 仅服务提单工具循环的项目预填，TTL 5 分钟，见 AiDiagnosisPlatform._get_user_projects
 _USER_PROJECTS_CACHE: Dict[str, tuple] = {}
-_ALL_PROJECT_NAMES_CACHE: list = []  # [(expires_at, names)] 单条目
+_ALL_PROJECT_NAMES_CACHE: list = []  # [expires_at, names] 两元素（1012 修读写契约）
 # 最近提单项目缓存（项目选择题候选）：结构与 _USER_PROJECTS_CACHE 相同，
 # 见 AiDiagnosisPlatform._get_recent_ticket_projects
 _RECENT_TICKET_PROJECTS_CACHE: Dict[str, tuple] = {}
@@ -446,8 +446,11 @@ def _user_profile_block(state: "AgentState") -> str:
     return "\n".join(lines) + "\n"
 
 
-def _vehicle_mode_block(memory) -> str:
+def _vehicle_mode_block(memory, query: str = "") -> str:
     """【车辆】扫码定制模式块（XQE 试点，0929；0930 选项引导规则）。
+
+    query：本轮用户输入原文，用于判定「上一轮选项是否已被作答」——见 last_choices
+    段落。不传（默认空串）时按「尚未回答」处理，与旧行为一致。
 
     会话经模式确认接口（/mode/confirm）注册 metadata["vehicle_mode"] 后，
     三套 prompt（全量诊断/收集/快路径）均注入本块：车型信息已确认，
@@ -476,15 +479,28 @@ def _vehicle_mode_block(memory) -> str:
     ]
     last = vm.get("last_choices") or []
     if last:
-        lines.append(
-            "【车辆】上一轮你已给出选项（" + "／".join(last) + "）且用户尚未回答："
-            "不要重复给出选项；用户以选项原文回应时，按该选项的含义理解并继续处理。")
+        _q = (query or "").strip()
+        if _q and _q in [str(c).strip() for c in last]:
+            # 用户点了选项原文作答——前提「尚未回答」不再成立。此时若照旧注入
+            # 「不要重复给出选项」，模型会把**下一层**的新分叉一起压住（0930 实机：
+            # 点「报识别超时」后沿树继续下钻的方向被摊成正文段落，不出气泡）。
+            # 选项原文另有一层用途：气泡不进 message 正文，模型只能靠这里还原
+            # 「用户答的是哪一项」。
+            lines.append(
+                "【车辆】上一轮你给出的选项是（" + "／".join(last) + "），用户已选择「"
+                + _q + "」：按该选项的含义继续处理。若该方向下知识库仍有明确互斥的"
+                "分支、需再确认属于哪种才能继续，照常输出 vehicle_choices 出下一层选项。")
+        else:
+            lines.append(
+                "【车辆】上一轮你已给出选项（" + "／".join(last) + "）且用户尚未回答："
+                "不要重复给出选项；用户以选项原文回应时，按该选项的含义理解并继续处理。")
     lines.append(
         "【车辆】选项引导：当且仅当知识库检索内容对当前问题存在明确互斥的分支、"
         "需要确认用户属于哪种分支才能继续处理时，在输出 JSON 顶层增加 "
         "vehicle_choices 字段（字符串数组），填 2~3 个分支的简短短语——选项必须"
-        "来自知识库检索内容，不得编造；此时 message 只写一句引导问题，不要在正文"
-        "里罗列选项或编号。以下情形一律不输出该字段：知识库内容没有明确分支、"
+        "来自知识库检索内容，不得编造；分支多于 3 个时只给常见程度最高的 3 个，"
+        "并按该顺序排列，其余分支由用户自行描述；此时 message 只写一句引导"
+        "问题，不要在正文里罗列选项或编号。以下情形一律不输出该字段：知识库内容没有明确分支、"
         "问题可以直接回答、需要用户开放描述、应当转工单、上一轮已给出选项尚未"
         "回答、当前在收集工单信息。用户问的是故障码时不出选项，引导其直接输入"
         "完整故障码即可。")
@@ -512,7 +528,7 @@ def _session_state_block(state: "AgentState", memory) -> str:
         lines.extend(_up.splitlines())
     # 车辆定制模式块（XQE 试点）：扫码绑定会话的车型事实，先于工单事实；
     # 常规会话空串零开销
-    _vm = _vehicle_mode_block(memory)
+    _vm = _vehicle_mode_block(memory, getattr(state, "original_query", "") or "")
     if _vm:
         lines.extend(_vm.splitlines())
     _lt = state.last_submitted_ticket or {}
@@ -730,6 +746,32 @@ def _is_project_field(key) -> bool:
     return _canonical_field_key(k) == "project" or k in ("project_id", "所属项目", "关联项目")
 
 
+# 需求/支持类工单不收的排障字段族（1012 bug2：同会话先聊设备故障后转功能需求，
+# decide 被旧故障叙事带偏，type=feature 仍列设备编号/位置/离线时间——类型是
+# LLM 判的，字段域一致性是采用侧的一致性检查，backfill 溯源门同纪律）。
+# 窄名单：只收键名强排障语义的（需求单出现几乎必为旧对话串味），宽泛词
+# （如含 time 的期望完成时间）不拦防误杀。
+_TROUBLESHOOT_FIELD_RE = re.compile(
+    r"device|robot|vehicle|fault_?code|error_?code|offline_?time|occurrence_?time|"
+    r"location|设备编号|车辆编号|设备位置|故障码|错误码|离线时间|发生时间", re.I)
+
+
+def _strip_troubleshoot_fields_for_demand_type(rf: dict, tt: str) -> dict:
+    """feature/support 工单剔除排障族字段（键名族匹配，1012 bug2 机械兜底）。"""
+    if tt not in ("feature", "support") or not isinstance(rf, dict):
+        return rf
+    out, dropped = {}, []
+    for k, v in rf.items():
+        if _TROUBLESHOOT_FIELD_RE.search(str(k)):
+            dropped.append(k)
+            continue
+        out[k] = v
+    if dropped:
+        logger.info(f"[decide_fields] 需求/支持类剔除排障字段（旧话题串味）: "
+                    f"{dropped}")
+    return out
+
+
 # 追问话术的项目问句模式（0828 第四次实锤：缺失清单被三道门洗得不含项目，
 # flash 生成话术时仍即兴加「您所在的项目或站点名称是什么」——prompt 红线
 # 挡不住违令，话术出口补机械后验门，与清单侧三道门配套）。
@@ -879,6 +921,31 @@ def _ticket_visible_to(ticket, username: str) -> bool:
     return bool(row) and str(row[0]) in (owner, assignee)
 
 
+def _format_recent_comments(comments, umap: dict, limit: int = 10,
+                            body_chars: int = 200) -> list[str]:
+    """最近 limit 条评论 → 【作者】正文（按时间正序）。
+
+    ORM 的 comments 关系是「新→旧」，这里取最近 limit 条后反转成正序，LLM 按对话顺序读。
+
+    TaskComment 模型**没有 created_by_name 列**（那是后端 API 的派生字段），必须用
+    users 映射（id/username → 姓名）自己还原；否则每条都渲染成 【】正文，
+    LLM 分不清哪句话是谁说的。
+
+    刻意不复用 AiTaskPlatform.contexts.comments.load_discussion 的渲染：两个 agent
+    零交叉依赖，且诊断入口后续可能要对人物信息脱敏，届时两边口径会分叉。umap 就是
+    这个注入点——脱敏在此变换映射即可，不必动渲染逻辑。
+    """
+    out = []
+    for c in list(comments or [])[:limit][::-1]:
+        body = re.sub(r"[ \t]+\n", "\n", str(getattr(c, "content", "") or "")).strip()
+        if not body:
+            continue
+        raw = str(getattr(c, "created_by", "") or "").strip()
+        who = (umap or {}).get(raw, raw) if raw else "?"
+        out.append(f"【{who}】{body[:body_chars]}")
+    return out
+
+
 async def _lookup_ticket_ref(ref_text: str, created_by: str = "") -> str:
     """用户指代的工单号（#595 / 工单595）→ 工单摘要（复用 backend TicketService）。
 
@@ -931,12 +998,7 @@ async def _lookup_ticket_ref(ref_text: str, created_by: str = "") -> str:
             if desc:
                 parts.append(desc[:600] + ("…" if len(desc) > 600 else ""))
             # 评论倒序返回 → 取最近 10 条反转为正序，LLM 按对话顺序读
-            for c in list(t.comments or [])[:10][::-1]:
-                body = re.sub(r"[ \t]+\n", "\n", str(c.content or "")).strip()
-                if not body:
-                    continue
-                who = str(getattr(c, "created_by_name", "") or "").strip()
-                parts.append(f"【{who}】{body[:200]}")
+            parts.extend(_format_recent_comments(t.comments, _umap))
             return "\n".join(parts)[:1800]
     except Exception as e:
         logger.warning(f"[ticket_ref] 查询用户指代的工单失败: ref={ref_text!r}, err={e}")
@@ -1862,7 +1924,7 @@ class AiDiagnosisPlatform:
         _user_block = _user_profile_block(state)
         # 车辆定制模式块（XQE 试点）：收集/快路径 prompt 不走 _session_state_block，
         # 在此与【用户】块同位注入——三套 prompt 都知道车型已绑定
-        _vehicle_block = _vehicle_mode_block(memory)
+        _vehicle_block = _vehicle_mode_block(memory, getattr(state, "original_query", "") or "")
         # 工单填写模式（对话路径 ticket_collecting / 按钮路径 prepare not_ready）
         if state.ticket_collecting:
             fields = "、".join(state.ticket_collecting)
@@ -1902,10 +1964,12 @@ class AiDiagnosisPlatform:
                 f"即使不对应任何缺失字段，也要先**简短确认收到**（如「异响的情况记下了」），"
                 f"再继续问下一个缺失字段——这些背景会进入工单描述，"
                 f"🚫 严禁无视用户刚说的内容直接跳问别的。\n"
-                f"10. 向用户询问缺失字段时，问题末尾自然带一句**不限字段的开放邀请**："
-                f"欢迎补充其他任何有助于定位问题的信息（现象、发生时间、涉及设备、"
-                f"报错内容等，具体措辞由你组织）；用户补充的内容按规则 9 的方式确认"
-                f"收录——不锁死字段清单，用户主动给的信息往往比追问得更准。\n"
+                f"10. 向用户询问缺失字段时，是否在问句末尾自然带一句**不限字段的开放邀请**、"
+                f"邀请的具体内容与措辞，由你根据本单话题自行判断和组织——"
+                f"只要求：邀请与本单话题相关、连着的几轮之间不要重复一模一样的措辞"
+                f"（机械复读同一句会让用户觉得在对着稿子念）；"
+                f"用户补充的内容按规则 9 的方式确认收录——不锁死字段清单，"
+                f"用户主动给的信息往往比追问得更准。\n"
                 + _prev_ref_block +
                 f"⚠️ 已收集的字段不要再问。"
             )
@@ -2222,6 +2286,17 @@ class AiDiagnosisPlatform:
                 if _key == "project":
                     logger.info(f"[state] 丢弃对话中误写的 project 值: {v!r}")
                     continue
+                # 指名处理人值的括号注释剥离（1013 生产实锤）：LLM 会把「提单给
+                # 我自己」输出成「胡健楠（提单人本人）」——带注释的值过不了
+                # requested_assignee 闸门（users 显示名精确匹配），指名静默失效，
+                # 而回复话术却按「已记录」说——话术与状态不符。剥注释后精确
+                # 匹配即过闸。null 字符串同理（decide 偶发输出）。
+                if _key == "requested_assignee":
+                    _cleaned = re.sub(r"（[^）]*）|\([^)]*\)", "", v).strip()
+                    if _cleaned and _cleaned != v:
+                        logger.info(f"[state] requested_assignee 剥括号注释: "
+                                    f"{v!r} → {_cleaned!r}")
+                        v = _cleaned
                 state.collected_info[_key] = v
                 _merged_view[_key] = v[:30]
             if _merged_view:
@@ -2362,7 +2437,11 @@ class AiDiagnosisPlatform:
         except Exception as e:
             logger.warning(f"[all_project_names] 查询失败(普遍度闸失效): {e}")
             return []
-        _ALL_PROJECT_NAMES_CACHE[:] = [(now + 300, names)]
+        # 1012 修复：写入原为 [:] = [(过期, 名单)]（单元素列表装 tuple），而读取按
+        # [0]=过期时间/[1]=名单索引 → 第二次调用 float < tuple TypeError，5 分钟内
+        # 全局规划全部崩进 diagnosis 兜底（1012 生产实锤：明确提单诉求被判诊断，
+        # 回复退化成教用户走按钮）。写入改为 [过期, 名单] 两元素，与读取索引一致。
+        _ALL_PROJECT_NAMES_CACHE[:] = [now + 300, names]
         return names
 
     _USER_TICKETS_SHOW_MAX = 20
@@ -3526,8 +3605,8 @@ class AiDiagnosisPlatform:
     async def _vehicle_mode_domains(self, session_id: str):
         """车辆定制模式的检索域配额；常规会话返回 None（走默认三域，行为不变）。
 
-        0930 收紧为**车型知识库定向过滤**：车型知识挂 company 域子目录
-        （kb/company/{车型}/，payload sub_domain="{车型}/manual"），检索
+        0930 收紧为**车型知识库定向过滤**：车型知识挂 company 域车型目录
+        （kb/company/{车型}/ 平铺，payload sub_domain="{车型}"），检索
         company 域 + sub_domain 精确过滤——两重隔离：既不捞 team/cheduan
         老知识（通用域兜底已删，串味实锤），也不捞 company 域里其他产品线
         内容（xmover 等）。车型域空 = LLM 如实说手册未收录，宁缺勿串。
@@ -3548,9 +3627,10 @@ class AiDiagnosisPlatform:
         # 车型串归一到大写再拼 sub_domain：kb 侧 sub_domain 是按磁盘目录名原样
         # 推出来的（kb_markdown 相对路径），目录名是大写，而档案表 model 存的是
         # 录入串、可能小写。不归一 → 过滤成空集（0930 实锤：小写 xqe 拼出
-        # xqe/manual，qdrant 命中 0，company 域 0+0，开场类目除故障码外全部零
-        # 召回，模型只能拿历史工单凑答案）。
-        sub_domain = f"{model_to_subpath(model)}/manual"
+        # xqe/，qdrant 命中 0，company 域 0+0，开场类目除故障码外全部零
+        # 召回，模型只能拿历史工单凑答案）。1010 起车型目录平铺（无 manual 层），
+        # sub_domain 即车型串本身。
+        sub_domain = model_to_subpath(model)
         _filt = qmodels.Filter(must=[qmodels.FieldCondition(
             key="sub_domain", match=qmodels.MatchValue(value=sub_domain))])
         return [("company", 8, _filt)]
@@ -4012,6 +4092,15 @@ class AiDiagnosisPlatform:
                 if v_sq not in c_sq:
                     rejected.append((k, f"value 不在 cite 原句中: value='{v_raw[:30]}'"))
                     continue
+                # ③（1012 bug2）：value 是问题概述的子串 = 用户只说了结论没给细节
+                # （「预填异常的具体表现」答「项目预填有问题」——value 就是概述里的
+                # 短语）→ 视为未回答，字段留空走追问一轮。溯源门 ①② 挡不住这类：
+                # 原话结论句永远能过 cite 校验。误杀面：合法细节值（车辆编号等）
+                # 偶尔恰好也被概述包含——后果只是多问一轮，宁缺勿错同款纪律。
+                _ps = _squash(str(getattr(agent_state, "problem_summary", "") or ""))
+                if _ps and v_sq in _ps:
+                    rejected.append((k, f"value 是问题概述的复述（未给细节）: 「{v_raw[:40]}」"))
+                    continue
                 agent_state.collected_info[k] = v_raw
                 filled.append(k)
             for rk, rreason in rejected:
@@ -4056,9 +4145,17 @@ class AiDiagnosisPlatform:
             "🔴 问题已锁定到具体部件时，要素只围绕该部件收敛——只收该部件的"
             "标识与故障现象，其他部件/对象的编号一律不列）\n"
             "3. 对照对话：逐项核对第 2 步要素——用户已经说过什么"
-            "（含顺带提到、换说法说过、能直接推出的）？哪些要素用户（现场人员）答得上来？\n"
+            "（含顺带提到、换说法说过、能直接推出的）？哪些要素用户（现场人员）答得上来？"
+            "🔴 助手此前复述/总结过的内容（如查单返回的工单详情、对话里念过的"
+            "历史记录）同样算「对话中已有」——用户说「根据XX提单」「就按刚才说的」时，"
+            "从这些已复述内容直接推导字段值，不得当作缺口重新追问\n"
             "4. 定字段：从「未说、用户能答、且与处理该问题直接相关」中挑 0-2 个核心 + 0-2 个补充；对话已把开工要素说清时一项都不挑\n\n"
             "# 红线（🔴 违反任何一条即返工）\n"
+            "- 🔴 话题归属：若对话**中前段**在处理某个话题（如设备故障排查），"
+            "而**末段**用户明确提出了另一个新的诉求/问题——本单类型与字段只从"
+            "**末段新诉求**推导；中前段旧话题出现过的信息（设备标识、故障时间、"
+            "现象等）属于旧话题，不构成本单的信息缺口，严禁照着旧话题列字段。"
+            "先确认末段诉求的类型，再围绕它找缺口\n"
             "- 🔴 对话里若出现「───── 以上对话已随上一张工单提交归档」分隔线："
             "分隔线之前是**上一张已提交工单**的旧对话，那里出现过的任何字段/问答"
             "（如上一单问过的任务编号、站点名等）与本单无关，严禁照着旧对话的"
@@ -4178,6 +4275,11 @@ class AiDiagnosisPlatform:
             if tt in ("problem", "bug", "feature", "support", "other"):
                 agent_state.ticket_type = tt
         rf = result.get("required_fields") or {}
+        # 类型-字段域一致性（1012 bug2）：生效类型为需求/支持时剔除排障族字段
+        # ——decide 与主 LLM 并行预跑，看不到主判定的类型；被旧故障对话带偏时
+        # 在采用侧机械纠偏（剔除≠替 LLM 判断，类型仍是 LLM 判的）。
+        _tt_eff = agent_state.ticket_type or result.get("ticket_type") or ""
+        rf = _strip_troubleshoot_fields_for_demand_type(rf, _tt_eff)
         # required_fields 一旦决定（包括空字典）即锁定；空清单也要采纳，
         # 否则后续轮会把“已决定”误认为 None，重复请求字段生成。
         if isinstance(rf, dict) and agent_state.required_fields is None:
@@ -5240,13 +5342,22 @@ class AiDiagnosisPlatform:
 
     def _parse_agent_output(self, raw: str) -> dict:
         """
-        解析 Agent 输出，支持三种格式：
+        解析 Agent 输出，支持五种格式：
         A) ```json {...} ``` === 回复文本     ← 标准格式
         B) ```json {...} ``` 回复文本         ← 缺 ===
         C) {...} 回复文本                     ← 裸 JSON（无 ``` 包裹）
         D) {...}                              ← 只有 JSON
+        E) ```json {...（未闭合围栏，到结尾）  ← 1013 新增：max_tokens 截断/模型
+                                                偷懒不写闭合 ```（原 A~D 全不
+                                                匹配 → 整轮丢弃 + 原文泄漏，
+                                                sess_mv63uw3a 生产实锤）
+
+        解析健壮性（1013）：loads 失败先修复（中文引号/尾逗号），仍失败按宽松
+        正则抢救顶层关键字段；message 卫生——协议原文（```json 块）绝不泄漏给
+        用户，剥离后无正文给兜底话术。
         """
         text = raw.strip()
+        data = {}          # 解析失败的兜底空对象（E 等场景必需）
         thinking = ""
         action = "ask"
         intent = ""
@@ -5260,11 +5371,11 @@ class AiDiagnosisPlatform:
         message = text
         json_end = 0  # JSON 区域结束位置
 
-        # ---- 尝试匹配带 ``` 包裹的 JSON ----
+        # ---- A/B）闭合围栏：```json ... ``` ----
         m_fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
-        # ---- 裸 JSON：用括号深度计数定位最外层 }，避免非贪婪正则被嵌套 {} 截断 ----
+        # ---- C/D）裸 JSON：括号深度计数定位最外层 }，避免非贪婪正则被嵌套 {} 截断 ----
         _bare_end = -1
-        if not m_fenced and text and text[0] == '{':
+        if not m_fenced and text and text[0] == "{":
             depth = 0
             in_string = False
             escape = False
@@ -5272,7 +5383,7 @@ class AiDiagnosisPlatform:
                 if escape:
                     escape = False
                     continue
-                if ch == '\\' and in_string:
+                if ch == "\\" and in_string:
                     escape = True
                     continue
                 if ch == '"':
@@ -5280,13 +5391,53 @@ class AiDiagnosisPlatform:
                     continue
                 if in_string:
                     continue
-                if ch == '{':
+                if ch == "{":
                     depth += 1
-                elif ch == '}':
+                elif ch == "}":
                     depth -= 1
                     if depth == 0:
                         _bare_end = i + 1
                         break
+
+        # ---- E）未闭合围栏（1013 实锤 sess_mv63uw3a）----
+        _e_match = False
+        _e_json_str, _e_json_end = None, 0
+        if m_fenced is None:
+            _of = re.match(r"```(?:json)?\s*", text)
+            if _of:
+                _cand = text[_of.end():]
+                _cand_st = _cand.lstrip()
+                if _cand_st.startswith("{"):
+                    _lead = len(_cand) - len(_cand_st)
+                    depth = 0
+                    in_string = False
+                    esc = False
+                    _end_e = -1
+                    for i, ch in enumerate(_cand_st):
+                        if esc:
+                            esc = False
+                            continue
+                        if ch == "\\" and in_string:
+                            esc = True
+                            continue
+                        if ch == '"':
+                            in_string = not in_string
+                            continue
+                        if in_string:
+                            continue
+                        if ch == "{":
+                            depth += 1
+                        elif ch == "}":
+                            depth -= 1
+                            if depth == 0:
+                                _end_e = i + 1
+                                break
+                    if _end_e > 0:
+                        _e_match = True
+                        _e_json_str = _cand_st[:_end_e].strip()
+                        _e_json_end = _of.end() + _lead + _end_e
+                        logger.info(f"[parse] 未闭合围栏抢救: 提取 json "
+                                    f"{len(_e_json_str)} chars")
 
         json_str = None
         if m_fenced:
@@ -5295,6 +5446,9 @@ class AiDiagnosisPlatform:
         elif _bare_end > 0:
             json_str = text[:_bare_end].strip()
             json_end = _bare_end
+        elif _e_match:
+            json_str = _e_json_str
+            json_end = _e_json_end
 
         if json_str:
             try:
@@ -5319,7 +5473,6 @@ class AiDiagnosisPlatform:
                 if not isinstance(referenced_ticket, str):
                     referenced_ticket = ""
                 # 车型追问选项（0930）：JSON 顶层 vehicle_choices，校验在调用侧
-                # （需要 action/会话态上下文，此处只收原始值）
                 vehicle_choices = data.get("vehicle_choices")
                 if not isinstance(vehicle_choices, list):
                     vehicle_choices = None
@@ -5328,72 +5481,56 @@ class AiDiagnosisPlatform:
                 if not isinstance(ticket_cancel, bool):
                     ticket_cancel = str(ticket_cancel).lower() in ("true", "1")
             except (json.JSONDecodeError, Exception):
+                # F）常见坏 JSON 修复：中文引号 → 直引号；对象尾逗号
+                _fixed = (json_str.replace("\u201c", '"').replace("\u201d", '"')
+                          .replace("\u2018", "'").replace("\u2019", "'")
+                          .replace(",}", "}").replace(",]", "]"))
+                try:
+                    data = json.loads(_fixed)
+                    logger.info("[parse] 坏 JSON 修复成功（引号/尾逗号）")
+                except Exception:
+                    data = {}
+                # G）仍失败 → 宽松正则抢救顶层关键字段（截断场景：字段靠前的
+                # action/problem_summary/collected_info 通常已完整输出）
+                if not isinstance(data, dict):
+                    data = {}
+                    for _k in ("action", "intent", "ticket_type", "problem_summary"):
+                        _m = re.search(rf'"{_k}"\s*:\s*"([^"]*)"', json_str)
+                        if _m and _m.group(1):
+                            data[_k] = _m.group(1)
+                    _m = re.search(r'"collected_info"\s*:\s*\{([^{}]*)\}', json_str)
+                    if _m:
+                        _ci = {}
+                        for _km, _kv in re.findall(
+                                r'"([^"]+)"\s*:\s*"([^"]*)"', _m.group(1)):
+                            _ci[_km] = _kv
+                        if _ci:
+                            data["collected_info"] = _ci
+                    logger.info(f"[parse] 截断/坏 JSON 字段抢救: {sorted(data.keys())}")
                 logger.info(f"[parse] json.loads failed on extracted JSON: "
                             f"json_str={json_str[:120]!r}")
 
-        # ---- 提取 JSON 之后的文本 ----
+        # ---- message 组装（1013 卫生版）----
+        # 解析成功：message = JSON 之后的正文（submit 允许空，系统随后弹窗）。
+        # 解析失败：剥掉 ```json 块后仍无正文 → 固定兜底话术——协议原文
+        # （```json 块）绝不泄漏给用户。
         after_json = text[json_end:] if json_end else text
-
-        if json_str:
-            after = re.sub(r"^```\s*", "", after_json).strip()
-            if after:
-                message = after
+        if json_str and data:
+            message = after_json.strip()
+            if not message and action == "ask":
+                message = "这条我这边解析遇到了点问题，麻烦您换个说法再说一次～"
+                action = "answer"
+        else:
+            _stripped = re.sub(r"```(?:json)?[\s\S]*?(?:```|$)", "", text).strip()
+            message = _stripped if _stripped else (
+                "这条我这边解析遇到了点问题，麻烦您换个说法再说一次～")
 
         message = message.lstrip("\n\r ")
 
         # 兜底清理：LLM 偶尔在 JSON 后多吐碎片（如 ,"key":"val"}、}} 等）
-        _before_clean = message[:100]
         message = re.sub(
             r'^[，,}\]\s]+(?:"[^"]*"\s*:\s*[^,\s]+\s*\}*)?[,，\s]*', '', message).strip()
-        if message != _before_clean.strip():
-            logger.info(f"[parse] cleaned JSON fragment: "
-                        f"before={_before_clean!r} after={message[:100]!r}")
 
-        # 兜底：如果 message 仍然以 JSON 开头（无 === 且无后续文本），
-        # 尝试剥掉裸 JSON 对象（同样用深度计数）
-        if message and (message.startswith("{") or message.startswith("```")):
-            # 先试带 ``` 包裹的
-            cleaned = re.sub(r'```(?:json)?\s*\{[\s\S]*?\}\s*```', '', message).strip()
-            # 再试裸 JSON（深度计数）
-            if not cleaned or cleaned.startswith("{"):
-                _msg_bare_end = -1
-                if message[0] == '{':
-                    _d, _s, _e = 0, False, False
-                    for _i, _ch in enumerate(message):
-                        if _e:
-                            _e = False
-                            continue
-                        if _ch == '\\' and _s:
-                            _e = True
-                            continue
-                        if _ch == '"':
-                            _s = not _s
-                            continue
-                        if _s:
-                            continue
-                        if _ch == '{':
-                            _d += 1
-                        elif _ch == '}':
-                            _d -= 1
-                            if _d == 0:
-                                _msg_bare_end = _i + 1
-                                break
-                    if _msg_bare_end > 0:
-                        cleaned = message[_msg_bare_end:].strip()
-            if cleaned:
-                message = cleaned
-            elif action == "submit":
-                # submit 且整个 message 就是裸 JSON（无后续正文）：符合 prompt 的
-                # 「message 留空」——置空，review 分支会回填「已生成工单草稿…」。
-                # 不置空的话 JSON 文本会一路带进 _finalize_diagnosis 状态流转。
-                message = ""
-            else:
-                # 剥不掉且非 submit：message 置空，交给下方「最终兜底」统一处理
-                # （LLM 抽风输出纯 JSON 无正文时，宁可让系统补一句通用确认，
-                # 也不把 JSON 文本当正文流给用户）。
-                message = ""
-
-        # 最终兜底：message 为空时给一个有意义的默认回复。
         # 例外：action=submit 时允许空 message——prompt 要求 submit 不写正文，
         # 系统随后展示「正在生成工单」动画 + 弹窗话术，这里不能再塞兜底文案。
         if (not message or not message.strip()) and action != "submit":
@@ -5413,13 +5550,14 @@ class AiDiagnosisPlatform:
             "referenced_ticket": referenced_ticket,
             "vehicle_choices": vehicle_choices,
         }
+    def _validate_vehicle_choices(self, parsed: dict) -> Optional[List[str]]:
+        """车型追问选项机械校验（0930）：超标截断，救不到下限才整批丢弃。
 
-    @staticmethod
-    def _validate_vehicle_choices(parsed: dict) -> Optional[List[str]]:
-        """车型追问选项机械校验（0930）：整体丢弃制，不部分挽救。
-
-        通过条件：2~3 个非空字符串、单条 ≤30 字、去重后不变少。
-        任何不满足 → None（当普通回复处理——正文从不含选项，前端零变化）。
+        清洗链：丢非字符串/空串/超 30 字/重复 → 不足 2 条整批丢弃 → 超 3 条截前 3。
+        截断而不整批丢弃：车辆块明令"不要在正文里罗列选项或编号"，丢弃时用户
+        既没按钮也没清单，等于彻底卡死；截断至少给出 3 条 + 输入框「其他」兜底，
+        正好落回分叉树「1/2/3/其他」的设计。截断取模型给的顺序（prompt 已要求
+        取最常见的 3 个），服务端不做语义判断，全是机械操作。
         submit（话术已被服务端接管）由调用侧先行丢弃。
         """
         vc = parsed.get("vehicle_choices")
@@ -5428,13 +5566,19 @@ class AiDiagnosisPlatform:
         clean = []
         for x in vc:
             if not isinstance(x, str):
-                return None
+                continue
             s = x.strip()
-            if not s or len(s) > 30:
-                return None
+            if not s or len(s) > 30 or s in clean:
+                continue
             clean.append(s)
-        if not (2 <= len(clean) <= 3) or len(set(clean)) != len(clean):
+        if len(clean) < 2:
+            # 一条选项不成题，无可展示——此时只能整批丢弃（正文里本就没有列表）
+            logger.info(f"[vehicle_mode] 车辆选项清洗后不足 2 条，整批丢弃: {vc}")
             return None
+        if len(clean) > 3:
+            # 截断只少分支，丢弃是零可选——取模型排过序的前 3，其余走输入框
+            logger.info(f"[vehicle_mode] 车辆选项超上限({len(clean)}条)，截前 3: {clean}")
+            clean = clean[:3]
         return clean
 
     # ================================================================
@@ -5578,6 +5722,32 @@ class AiDiagnosisPlatform:
             yield {"event": "result", "data": result}
             return
 
+        # ---- 车型分叉树直出（1014 ORS-980）：点引导按钮 = 树节点文案确定性回放 ----
+        # 类目/场景/现象选项在树里都有结构化下一层（选项表是人工写的），机械
+        # 匹配命中即秒回下一层按钮或该行方案，零检索零 LLM（点选项不产生新
+        # 信息，让 LLM 转几秒只是把表重新排版）。树直出的 choices 不过
+        # _validate_vehicle_choices——那是 LLM 幻觉选项的清洗闸门（≤3 条/30字），
+        # 树选项是结构化内容源，全量直出。自由输入不命中树路径自然落到下方
+        # 正常链路上 AI；树导览每步都在 turns 里（add_turn + _finalize），
+        # AI 接手时上下文完整。
+        _vm_meta_td = (getattr(memory, "metadata", None) or {}).get("vehicle_mode") or {}
+        if _vm_meta_td.get("model"):
+            from ai.api.vehicle_mode import tree_direct_reply
+            _td = tree_direct_reply(request.query, _vm_meta_td,
+                                    model=_vm_meta_td.get("model"))
+            if _td:
+                logger.info(f"[vehicle_mode] 分叉树直出({_td['kind']}): "
+                            f"session={request.session_id}, q={request.query[:30]}")
+                yield {"event": "token", "data": _td["message"]}
+                _td_result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action=_td["action"], message=_td["message"],
+                    streaming=True, vehicle_choices=_td.get("choices"))
+                _td_result["vehicle_choices"] = _td.get("choices")
+                if _td_result.get("title"):
+                    yield {"event": "title", "data": {"title": _td_result["title"]}}
+                yield {"event": "result", "data": _td_result}
+                return
 
         # 收集模式取消短接改用 LLM 判断：ticket_cancel 由 LLM 每轮输出（见 DIAGNOSIS_PROMPT
         # 输出规范），服务端只信任这个布尔值，不再用关键词正则（关键词既僵化又漏判）。
@@ -5725,6 +5895,17 @@ class AiDiagnosisPlatform:
             # 与草稿守卫同理：挂着就回落主循环。
             _pending_proj_ask = bool(getattr(state, "project_candidates", None))
 
+            # 车型会话（XQE 试点）必须走主循环。车辆选项引导规则
+            # （_vehicle_mode_block）和出选项的唯一出口（主循环 JSON 顶层
+            # vehicle_choices → _validate_vehicle_choices → _finalize_diagnosis
+            # → result.vehicle_choices）都只挂在主循环上；单轮分支和工具循环
+            # 分支是纯文本流式，既拿不到那条规则也没有能携带选项的字段。一旦
+            # 落进去，模型只能把分叉树整个摊平在正文里（0930 实锤：卸货/放货
+            # 异常整张 A~G 表直出，前端一个气泡都拿不到）。与 _has_draft /
+            # _pending_proj_ask 守卫同理：缺协议的分支不进。
+            _in_vehicle_mode = bool(
+                (memory.metadata.get("vehicle_mode") or {}).get("model"))
+
             if _intent == "ticket":
                 # 提单意图 → 不需要知识库检索。
                 reference_docs = "（提单轮跳过检索）"
@@ -5774,7 +5955,9 @@ class AiDiagnosisPlatform:
                     _prefetch_decide.add_done_callback(_swallow_prefetch)
                     logger.info(f"[stream] decide 预跑已启动(与主LLM并行): "
                                 f"session={request.session_id}")
-            elif _intent == "diagnosis" and os.getenv("AI_DIAGNOSIS_TOOL_LOOP", "") == "1":
+            elif (_intent == "diagnosis"
+                  and os.getenv("AI_DIAGNOSIS_TOOL_LOOP", "") == "1"
+                  and not _in_vehicle_mode):
                 # 诊断意图 → 走诊断工具循环（search_kb + submit_ticket）。
                 # LLM 自主决定：查不查知识库、查什么、查几次，再生成回答；
                 # 也可顺势提单（submit_ticket 也在工具列表里）。
@@ -5792,7 +5975,8 @@ class AiDiagnosisPlatform:
                 # 项目题挂着未答同理（见 _pending_proj_ask 注释）：序号/名称回答
                 # 需要主协议还原，单轮分支没有候选也没有协议。
                 _has_draft = bool(memory.metadata.get("ticket_draft"))
-                if not _needs_kb and not _has_draft and not _pending_proj_ask:
+                if (not _needs_kb and not _has_draft and not _pending_proj_ask
+                        and not _in_vehicle_mode):
                     # 诊断但无需知识库（续接轮/通用对话）：单轮分支自带最近 8 轮对话
                     # + 省略式追问承接规则，靠上文即可作答，省下 rerank 等检索尾延。
                     # plan-execute 开时以规划器为准：它判了工具就执行（判无工具 → 空，
@@ -5809,10 +5993,20 @@ class AiDiagnosisPlatform:
                     return
                 # 诊断单轮：等资料（plan-execute=执行规划工具；否则并发检索）
                 # → 小 prompt 1 次 LLM 直接回答（无工具往返）
-                reference_docs = await _get_reference_docs()
-                if _has_draft or _pending_proj_ask:
-                    logger.info(f"[stream] 草稿/项目题挂着，诊断意图回落主循环"
-                                f"（防序号回答掉进无候选无协议的单轮分支）: "
+                # 车型会话的 nokb 轮仍要回落主循环（出选项的协议只在那儿），但
+                # 沿用 nokb 的省检索纪律：续接语的检索词本身就是噪声，召回的无关
+                # 内容反而会污染选项；plan-execute 开时照旧执行规划工具
+                # （lookup_ticket 等要挂 state）。
+                if _in_vehicle_mode and not _needs_kb and _plan_task is None:
+                    reference_docs = ""
+                    _cancel_prefetch()
+                    logger.info(f"[stream] 车型会话 nokb 轮回落主循环（跳过检索）: "
+                                f"session={request.session_id}")
+                else:
+                    reference_docs = await _get_reference_docs()
+                if _has_draft or _pending_proj_ask or _in_vehicle_mode:
+                    logger.info(f"[stream] 草稿/项目题/车型会话挂着，诊断意图回落主循环"
+                                f"（防序号回答或车辆选项掉进无候选无协议的单轮分支）: "
                                 f"session={request.session_id}")
                 else:
                     logger.info(f"[stream] 诊断走单轮分支（服务端检索+1次LLM）: session={request.session_id}")
@@ -5826,9 +6020,13 @@ class AiDiagnosisPlatform:
                 # 「已取消草稿」而草稿根本没删。守卫：有待确认草稿时不走闲聊
                 # 分支，回落主循环（草稿轮铁律在那，取消/补充由 LLM 结构化判定）。
                 # 项目题挂着未答同理：答序号/「好的」要主协议还原或重新引导。
-                if memory.metadata.get("ticket_draft") or _pending_proj_ask:
-                    logger.info(f"[stream] 草稿/项目题挂着，闲聊意图回落主循环"
-                                f"（防取消话术/序号回答掉进无处理能力的单轮分支）: "
+                # 车型会话同理：短回复（选完选项后的「好的」「知道了」）常被判成
+                # 闲聊，落单轮分支就没有车辆块了，上一轮 last_choices 的承接规则
+                # 一并丢失，用户再追问一嘴分叉又得整张表直出。
+                if (memory.metadata.get("ticket_draft") or _pending_proj_ask
+                        or _in_vehicle_mode):
+                    logger.info(f"[stream] 草稿/项目题/车型会话挂着，闲聊意图回落主循环"
+                                f"（防取消话术/序号回答/车辆选项掉进无处理能力的单轮分支）: "
                                 f"session={request.session_id}")
                     reference_docs = await _get_reference_docs()
                 else:
@@ -5848,13 +6046,17 @@ class AiDiagnosisPlatform:
                         yield ev
                     return
             else:
-                # 兜底（意图识别失败按 diagnosis 处理）：等资料 → 单轮分支
+                # 兜底（意图识别失败按 diagnosis 处理）：等资料 → 单轮分支。
+                # 车型会话回落主循环（车辆选项协议只在那儿）。
                 reference_docs = await _get_reference_docs()
-                logger.info(f"[stream] 意图兜底走单轮分支: session={request.session_id}")
-                async for ev in self._diagnosis_oneshot_branch(
-                        request, state, memory, reference_docs, fill_problem_summary=True):
-                    yield ev
-                return
+                if _in_vehicle_mode:
+                    logger.info(f"[stream] 车型会话兜底回落主循环: session={request.session_id}")
+                else:
+                    logger.info(f"[stream] 意图兜底走单轮分支: session={request.session_id}")
+                    async for ev in self._diagnosis_oneshot_branch(
+                            request, state, memory, reference_docs, fill_problem_summary=True):
+                        yield ev
+                    return
 
         t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
         logger.info(f"[stream] 检索完成: {t_stream['retrieve']}ms, docs_len={len(reference_docs)}"

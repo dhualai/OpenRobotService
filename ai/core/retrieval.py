@@ -62,6 +62,26 @@ class RetrievalResult:
     task_id: str = ""
 
 
+def render_resolution_content(
+    problem_summary: str,
+    root_cause: str,
+    solution_steps: str,
+    fault_code: str = "",
+    robot_type: str = "",
+) -> str:
+    """工单方案卡的 content（消费侧 RetrievalResult.content 的映射源）。
+
+    入库与事后改卡（如归档放行时把 solution 换成归档报告）共用同一段渲染，
+    避免两处漂移导致「答案正文」与卡字段不一致。
+    """
+    return (
+        f"问题：{problem_summary}\n根因：{root_cause}\n"
+        f"解决：{solution_steps}"
+        + (f"\n故障码：{fault_code}" if fault_code else "")
+        + (f"\n车型：{robot_type}" if robot_type else "")
+    )
+
+
 def rank_similar_tickets(
     results: List[RetrievalResult],
     exclude_task_id: str = "",
@@ -453,6 +473,18 @@ class QdrantClientWrapper:
 # 统一检索服务
 # ============================================================
 
+def _ticket_card_collection() -> str:
+    """工单卡集合 override（TICKET_CARD_COLLECTION env，测试环境隔离）。
+
+    非空时 index/retrieve/ensure 全部走该集合，与 company_* 指针完全脱钩——
+    carry_over_cards 只扫 company_ 前缀集合，测试卡物理上不可能被搬进生产集合。
+    生产侧不设此 env，行为与旧版完全一致。
+    """
+    from ai.config import get_ai_config
+    return (get_ai_config().ticket_card_collection or "").strip()
+
+
+
 class RetrievalService:
     """
     统一检索服务
@@ -802,6 +834,7 @@ class RetrievalService:
         sub_domain: Optional[str] = None,
         query_filter=None,
         skip_rerank: bool = False,
+        collection: str = "",
     ) -> List[RetrievalResult]:
         """
         通用 domain 检索：给定 domain 和可选 sub_domain，从对应 Qdrant 集合中检索。
@@ -819,7 +852,7 @@ class RetrievalService:
         """
         from ai.config import get_active_collection_for
 
-        col = get_active_collection_for(domain)
+        col = collection or get_active_collection_for(domain)
         if not col:
             return []
 
@@ -1361,6 +1394,7 @@ class RetrievalService:
             top_k=_fetch_k,
             sub_domain="ticket_resolutions",
             query_filter=_approved_filter,
+            collection=_ticket_card_collection(),
         )
         results = [r for r in results if r.review_status == "approved"]
         # P2 verified 权重：confirmed×1.15，recurred×0.85，rejected×0.7，其余×1.0
@@ -1397,6 +1431,35 @@ class RetrievalService:
         """
         from ai.config import get_active_collection_for, write_active_collection_for
         import time as _time
+
+        override = _ticket_card_collection()
+        if override:
+            # 测试隔离集合：独立存在，绝不写 company 指针（写指针会把整套
+            # company 检索切到测试卡集合上）
+            try:
+                client = await self._qdrant._ensure_client()
+                if await self._to_thread(client.collection_exists, override):
+                    return override
+                await self._ensure_clients()
+                vec_dim = await self._embed_client.get_dimension()
+                from qdrant_client.models import (Distance, VectorParams,
+                                                  SparseVectorParams, SparseIndexParams)
+                await self._to_thread(
+                    client.create_collection,
+                    collection_name=override,
+                    vectors_config={
+                        "dense": VectorParams(size=vec_dim, distance=Distance.COSINE),
+                    },
+                    sparse_vectors_config={
+                        "sparse": SparseVectorParams(
+                            index=SparseIndexParams(on_disk=False)),
+                    },
+                )
+                print(f"  [retrieval] Created ticket card collection: {override}")
+                return override
+            except Exception as e:
+                logger.error(f"创建工单卡隔离集合 {override} 失败: {e}", exc_info=True)
+                return ""
 
         tr_col = get_active_collection_for("company")
         if tr_col:
@@ -1463,7 +1526,7 @@ class RetrievalService:
         from ai.config import get_active_collection_for
         import uuid
 
-        col = get_active_collection_for("company")
+        col = _ticket_card_collection() or get_active_collection_for("company")
         if not col:
             col = await self.ensure_task_resolutions_collection()
         if not col:
@@ -1488,11 +1551,8 @@ class RetrievalService:
             "domain": "company", "sub_domain": "ticket_resolutions",
             # content 是消费侧 RetrievalResult.content 的映射源
             # （主 KB chunk 文本同键）——缺它检索结果正文为空
-            "content": (
-                f"问题：{problem_summary}\n根因：{root_cause}\n"
-                f"解决：{solution_steps}"
-                + (f"\n故障码：{fault_code}" if fault_code else "")
-                + (f"\n车型：{robot_type}" if robot_type else "")),
+            "content": render_resolution_content(
+                problem_summary, root_cause, solution_steps, fault_code, robot_type),
             "resolved_at": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
             # P1 结构化根因（供查询过滤 + 验证回填）
             "root_cause_type": root_cause_type or "unknown",
@@ -1511,8 +1571,11 @@ class RetrievalService:
         # upsert 都是新点，重复索引会膨胀集合）。
         # 命名双向量（与主入库链路 ai/ingestion/base.py 同 schema）：
         # dense 语义 + sparse BM25——检索侧 RRF 融合的稀疏路才有料。
-        _point_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                   f"yaorenba:task_resolution:{task_id}"))
+        # 隔离集合时 ID 加 test: 命名空间——两库同号工单（helpdesk_test 与
+        # helpdesk_724 都有 #770）即使某天被手动搬进同一集合也不会互相覆盖
+        _id_ns = ("test:" if _ticket_card_collection() else "") + \
+            f"yaorenba:task_resolution:{task_id}"
+        _point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, _id_ns))
         try:
             from qdrant_client.models import PointStruct, SparseVector
             from ai.core.retrieval import generate_bm25_sparse
@@ -1544,54 +1607,66 @@ class RetrievalService:
     ) -> bool:
         """按 task_id 更新一条工单方案的 verified 字段（P2 验证回填）。
 
-        在 project domain 集合里 scroll 查找 task_id 匹配的点，set_payload 更新 verified。
         找不到返回 False，不影响主流程。
         """
-        from ai.config import get_active_collection_for
-
         if verified not in ("confirmed", "rejected", "recurred", "unknown"):
             return False
+        return await self.patch_task_resolution_payload(
+            str(task_id), {"verified": verified})
+
+    async def _scroll_task_resolution_points(self, task_id: str) -> List[Any]:
+        """按 task_id scroll 出工单方案点（含 payload）。无集合/Qdrant 不可用返回 []。"""
+        from ai.config import get_active_collection_for
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        col = get_active_collection_for("company")
+        if not col:
+            return []
+        await self._ensure_clients()
+        if self._qdrant.is_unavailable:
+            return []
+        client = await self._qdrant._ensure_client()
+        flt = Filter(must=[FieldCondition(
+            key="task_id", match=MatchValue(value=str(task_id)))])
+        # limit 64 足够覆盖单工单的历史重复索引
+        points, _next = await self._to_thread(
+            client.scroll, collection_name=col, scroll_filter=flt,
+            limit=64, with_payload=True, with_vectors=False)
+        return list(points)
+
+    async def fetch_task_resolution_payload(
+        self, task_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """取该工单方案卡的 payload（已沉淀的点）。没有或 Qdrant 不可用返回 None。"""
+        try:
+            points = await self._scroll_task_resolution_points(task_id)
+        except Exception as e:
+            logger.warning(f"[retrieval] 读方案卡失败 task_id={task_id}: {e}")
+            return None
+        return dict(points[0].payload or {}) if points else None
+
+    async def patch_task_resolution_payload(
+        self, task_id: str, payload: Dict[str, Any]
+    ) -> bool:
+        """按 task_id 局部更新方案卡 payload（**不动向量**）。找不到返回 False。"""
+        from ai.config import get_active_collection_for
+
         col = get_active_collection_for("company")
         if not col:
             return False
-        await self._ensure_clients()
-        if self._qdrant.is_unavailable:
-            return False
-
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
-        client = await self._qdrant._ensure_client()
         try:
-            flt = Filter(
-                must=[
-                    FieldCondition(
-                        key="task_id",
-                        match=MatchValue(value=str(task_id)),
-                    )
-                ]
-            )
-            # 分页 scroll 找到匹配点（limit 64 足够覆盖单工单的重复索引）
-            matched = await self._to_thread(
-                client.scroll,
-                collection_name=col,
-                scroll_filter=flt,
-                limit=64,
-                with_payload=False,
-                with_vectors=False,
-            )
-            points, _next = matched
+            points = await self._scroll_task_resolution_points(task_id)
             if not points:
                 return False
-            ids = [p.id for p in points]
+            client = await self._qdrant._ensure_client()
             await self._to_thread(
-                client.set_payload,
-                collection_name=col,
-                payload={"verified": verified},
-                points=ids,
-            )
-            logger.info(f"[retrieval] 已回填 verified={verified}: task_id={task_id} 覆盖 {len(ids)} 点")
+                client.set_payload, collection_name=col, payload=payload,
+                points=[p.id for p in points])
+            logger.info(f"[retrieval] 已更新方案卡 payload task_id={task_id} "
+                        f"覆盖 {len(points)} 点: {sorted(payload)}")
             return True
         except Exception as e:
-            logger.warning(f"[retrieval] update verified 失败 task_id={task_id}: {e}")
+            logger.warning(f"[retrieval] 更新方案卡 payload 失败 task_id={task_id}: {e}")
             return False
 
     # ── 派单模块（Assigner）：历史工单向量库 dispatch_history ──

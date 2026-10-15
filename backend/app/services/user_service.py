@@ -5,8 +5,11 @@ from app.services.permission_service import permission_service
 from app.models import role_permissions
 from app.models.organization import Company, Department
 import json
+import logging
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 
 class UserService:
@@ -215,12 +218,21 @@ class UserService:
 
     @classmethod
     def _refresh_cache(cls) -> None:
-        """重新加载用户映射缓存；失败时保留旧缓存且不更新时间戳（下次调用重试）。"""
+        """重新加载用户映射缓存；失败**或结果为空**时保留旧缓存且不更新时间戳（下次重试）。
+
+        空结果**不缓存**：否则一次异常读到的空表，会让这张映射在
+        `_CACHE_EXPIRE_SECONDS`（10 分钟）内稳定为空，期间所有依赖它的地方
+        （如讨论史还原真实姓名）都会退化成原始 ID —— 那正是 issues.md #4 那个 bug
+        换一种方式复现。宁可每次重查一次轻量 SQL，也不要把它锁住。
+        """
         try:
-            cls._user_cache = cls._load_user_map_from_db()
+            loaded = cls._load_user_map_from_db()
+            if not loaded:
+                raise ValueError("用户映射为空（users 表读不到？）")
+            cls._user_cache = loaded
             cls._cache_timestamp = time.time()
         except Exception as e:
-            print(f"加载用户信息失败: {str(e)}")
+            logger.warning(f"加载用户信息失败，保留旧缓存并稍后重试: {e}")
         finally:
             cls._refreshing = False
 

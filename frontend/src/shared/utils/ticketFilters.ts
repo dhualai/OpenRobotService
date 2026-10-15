@@ -110,6 +110,16 @@ export const buildRelevanceFilters = (
     ];
   }
 
+  // 「我归档的」：ArchiveReport.created_by = 当前用户
+  if (relevance === 'archive_mine') {
+    return [{ field: 'archiveCreatedBy', op: 'eq', value: true }];
+  }
+
+  // 「待我审核」：ArchiveReport.reviewer = 当前用户 且 submit_status='submitted'
+  if (relevance === 'archive_review') {
+    return [{ field: 'archiveReviewerPending', op: 'eq', value: true }];
+  }
+
   // 「项目相关」：仅展示与当前用户关联的项目（projectIds）下的工单，
   // 项目列表为空时（未加载/无项目）回退为不限制。
   return projectIds.length > 0

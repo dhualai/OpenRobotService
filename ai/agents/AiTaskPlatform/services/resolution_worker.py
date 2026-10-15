@@ -21,6 +21,7 @@ from typing import Optional
 from ai.config import get_ai_config
 from ai.core.logging import get_logger
 from ai.core.llm import get_llm_client
+from ai.agents.AiTaskPlatform.contexts import author_display_name
 from ai.agents.AiTaskPlatform.prompts import (
     RESOLUTION_FULL_TEMPLATE,
     RESOLUTION_INCREMENTAL_TEMPLATE,
@@ -91,7 +92,7 @@ async def _summarize_resolution(task_id: int, llm) -> tuple[str, bool]:
     # 组装历史对话行
     history_lines = []
     for c in new_comments[-20:]:
-        author = getattr(c, 'created_by_name', None) or c.created_by or "?"
+        author = author_display_name(c.created_by)
         content = (c.content or "")[:200]
         history_lines.append(f"[{author}] {content}")
     history_text = "\n".join(history_lines) if history_lines else ""
@@ -289,23 +290,13 @@ class ResolutionSummaryWorker:
 
 
 # 模块级单例（供 lifespan 使用）
-_resolution_worker: Optional[ResolutionSummaryWorker] = None
-
-
 def resolution_worker_start() -> tuple[ResolutionSummaryWorker, asyncio.Task]:
     """启动 resolver worker（供 ai/run.py lifespan 调用）。
 
     Returns:
         (worker, task)
     """
-    global _resolution_worker
     worker = ResolutionSummaryWorker()
-    _resolution_worker = worker
     task = asyncio.create_task(worker.run())
     worker._task = task
     return worker, task
-
-
-def get_resolution_worker() -> Optional[ResolutionSummaryWorker]:
-    """获取当前 resolution worker 单例（供后端接口入队）。"""
-    return _resolution_worker

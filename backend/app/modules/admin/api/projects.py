@@ -45,6 +45,7 @@ async def get_projects(
     status: Optional[str] = Query(None, description="按状态过滤"),
     execution_status: Optional[str] = Query(None, description="按执行状态过滤"),
     contact_person_id: Optional[str] = Query(None, description="按对接人ID过滤"),
+    online_status: Optional[str] = Query(None, description="按在线状态过滤: online/offline/unknown"),
     include_analysis: bool = Query(True, description="是否包含分析信息"),
     # 默认口径不变（只返回已承接项目）；录入信息页的项目名选择器要能选到台账里的
     # 「待定」项目，才显式传 include_pending=true（不传时与其它列表/统计完全一致）
@@ -60,6 +61,10 @@ async def get_projects(
         projects = project_service.filter_projects(status, execution_status, contact_person_id)
     else:
         projects = project_service.get_projects(skip, limit, include_pending=include_pending)
+
+    # 在线状态后筛选（online_status 已由 _convert_to_dict 计算好）
+    if online_status and online_status in ("online", "offline", "unknown"):
+        projects = [p for p in projects if p.get("online_status") == online_status]
 
     # 项目卡右上角工单数：与 include_analysis 无关，始终附带
     await _attach_ticket_counts(db, projects)

@@ -239,6 +239,8 @@ class LLMClient:
         self._provider_impl = _PROVIDERS[provider]
         self._client: Optional[httpx.AsyncClient] = None
         self._vision_client: Optional[httpx.AsyncClient] = None
+        # 跨站热备：relay 站点独立客户端（Authorization headers 建连时定死，不能与主站混用）
+        self._relay_client: Optional[httpx.AsyncClient] = None
 
     def _get_default_base_url(self) -> str:
         """获取默认 base URL"""
@@ -260,16 +262,70 @@ class LLMClient:
             return self.config.relay_model
         return self.config.deepseek_model
 
-    def _model_chain(self) -> List[str]:
-        """主模型 + relay 降级链（仅 relay 后端启用；deepseek 直连不降级）"""
-        chain = [self.model]
+    def _failover_chain(self) -> List[tuple]:
+        """跨站热备降级链：[(provider, model), ...]。
+
+        主站（构造时的 provider）崩（HTTP 错误/连接失败/读超时）时依次切换：
+        - 主站为 deepseek/openai 且 relay key 已配置 → 追加中转站 relay_model +
+          RELAY_FALLBACK_MODELS（故障域独立：deepseek 官方崩不影响中转聚合层）
+        - 主站本身是 relay → 维持原语义，链内按 RELAY_FALLBACK_MODELS 换模型
+        意图分类等独立客户端同为 LLMClient，自动获得同款降级链。
+        """
+        chain = [(self.provider, self.model)]
+        cfg = self.config
         if self.provider != LLMProvider.RELAY:
+            if cfg.relay_api_key:
+                # 跨站热备：主站崩切中转（RELAY_MODEL 与配置的 fallback 依次）
+                relay_models = [cfg.relay_model]
+                for m in (cfg.relay_fallback_models or "").split(","):
+                    m = m.strip()
+                    if m and m not in relay_models:
+                        relay_models.append(m)
+                for m in relay_models:
+                    if m != self.model:
+                        chain.append((LLMProvider.RELAY, m))
             return chain
-        for m in (getattr(self.config, "relay_fallback_models", "") or "").split(","):
+        for m in (cfg.relay_fallback_models or "").split(","):
             m = m.strip()
-            if m and m not in chain:
-                chain.append(m)
+            if m and m != self.model:
+                chain.append((self.provider, m))
         return chain
+
+    def _endpoint(self, provider: LLMProvider):
+        """按站点返回 (provider_impl, base_url, api_key)。跨站热备用：
+        主站用构造期配置，relay 站点用 RELAY_* 配置。"""
+        if provider == self.provider:
+            return self._provider_impl, self.base_url, self.api_key
+        if provider == LLMProvider.RELAY:
+            cfg = self.config
+            return _PROVIDERS[LLMProvider.RELAY], cfg.relay_base_url, cfg.relay_api_key
+        # 预留：openai 等其他站点，当前主站即该站点时走上方分支
+        return self._provider_impl, self.base_url, self.api_key
+
+    async def _client_for(self, provider: LLMProvider) -> httpx.AsyncClient:
+        """按站点取长驻客户端：主站复用 self._client，relay 独立建（api_key 不同，
+        headers 在建连时定死，不能混用）。"""
+        if provider == self.provider:
+            return await self._get_client()
+        if provider == LLMProvider.RELAY:
+            if self._relay_client is None or self._relay_client.is_closed:
+                cfg = self.config
+                self._relay_client = httpx.AsyncClient(
+                    headers={
+                        "Authorization": f"Bearer {cfg.relay_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=httpx.Timeout(
+                        connect=self.config.llm_connect_timeout,
+                        read=self.config.llm_read_timeout,
+                        write=10.0,
+                        pool=10.0,
+                    ),
+                    trust_env=False,
+                    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+                )
+            return self._relay_client
+        return await self._get_client()
 
     def _relay_thinking(self) -> bool:
         return bool(getattr(self.config, "relay_thinking", False))
@@ -284,18 +340,21 @@ class LLMClient:
         return self.reasoning_effort
 
     async def _run_with_fallback(self, call):
-        """非流式请求的模型降级：主模型 ServiceUnavailableError（HTTP 非200，
-        尚未产出任何内容）时按 RELAY_FALLBACK_MODELS 依次换模型重发。
-        网络类失败（连接/超时）说明中转站本身不可达，换模型无意义，不降级。"""
-        chain = self._model_chain()
-        for i, model in enumerate(chain):
+        """跨站热备降级：链 = [(provider, model), ...]（_failover_chain），依次尝试。
+
+        降级触发：ServiceUnavailableError（HTTP 非200/解析失败）或 AITimeoutError
+        （连接/读超时重试耗尽）——主站「服务器崩」两种形态都要切。已产出内容时
+        由 call 内部自行抛出不可降级异常（流式 has_yielded / 非流式整段返回无此问题）。"""
+        chain = self._failover_chain()
+        for i, (provider, model) in enumerate(chain):
             try:
-                return await call(model)
-            except ServiceUnavailableError as e:
+                return await call(provider, model)
+            except (ServiceUnavailableError, AITimeoutError) as e:
                 if i == len(chain) - 1:
                     raise
                 logger.warning(
-                    f"[llm-fallback] {model} 不可用({str(e)[:120]})，降级尝试 {chain[i + 1]}")
+                    f"[llm-fallback] {provider.value}/{model} 不可用({str(e)[:120]})，"
+                    f"降级尝试 {chain[i + 1][0].value}/{chain[i + 1][1]}")
         raise ServiceUnavailableError("LLM", "模型链耗尽")  # pragma: no cover
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -346,6 +405,9 @@ class LLMClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
+        if self._relay_client and not self._relay_client.is_closed:
+            await self._relay_client.aclose()
+            self._relay_client = None
         if self._vision_client and not self._vision_client.is_closed:
             await self._vision_client.aclose()
             self._vision_client = None
@@ -364,12 +426,14 @@ class LLMClient:
         self,
         model: str,
         messages: List[Dict[str, str]],
+        provider: Optional[LLMProvider] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """发送请求（带重试）"""
-        client = await self._get_client()
+        """发送请求（带重试）。provider 供跨站热备按链元素切换站点。"""
+        impl, base_url, _ = self._endpoint(provider or self.provider)
+        client = await self._client_for(provider or self.provider)
 
-        payload = self._provider_impl.build_payload(
+        payload = impl.build_payload(
             model=model,
             messages=messages,
             reasoning_effort=self.reasoning_effort,
@@ -377,7 +441,7 @@ class LLMClient:
             **kwargs,
         )
 
-        url = self._provider_impl.get_api_url(self.base_url)
+        url = impl.get_api_url(base_url)
         response = await client.post(url, json=payload)
 
         if response.status_code == 401:
@@ -398,13 +462,16 @@ class LLMClient:
             )
 
     async def _complete_responses(
-        self, model: str, prompt: str, system_prompt: Optional[str], max_tokens: int, temperature: float
+        self, model: str, prompt: str, system_prompt: Optional[str], max_tokens: int, temperature: float,
+        provider: Optional[LLMProvider] = None,
     ) -> str:
         """gpt-5 走 Responses API 的非流式补全（标题生成/草稿生成等 complete 场景）。
 
         Chat Completions 兼容层在中转站上不流式且行为异常，gpt-5 统一走 /responses。
         """
-        client = await self._get_client()
+        provider = provider or self.provider
+        impl, base_url, _ = self._endpoint(provider)
+        client = await self._client_for(provider)
         _input = []
         if system_prompt:
             _input.append({"role": "system", "content": system_prompt})
@@ -417,7 +484,7 @@ class LLMClient:
         }
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self._effort_floor(model)}
-        url = self._provider_impl.get_responses_url(self.base_url)
+        url = impl.get_responses_url(base_url)
         response = await client.post(url, json=payload)
         if response.status_code != 200:
             raise ServiceUnavailableError(
@@ -461,8 +528,8 @@ class LLMClient:
         """
         try:
             return await self._run_with_fallback(
-                lambda m: self._complete_one(
-                    m, prompt, system_prompt, max_tokens, temperature, thinking)
+                lambda p, m: self._complete_one(
+                    m, prompt, system_prompt, max_tokens, temperature, thinking, provider=p)
             )
         except (AITimeoutError, ServiceUnavailableError):
             raise
@@ -478,9 +545,13 @@ class LLMClient:
         max_tokens: int,
         temperature: float,
         thinking: bool,
+        provider: Optional[LLMProvider] = None,
     ) -> str:
-        if self._provider_impl.is_responses_model(model):
-            return await self._complete_responses(model, prompt, system_prompt, max_tokens, temperature)
+        provider = provider or self.provider
+        impl, _, _ = self._endpoint(provider)
+        if impl.is_responses_model(model):
+            return await self._complete_responses(
+                model, prompt, system_prompt, max_tokens, temperature, provider=provider)
 
         messages: List[Dict[str, str]] = []
         if system_prompt:
@@ -494,9 +565,10 @@ class LLMClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 thinking=thinking,
+                provider=provider,
             )
             # 记录思考过程
-            reasoning = self._provider_impl.extract_reasoning(response)
+            reasoning = impl.extract_reasoning(response)
             if reasoning:
                 logger.info(
                     f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:500]}"
@@ -510,7 +582,7 @@ class LLMClient:
                     f"msg_keys={list(_msg.keys())}, "
                     f"content_len={len(_msg.get('content', '') or '')}"
                 )
-            return self._provider_impl.extract_content(response)
+            return impl.extract_content(response)
 
         except RetryError as e:
             logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
@@ -542,7 +614,8 @@ class LLMClient:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt or ""})
 
-        async def _one(model: str):
+        async def _one(provider: LLMProvider, model: str):
+            impl, _, _ = self._endpoint(provider)
             response = await self._make_request(
                 model,
                 messages=messages,
@@ -550,6 +623,7 @@ class LLMClient:
                 temperature=temperature,
                 thinking=thinking if thinking is not None else self._thinking_default,
                 tools=tools,
+                provider=provider,
             )
             _msg = response.get("choices", [{}])[0].get("message", {})
             tool_calls = []
@@ -565,7 +639,7 @@ class LLMClient:
                     "name": fn.get("name", ""),
                     "arguments": args,
                 })
-            reasoning = self._provider_impl.extract_reasoning(response)
+            reasoning = impl.extract_reasoning(response)
             if reasoning:
                 logger.info(f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:300]}")
             return {
@@ -789,7 +863,8 @@ class LLMClient:
             temperature: 温度参数
             thinking: 是否开启思考模式（工具调用默认关闭）
         """
-        async def _one(model: str):
+        async def _one(provider: LLMProvider, model: str):
+            impl, _, _ = self._endpoint(provider)
             try:
                 response = await self._make_request(
                     model,
@@ -797,15 +872,16 @@ class LLMClient:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     thinking=thinking,
+                    provider=provider,
                 )
                 # 记录思考过程
-                reasoning = self._provider_impl.extract_reasoning(response)
+                reasoning = impl.extract_reasoning(response)
                 if reasoning:
                     logger.info(
                         f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:500]}"
                         f"{'…' if len(reasoning) > 500 else ''}"
                     )
-                return self._provider_impl.extract_content(response)
+                return impl.extract_content(response)
             except RetryError as e:
                 logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
                 raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
@@ -841,22 +917,23 @@ class LLMClient:
         if thinking is None:
             thinking = self._thinking_default
 
-        chain = self._model_chain()
-        for i, model in enumerate(chain):
+        chain = self._failover_chain()
+        for i, (provider, model) in enumerate(chain):
             yielded = False
             try:
                 async for event in self._stream_with_tools_once(
-                    model, messages, tools, max_tokens, temperature, thinking
+                    model, messages, tools, max_tokens, temperature, thinking, provider=provider
                 ):
                     yielded = True
                     yield event
                 return
-            except ServiceUnavailableError as e:
-                # 已向调用方产出内容时换模型重发会导致重复输出，直接抛
+            except (ServiceUnavailableError, AITimeoutError) as e:
+                # 已向调用方产出内容时换站点重发会导致重复输出，直接抛
                 if yielded or i == len(chain) - 1:
                     raise
                 logger.warning(
-                    f"[llm-fallback] {model} 流式不可用({str(e)[:120]})，降级尝试 {chain[i + 1]}")
+                    f"[llm-fallback] {provider.value}/{model} 工具流式不可用({str(e)[:120]})，"
+                    f"降级尝试 {chain[i + 1][0].value}/{chain[i + 1][1]}")
 
     async def _stream_with_tools_once(
         self,
@@ -866,8 +943,11 @@ class LLMClient:
         max_tokens: int,
         temperature: float,
         thinking: bool,
+        provider: Optional[LLMProvider] = None,
     ):
-        payload = self._provider_impl.build_payload(
+        provider = provider or self.provider
+        impl, base_url, _ = self._endpoint(provider)
+        payload = impl.build_payload(
             model=model, messages=messages,
             max_tokens=max_tokens, temperature=temperature, stream=True,
             reasoning_effort=self.reasoning_effort, thinking=thinking,
@@ -880,8 +960,8 @@ class LLMClient:
         reasoning_parts: list[str] = []
         for attempt in range(3):
             try:
-                client = await self._get_client()
-                url = self._provider_impl.get_api_url(self.base_url)
+                client = await self._client_for(provider)
+                url = impl.get_api_url(base_url)
                 full_content: list[str] = []
                 tool_fragments: Dict[int, Dict[str, str]] = {}
                 async with client.stream("POST", url, json=payload) as response:
@@ -993,22 +1073,25 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        chain = self._model_chain()
-        for i, model in enumerate(chain):
+        chain = self._failover_chain()
+        for i, (provider, model) in enumerate(chain):
             yielded = False
             try:
                 async for token in self._stream_once(
-                    model, messages, max_tokens, temperature, thinking
+                    model, messages, max_tokens, temperature, thinking, provider=provider
                 ):
                     yielded = True
                     yield token
                 return
-            except ServiceUnavailableError as e:
-                # 已向调用方产出 token 时换模型重发会导致重复输出，直接抛
+            except (ServiceUnavailableError, AITimeoutError) as e:
+                # 已向调用方产出 token 时换站点重发会导致重复输出，直接抛；
+                # AITimeoutError = 内层同站重试耗尽的连接/读超时——主站「崩」的
+                # 常见形态，跨站热备必须接住
                 if yielded or i == len(chain) - 1:
                     raise
                 logger.warning(
-                    f"[llm-fallback] {model} 流式不可用({str(e)[:120]})，降级尝试 {chain[i + 1]}")
+                    f"[llm-fallback] {provider.value}/{model} 流式不可用({str(e)[:120]})，"
+                    f"降级尝试 {chain[i + 1][0].value}/{chain[i + 1][1]}")
 
     async def _stream_once(
         self,
@@ -1017,14 +1100,17 @@ class LLMClient:
         max_tokens: int,
         temperature: float,
         thinking: bool,
+        provider: Optional[LLMProvider] = None,
     ):
-        payload = self._provider_impl.build_payload(
+        provider = provider or self.provider
+        impl, base_url, _ = self._endpoint(provider)
+        payload = impl.build_payload(
             model=model, messages=messages,
             max_tokens=max_tokens, temperature=temperature, stream=True,
             reasoning_effort=self.reasoning_effort, thinking=thinking,
             relay_thinking=self._relay_thinking(),
         )
-        _use_responses = self._provider_impl.is_responses_model(model)
+        _use_responses = impl.is_responses_model(model)
         if _use_responses:
             payload = {
                 "model": model,
@@ -1043,9 +1129,9 @@ class LLMClient:
         _debug_first_delta = True
         for attempt in range(3):
             try:
-                client = await self._get_client()
-                url = (self._provider_impl.get_responses_url(self.base_url)
-                       if _use_responses else self._provider_impl.get_api_url(self.base_url))
+                client = await self._client_for(provider)
+                url = (impl.get_responses_url(base_url)
+                       if _use_responses else impl.get_api_url(base_url))
                 t_conn = time.perf_counter()
                 async with client.stream("POST", url, json=payload) as response:
                     t_resp = time.perf_counter()

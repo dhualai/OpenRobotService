@@ -373,30 +373,27 @@ class TaskCommentRead(Base):
     last_read_comment_id = Column(BigInteger, nullable=True, comment="已读到的最后一条评论ID")
 
 
-class Vehicle(Base):
-    """车辆档案表（AI 侧自有新表，扫码定制模式用）。
+class WechatQrcode(Base):
+    """微信公众号带参数二维码表（仅查询，字段对齐 backend/app/models/wechat_qrcode.py）。
 
-    车体二维码（服务链接+唯一车号）→ 用户扫码进入时，前端模式确认接口拿
-    上游参数（车型/项目/客户）来这里校验：有档案 → 该会话注册为车型定制
-    模式；无档案 → 报错拦住（实验阶段不降级常规模式）。
-    AI 侧自有表（非 backend 映射），由 ai/api/vehicle_mode.py 首次使用时
-    幂等建表；初版建档走手工 INSERT / 管理 SQL。
+    扫码定制模式的唯一数据源：车体码的场景值 scene = str(id)，车型确认接口按
+    主键精确取「扫的那一张码」对应的录入信息行（项目名/客户名/车型）。表由
+    backend 侧维护（admin 的录入信息接口），AI 侧只读——不建表、不写入。
     """
-    __tablename__ = "vehicles"
+    __tablename__ = "wechat_qrcodes"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    vehicle_code = Column(String(64), unique=True, nullable=False, comment="唯一车号（二维码绑定，如 XQE-122）")
-    model = Column(String(64), nullable=False, index=True, comment="车型（如 XQE）")
-    project_name = Column(String(128), nullable=True, index=True, comment="项目名")
-    customer_name = Column(String(128), nullable=True, comment="客户名")
-    location = Column(String(128), nullable=True, comment="地点")
-    status = Column(String(16), nullable=False, default="active", comment="active/disabled")
-    created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+    id = Column(Integer, primary_key=True, comment="主键；同时作为微信 scene_str（str(id)）")
+    status = Column(String(20), nullable=False, index=True, comment="状态: init/entering/published/deprecated")
+    project_code = Column(String(64), nullable=True, index=True, comment="项目编号（录入信息行）")
+    project_name = Column(String(128), nullable=True, comment="项目名（录入信息行）")
+    project_location = Column(String(128), nullable=True, comment="项目地点（录入信息行）")
+    customer_name = Column(String(128), nullable=True, comment="客户名（录入信息行）")
+    vehicle_model = Column(String(128), nullable=True, comment="车型（录入信息行）")
 
-    __table_args__ = (
-        Index("idx_vehicle_model_project", "model", "project_name"),
-    )
+    @property
+    def scene_str(self) -> str:
+        """微信带参数二维码的场景值，始终等于 str(id)（与 backend 同口径）。"""
+        return str(self.id)
 
 
 class ArchiveReport(Base):

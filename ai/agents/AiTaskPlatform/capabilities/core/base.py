@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class CapabilityResult:
-    """统一能力返回：内容 + 元信息 + 状态（供 trace / Evaluator / Router 使用）。
+    """统一能力返回：内容 + 元信息 + 状态（供 trace / Router 使用）。
 
     用 dataclass（非 Pydantic）：它是轻量结果容器，构造频繁，且支持位置参数
     （本环境 Pydantic 2.13 禁止位置参数构造 BaseModel，见 BUG 记录）。
@@ -77,12 +77,13 @@ class BaseCapability(ABC):
     tags: list[str] = []         # 标签：["log","image","code","history","knowledge"...]
 
     # ── 生命周期 / 配额（可选）──
-    max_usage_per_session: Optional[int] = None  # 单会话调用上限（None=不限）
+    # 本次请求（一轮讨论 / 一次诊断）内，该能力被【LLM 自主调度】的次数上限。
+    # 由 supervisor 在机制层强制：超出即不排进计划、也不再派发，并把「已达上限」写进
+    # 汇总正文（见 capabilities/core/usage.py）。**不要在实例上计数**——能力实例每次
+    # 新建（registry.get → cap_cls()），挂在实例上的计数永远是 0（见 issues.md #10）。
+    # 代码里确定性的兜底调用（如 discuss_flow 按用户要求补做日志分析）不计入此限。
+    max_usage_per_session: Optional[int] = None
     requires_approval: bool = False  # True 时 before_run 按审批策略短路，读日志/知识库保持 False
-
-    def __init__(self):
-        # 会话内调用计数（配额）
-        self._usage_count = 0
 
     # ── 子类必须实现 ──
     @abstractmethod
@@ -104,15 +105,6 @@ class BaseCapability(ABC):
         return True
 
     # ── 配额控制 ──
-    def _claim_usage(self) -> bool:
-        """尝试占用一次调用额度。超限返回 False。"""
-        if self.max_usage_per_session is None:
-            return True
-        if self._usage_count >= self.max_usage_per_session:
-            return False
-        self._usage_count += 1
-        return True
-
     async def before_run(self, **kwargs: Any) -> Optional[CapabilityResult]:
         """执行前钩子。审批策略不通过时返回结果并短路；否则 None，继续 run。"""
         from ai.agents.AiTaskPlatform.capabilities.core.approval import approval_gate
@@ -122,18 +114,16 @@ class BaseCapability(ABC):
         """执行后钩子：可改写/盖章结果；默认原样返回。异常由调用方忽略后处理。"""
         return result
 
-    # ── 统一执行入口（带配额 + 异常兜底）──
+    # ── 统一执行入口（异常兜底）──
     async def __call__(self, **kwargs: Any) -> CapabilityResult:
-        """带配额控制 + 异常兜底的统一执行入口。
+        """带异常兜底的统一执行入口。
 
         调用方统一用 `await capability(**kwargs)`（或 `capability.run(...)`），
-        这里负责：配额检查 → before_run → run → after_run → 异常转错误态。
+        这里负责：before_run → run → after_run → 异常转错误态。
+
+        配额（`max_usage_per_session`）**不在这里管**：它由 supervisor 按请求计数并
+        在派发前拦下（capabilities/core/usage.py），因为实例每次新建、计数挂不住。
         """
-        # 配额检查
-        if not self._claim_usage():
-            return CapabilityResult.failure(
-                f"能力 {self.name} 已达单会话调用上限 ({self.max_usage_per_session})"
-            )
         # 环境可用性
         if not self.is_available():
             return CapabilityResult.failure(f"能力 {self.name} 在当前环境不可用")

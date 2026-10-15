@@ -5,6 +5,13 @@
 - ai/tools/backfill_resolutions.py（存量批量回填，CLI）
 - ai/core/knowledge_worker.py 的 run_knowledge_worker（增量）
 
+两条沉淀路，闸门不同：
+- **closed 路**（load_candidates / process_ticket）：LLM 从评论提炼 → 写 pending 卡
+  → 人工 review_resolutions 审核放行后才可检索。
+- **archived 路**（load_archived_candidates / process_archived_ticket）：归档审核
+  通过的单，直接用**审核过的归档报告**写卡，review_status=approved——归档审核
+  本身就是那道人工闸门，不需要再走一次 pending。
+
 0901 移入 ai/core（共享核心）：知识沉淀服务跨平台（数据来自工单平台、
 检索服务诊断平台），不属于任何单个 agent 的私有 services。
 
@@ -203,25 +210,38 @@ def mark_indexed(task_id: int, status: str) -> None:
         db.close()
 
 
-async def process_ticket(row: dict, retriever, dry_run: bool = False) -> str:
+def _as_meta(raw) -> dict:
+    """metadata_info 可能是 dict 或 JSON 字符串，统一成 dict。"""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def _fmt_reviewed_at(value) -> str:
+    """审核时间统一成 'YYYY-mm-dd HH:MM:SS'；缺省用当前时间（保证字段不空）。"""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    return str(value) if value else time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def process_ticket(row: dict, retriever, dry_run: bool = False,
+                         archive_content: str | None = None) -> str:
     """处理单张工单：组装 → 提炼 → 入库 → 标记。
 
     Returns: indexed | empty | failed
     """
     from ai.core.solution_distiller import distill_solution
     tid = row["id"]
-    meta = row.get("metadata_info") or {}
-    if not isinstance(meta, dict):
-        try:
-            meta = json.loads(meta) if meta else {}
-        except Exception:
-            meta = {}
+    meta = _as_meta(row.get("metadata_info"))
     comments_text, last_human = load_comments_text(tid)
     ticket_type = getattr(row.get("task_type"), "value", row.get("task_type")) or ""
     card = await distill_solution(
         title=row.get("title") or "",
         description=row.get("description") or "",
-        resolution_summary=meta.get("resolution_summary") or "",
+        resolution_summary=(archive_content or meta.get("resolution_summary") or ""),
         comments_text=comments_text,
         task_type=ticket_type,
     )
@@ -258,4 +278,170 @@ async def process_ticket(row: dict, retriever, dry_run: bool = False) -> str:
     if not ok:
         return "failed"
     mark_indexed(tid, "indexed")
+    return "indexed"
+
+
+# ── 归档路：归档审核通过 → 直接沉淀（素材是人写且审核过的归档报告） ──
+
+# 已归档、报告审核通过、且尚未按归档报告入库的单；取该单最高版本的 approved 报告。
+# 标记用独立的 archive_sink_status 而非 solution_indexed：归档单通常早在 closed
+# 阶段就被标过 solution_indexed，共用同一标记会让它永远进不了这条队列。
+_ARCHIVED_CANDIDATES_SQL = (
+    "SELECT t.id, t.title, t.description, t.assigned_to, t.metadata_info, "
+    "       t.project_name, t.task_type, "
+    "       r.content AS report_content, r.reviewer AS report_reviewer, "
+    "       r.version AS report_version, r.reviewed_at AS report_reviewed_at "
+    "FROM tasks t "
+    "JOIN archive_reports r "
+    "  ON r.task_id = t.id AND r.submit_status = 'approved' "
+    " AND r.version = (SELECT MAX(r2.version) FROM archive_reports r2 "
+    "                  WHERE r2.task_id = t.id AND r2.submit_status = 'approved') "
+    "WHERE t.status = 'archived' "
+    "  AND JSON_EXTRACT(t.metadata_info, '$.archive_sink_status') IS NULL "
+    "ORDER BY t.updated_at DESC "
+    "LIMIT :lim OFFSET :off"
+)
+
+
+def load_archived_candidates(limit: int, offset: int = 0) -> list[dict]:
+    """待沉淀的「已归档」工单：归档审核通过、报告尚未入库。
+
+    与 load_candidates（closed 路）分开：归档单的素材是**人写且审核通过的
+    归档报告**，不再让 LLM 从评论里提炼。
+    """
+    from ai.core.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        rows = db.execute(text(_ARCHIVED_CANDIDATES_SQL),
+                          {"lim": limit, "off": offset}).mappings().all()
+        return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+
+def mark_archived_sunk(task_id: int, status: str) -> None:
+    """回写归档沉淀标记。status: indexed（已入库）/ empty（报告为空，跳过）。"""
+    from ai.core.database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        db.execute(text(
+            "UPDATE tasks SET metadata_info = JSON_MERGE_PATCH("
+            "  COALESCE(metadata_info, JSON_OBJECT()), "
+            "  JSON_OBJECT('archive_sink_status', :st, 'archive_sink_at', :at)) "
+            "WHERE id = :tid"),
+            {"st": status, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "tid": task_id})
+        db.commit()
+    finally:
+        db.close()
+
+
+async def process_archived_ticket(row: dict, retriever, dry_run: bool = False) -> str:
+    """已归档工单沉淀：归档审核通过 → 把该单的卡**放行**。
+
+    与人工审核路（closed 提炼）的**向量文本逐字相同**，分两种情形：
+    1. **已有卡**（closed 路提炼过；点 ID 按 task_id 确定性相同）→ 只改 payload：
+       `review_status=approved` + `reviewed_by/at` + `solution_steps` 换成归档报告，
+       **向量一个字不动**——检索侧与人工放行的卡完全不可区分。
+    2. **没有卡**（未沉淀/被驳回删过/被排除）→ 用**同一个 LLM 提炼器**（素材=归档报告）
+       生成卡，字段构造与 closed 路一致，再写 approved。
+
+    Returns: indexed | empty | failed
+    """
+    from ai.core.retrieval import render_resolution_content
+
+    tid = row["id"]
+    report = (row.get("report_content") or "").strip()
+    if not report:
+        if not dry_run:
+            mark_archived_sunk(tid, "empty")
+        logger.info(f"[sink] #{tid} 归档报告为空，跳过")
+        return "empty"
+
+    meta = _as_meta(row.get("metadata_info"))
+    reviewer = (row.get("report_reviewer") or "").strip()
+    version = row.get("report_version")
+    # 与人工审核放行的卡同键：review_resolutions --apply 会写 reviewed_by/at，
+    # ticket_card_store 换集合搬运时按 reviewed_at 比新旧，缺了会被旧卡压住。
+    reviewed_at_str = _fmt_reviewed_at(row.get("report_reviewed_at"))
+    logger.info(f"[sink:archive] #{tid} 归档报告 v{version} "
+                f"审核人={reviewer or '-'}，放行沉淀")
+    if dry_run:
+        return "indexed"
+
+    # 1) 已有卡 → 只放行 + 换 solution，向量不重写
+    existing = await retriever.fetch_task_resolution_payload(str(tid))
+    if existing:
+        patch = {
+            "review_status": "approved",
+            "reviewed_by": reviewer,
+            "reviewed_at": reviewed_at_str,
+            "solution_steps": report,
+            # content 是答案正文的映射源，solution_steps 换了它必须跟着换；
+            # 问题侧字段沿用原卡，向量文本与人工审核路保持逐字一致
+            "content": render_resolution_content(
+                existing.get("problem_summary") or "",
+                existing.get("root_cause") or "",
+                report,
+                existing.get("fault_code") or "",
+                existing.get("robot_type") or "",
+            ),
+            "source": "archive_review",
+            "archive_report_version": version,
+        }
+        if not await retriever.patch_task_resolution_payload(str(tid), patch):
+            return "failed"
+        logger.info(f"[sink:archive] #{tid} 已有卡：只放行，向量未动")
+        mark_archived_sunk(tid, "indexed")
+        return "indexed"
+
+    # 2) 没卡 → 用同一提炼器补建（构造与 closed 路逐字一致），直接 approved
+    from ai.core.solution_distiller import distill_solution
+
+    comments_text, last_human = load_comments_text(tid)
+    ticket_type = getattr(row.get("task_type"), "value", row.get("task_type")) or ""
+    card = await distill_solution(
+        title=row.get("title") or "",
+        description=row.get("description") or "",
+        # 归档报告是这张单的解法（人写且审核过），拿它当提炼素材
+        resolution_summary=report,
+        comments_text=comments_text,
+        task_type=ticket_type,
+    )
+    if card is None:
+        mark_archived_sunk(tid, "empty")
+        logger.info(f"[sink:archive] #{tid} 无卡且提炼为空卡，跳过")
+        return "empty"
+    resolver = (reviewer
+                or _resolver_from_oplog(tid)
+                or resolver_name(row.get("assigned_to") or "", last_human))
+    logger.info(f"[sink:archive] #{tid} 无卡补建: 问题={card['problem_summary'][:60]} | "
+                f"根因={card['root_cause'][:40]} | 解决人={resolver}")
+    ok = await retriever.index_task_resolution(
+        task_id=str(tid),
+        title=row.get("title") or f"工单 #{tid}",
+        root_cause=card["root_cause"],
+        solution_steps=card["solution_steps"],
+        engineer_note=f"解决人: {resolver}" if resolver else "",
+        fault_code=card["fault_code"] or meta.get("fault_code") or "",
+        robot_type=card["robot_type"] or meta.get("robot_type") or "",
+        problem_summary=card["problem_summary"],
+        extra_payload={
+            "description": (row.get("description") or "")[:1000],
+            "comments_text": comments_text,
+            "project_name": row.get("project_name") or "",
+            "resolver": resolver,
+            "ticket_type": ticket_type,
+            "reviewed_by": reviewer,
+            "reviewed_at": reviewed_at_str,
+            "source": "archive_review",
+            "archive_report_version": version,
+        },
+        # 归档审核通过 = 人工闸门已过，直接 approved（无需再走 review_resolutions）
+        review_status="approved",
+    )
+    if not ok:
+        return "failed"
+    mark_archived_sunk(tid, "indexed")
     return "indexed"

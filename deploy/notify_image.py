@@ -146,13 +146,27 @@ def _head_lines(draw, text, fnt, max_w, max_lines=2):
     return lines
 
 
+def _schema_row(ctx):
+    """数据库结构行：因结构中止（blocked）用红色醒目，正常通过用普通墨色。"""
+    if ctx.get("schema_blocked"):
+        return ("数据库结构", f"❌ {ctx.get('schema_summary') or '库结构落后于代码，已中止部署'}", RED)
+    if ctx.get("schema_summary"):
+        return ("数据库结构", f"✅ {ctx['schema_summary']}", INK)
+    return None
+
+
 def _rows(ctx):
     """卡片键值对：告警优先，最长 5 行，避免整图太高。"""
     rows = [("部署组件", component_text(ctx.get("components")), INK)]
     if ctx.get("git_ref"):
         rows.append(("代码分支", f"{ctx['git_ref']} @ {ctx.get('sha', '')}".strip(), INK))
+    schema = _schema_row(ctx)
+    if schema:
+        rows.append(schema)
     if ctx.get("skip_gate"):
         rows.append(("测试门禁", "已跳过（紧急发布）", ORANGE))
+    elif ctx.get("gate_failed"):
+        rows.append(("测试门禁", "有失败用例（非阻塞放行）", ORANGE))
     if ctx.get("auto_rollback"):
         rows.append(("自动回滚", "已触发，请人工确认服务", ORANGE))
     if ctx.get("backup_id"):
@@ -383,6 +397,7 @@ def _render_release(ctx):
     meta = " · ".join(x for x in (
         f"部署组件 {component_text(ctx.get('components'))}",
         f"分支 {ctx['git_ref']} @ {ctx.get('sha', '')}".strip() if ctx.get("git_ref") else "",
+        f"库结构 {ctx['schema_summary']}" if ctx.get("schema_summary") else "",
         f"耗时 {ctx['elapsed']}" if ctx.get("elapsed") else "",
     ) if x)
     d.text((PAD, y), meta, font=f_meta, fill=SUB)

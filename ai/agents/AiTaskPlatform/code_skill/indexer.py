@@ -141,7 +141,6 @@ _TS_ARROW_RE = re.compile(
 _TS_CLASS_RE = re.compile(
     r'(?:export\s+)?class\s+(\w+)'
 )
-_TS_JSDOC_RE = re.compile(r'/\*\*([\s\S]*?)\*/')
 
 
 def _extract_typescript(file_path: Path) -> List[FunctionRef]:

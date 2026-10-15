@@ -50,6 +50,9 @@ PATCHES = {
         ("step_phase_round", "INT NOT NULL DEFAULT 0 COMMENT '阶段回合数：complete-step 推进+1，初始0=第一轮；0时协商节点不受sequence下限限制'", None),
         ("curr_step_agreed", "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '当前协商节点是否已协商一致：respond 置 True；negotiate-step/complete-step 重置为 False'", None),
         ("escalate_count", "INT NOT NULL DEFAULT 0 COMMENT '升级上报次数：>0 表示已升级，协商回合重置为1且不再受限'", None),
+        # 归档工作流（9726d417）：更完整补齐请跑 scripts/ensure_archive_schema.py
+        ("archived_by", "VARCHAR(50) NULL COMMENT '归档审核人ID（users.id）'", "ix_tasks_archived_by"),
+        ("archived_at", "DATETIME NULL COMMENT '归档完成时间'", None),
     ],
     "conversations": [
         ("is_deleted", "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '逻辑删除：1=用户已删除（列表隐藏，数据保留供 AI 统计）'", "ix_conversations_is_deleted"),

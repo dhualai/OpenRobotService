@@ -16,11 +16,9 @@
 
 import base64
 import io
-import os
 import tarfile
-import tempfile
 import zipfile
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple
 import httpx
 from pathlib import Path
 

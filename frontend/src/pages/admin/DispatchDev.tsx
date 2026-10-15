@@ -10,6 +10,7 @@ import ReactECharts from '@/shared/components/ReactECharts';
 import UiAtlasPanel from '@/pages/admin/UiAtlasPanel';
 import UspEnvPanel from '@/pages/admin/UspEnvPanel';
 import MemoryPanel from '@/pages/admin/MemoryPanel';
+import ArchiveReviewersPanel from '@/pages/admin/ArchiveReviewersPanel';
 import { PERM_DISPATCH_DEV } from '@/shared/constants/dispatchDev';
 
 export { PERM_DISPATCH_DEV };
@@ -1008,7 +1009,7 @@ export default function DispatchDev() {
   const [redispatchNormalOpen, setRedispatchNormalOpen] = useState(false);
   const [listKey, setListKey] = useState<FunnelListKey | null>(null);
   const [funnelWeek, setFunnelWeek] = useState<string>('latest');
-  const [mainTab, setMainTab] = useState<'metrics' | 'atlas' | 'test' | 'usp-envs' | 'memory'>('metrics');
+  const [mainTab, setMainTab] = useState<'metrics' | 'atlas' | 'test' | 'usp-envs' | 'memory' | 'archive-review'>('metrics');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1397,11 +1398,20 @@ export default function DispatchDev() {
         >
           长期记忆
         </button>
+        <button
+          type="button"
+          className={`dispatch-dev__tab${mainTab === 'archive-review' ? ' is-active' : ''}`}
+          onClick={() => setMainTab('archive-review')}
+        >
+          归档审核
+        </button>
       </div>
       {mainTab === 'atlas' ? (
         <UiAtlasPanel />
       ) : mainTab === 'memory' ? (
         <MemoryPanel />
+      ) : mainTab === 'archive-review' ? (
+        <ArchiveReviewersPanel />
       ) : mainTab === 'usp-envs' ? (
         <UspEnvPanel />
       ) : mainTab === 'test' ? (

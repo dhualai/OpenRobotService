@@ -48,6 +48,9 @@ interface ProjectItem {
   settlement_period?: string | null; // 业绩核算期，手工填写常见 YYYYMM（如 202608），兼容 YYYY-MM，来自企业微信同步
   deployment_date?: string | null;   // 部署时间
   final_delivery_date?: string | null; // 最终交付时间
+  // 项目在线状态（/api/health?project_code=xxx 心跳判定）
+  online_status?: 'online' | 'offline' | 'unknown';
+  last_heartbeat_at?: number | null; // Unix 秒，最近心跳时间戳
 }
 
 // 企业微信实时台账记录（GET /api/ai/wecom/projects 返回，values 的键为企业微信智能表格列名）
@@ -82,7 +85,7 @@ const SORT_OPTIONS: { key: SortKey; label: string }[] = [
 // ── 列表筛选 ──
 // 每个维度内多选取并集（同维度选了 A 和 B → A 或 B 都留下），
 // 维度之间取交集（项目经理选了张三 + 地区选了欧洲 → 两个条件都要满足）。
-type FilterDim = 'manager' | 'contact' | 'region' | 'status' | 'agv';
+type FilterDim = 'manager' | 'contact' | 'region' | 'status' | 'agv' | 'online';
 
 const FILTER_DIMS: { key: FilterDim; label: string }[] = [
   { key: 'manager', label: '项目经理' },
@@ -90,10 +93,11 @@ const FILTER_DIMS: { key: FilterDim; label: string }[] = [
   { key: 'region', label: '地区' },
   { key: 'status', label: '项目阶段' },
   { key: 'agv', label: 'AGV 数量' },
+  { key: 'online', label: '在线状态' },
 ];
 
 const EMPTY_FILTERS: Record<FilterDim, string[]> = {
-  manager: [], contact: [], region: [], status: [], agv: [],
+  manager: [], contact: [], region: [], status: [], agv: [], online: [],
 };
 
 // 筛选项里的「其他」兜底：项目在该维度没填值的都归到这里（空值也得能被筛出来）。
@@ -378,6 +382,11 @@ export default function ProjectProgress() {
         const bucket = AGV_BUCKETS.find((b) => b.match(p.total_vehicle_count));
         return bucket ? bucket.key : 'none';
       }
+      case 'online': {
+        // online_status 后端可能返回英文枚举值，下拉选项里用中文展示
+        const map: Record<string, string> = { online: '在线', offline: '离线', unknown: '未知' };
+        return map[p.online_status || 'unknown'] || '未知';
+      }
     }
   }
 
@@ -422,11 +431,11 @@ export default function ProjectProgress() {
   // 常用的在前（下拉框里同时在右侧标出每个选项能筛出多少个项目）。
   const filterOptions = (() => {
     const options: Record<FilterDim, { value: string; count: number }[]> = {
-      manager: [], contact: [], region: [], status: [], agv: [],
+      manager: [], contact: [], region: [], status: [], agv: [], online: [],
     };
     const counts: Record<FilterDim, Map<string, number>> = {
       manager: new Map(), contact: new Map(), region: new Map(),
-      status: new Map(), agv: new Map(),
+      status: new Map(), agv: new Map(), online: new Map(),
     };
     for (const p of projects) {
       for (const dim of FILTER_DIMS) {
@@ -597,6 +606,23 @@ export default function ProjectProgress() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
                 <span className="mac-chip mac-chip--tag mac-chip--blue">{p.status}</span>
+                {/* 在线状态指示：绿点=在线，灰点=离线，不显示=从未心跳 */}
+                {p.online_status && p.online_status !== 'unknown' && (
+                  <span
+                    title={p.online_status === 'online' ? '在线' : '离线'}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 3,
+                      fontSize: 11.5,
+                      color: p.online_status === 'online' ? '#1a7f37' : '#8a8f98',
+                    }}
+                  >
+                    <span style={{
+                      width: 7, height: 7, borderRadius: '50%',
+                      background: p.online_status === 'online' ? '#1a7f37' : '#8a8f98',
+                    }} />
+                    {p.online_status === 'online' ? '在线' : '离线'}
+                  </span>
+                )}
                 <span style={{ fontSize: 11.5, color: 'var(--mac-muted-fg)' }}>
                   {p.project_code} · 项目经理: {wecomManager || p.project_manager || '未指定'}
                 </span>

@@ -1,6 +1,5 @@
 """CodeSkill 主入口 — 单例 + 懒加载索引"""
 
-import os
 import time
 from pathlib import Path
 from typing import Optional

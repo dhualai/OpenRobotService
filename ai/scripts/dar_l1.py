@@ -44,6 +44,35 @@ TOPIC_TYPES = ["故障处置", "操作指引", "功能咨询", "状态查询", "
 # 后半段落回默认值（q=true/topic=0）——切分质量崩。按窗滑判，窗口间话题续号。
 CLASSIFY_WINDOW = 40
 
+# 切分判据模板（0929 抽出）：__CONT__/__LINES__ 运行时替换。md5 进签名——
+# 改判据 = 签名变 = 全量重切（历史会话内容不变，签名同就该复用，重切是白烧
+# LLM 且切分漂移会错位人工标签锚点）
+CLASSIFY_PROMPT_TMPL = (
+    "下面是一场客服对话里用户的每条消息（含时间）和助手回答的开头。"
+    "请把对话切分成话题段，再逐条判断：\n"
+    "话题=一个用户诉求的完整过程：提问→澄清补充→得到解答，或者提问没解决→要求提工单→"
+    "补全单据信息→提单完成。**为提单服务的消息（要求提单/报障、确认单据、补型号发图）"
+    "属于引发它的前一个话题，不是新话题**。\n"
+    "以下才算新话题：内容换成另一个独立的问题/诉求；或时间上隔了很久（如隔几小时、"
+    "隔天）再回来提新的事。\n"
+    "每条消息标注 topic=它属于第几个话题（从 0 开始，按时间顺序递增，同一话题的消息 topic 相同）。\n"
+    "q=这条用户消息是否是咨询提问（想了解方法/排查解决某个问题，希望得到解答）；\n"
+    "   要求提单/报障、为提单补全信息（报型号、发图片、确认单据内容）不算（q=false）；\n"
+    "   问候闲聊、确认收到、纯表情、发链接不算。\n"
+    "t=助手回答是否明确建议用户转工单/提单（仅口头建议，与用户是否实际提单无关）。\n"
+    "另给每个话题标 type（话题类型，枚举选一）："
+    "故障处置=报错/异常/不正常行为的排查修复诉求；"
+    "操作指引=怎么操作、配置、使用某功能；"
+    "功能咨询=功能是否存在、有什么能力、概念含义；"
+    "状态查询=查某个单据/任务/数据的当前状态；"
+    "资料查询=要文档、参数、清单等资料；其他=以上都不是。\n"
+    "__CONT__"
+    "只输出 JSON：{\"rounds\": [{\"i\":0,\"topic\":0,\"q\":true,\"t\":false}, ...],"
+    " \"topics\": [{\"topic\":0,\"type\":\"操作指引\"}, ...], \"n\": 2}，"
+    "不要输出其他内容。\n\n"
+    "__LINES__"
+)
+
 
 async def classify(rounds):
     """逐回合 {q,t} + 末尾 {n_topics}。失败降级全算提问（方向：保守）。
@@ -80,31 +109,8 @@ async def _classify_once(rounds, topic_base):
             f"若本段开头延续前面的话题，请继续用编号 {max(0, topic_base - 1)}。）\n"
             if topic_base else ""
         )
-        prompt = (
-            "下面是一场客服对话里用户的每条消息（含时间）和助手回答的开头。"
-            "请把对话切分成话题段，再逐条判断：\n"
-            "话题=一个用户诉求的完整过程：提问→澄清补充→得到解答，或者提问没解决→要求提工单→"
-            "补全单据信息→提单完成。**为提单服务的消息（要求提单/报障、确认单据、补型号发图）"
-            "属于引发它的前一个话题，不是新话题**。\n"
-            "以下才算新话题：内容换成另一个独立的问题/诉求；或时间上隔了很久（如隔几小时、"
-            "隔天）再回来提新的事。\n"
-            "每条消息标注 topic=它属于第几个话题（从 0 开始，按时间顺序递增，同一话题的消息 topic 相同）。\n"
-            "q=这条用户消息是否是咨询提问（想了解方法/排查解决某个问题，希望得到解答）；\n"
-            "   要求提单/报障、为提单补全信息（报型号、发图片、确认单据内容）不算（q=false）；\n"
-            "   问候闲聊、确认收到、纯表情、发链接不算。\n"
-            "t=助手回答是否明确建议用户转工单/提单（仅口头建议，与用户是否实际提单无关）。\n"
-            "另给每个话题标 type（话题类型，枚举选一）："
-            "故障处置=报错/异常/不正常行为的排查修复诉求；"
-            "操作指引=怎么操作、配置、使用某功能；"
-            "功能咨询=功能是否存在、有什么能力、概念含义；"
-            "状态查询=查某个单据/任务/数据的当前状态；"
-            "资料查询=要文档、参数、清单等资料；其他=以上都不是。\n"
-            + cont +
-            "只输出 JSON：{\"rounds\": [{\"i\":0,\"topic\":0,\"q\":true,\"t\":false}, ...],"
-            " \"topics\": [{\"topic\":0,\"type\":\"操作指引\"}, ...], \"n\": 2}，"
-            "不要输出其他内容。\n\n"
-            + "\n".join(lines)
-        )
+        prompt = CLASSIFY_PROMPT_TMPL.replace(
+            "__CONT__", cont).replace("__LINES__", "\n".join(lines))
         raw = await llm.complete(prompt=prompt, max_tokens=4000, temperature=0,
                                  thinking=False)
         obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
@@ -175,6 +181,11 @@ async def main():
 
     convs = [json.loads(l) for l in open(DATA, encoding="utf-8")]
     cls_path = os.path.join(args.out, "conversations_classified.jsonl")
+    # 切分签名：模型 + 切分判据 md5（同步可算，全量分支与 review 写回共用；
+    # 签名同的历史切分才复用——换模型/改判据自动全量重切）
+    import hashlib as _hl
+    cur_sig = (f"{os.getenv('DAR_MODEL', 'deepseek-flash')}|"
+               f"{_hl.md5(CLASSIFY_PROMPT_TMPL.encode('utf-8')).hexdigest()[:8]}")
 
     if args.replay:
         print(f"replay：读 {cls_path}，不调 LLM")
@@ -185,26 +196,44 @@ async def main():
             c["_cls"] = j.get("cls") or [{"q": True, "t": False, "topic": 0}
                                          for _ in c["rounds"]]
     else:
-        print(f"会话 {len(convs)}，开始 LLM 判定（并发 {CONCURRENCY}）…")
-        t0 = time.time()
-        sem = asyncio.Semaphore(CONCURRENCY)
-        done = [0]
+        # 0929 按会话增量：classified 行带 sig（模型+切分判据 md5），一致的历史
+        # 会话直接复用（历史会话内容不变，重切=白烧 LLM 且切分漂移会错位人工
+        # 标签锚点）；只有新会话/签名变才重切。人工边界不受影响——--review 的
+        # 覆盖写回在本分支之后独立执行，恒优先。
+        saved = {}
+        if os.path.exists(cls_path):
+            for l in open(cls_path, encoding="utf-8"):
+                if l.strip():
+                    j = json.loads(l)
+                    if j.get("sig") == cur_sig:
+                        saved[j["conversation_id"]] = j
+        reuse = [c for c in convs if c["conversation_id"] in saved]
+        todo_convs = [c for c in convs if c["conversation_id"] not in saved]
+        print(f"会话 {len(convs)}：增量复用 {len(reuse)}（sig={cur_sig}），"
+              f"LLM 切分 {len(todo_convs)} 个")
+        for c in reuse:
+            c["_cls"] = saved[c["conversation_id"]]["cls"]
+        if todo_convs:
+            t0 = time.time()
+            sem = asyncio.Semaphore(CONCURRENCY)
+            done = [0]
 
-        async def one(c):
-            async with sem:
-                res = await classify(c["rounds"])
-                done[0] += 1
-                if done[0] % 20 == 0 or done[0] == len(convs):
-                    print(f"  {done[0]}/{len(convs)}"
-                          f"（{done[0] / len(convs) * 100:.0f}%，{time.time()-t0:.0f}s）")
-                c["_cls"] = res[:len(c["rounds"])]
+            async def one(c):
+                async with sem:
+                    res = await classify(c["rounds"])
+                    done[0] += 1
+                    if done[0] % 20 == 0 or done[0] == len(todo_convs):
+                        print(f"  {done[0]}/{len(todo_convs)}"
+                              f"（{done[0] / len(todo_convs) * 100:.0f}%，{time.time()-t0:.0f}s）")
+                    c["_cls"] = res[:len(c["rounds"])]
 
-        await asyncio.gather(*(one(c) for c in convs))
-        print(f"判定完成，{time.time()-t0:.0f}s。")
+            await asyncio.gather(*(one(c) for c in todo_convs))
+            print(f"切分完成，{time.time()-t0:.0f}s。")
         with open(cls_path, "w", encoding="utf-8") as fh:
             for c in convs:
                 fh.write(json.dumps({"conversation_id": c["conversation_id"],
-                                     "cls": c["_cls"]}, ensure_ascii=False) + "\n")
+                                     "cls": c["_cls"], "sig": cur_sig},
+                                    ensure_ascii=False) + "\n")
         # 校对入口：build_segmentation_tool.py 生成的 segmentation_tool.html
         print("话题校对工具: segmentation_tool.html（build_segmentation_tool.py 重新生成）")
 
@@ -214,7 +243,7 @@ async def main():
         rev = json.load(open(args.review, encoding="utf-8"))
         seg = rev.get("bounds") or {}
         lab_all = rev.get("labels") or {}
-        legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+        legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
         n_fix = 0
         for c in convs:
             c["_labels"] = {int(k): legacy.get(v, v) for k, v in
@@ -243,7 +272,8 @@ async def main():
         with open(cls_path, "w", encoding="utf-8") as fh:
             for c in convs:
                 fh.write(json.dumps({"conversation_id": c["conversation_id"],
-                                     "cls": c["_cls"]}, ensure_ascii=False) + "\n")
+                                     "cls": c["_cls"], "sig": cur_sig},
+                                    ensure_ascii=False) + "\n")
         print(f"人工边界版 classified 已落盘: {cls_path}")
     print("聚合…")
 
@@ -388,8 +418,8 @@ async def main():
               f"多话题会话 {pct(multi, n_conv)}")
     # L2 人工标注分布（口径见 docs/直答率统计口径.md）：
     # 分子=直答正确，分母=+未直答；未覆盖/无法判定单列不摊入；
-    # 建议转单/直接提单=非直答测量对象，分子分母均剔除（直接提单=用户明确目的来提单）
-    LAB_KEYS = ["直答正确", "未直答", "未覆盖", "建议转单", "直接提单", "无法判定", "未标"]
+    # 直接提单=非直答测量对象，分子分母均剔除（用户明确目的来提单）
+    LAB_KEYS = ["直答正确", "未直答", "未覆盖", "直接提单", "无法判定", "未标"]
     if any(sum(v[k] for k in LAB_KEYS) for v in lab_cnt.values()):
         print("-" * 72)
         for grp in ("真实组", "测试组"):
@@ -401,8 +431,8 @@ async def main():
             e2e_den = den + s["未覆盖"]
             print(f"L2 {grp}: " + "｜".join(f"{k} {s[k]}" for k in LAB_KEYS if s[k])
                   + f" → 确定直答 {pct(ok, den)}｜端到端直答（未覆盖进分母） {pct(ok, e2e_den)}"
-                  f"（未覆盖/无法判定单列；建议转单+直接提单共 "
-                  f"{s['建议转单'] + s['直接提单']} 段已剔除，不进分子分母）")
+                  f"（未覆盖/无法判定单列；直接提单共 "
+                  f"{s['直接提单']} 段已剔除，不进分子分母）")
     print("=" * 72)
 
     stamp = time.strftime("%Y%m%d_%H%M%S")

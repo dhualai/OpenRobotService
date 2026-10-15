@@ -71,6 +71,10 @@ class PermissionService:
                     project_id,
                     role_id
                 )
+
+            # 项目人员变更 → 授权包版本 +1
+            from app.modules.admin.services.project_service import project_service
+            project_service.bump_export_version(project_id)
             
             return {"success": True}
         except HTTPException:
@@ -94,6 +98,10 @@ class PermissionService:
                     project_id,
                     role_id
                 )
+
+            # 项目人员变更 → 授权包版本 +1
+            from app.modules.admin.services.project_service import project_service
+            project_service.bump_export_version(project_id)
             
             return {"success": True}
         except HTTPException:

@@ -179,3 +179,12 @@ ai/kb/kb_structure_cache.json
 _tmp_*.sql
 _tmp_diag*.py
 .pr-body-tmp.json
+/_probe_automation.py
+/_tmp_topo_agent_zip/
+.agents/skills/smart-dispatch-git/scripts/daily-sync-test.ps1
+
+# ===== AiTaskPlatform 回归用例：含真实人名与工单正文，本地生成、不入库 =====
+ai/agents/AiTaskPlatform/regression/datasets/
+
+# ===== 本地专用文档（责任双树等构思/口径，不入库）=====
+.local/

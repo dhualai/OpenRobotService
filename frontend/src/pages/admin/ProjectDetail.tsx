@@ -66,6 +66,9 @@ interface ProjectDetailData {
   server_deployment_status?: string | null;
   settlement_period?: string | null;
   ext_info?: { overview?: Record<string, unknown>; activity?: Record<string, unknown> } | null;
+  // 项目在线状态（/api/health?project_code=xxx 心跳判定）
+  online_status?: 'online' | 'offline' | 'unknown';
+  last_heartbeat_at?: number | null; // Unix 秒
 }
 
 // 项目阶段枚举与「项目时间进度」计算见 shared/utils/projectLifecycle.ts（与项目进度列表共用同一口径）
@@ -332,7 +335,28 @@ export default function ProjectDetail() {
               绑定 status（企业微信「项目生命周期」列实时同步）；
               进度与项目进度列表同一口径（按生命周期阶段线性计算；仅「项目中止」隐藏） */}
           <div className="mac-ov-divider">
-            <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
+              {/* 在线状态：绿点=在线，灰点=离线，不显示=从未心跳 */}
+              {project.online_status && project.online_status !== 'unknown' && (
+                <span
+                  title={project.last_heartbeat_at
+                    ? `最近心跳: ${new Date(project.last_heartbeat_at * 1000).toLocaleString()}`
+                    : undefined}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    fontSize: 12,
+                    color: project.online_status === 'online' ? '#1a7f37' : '#8a8f98',
+                  }}
+                >
+                  <span style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: project.online_status === 'online' ? '#1a7f37' : '#8a8f98',
+                  }} />
+                  {project.online_status === 'online' ? '在线' : '离线'}
+                </span>
+              )}
+            </div>
             {!isAborted && (
               <div className="mac-progress mac-progress--detail" style={{ marginTop: 14 }}>
                 <div className="mac-progress__head">

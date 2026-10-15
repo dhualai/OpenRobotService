@@ -44,6 +44,41 @@ class IdentityService:
         return {"company": company_name, "department": department_name}
 
     @staticmethod
+    def _user_dict(db_user: UserDB, org_names: Dict[str, Optional[str]]) -> Dict[str, Any]:
+        """UserDB → 对外 dict（含 wechat_openid，供 identity_keys 互认）。"""
+        ec = {}
+        if hasattr(db_user, "external_credentials") and db_user.external_credentials:
+            try:
+                ec = json.loads(db_user.external_credentials)
+            except Exception:
+                ec = {}
+        rm = getattr(db_user, "responsibility_modules", None)
+        # 历史数据可能因 add_user 包装层参数错位被写入非法值（如 int 1 / 字符串 "1"），
+        # 此处强制归一为 dict，避免 Pydantic Dict 校验失败导致接口 500
+        if not isinstance(rm, dict):
+            rm = {}
+        return {
+            "id": db_user.id,
+            "username": db_user.username,
+            "password_hash": db_user.password_hash,
+            "name": getattr(db_user, "name", None),
+            "status": getattr(db_user, "status", "inactive"),
+            "external_credentials": ec,
+            "avatar_resource_id": getattr(db_user, "avatar_resource_id", None),
+            "permissions": ["admin"] if db_user.username == "admin" else ["user"],
+            "company_id": getattr(db_user, "company_id", None),
+            "department_id": getattr(db_user, "department_id", None),
+            "company": org_names["company"],
+            "department": org_names["department"],
+            "responsibility_modules": rm,
+            "job_level": getattr(db_user, "job_level", 1) or 1,
+            "duty_text": getattr(db_user, "duty_text", None),
+            "supervisor_id": getattr(db_user, "supervisor_id", None),
+            "phone": getattr(db_user, "phone", None),
+            "wechat_openid": getattr(db_user, "wechat_openid", None),
+        }
+
+    @staticmethod
     def add_user(
         user_id: str, username: str, hashed_password: str, permissions: List[str],
         name: Optional[str] = None, status: str = "inactive",
@@ -81,36 +116,10 @@ class IdentityService:
         try:
             db_user = db.query(UserDB).filter(UserDB.username == username).first()
             if db_user:
-                ec = {}
-                if hasattr(db_user, 'external_credentials') and db_user.external_credentials:
-                    try: ec = json.loads(db_user.external_credentials)
-                    except: ec = {}
-                rm = getattr(db_user, 'responsibility_modules', None)
-                # 历史数据可能因 add_user 包装层参数错位被写入非法值（如 int 1 / 字符串 "1"），
-                # 此处强制归一为 dict，避免 Pydantic Dict 校验失败导致接口 500
-                if not isinstance(rm, dict):
-                    rm = {}
                 org_names = IdentityService._resolve_org_names(
                     db, getattr(db_user, 'company_id', None), getattr(db_user, 'department_id', None)
                 )
-                return {
-                    'id': db_user.id, 'username': db_user.username,
-                    'password_hash': db_user.password_hash,
-                    'name': getattr(db_user, 'name', None),
-                    'status': getattr(db_user, 'status', 'inactive'),
-                    'external_credentials': ec,
-                    'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
-                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
-                    'company_id': getattr(db_user, 'company_id', None),
-                    'department_id': getattr(db_user, 'department_id', None),
-                    'company': org_names['company'],
-                    'department': org_names['department'],
-                    'responsibility_modules': rm,
-                    'job_level': getattr(db_user, 'job_level', 1) or 1,
-                    'duty_text': getattr(db_user, 'duty_text', None),
-                    'supervisor_id': getattr(db_user, 'supervisor_id', None),
-                    'phone': getattr(db_user, 'phone', None),
-                }
+                return IdentityService._user_dict(db_user, org_names)
             return None
         finally:
             db.close()
@@ -120,35 +129,18 @@ class IdentityService:
         db = IdentityService._get_db()
         try:
             db_user = db.query(UserDB).filter(UserDB.id == user_id).first()
+            if not db_user:
+                # 业务账号绑定微信后，工单字段可能直接写 openid
+                db_user = (
+                    db.query(UserDB)
+                    .filter(UserDB.wechat_openid == user_id)
+                    .first()
+                )
             if db_user:
-                ec = {}
-                if hasattr(db_user, 'external_credentials') and db_user.external_credentials:
-                    try: ec = json.loads(db_user.external_credentials)
-                    except: ec = {}
-                rm = getattr(db_user, 'responsibility_modules', None)
-                if not isinstance(rm, dict):
-                    rm = {}
                 org_names = IdentityService._resolve_org_names(
                     db, getattr(db_user, 'company_id', None), getattr(db_user, 'department_id', None)
                 )
-                return {
-                    'id': db_user.id, 'username': db_user.username,
-                    'password_hash': db_user.password_hash,
-                    'name': getattr(db_user, 'name', None),
-                    'status': getattr(db_user, 'status', 'inactive'),
-                    'external_credentials': ec,
-                    'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
-                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
-                    'company_id': getattr(db_user, 'company_id', None),
-                    'department_id': getattr(db_user, 'department_id', None),
-                    'company': org_names['company'],
-                    'department': org_names['department'],
-                    'responsibility_modules': rm,
-                    'job_level': getattr(db_user, 'job_level', 1) or 1,
-                    'duty_text': getattr(db_user, 'duty_text', None),
-                    'supervisor_id': getattr(db_user, 'supervisor_id', None),
-                    'phone': getattr(db_user, 'phone', None),
-                }
+                return IdentityService._user_dict(db_user, org_names)
             return None
         finally:
             db.close()

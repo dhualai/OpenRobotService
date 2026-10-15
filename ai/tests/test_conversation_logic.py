@@ -259,9 +259,21 @@ class TestParseAgentOutput:
 
     def test_parse_invalid_action_fallback(self, parser):
         """action="dance"（不在枚举内）→ 修正为 "ask" """
-        raw = '```json\n{"action":"dance","message":"跳舞"}\n```'
+        # 正文放 JSON 块之后：协议正文只认块外文本，块内 message 字段本就不读
+        raw = '```json\n{"action":"dance"}\n```\n好的，我来帮你看看'
         result = parser(raw)
         assert result["action"] == "ask"
+
+    def test_parse_ask_empty_message_downgrades(self, parser):
+        """action="ask" 但 JSON 块后无正文 → 降级 answer + 兜底话术。
+
+        1013 卫生版：绝不下发空话术的追问——追问没内容时用户只看到空气泡，
+        还不如给一条「换个说法」的兜底回复。
+        """
+        raw = '```json\n{"action":"ask"}\n```'
+        result = parser(raw)
+        assert result["action"] == "answer"
+        assert result["message"]
 
     def test_parse_no_json_at_all(self, parser):
         """纯文本无 JSON → action="ask" """

@@ -6,6 +6,7 @@ import { Pencil, Trash2, MessageSquarePlus, X } from 'lucide-react';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { formatDateTimeFull } from '@/shared/utils/url';
 import type { Conversation } from '@/api/conversation';
+import { readVehicleTag } from '@/api/conversation';
 
 interface Props {
   visible: boolean;
@@ -78,6 +79,11 @@ export default function ConversationDrawer({ visible, onClose }: Props) {
                 <div className="conv-item__title">{conv.title || '未命名会话'}</div>
                 <div className="conv-item__time">{formatDateTimeFull(conv.created_at)}</div>
               </div>
+              {readVehicleTag(conv) && (
+                <span className="conv-item__badge" title={`车型定制会话（${readVehicleTag(conv)}）`}>
+                  {readVehicleTag(conv)}
+                </span>
+              )}
               <div className="conv-item__actions">
                 <button type="button" onClick={(e) => { e.stopPropagation(); openRename(conv); }} aria-label="重命名">
                   <Pencil size={14} strokeWidth={2} />

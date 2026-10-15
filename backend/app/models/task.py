@@ -413,6 +413,48 @@ class TaskSpecDoc(Base):
         return f"<TaskSpecDoc(id={self.id}, task_id={self.task_id}, revision={self.revision})>"
 
 
+class TaskAgentState(Base):
+    """工单的 Agent 状态：U老师 对这张工单的**结构化工作记忆**（一工单一行）。
+
+    为什么要有它：讨论区每轮 @U老师 都要知道"之前发生了什么"。原实现把该工单**全部评论
+    原文**每轮塞进 prompt —— 长工单 token 浪费；而只有一句话的 `metadata_info.ai_summary`
+    又太粗（丢关键信息）。折中是分层：**结构化的状态（覆盖较早讨论）+ 最近 N 条原文**。
+
+    `state` 里放九栏结构（目标/当前判断/已确认事实带出处/已排除方向/失败尝试/关键标识/
+    未完成下一步/还没定的问题/被纠正过的结论），字段随迭代增删，故用 JSON 一列而非拆列。
+
+    为什么单列一张表（同 TaskSpecDoc 的理由）：AI 侧 `upsert_task` 会**整体重建**
+    `tasks.metadata_info`，放那里会被反复覆盖。
+
+    与 AiDiagnosisPlatform 的 `AgentState` **刻意不共用**（两个 Agent 零交叉导入，
+    见 ai/agents/AiTaskPlatform/issues.md「刻意不共用」）：那边是 session 维度、存 Redis；
+    这边是 ticket 维度、存库。形状上互为参照，实现各留一份。
+
+    可丢弃：评论原文永远在 task_comments，本表数据坏了直接删行重建即可。
+    """
+    __tablename__ = "task_agent_state"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="主键")
+    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"),
+                     nullable=False, index=True, comment="任务ID")
+    state = Column(JSON, nullable=True, comment="九栏结构化状态（键随迭代增删）")
+    covered_comment_id = Column(BigInteger, nullable=False, server_default="0", default=0,
+                                comment="水位线：状态已覆盖到这条 task_comments.id（含）")
+    rounds = Column(Integer, nullable=False, server_default="0", default=0,
+                    comment="刷新次数（观察用）")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="创建时间")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(),
+                        nullable=False, comment="更新时间")
+
+    __table_args__ = (
+        UniqueConstraint("task_id", name="uq_task_agent_state_task"),
+    )
+
+    def __repr__(self):
+        return (f"<TaskAgentState(id={self.id}, task_id={self.task_id}, "
+                f"covered_comment_id={self.covered_comment_id}, rounds={self.rounds})>")
+
+
 class RelationType(str, enum.Enum):
     """工单关联关系类型"""
     PREDECESSOR = "predecessor"   # 前置工单（阻塞：前置未完成则阻塞当前工单完成/关闭）

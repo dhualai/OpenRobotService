@@ -128,6 +128,21 @@ class Settings(BaseSettings):
     WECHAT_WORK_WEBHOOK_URL: str = Field(default="")
 
     SUGGESTIONS_NOTIFICATION_USERS: List[str] = Field(default=[])
+
+    # ===== 微信支付（独立 Go 微服务 wxpay-service，见 docs/微信支付接入技术方案.md）=====
+    # 业务形态：奖励记录 + 立即提现（无卡包）。密钥全部在 Go 侧，本服务不持有。
+    WXPAY_ENABLED: bool = Field(default=False, description="微信支付总开关，关闭时相关接口返回 503")
+    WXPAY_SERVICE_URL: str = Field(default="http://127.0.0.1:9100", description="wxpay-service 内网地址")
+    WXPAY_INTERNAL_TOKEN: str = Field(default="", description="内部调用鉴权令牌（FastAPI<->Go 双向共用）")
+    WXPAY_MCH_ID: str = Field(default="", description="商户号，仅用于前端调起参数回传")
+    WXPAY_APP_ID: str = Field(default="", description="服务号 appid，留空则回退 WECHAT_APP_ID")
+    WXPAY_TRANSFER_SCENE_ID: str = Field(default="1000", description="商家转账场景 ID")
+    WXPAY_USER_RECV_PERCEPTION: str = Field(default="现金奖励", description="收款感知：现金奖励/活动奖励")
+    WXPAY_REWARD_EXPIRE_DAYS: int = Field(default=30, description="奖励有效期（天），超期未提现即失效")
+    WXPAY_MIN_WITHDRAW_FEN: int = Field(default=100, description="最低提现金额（分），默认 1 元")
+    WXPAY_MAX_TRANSFER_FEN: int = Field(default=20000, description="单笔转账上限（分），默认 200 元")
+    WXPAY_RECONCILE_INTERVAL_MINUTES: int = Field(default=10, description="兜底查单/巡检周期（分钟）")
+    WXPAY_SERVICE_TIMEOUT: float = Field(default=10.0, description="调用 Go 服务超时（秒）")
     
     MQTT_BROKER: str = Field(default="")
     MQTT_PORT: int = Field(default=8084)
@@ -149,6 +164,16 @@ class Settings(BaseSettings):
     ZENTAO_PROJECT_IDS: str = Field(default="")            # "[1,2,3]" 或 "1,2,3" 或 "1;2;3"
     HELPDESK_SYNC_API_KEY: str = Field(default="")          # 外部任务源同步接口 API Key（Airflow 用，X-API-Key）
     ROBOT_ALARM_API_KEY: str = Field(default="")            # 设备报警提醒对外接口 API Key（URL ?key= 方式鉴权）
+    USP_PROJECT_SYNC_KEY: str = Field(default="")           # 项目导出接口内部服务鉴权（X-API-Key Header，跳过 JWT 权限码校验）
+
+    # ===== 项目在线状态监控（/api/health?project_code=xxx 心跳判定）=====
+    # 超过此秒数未收到心跳视为离线（默认 5 分钟）
+    PROJECT_ONLINE_THRESHOLD_SECONDS: int = Field(default=300, description="项目在线判定阈值（秒）")
+
+    @property
+    def WXPAY_APP_ID_EFFECTIVE(self) -> str:
+        """前端调起确认页用的 appid：优先微信支付专用配置，回退服务号 appid。"""
+        return self.WXPAY_APP_ID or self.WECHAT_APP_ID
 
     @property
     def WECHAT_CONFIG(self) -> Dict:

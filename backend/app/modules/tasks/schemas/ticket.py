@@ -257,6 +257,16 @@ class TicketListItemResponse(TicketBase):
         description="当前登录用户是否为该代理单的接单人（接单人视角展示「谁代谁提单」）",
     )
 
+    # --- 父子工单 & 前置依赖关系（见 docs/PRODUCT/工单关系模型设计.md）---
+    parent_id: Optional[int] = Field(
+        None, description="父工单ID（subtask 关系中 source=父）"
+    )
+    predecessor_ids: List[int] = Field(
+        default_factory=list, description="前置依赖工单ID列表（predecessor 关系）"
+    )
+    child_count: int = Field(0, description="子工单总数（所有状态）")
+    child_done: int = Field(0, description="子工单中已解决/已关闭的数量")
+
     class Config:
         from_attributes = True
 
@@ -267,6 +277,9 @@ class TicketListResponse(BaseModel):
     page: int
     size: int
     pages: int
+    related_tickets: List["TicketListItemResponse"] = Field(
+        default_factory=list, description="关联工单完整数据（with_relations=true 时返回）"
+    )
 
 
 class TicketQueryParams(BaseModel):
@@ -309,6 +322,9 @@ class TicketQueryParams(BaseModel):
     closed_at_end: Optional[datetime] = Field(None, description="关闭时间结束")
     deadline_at_start: Optional[datetime] = Field(None, description="截止时间起始")
     deadline_at_end: Optional[datetime] = Field(None, description="截止时间结束")
+    with_relations: bool = Field(
+        False, description="是否同时返回关联工单完整数据（解决父子工单跨页问题）"
+    )
 
 
 class TicketCuibanNotification(BaseModel):
@@ -366,6 +382,9 @@ class TicketFilterRequest(BaseModel):
     sorts: Optional[List[TicketSort]] = Field(default_factory=list, description="排序条件列表")
     page: int = Field(default=1, ge=1, description="页码")
     size: int = Field(default=10, ge=1, le=100, description="每页数量")
+    with_relations: bool = Field(
+        False, description="是否同时返回关联工单完整数据（解决父子工单跨页问题）"
+    )
 
 
 class TicketBatchCountRequest(BaseModel):

@@ -21,7 +21,6 @@
   await SemanticCodeIndex.build(functions, base_dir)  # 离线建索引
 """
 
-import asyncio
 import json
 import os
 from typing import Dict, List, Optional, Tuple
@@ -184,11 +183,6 @@ class SemanticCodeIndex:
             if len(hits) >= top_k:
                 break
         return hits
-
-    def position_of(self, fp: dict) -> Optional[int]:
-        """函数指纹 → 向量行位置（供融合时按函数对齐）。"""
-        return self._id_to_pos.get(_fp_key(fp))
-
 
 def _fp_key(fp: dict) -> str:
     """指纹 → 去重 key（name|file_path|line_start）。"""

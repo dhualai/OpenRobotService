@@ -1,7 +1,7 @@
 // 我要摇人 —— 全屏 AI 对话 + 左侧会话抽屉 + 右上角历史工单入口 + 车体扫码进入的车辆信息确认
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Navbar } from 'tdesign-mobile-react';
+import { Toast, Navbar } from 'tdesign-mobile-react';
 import { Menu, CalendarDays } from 'lucide-react';
 
 import ChatPanel from '@/shared/components/ChatPanel';
@@ -14,11 +14,11 @@ import { fetchQrcodeByScene } from '@/api/qrcode';
 import { useWorkbenchStore, type VehicleContext } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 
-/** 码记录状态「已发布」即车辆已出厂，才进入信息确认流程（其余状态一律静默不打扰） */
+/** 码记录状态「已发布」即车辆已出厂，才进入信息确认流程（其余状态给出提示，见下方 effect） */
 const STATUS_PUBLISHED = 'published';
 
-/** 场景值白名单：2026-09-30 起 scene = str(id)（纯数字）；这里放宽为 [A-Za-z0-9_-]（1~64），
- *  非数字 scene 由后端 by-scene 400 拦下（查不到同样静默降级，见下方 effect） */
+/** 场景值粗筛白名单：2026-09-30 起 scene = str(id)（纯数字）；这里放宽为 [A-Za-z0-9_-]（1~64），
+ *  非数字 scene 由后端 by-scene 400 拦下（前端同样按「码不可用」提示，见下方 effect） */
 const SCENE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
@@ -68,7 +68,8 @@ export default function CallView() {
   }, [tasksRefreshKey, username, isAdmin]);
 
   // 车体扫码进入监听：解析 scene → 查一次码记录 → 仅「已发布（出厂）」才弹车辆信息确认。
-  // 未携带 / 查无此码 / 查询异常 / 非已发布 一律静默降级，不打扰用户，也不影响现有对话。
+  // 未携带 scene（Tab / 登录 / 根路径跳转等日常入口）保持静默；而查无此码 / 查询异常 /
+  // 非已发布 说明这张码不可用，明确提示用户联系管理员，不降级为普通对话（避免在坏码上误答）。
   useEffect(() => {
     if (!sceneCode || handledSceneRef.current === sceneCode) return;
     handledSceneRef.current = sceneCode;
@@ -82,7 +83,10 @@ export default function CallView() {
 
     (async () => {
       const record = await fetchQrcodeByScene(sceneCode);
-      if (!record || record.status !== STATUS_PUBLISHED) return;
+      if (!record || record.status !== STATUS_PUBLISHED) {
+        Toast({ message: '该二维码未录入信息或不可用，请联系管理员', theme: 'warning' });
+        return;
+      }
       setVehicleInfo({
         scene: sceneCode,
         projectName: record.project_name ?? '',

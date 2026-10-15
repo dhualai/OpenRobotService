@@ -93,6 +93,8 @@ class OperationLogService:
         to_status: Optional[str] = None,
         detail: Optional[Dict[str, Any]] = None,
         description: Optional[str] = None,
+        *,
+        auto_commit: bool = True,
     ) -> Optional[TaskOperationLog]:
         """
         统一写入操作日志。
@@ -106,6 +108,8 @@ class OperationLogService:
             to_status: 目标状态（仅 STATUS_CHANGE 有值）
             detail: 操作详情快照（JSON 可序列化的 dict）
             description: 人类可读描述
+            auto_commit: True 时立即 commit（默认，兼容旧调用方）；
+                False 时只 flush，由调用方与业务变更一并 commit，避免中途 commit 导致 ORM 过期。
 
         Returns:
             创建的 TaskOperationLog 实例，失败返回 None
@@ -122,8 +126,11 @@ class OperationLogService:
                 description=description or f"{resolved_name} {op_type.value}",
             )
             db.add(log_entry)
-            await db.commit()
-            await db.refresh(log_entry)
+            if auto_commit:
+                await db.commit()
+                await db.refresh(log_entry)
+            else:
+                await db.flush()
             logger.info(f"Operation logged: task_id={task_id}, type={op_type.value}, operator={operator}")
             return log_entry
         except Exception as e:

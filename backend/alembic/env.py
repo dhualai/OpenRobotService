@@ -1,8 +1,12 @@
 """Alembic 运行环境（MIGRATION.md 阶段 1）。
 
 要点：
-- `target_metadata` 指向 `app.models.Base.metadata`——导入 `app.models` 即触发全部
-  19 张表注册，autogenerate 以此为准。
+- `target_metadata` 指向 `app.models.Base.metadata`——导入 `app.models` 即触发其下全部
+  表注册，autogenerate 以此为准。
+- ⚠️ 因此**所有** ORM 表定义都必须放在 `app/models/` 下并在 `app/models/__init__.py`
+  中导入。若把模型定义在 `app/modules/**` 里，`app.models` 的导入链覆盖不到，
+  autogenerate 会静默生成空迁移（`app/modules/wxpay/models.py` 曾踩此坑，已迁至
+  `app/models/wxpay.py`）。
 - 数据库 URL 从 `app.core.config.settings.DB_CONFIG` 拼接，与运行时
   `app/core/database.py` 完全一致，杜绝双份数据源配置漂移。
 """

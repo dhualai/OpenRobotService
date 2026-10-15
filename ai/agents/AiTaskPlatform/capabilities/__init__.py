@@ -10,7 +10,7 @@
   - Supervisor = 产品无关通用编排内核（F1/F6，日志多轮推理收敛为 LogSubAgent）
 
 目录分层：
-  - capabilities/core/   ← 能力基础设施（框架层，产品无关）：base / registry / supervisor / supervisor_todo / router / evaluator
+  - capabilities/core/   ← 能力基础设施（框架层，产品无关）：base / registry / supervisor / supervisor_todo / router
   - capabilities/tools/  ← 具体能力（可被 Supervisor 调度的 worker）：log_analyze / retrieve_history / retrieve_troubleshooting / code_search / image_analyze / attachment_parse / ticket_ref / memory_store / memory_recall
 
 公开导出（保持外部 from ...capabilities import xxx 不变）：
@@ -19,7 +19,6 @@
   - TodoList / TodoItem                          # from ...capabilities.core.supervisor_todo
   - Supervisor / SupervisorDecision             # from ...capabilities.core.supervisor
   - Router                                        # from ...capabilities.core.router
-  - Evaluator                                     # from ...capabilities.core.evaluator
   - LogAnalyzeCapability                       # from ...capabilities.tools.log_analyze
   - RetrieveHistoryCapability / CodeSearchCapability / ImageAnalyzeCapability
   - RetrieveTroubleshootingCapability / AttachmentParseCapability / TicketRefCapability
@@ -29,7 +28,6 @@ from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability, Capa
 from ai.agents.AiTaskPlatform.capabilities.core.registry import CapabilityRegistry, get_capability
 from ai.agents.AiTaskPlatform.capabilities.core.supervisor_todo import TodoList, TodoItem
 from ai.agents.AiTaskPlatform.capabilities.core.supervisor import Supervisor, SupervisorDecision
-from ai.agents.AiTaskPlatform.capabilities.core.evaluator import Evaluator
 from ai.agents.AiTaskPlatform.capabilities.core.router import Router
 from ai.agents.AiTaskPlatform.capabilities.tools.log_analyze import LogAnalyzeCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.retrieve_history import RetrieveHistoryCapability
@@ -40,6 +38,7 @@ from ai.agents.AiTaskPlatform.capabilities.tools.retrieve_troubleshooting import
 from ai.agents.AiTaskPlatform.capabilities.tools.attachment_parse import AttachmentParseCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.ticket_ref import TicketRefCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.project_info import ProjectInfoCapability
+from ai.agents.AiTaskPlatform.capabilities.tools.discussion_read import DiscussionReadCapability
 
 # 长期记忆能力：生产若未同步 memory_store/memory_recall 文件，不应拖垮整个 @U老师 讨论入口
 try:
@@ -60,7 +59,6 @@ __all__ = [
     "TodoItem",
     "Supervisor",
     "SupervisorDecision",
-    "Evaluator",
     "Router",
     "LogAnalyzeCapability",
     "RetrieveHistoryCapability",
@@ -70,6 +68,7 @@ __all__ = [
     "AttachmentParseCapability",
     "TicketRefCapability",
     "ProjectInfoCapability",
+    "DiscussionReadCapability",
     "MemoryStoreCapability",
     "MemoryRecallCapability",
 ]

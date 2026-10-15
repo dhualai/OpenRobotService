@@ -35,7 +35,7 @@ import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineStri
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import MDEditor from '@uiw/react-md-editor';
 import '@uiw/react-md-editor/markdown-editor.css';
-import { fetchWithAuth, taskDiscussStream } from '@/api/ai';
+import { archiveGenerateStream, fetchWithAuth, taskDiscussStream } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
@@ -293,10 +293,12 @@ export default function TaskDetailPage() {
   const [archiveEditorVisible, setArchiveEditorVisible] = useState(false);
   const [archiveReportContent, setArchiveReportContent] = useState('');
   const [archiveReportRevision, setArchiveReportRevision] = useState<number>(1);
-  const [archiveReportReviewer, setArchiveReportReviewer] = useState<string | null>(null);
+
   const [archiveEditorMode, setArchiveEditorMode] = useState<'edit' | 'review'>('edit');
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveRejectReason, setArchiveRejectReason] = useState('');
+  const [archiveGenerating, setArchiveGenerating] = useState(false);
+  const [archiveGenStatus, setArchiveGenStatus] = useState('');
   const [showArchiveRejectPopup, setShowArchiveRejectPopup] = useState(false);
 
   // 工单阶段性处理（协商节点）
@@ -648,18 +650,61 @@ export default function TaskDetailPage() {
 
   // ── 开始归档（closed → archiving）──
   const handleStartArchive = async () => {
-    if (!detail) return;
+    if (!detail || archiveLoading) return;
     setArchiveLoading(true);
     try {
-      const ticket: Ticket = await request<Ticket>(`/${detail.id}/archive-start`, { method: 'POST' });
+      const ticket: Ticket = await request<Ticket>(`/archive-report/${detail.id}/archive-start`, { method: 'POST' });
       setDetail(ticket);
-      setArchiveReportContent(ticket.current_archive_report?.content || '');
       setArchiveReportRevision(ticket.current_archive_report?.revision || 1);
       setArchiveEditorMode('edit');
       setArchiveEditorVisible(true);
-      Toast({ message: '已开始归档，请编写归档报告', theme: 'success' });
+
+      const existing = ticket.current_archive_report?.content || '';
+      if (existing) {
+        // 已有内容（幂等复用/处理人写过）：不触发 AI，直接编辑
+        setArchiveReportContent(existing);
+        Toast({ message: '已开始归档，请编写归档报告', theme: 'success' });
+        return;
+      }
+
+      // AI 初稿流式生成：编辑器只读态直播，完成后解锁修改
+      setArchiveGenerating(true);
+      setArchiveGenStatus('AI 正在为您总结归档报告…');
+      let acc = '';
+      await archiveGenerateStream(
+        // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；
+        // detail.id 是路由字符串，与 ticket.ts 既有写法一致显式转换
+        { task_id: Number(detail.id) },
+        {
+          onStatus: (m) => setArchiveGenStatus(m),
+          onTitle: (t) => { acc = `# ${t}\n\n`; setArchiveReportContent(acc); },
+          onDelta: (d) => { acc += d; setArchiveReportContent(acc); },
+          onDone: () => {
+            setArchiveGenerating(false);
+            setArchiveGenStatus('');
+            Toast({ message: 'AI 初稿已生成，请核对并修改后提交审核', theme: 'success' });
+          },
+          onError: (m) => {
+            setArchiveGenerating(false);
+            setArchiveGenStatus('');
+            setArchiveReportContent('');
+            Toast({ message: `${m}（可直接手写）`, theme: 'warning' });
+          },
+          onSkipped: (m) => {
+            setArchiveGenerating(false);
+            setArchiveGenStatus('');
+            Toast({ message: m, theme: 'warning' });
+          },
+        },
+      );
+      // SSE 网络级失败：解锁手写（服务端后台生成仍会写回，处理人保存前先刷新）
+      setArchiveGenerating(false);
+      setArchiveGenStatus('');
     } catch (err) {
-      Toast({ message: `开始归档失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      setArchiveGenerating(false);
+      setArchiveGenStatus('');
+      // 归档已开成、AI 生成链路失败：解锁手写（archive-start 本身失败也在此兜底）
+      Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}（可直接手写报告）`, theme: 'warning' });
     } finally {
       setArchiveLoading(false);
     }
@@ -667,11 +712,12 @@ export default function TaskDetailPage() {
 
   // ── 保存归档草稿 ──
   const handleSaveArchiveDraft = async () => {
+    if (archiveLoading) return;
     const reportId = detail?.current_archive_report?.id;
     if (!reportId) return;
     setArchiveLoading(true);
     try {
-      const report = await request(`/archive-reports/${reportId}`, {
+      const report = await request(`/archive-report/archive-reports/${reportId}`, {
         method: 'PUT',
         body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
       });
@@ -684,21 +730,23 @@ export default function TaskDetailPage() {
     }
   };
 
-  // ── 提交归档报告审核 ──
+  // ── 提交归档报告审核（审核人由系统按问题领域 + 负荷概率派审）──
   const handleSubmitArchive = async () => {
+    if (archiveLoading) return;
     const reportId = detail?.current_archive_report?.id;
-    if (!reportId || !archiveReportReviewer) {
-      Toast({ message: '请选择审核人', theme: 'warning' });
+    if (!reportId) {
+      Toast({ message: '归档报告未找到，请重新开始归档', theme: 'warning' });
       return;
     }
     setArchiveLoading(true);
     try {
-      const ticket: Ticket = await request(`/archive-reports/${reportId}/submit`, {
+      // submit 后端返回 ArchiveReportResponse（不是 Ticket），不调 setDetail
+      await request(`/archive-report/archive-reports/${reportId}/submit`, {
         method: 'POST',
-        body: JSON.stringify({ reviewer: archiveReportReviewer, content: archiveReportContent, revision: archiveReportRevision }),
+        body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
       });
-      setDetail(ticket);
       setArchiveEditorVisible(false);
+      loadDetail();
       Toast({ message: '已提交归档报告，等待审核', theme: 'success' });
     } catch (err) {
       Toast({ message: `提交失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -709,13 +757,15 @@ export default function TaskDetailPage() {
 
   // ── 审核通过归档 ──
   const handleArchiveApprove = async () => {
+    if (archiveLoading) return;
     const reportId = detail?.current_archive_report?.id;
     if (!reportId || !detail) return;
     setArchiveLoading(true);
     try {
-      const ticket: Ticket = await request(`/archive-reports/${reportId}/approve`, { method: 'POST' });
-      setDetail(ticket);
+      // approve 后端返回 TicketResponse，但 archive report 状态也变了，统一 loadDetail
+      await request(`/archive-report/archive-reports/${reportId}/approve`, { method: 'POST' });
       setArchiveEditorVisible(false);
+      loadDetail();
       Toast({ message: '归档审核通过', theme: 'success' });
     } catch (err) {
       Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -726,6 +776,7 @@ export default function TaskDetailPage() {
 
   // ── 审核驳回归档 ──
   const handleArchiveReject = async () => {
+    if (archiveLoading) return;
     const reportId = detail?.current_archive_report?.id;
     if (!reportId || !detail) return;
     if (!archiveRejectReason.trim()) {
@@ -734,13 +785,14 @@ export default function TaskDetailPage() {
     }
     setArchiveLoading(true);
     try {
-      const ticket: Ticket = await request(`/archive-reports/${reportId}/reject`, {
+      // reject 后端返回 ArchiveReportResponse（不是 Ticket），不调 setDetail
+      await request(`/archive-report/archive-reports/${reportId}/reject`, {
         method: 'POST',
         body: JSON.stringify({ review_comment: archiveRejectReason }),
       });
-      setDetail(ticket);
       setShowArchiveRejectPopup(false);
       setArchiveRejectReason('');
+      loadDetail();
       Toast({ message: '已驳回归档报告', theme: 'success' });
     } catch (err) {
       Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -2606,18 +2658,31 @@ export default function TaskDetailPage() {
           )}
           {archiveEditorMode === 'edit' ? (
             <>
-              <MDEditor
-                height={320}
-                value={archiveReportContent}
-                onChange={(v) => setArchiveReportContent(v || '')}
-                preview="edit"
-              />
+              {archiveGenerating ? (
+                /* AI 生成中：只读直播，防止处理人同时手写（服务端 content='' 条件写回兜底） */
+                <div style={{ height: 320, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                    <span className="loading" style={{ width: 12, height: 12, display: 'inline-block', border: '2px solid var(--brand, #266fe8)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                    <b style={{ fontSize: 14 }}>AI 正在为您总结归档报告…</b>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginBottom: 8 }}>{archiveGenStatus}</div>
+                  {archiveReportContent && (
+                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.7, color: 'var(--foreground)' }}>{archiveReportContent}</pre>
+                  )}
+                </div>
+              ) : (
+                <MDEditor
+                  height={320}
+                  value={archiveReportContent}
+                  onChange={(v) => setArchiveReportContent(v || '')}
+                  preview="edit"
+                />
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
-                <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading}>保存草稿</Button>
+                <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>审核人：</span>
-                  <UserSelect value={archiveReportReviewer} onChange={(u) => setArchiveReportReviewer(u.id)} placeholder="选择审核人" />
-                  <Button size="small" theme="primary" onClick={handleSubmitArchive} loading={archiveLoading}>提交审核</Button>
+                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>提交后系统自动指定审核人</span>
+                  <Button size="small" theme="primary" onClick={handleSubmitArchive} loading={archiveLoading} disabled={archiveGenerating}>提交审核</Button>
                 </div>
               </div>
             </>

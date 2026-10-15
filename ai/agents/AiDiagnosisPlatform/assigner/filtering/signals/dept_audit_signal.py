@@ -72,7 +72,7 @@ class DeptAuditSignal:
             reason=(data.get("reason") or "").strip(),
         )
 
-    async def audit(self, ticket: TicketContext, suggested_dept: str) -> DeptAuditResult:
+    async def audit(self, ticket: TicketContext, suggested_dept: str, dialogue=None) -> DeptAuditResult:
         """对建议部门做单轮审查。LLM 失败返回 audit_failed 结果（不阻断，由上层兜底）。"""
         if not suggested_dept or not self._departments:
             return DeptAuditResult(audit_failed=True, reason="无部门可审或未给建议部门")
@@ -80,7 +80,10 @@ class DeptAuditSignal:
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
-            response = await llm.complete(prompt, max_tokens=200, temperature=0.0)
+            if dialogue is not None:
+                response = await dialogue.complete(llm, prompt, max_tokens=200, temperature=0.0)
+            else:
+                response = await llm.complete(prompt, max_tokens=200, temperature=0.0)
         except Exception as e:
             logger.warning(f"[派单:{ticket.id}] Step1 部门审查 LLM 调用失败: {e}")
             return DeptAuditResult(audit_failed=True, reason="审查LLM调用失败")

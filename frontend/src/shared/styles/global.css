@@ -199,13 +199,23 @@ html, body, #root {
   .tabbar-shell__content .chat-input-bar,
   .tabbar-shell__content .suggested-questions,
   .tabbar-shell__content .tasks-view__filters,
+  .tabbar-shell__content .tasks-view__view-toggle,
   .tabbar-shell__content .tasks-cards,
+  /* 历史工单页：工具栏（搜索框 + 状态 tab）与下方卡片列表收进同一 768px 居中容器，
+     三者左右边界对齐（此前工具栏全宽、卡片居中，PC 端两者不齐） */
+  .tabbar-shell__content .history-toolbar,
   .tabbar-shell__content .history-tickets__viewport,
   .tabbar-shell__content .history-tickets__head {
     max-width: 768px;
     width: 100%;
     margin-left: auto;
     margin-right: auto;
+  }
+  /* tab 行默认左右各 8px 内边距，比工具栏的 12px 少 4px，
+     会使状态胶囊比搜索框/卡片内缩；桌面端统一 12px 严格对齐 */
+  .tabbar-shell__content .history-tabs {
+    padding-left: 12px;
+    padding-right: 12px;
   }
   .tabbar-shell__content .suggested-questions {
     width: calc(100% - 24px);
@@ -939,10 +949,10 @@ html, body, #root {
   appearance: none;
   max-width: 100%;
   padding: 8px 14px;
-  border: 1px solid #c9d9f5;
+  border: 1px solid color-mix(in oklab, var(--primary) 35%, var(--card));
   border-radius: 16px;
-  background: #f4f7fd;
-  color: #1a5cc8;
+  background: var(--primary-soft);
+  color: var(--sky);
   font-size: 13.5px;
   line-height: 1.4;
   text-align: left;
@@ -951,21 +961,67 @@ html, body, #root {
   transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
 .chat-veh-chip:active {
-  background: #e8f0fe;
-  border-color: #1a73e8;
+  background: var(--accent);
+  border-color: var(--primary);
 }
 .chat-veh-chip:disabled {
   cursor: default;
 }
 /* 答复后整组持久保留：所选实心加深，其余弱化 */
 .chat-veh-chip--selected {
-  background: #1a73e8;
-  border-color: #1a73e8;
+  background: var(--sky);
+  border-color: var(--sky);
   color: #fff;
   font-weight: 600;
 }
 .chat-veh-chip--done {
   opacity: 0.45;
+}
+/* 车型介绍按钮变体：马卡龙主蓝底白字，与开场题的浅蓝胶囊保持同一色系。 */
+.chat-veh-chip--intro {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+.chat-veh-chip--intro:active {
+  background: var(--sky);
+  border-color: var(--sky);
+}
+.chat-veh-chip--intro.chat-veh-chip--selected {
+  background: var(--sky);
+  border-color: var(--sky);
+  color: #fff;
+}
+/* 车型介绍按钮组两列等宽（1014）：实测 375 宽下两个胶囊需 286px 而容器只有
+   258px，flex-wrap 竖排成两行很浪费。grid 两列一行放下；chip 内边距/字号
+   微调——不换行文字 105px，列内容区须留足余量（padding 4px 时 118px，
+   余 13px），赌 1px 临界会在安卓/微信字体渲染下随机换行 */
+.chat-veh-choices--intro {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.chat-veh-choices--intro .chat-veh-chip {
+  padding: 8px 4px;
+  font-size: 13px;
+  text-align: center;
+}
+/* 开场题折叠开关（1012 v2）：常驻 4 之外的类目点此展开/收起，无边框文字按钮，
+   与胶囊组左对齐 */
+.chat-veh-expand {
+  appearance: none;
+  margin-top: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--sky);
+  font-size: 12.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-veh-expand:active {
+  opacity: 0.6;
 }
 /* 开场题大字题面（「您遇到了什么问题？」） */
 .chat-veh-q {
@@ -3052,6 +3108,77 @@ html, body, #root {
    卡片内环图在左、图例在右占满剩余宽度，保证角色名/数值完整展示 */
 .mac-source-block {
   min-width: 0;
+}
+.question-module {
+  margin-top: 12px;
+  min-width: 0;
+}
+.question-module__filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13px;
+}
+.question-module__filters .mac-input {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 140px;
+  color-scheme: light;
+}
+.question-module__link {
+  border: 0;
+  background: none;
+  padding: 4px 0;
+  color: var(--mac-primary, #5279c7);
+  font-size: 13px;
+  cursor: pointer;
+}
+.question-module__link:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.question-module__item {
+  padding: 16px 0;
+  border-top: 1px solid var(--mac-border);
+}
+.question-module__vehicle {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.question-module__meta {
+  margin: 8px 0 12px;
+  color: var(--mac-muted-fg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.question-module__description h5 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--mac-muted-fg);
+}
+.question-module__text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  font-size: 13px;
+  line-height: 22px;
+}
+.question-module__text.is-expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+.question-module__state {
+  padding: 16px 0;
+  text-align: center;
+  color: var(--mac-muted-fg);
+  font-size: 13px;
 }
 .mac-source-block__title {
   margin: 0 0 12px;
@@ -8510,6 +8637,15 @@ html, body, #root {
   transition: all 0.2s ease;
 }
 .history-tab.is-active { background: var(--foreground); color: var(--background); border-color: transparent; font-weight: 500; }
+/* 「我关注的」开关：与状态 tab 同行但语义不同（可叠加状态筛选，不是互斥单选），
+   用星标图标 + 描边与状态 tab 区分；选中态沿用 .is-active 的黑底白字 */
+.history-tab--follow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-color: color-mix(in oklab, var(--border) 75%, transparent);
+}
+.history-tab--follow.is-active { border-color: transparent; }
 /* 数量角标：绝对定位到胶囊内部右上角（设计稿「右上角凸出 6px」会与外层
    .history-tickets{overflow:hidden} 冲突导致角标右边被裁切，看起来贴在胶囊右侧；
    改为紧贴胶囊右上角内侧，视觉一致且不再被裁）。pointer-events 透传点击到按钮。 */
@@ -8624,6 +8760,19 @@ html, body, #root {
 .conv-item.active { background: var(--blue-soft); }
 .conv-item__main { flex: 1; min-width: 0; }
 .conv-item__title { font-size: 13px; font-weight: 500; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 车型定制会话角标：conv-item 直接子级（flex align-items:center 整行垂直居中）。
+   主题变量蓝（与故障排查按钮同款用色：主题浅蓝底+蓝字+主蓝 35% 描边），跟随 #277 主题化 */
+.conv-item__badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--primary-soft);
+  border: 1px solid color-mix(in oklab, var(--primary) 35%, var(--card));
+  color: var(--sky);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
 .conv-item__time { font-size: 11px; color: var(--muted-foreground); margin-top: 2px; white-space: nowrap; }
 /* 行内操作钮（设计稿：size-7 rounded-md muted，hover background） */
 .conv-item__actions { display: flex; gap: 4px; flex-shrink: 0; }
@@ -8909,13 +9058,23 @@ html, body, #root {
   .tabbar-shell__content .chat-input-bar,
   .tabbar-shell__content .suggested-questions,
   .tabbar-shell__content .tasks-view__filters,
+  .tabbar-shell__content .tasks-view__view-toggle,
   .tabbar-shell__content .tasks-cards,
+  /* 历史工单页：工具栏（搜索框 + 状态 tab）与下方卡片列表收进同一 768px 居中容器，
+     三者左右边界对齐（此前工具栏全宽、卡片居中，PC 端两者不齐） */
+  .tabbar-shell__content .history-toolbar,
   .tabbar-shell__content .history-tickets__viewport,
   .tabbar-shell__content .history-tickets__head {
     max-width: 768px;
     width: 100%;
     margin-left: auto;
     margin-right: auto;
+  }
+  /* tab 行默认左右各 8px 内边距，比工具栏的 12px 少 4px，
+     会使状态胶囊比搜索框/卡片内缩；桌面端统一 12px 严格对齐 */
+  .tabbar-shell__content .history-tabs {
+    padding-left: 12px;
+    padding-right: 12px;
   }
   .tabbar-shell__content .chat-input-bar,
   .tabbar-shell__content .suggested-questions {
@@ -10409,3 +10568,16 @@ button.dispatch-dev__rate-row { cursor: pointer; }
   font-size: 11px; line-height: 1.6; overflow-wrap: anywhere;
 }
 .wsm-createdoc__result a { color: var(--mac-blue-1); text-decoration: underline; }
+
+.wsm-sheets { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.wsm-sheets__head { font-size: 11.5px; line-height: 1.6; color: var(--mac-muted-fg); }
+.wsm-sheets__head span { display: block; font-size: 10.5px; color: #ad6800; }
+.wsm-sheets__item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 9px; border: 1px solid var(--mac-border); border-radius: 8px;
+  background: #fff; text-align: left; cursor: pointer;
+}
+.wsm-sheets__item.is-active { border-color: var(--mac-blue-2); background: var(--mac-blue-soft); }
+.wsm-sheets__title { flex: 1; font-size: 12.5px; color: var(--mac-fg); overflow-wrap: anywhere; }
+.wsm-sheets__id { font-size: 10.5px; color: var(--mac-muted-fg); overflow-wrap: anywhere; }
+.wsm-sheets__tag { flex-shrink: 0; font-size: 10.5px; color: var(--mac-blue-1); }

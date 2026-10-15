@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockRequest = vi.hoisted(() => vi.fn());
 vi.mock('@/api/client', () => ({ createRequest: () => mockRequest }));
 
-import { fetchTicketsByStatus } from '../dashboard';
+import { fetchDashboardQuestions, fetchTicketsByStatus } from '../dashboard';
 
 describe('fetchTicketsByStatus', () => {
   beforeEach(() => {
@@ -36,5 +36,39 @@ describe('fetchTicketsByStatus', () => {
     await expect(fetchTicketsByStatus('all')).rejects.toThrow('network error');
     mockRequest.mockResolvedValueOnce({ code: 1 });
     await expect(fetchTicketsByStatus('all')).rejects.toThrow('工单列表加载失败');
+  });
+});
+
+describe('fetchDashboardQuestions', () => {
+  beforeEach(() => mockRequest.mockReset());
+
+  it('按日查询，分页请求跳过通用缓存', async () => {
+    const data = { report_date: '2026-09-28', items: [], total: 25, page: 2, page_size: 20, last_sync_at: null };
+    mockRequest.mockResolvedValue({ code: 0, data });
+    expect(await fetchDashboardQuestions('2026-09-28', 2)).toEqual(data);
+    expect(mockRequest).toHaveBeenCalledWith(
+      '/dashboard/questions?report_date=2026-09-28&page=2&page_size=20', { skipCache: true },
+    );
+  });
+
+  it('默认第一页，并允许指定每页条数', async () => {
+    mockRequest.mockResolvedValue({ code: 0, data: { items: [] } });
+    await fetchDashboardQuestions('2026-10-13');
+    expect(mockRequest).toHaveBeenLastCalledWith(
+      '/dashboard/questions?report_date=2026-10-13&page=1&page_size=20', { skipCache: true },
+    );
+    await fetchDashboardQuestions('2026-10-13', 3, 10);
+    expect(mockRequest).toHaveBeenLastCalledWith(
+      '/dashboard/questions?report_date=2026-10-13&page=3&page_size=10', { skipCache: true },
+    );
+  });
+
+  it('网络和业务错误不伪装成无数据', async () => {
+    mockRequest.mockRejectedValueOnce(new Error('权限不足'));
+    await expect(fetchDashboardQuestions('2026-10-13')).rejects.toThrow('权限不足');
+    mockRequest.mockResolvedValueOnce({ code: 1 });
+    await expect(fetchDashboardQuestions('2026-10-13')).rejects.toThrow('问题列表加载失败');
+    mockRequest.mockResolvedValueOnce({ code: 0 });
+    await expect(fetchDashboardQuestions('2026-10-13')).rejects.toThrow('问题列表加载失败');
   });
 });

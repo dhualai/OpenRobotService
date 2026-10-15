@@ -1,23 +1,15 @@
 """Assigner（智能派单） — AiDiagnosisPlatform 子模块
 
 工单生成后自动推荐负责人。
+
+重要：本包 __init__ 只做轻量导出，禁止在顶层 import pipeline / ranking / recall。
+后端开发者模式与归档派审会 ``import assigner.settings`` / ``assigner.archive_review``，
+若顶层拉起重依赖（numpy 等），会在未装 AI 依赖的后端进程里直接炸。
 """
 
-from typing import Dict, List, Optional
+from __future__ import annotations
 
-from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow import DispatchFlow
-from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import (
-    load_engineers,
-    invalidate_cache as invalidate_personnel_cache,
-)
-from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
-    AssignmentResult,
-    EngineerProfile,
-    TicketContext,
-)
-from ai.core.logging import get_logger
-
-logger = get_logger("ASSIGNER")
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 __all__ = [
     "DispatchFlow",
@@ -30,11 +22,42 @@ __all__ = [
     "ensure_dispatch_ready",
 ]
 
+if TYPE_CHECKING:
+    from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow import DispatchFlow
+    from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
+        AssignmentResult,
+        EngineerProfile,
+        TicketContext,
+    )
+
 # 进程级 DispatchFlow 单例（避免每张工单重复加载配置/构建流水线）
-_dispatch_singleton: Optional[DispatchFlow] = None
+_dispatch_singleton = None
 
 
-def ensure_dispatch_ready() -> DispatchFlow:
+def __getattr__(name: str):
+    """按需导出，兼容 ``from assigner import DispatchFlow`` 等旧写法。"""
+    if name == "DispatchFlow":
+        from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow import DispatchFlow
+
+        return DispatchFlow
+    if name in ("AssignmentResult", "EngineerProfile", "TicketContext"):
+        from ai.agents.AiDiagnosisPlatform.assigner import schemas as _schemas
+
+        return getattr(_schemas, name)
+    if name == "load_engineers":
+        from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import load_engineers
+
+        return load_engineers
+    if name == "invalidate_personnel_cache":
+        from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import (
+            invalidate_cache as invalidate_personnel_cache,
+        )
+
+        return invalidate_personnel_cache
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def ensure_dispatch_ready():
     """预热并返回进程级 DispatchFlow 单例（Worker 启动时调用，避免首单卡顿）。
 
     首次调用会加载配置 + 构建整个派单流水线（部门过滤/召回/精排/决策），
@@ -42,12 +65,14 @@ def ensure_dispatch_ready() -> DispatchFlow:
     """
     global _dispatch_singleton
     if _dispatch_singleton is None:
+        from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow import DispatchFlow
+        from ai.core.logging import get_logger
+
         _dispatch_singleton = DispatchFlow()
-        logger.info("派单 DispatchFlow 预热完成（配置 + 流水线就绪）")
+        get_logger("ASSIGNER").info("派单 DispatchFlow 预热完成（配置 + 流水线就绪）")
     return _dispatch_singleton
 
 
-# 外部调用函数
 async def assign_ticket(
     *,
     title: str,
@@ -77,14 +102,17 @@ async def assign_ticket(
     preferred_assignee_remark: Optional[str] = None,  # 重新派单时的备注/原因（拼入描述供派单算法参考）
     prev_assignee: Optional[str] = None,  # 重新派单前的原处理人 users.id（识别"对谁不满意/换掉谁"）
     curr_step_name: Optional[str] = None,  # 提单时记下的当前阶段（tasks.curr_step_name）
-) -> AssignmentResult:
-    global _dispatch_singleton
+):
+    from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import load_engineers
+
     engineers = load_engineers()
     if not engineers:
         raise ValueError("工程师画像为空，请检查 users 表人员数据是否就绪")
 
     if not ticket_id:
         import time
+
         ticket_id = f"ticket_{int(time.time())}"
 
     # 重新派单备注：拼到问题描述之后，作为派单算法（部门判定/召回/LLM 决策）的补充上下文
@@ -106,7 +134,7 @@ async def assign_ticket(
         fault_code=fault_code,
         special_notes=special_notes,
         project_name=project_name,
-        project_id=project_id or "", 
+        project_id=project_id or "",
         required_skills=required_skills or [],
         diagnosis_hypotheses=diagnosis_hypotheses,
         diagnosis_ruled_out=diagnosis_ruled_out,

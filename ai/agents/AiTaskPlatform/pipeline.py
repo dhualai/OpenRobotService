@@ -14,7 +14,7 @@ import time
 from typing import Optional
 
 from ai.config import get_ai_config
-from ai.core import get_llm_client, get_memory_manager, get_retrieval_service
+from ai.core import get_llm_client, get_retrieval_service
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.schemas import (
     TaskAnalyzeRequest,
@@ -35,7 +35,6 @@ from ai.agents.AiTaskPlatform.contexts import (
     build_task_ctx as _build_task_ctx_impl,
     build_img_ctx as _build_img_ctx_impl,
 )
-from ai.agents.AiTaskPlatform.retrieval import rules as _rules
 from ai.agents.AiTaskPlatform.attachments.utils import (
     read_attachment_content as _read_attachment_content_impl,
     extract_log_errors as _extract_log_errors_impl,
@@ -79,7 +78,6 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
         self.config = get_ai_config()
         self._llm_client = None
         self._retriever = None
-        self._memory = None
         self._trace_bus = TraceBus()
         self._trace = self._trace_bus._trace  # 兼容旧代码直接访问 self._trace
 
@@ -90,8 +88,6 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
             self._llm_client = await get_llm_client()
         if self._retriever is None:
             self._retriever = await get_retrieval_service()
-        if self._memory is None:
-            self._memory = await get_memory_manager()
         self._add_trace(self.NODE_OVERHEAD, "ok", elapsed_ms=round((time.perf_counter() - t0) * 1000))
 
     # ── 埋点 ──────────────────────────────────────────────────
@@ -272,60 +268,6 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
     def _build_query(context: TaskContext) -> str:
         """构建检索查询文本。委托 contexts.build_query。"""
         return _build_query_impl(context)
-
-    # ============================================================
-    # 私有：记忆 + 索引
-    # ============================================================
-
-    async def _save_analysis_context(
-        self, session_id: str, context: TaskContext, draft: SolutionDraft
-    ) -> None:
-        """保存分析上下文到 Redis 记忆（供多轮编辑）"""
-        try:
-            await self._memory.add_turn(
-                session_id, "user",
-                f"分析工单 #{context.task_id}: {context.title}"
-            )
-            await self._memory.add_turn(
-                session_id, "assistant",
-                json.dumps(draft.model_dump(), ensure_ascii=False)
-            )
-        except Exception:
-            pass
-
-    async def _index_solution(
-        self, task_id: str, solution_text: str, draft: SolutionDraft,
-        structured: Optional[dict] = None,
-    ) -> None:
-        """向量化方案 → 写入 Qdrant task_resolutions collection"""
-        try:
-            from ai.core.task_adapter import load_task_context_dict
-            d = load_task_context_dict(task_id)
-            title = d.get("title", f"工单 #{task_id}") or f"工单 #{task_id}"
-            fault_code = d.get("fault_code", "")
-            robot_type = d.get("robot_type", "")
-            problem_summary = d.get("problem_summary", "")
-
-            # P1 结构化根因（如提供，覆盖默认；否则用 safe 默认，兼容旧调用）
-            structured = structured or {}
-
-            await self._retriever.index_task_resolution(
-                task_id=task_id,
-                title=title,
-                root_cause=draft.root_cause_analysis,
-                solution_steps="；".join(draft.suggested_actions),
-                engineer_note=draft.references[0] if draft.references else "",
-                fault_code=fault_code,
-                robot_type=robot_type,
-                problem_summary=problem_summary,
-                root_cause_type=structured.get("root_cause_type", "unknown"),
-                error_codes=structured.get("error_codes", []),
-                severity=structured.get("severity", "unknown"),
-                is_common_bug=bool(structured.get("is_common_bug", False)),
-                verified=structured.get("verified", "unknown"),
-            )
-        except Exception as e:
-            logger.warning(f"Solution index failed: {e}")
 
     @staticmethod
     def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "U老师") -> bool:

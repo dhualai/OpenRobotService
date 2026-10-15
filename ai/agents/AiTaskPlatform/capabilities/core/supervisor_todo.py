@@ -19,7 +19,7 @@ Agent 拿到任务后自列 todo，边执行边更新（新增/勾选/调整）�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -72,21 +72,10 @@ class TodoList:
         self.update(todo_id, status="completed", result_summary=result)
 
     # ── 读操作 ──
-    def next_pending(self) -> Optional[TodoItem]:
-        """取下一个未开始的待办（按顺序首个 pending）。"""
-        for it in self._items:
-            if it.status == "pending":
-                return it
-        return None
-
     def progress(self) -> tuple[int, int]:
         """返回 (已完成数, 总数)。"""
         done = sum(1 for it in self._items if it.status == "completed")
         return done, len(self._items)
-
-    def all_done(self) -> bool:
-        """是否全部完成（无 pending/in_progress）。"""
-        return all(it.status == "completed" for it in self._items)
 
     def to_prompt(self) -> str:
         """序列化成给 LLM 看的 todo 文本（供 Supervisor 每轮注入）。"""

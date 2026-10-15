@@ -118,13 +118,14 @@ class DeptRouter:
         self,
         ticket: TicketContext,
         engineers: List[EngineerProfile],
+        dialogue=None,
     ) -> Tuple[List[EngineerProfile], DeptRoutingResult]:
         ltag = f"[派单:{ticket.id}]"
         result = DeptRoutingResult()
 
         # ── LLM(部门画像) + 历史(相似工单) 并行判部门 ──
         llm_scores, hist_scores = await asyncio.gather(
-            self._llm.classify(ticket),
+            self._llm.classify(ticket, dialogue=dialogue),
             self._history.aggregate(ticket, engineers),
         )
         if not (self._config.departments or []):
@@ -191,7 +192,7 @@ class DeptRouter:
             primary
             and bool(getattr(self._config, "dept_audit_enabled", True))
         ):
-            audit = await self._audit.audit(ticket, primary)
+            audit = await self._audit.audit(ticket, primary, dialogue=dialogue)
             result.signals["audit"] = audit
             audit_min_conf = float(self._audit_cfg.get("min_confidence", 0.7))
             if audit.audit_failed:
@@ -229,7 +230,7 @@ class DeptRouter:
                 )
                 try:
                     llm2, hist2 = await asyncio.gather(
-                        self._llm.classify(ticket, feedback=feedback),
+                        self._llm.classify(ticket, feedback=feedback, dialogue=dialogue),
                         self._history.aggregate(ticket, engineers),
                     )
                     merged2 = self._fuse(llm2, hist2, self._history_bonus, self._history_confirm_threshold)

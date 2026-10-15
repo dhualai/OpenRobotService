@@ -46,6 +46,10 @@ const API_CONFIG = {
   WECHAT: {
     BASE_URL: `${API_ROOT}/wechat`,
   },
+  /** 微信支付 - /api/wxpay (奖励记录 / 立即提现，商家转账) */
+  WXPAY: {
+    BASE_URL: `${API_ROOT}/wxpay`,
+  },
 } as const;
 
 export default API_CONFIG;

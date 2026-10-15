@@ -7,6 +7,7 @@ summarize = 后端触发，扫描活跃工单，逐条判断是否生成摘要�
 import time
 
 from ai.core.logging import get_logger
+from ai.agents.AiTaskPlatform.contexts import author_display_name
 from ai.agents.AiTaskPlatform.prompts import (
     SUMMARIZE_SYSTEM_PROMPT,
     SUMMARIZE_FULL_TEMPLATE,
@@ -137,7 +138,7 @@ class SummarizeFlow:
 
         history_lines = []
         for c in summary_comments[-20:]:
-            author = getattr(c, 'created_by_name', None) or c.created_by or "?"
+            author = author_display_name(c.created_by)
             content = (c.content or "")[:200]
             history_lines.append(f"[{author}] {content}")
         history_text = "\n".join(history_lines) if history_lines else ""

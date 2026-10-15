@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability, CapabilityResult

@@ -17,6 +17,8 @@
   python ai/scripts/dar_retrieval_check.py
 """
 import asyncio
+import glob
+import hashlib
 import io
 import json
 import os
@@ -24,7 +26,7 @@ import re
 import sys
 import time
 from collections import Counter
-from datetime import datetime as _dt
+from datetime import datetime as _dt, timedelta as _td
 
 sys.stdout.reconfigure(encoding="utf-8")  # 不换 wrapper 对象：pytest 捕获下替换会炸
 _PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -90,7 +92,7 @@ def build_rows():
     man = ({ } if not os.path.exists(MANUAL)
            else json.load(open(MANUAL, encoding="utf-8")))
     bounds, labels = man.get("bounds") or {}, man.get("labels") or {}
-    legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+    legacy = {"直答错误": "未直答", "直答不完整": "未直答"}
     rows = []
     for c in convs:
         cid = str(c["conversation_id"])
@@ -140,10 +142,10 @@ JUDGE_PROMPT = (
 )
 
 
-async def main():
+async def main(ptr: dict | None = None):
+    """ptr=当前三域检索源指针（remote_qdrant 上下文返回值）；local 源为 None。"""
     from ai.agents.AiDiagnosisPlatform.pipeline import AgentState, get_diagnosis_platform
     from dar_llm import get_dar_client
-
     if QDRANT == "local":  # 指针残留自愈+校验：否则全轮静默空检索（0910 实锤，见 dar_qdrant）
         from dar_qdrant import heal_local_pointers
         miss = heal_local_pointers()
@@ -153,36 +155,89 @@ async def main():
                   "且整轮不报错，判定失真——先修指针再跑。")
             sys.exit(2)
 
+    # 判定签名（0929 跨天增量引入）：模型+判据 md5+KB 指针分字段落盘。
+    # 复用语义（用户拍板）：模型/判据变了→老判定口径作废全量重判；
+    # 仅 KB 变（入库过）→「通过过的不再考，没过的重考一遍」——yes 保留
+    # （历史事实），partial/no 重判（缺口复查：补的知识有没有生效）；
+    # 全同→全复用（断点续跑/周内重跑零成本）。直答率上升只来自新段真实
+    # 表现 + 老缺口真实补齐，不可能被批量补充知识刷高。
+    llm = await get_dar_client()
+    kb_tag = "local" if not ptr else ";".join(f"{k}={v}" for k, v in sorted(ptr.items()))
+    RUN_SIG = f"{QDRANT}|{kb_tag}|{llm.model}|{hashlib.md5(JUDGE_PROMPT.encode('utf-8')).hexdigest()[:8]}"
+    JUDGE_MD5 = hashlib.md5(JUDGE_PROMPT.encode("utf-8")).hexdigest()[:8]
+
     rows = build_rows()
     path = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
     jpath = path[:-5] + ".jsonl"  # 断点续跑：逐段追加；中断后重跑只补未判段
-    # 增量：jsonl（逐段追加，最新）+ json（上次快照）里已判过的段（cid+段首问题
-    # 匹配）复用判定，补 astart；jsonl 后读覆盖 json 的旧结果
+    # 增量：当天 jsonl（逐段追加，最新）+ json（快照）照旧复用；0929 起另读
+    # 最近 7 天历史产物跨天复用（按日切文件曾让每周流程永远全量重放 482 段，
+    # 用户实锤）。历史行仅当 sig 与当前完全一致才认——旧行无 sig 一律不认
+    # （保守：本轮跑完即带 sig，下次跨天即可秒复用）。
+    hist = []
+    _cutoff = (_dt.now() - _td(days=7)).strftime("%Y%m%d")
+    for p in sorted(glob.glob(os.path.join(OUT, "retrieval_check_*.json*")),
+                    reverse=True):
+        if p in (path, jpath):
+            continue
+        m = re.search(r"retrieval_check_(\d{8})\.", p)
+        if m and _cutoff <= m.group(1) <= _dt.now().strftime("%Y%m%d"):
+            hist.append(p)
     done_keys = {}
-    for src in (path, jpath):
+    reexam_old = {}  # 缺口复查段（KB 更新后重考；结果进 reexam_* 字段，不动 verdict）
+    n_hist = 0
+    for src in (path, jpath, *hist):  # 当天优先，历史兜底（dict 后写覆盖先写，顺序即优先级）
         if not os.path.exists(src):
             continue
         items = ([json.loads(l) for l in open(src, encoding="utf-8") if l.strip()]
                  if src.endswith(".jsonl") else json.load(open(src, encoding="utf-8")))
         for old in items:
-            if old.get("verdict") in ("yes", "partial", "no"):
-                done_keys[(str(old["cid"]), (old.get("q") or "")[:80])] = old
-    for r in rows:  # 复用判定拷回（否则落盘行缺 verdict）；jsonl 后读覆盖 json
+            if old.get("verdict") not in ("yes", "partial", "no"):
+                continue
+            if old.get("model") != llm.model or old.get("judge_md5") != JUDGE_MD5:
+                continue  # 模型/判据变了：老判定口径作废，全量重判
+            kb_same = old.get("kb_tag") == kb_tag
+            if not kb_same and old["verdict"] != "yes":
+                # 0929 用户定调：缺口复查与直答率彻底分开——这些段重考（看补的
+                # 知识有没有生效），但 verdict 恒为产生时的历史判定（漏斗/直答率/
+                # KB 缺口率口径不变），重考结果写 reexam_* 独立字段供复查报表。
+                reexam_old[(str(old["cid"]), (old.get("q") or "")[:80])] = old
+                continue
+            if not done_keys.get((str(old["cid"]), (old.get("q") or "")[:80])):
+                n_hist += src in hist
+            done_keys[(str(old["cid"]), (old.get("q") or "")[:80])] = old
+    for r in rows:  # 复用判定拷回（否则落盘行缺 verdict）
         old = done_keys.get((r["cid"], r["q"][:80]))
         if old and "verdict" not in r:
             for k in ("verdict", "reason", "retrieval", "chunks"):
                 if old.get(k) is not None:
                     r[k] = old[k]
+    # 缺口复查段：verdict 拷历史值（直答率口径不变），标记进 todo 重考
+    for r in rows:
+        old = reexam_old.get((r["cid"], r["q"][:80]))
+        if old and "verdict" not in r:
+            for k in ("verdict", "reason", "retrieval", "chunks"):
+                if old.get(k) is not None:
+                    r[k] = old[k]
+            r["reexam"] = True
+            r["reexam_prev"] = old.get("verdict")
     n_hit = sum(1 for r in rows if r.get("verdict") in ("yes", "partial", "no"))
     n_err = sum(1 for r in rows if r.get("verdict") == "error")
-    if n_hit or n_err:
-        print(f"增量：{n_hit}/{len(rows)} 段复用已判结果，补跑 {len(rows) - n_hit} 段")
-    todo = [r for r in rows if r.get("verdict") not in ("yes", "partial", "no")]
+    if n_hit or n_err or reexam_old:
+        print(f"增量：{n_hit}/{len(rows)} 段复用已判结果（其中 {n_hist} 段来自 7 天内"
+              f"历史产物），另 {len(reexam_old)} 段安排缺口复查（结果进 reexam 字段，"
+              f"不影响直答率）")
+    todo = [r for r in rows if r.get("verdict") not in ("yes", "partial", "no")
+            or r.get("reexam")]
+    for r in rows:  # 全量行补签名字段（复用行也补：下次跨天即可被认出）
+        r["sig"] = RUN_SIG
+        r["kb_tag"] = kb_tag
+        r["model"] = llm.model
+        r["judge_md5"] = JUDGE_MD5
     print(f"待验证 {len(todo)} 条咨询段（真实组；测试组默认不判，DAR_INCLUDE_TEST=1 开回）")
     if todo:
         platform = await get_diagnosis_platform()
         await platform._ensure_clients()  # 懒加载只在 run 入口触发，直连检索前必须显式初始化
-        llm = await get_dar_client()
+        # llm 已在签名计算时创建（main 开头）
 
         sem = asyncio.Semaphore(CONCURRENCY)
         done = [0]
@@ -222,13 +277,26 @@ async def main():
                     raw = await llm.complete(prompt=prompt, max_tokens=200, temperature=0,
                                              thinking=False)
                     obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
-                    r["verdict"] = str(obj.get("verdict", "?")).lower()
-                    r["reason"] = str(obj.get("reason", ""))[:120]
-                    if r["verdict"] not in ("yes", "partial", "no"):
-                        r["verdict"] = "?"
+                    new_verdict = str(obj.get("verdict", "?")).lower()
+                    new_reason = str(obj.get("reason", ""))[:120]
+                    if new_verdict not in ("yes", "partial", "no"):
+                        new_verdict = "?"
+                    if r.get("reexam"):
+                        # 缺口复查：verdict 恒为历史判定（直答率口径），重考结果
+                        # 走独立字段——补的知识有没有把老问题救活，只进复查报表
+                        r["reexam_verdict"] = new_verdict
+                        r["reexam_reason"] = new_reason
+                        r["reexam_chunks"] = parse_retrieval_chunks(ctx)
+                    else:
+                        r["verdict"] = new_verdict
+                        r["reason"] = new_reason
                 except Exception as e:
-                    r["verdict"] = "error"
-                    r["reason"] = f"{type(e).__name__}: {e}"[:120]
+                    if r.get("reexam"):
+                        r["reexam_verdict"] = "error"
+                        r["reexam_reason"] = f"{type(e).__name__}: {e}"[:120]
+                    else:
+                        r["verdict"] = "error"
+                        r["reason"] = f"{type(e).__name__}: {e}"[:120]
                 async with lock:
                     # 成功/格式异常即落 jsonl（断点续跑）；error 不落，重跑重试
                     if "qdrant 不可用" in (r.get("reason") or ""):
@@ -255,7 +323,7 @@ async def main():
         json.dump(rows, fh, ensure_ascii=False, indent=1)
     print(f"明细: {path}（{len(rows)} 条）\n")
     cross = Counter((r["grp"], r["lab"], r.get("verdict")) for r in rows)
-    labs = ["直答正确", "未直答", "未覆盖", "建议转单", "直接提单", "未标"]
+    labs = ["直答正确", "未直答", "未覆盖", "直接提单", "未标"]
     for grp in ("真实组", "测试组"):
         print(f"== {grp}：人工标签 × 检索判定（yes=资料有答案/partial=部分/no=基本不相关） ==")
         for lab in labs:
@@ -280,7 +348,7 @@ if __name__ == "__main__":
                          f"  → 检查免密 ssh {SSH_HOST}:{SSH_PORT}；"
                          "或 DAR_QDRANT=local 用本地知识库跑")
             print(f"检索源={QDRANT} 服务器 qdrant（指针: {ptr}）")
-            asyncio.run(main())
+            asyncio.run(main(ptr))
     else:
         print("检索源=本地知识库")
         asyncio.run(main())

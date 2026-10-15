@@ -615,6 +615,9 @@ def get_env_config(environment):
             "SupBackend": "test-open-robot",
             "SupAi": "test-open-robot-ai",
             "NpmScript": "build:test",
+            # 跑数据库结构校验用的解释器：必须能 import 后端模型（sqlalchemy/pymysql）。
+            # 取后端实际运行的解释器最稳妥，deploy.py 会在不可用时按候选列表回退。
+            "SchemaPython": "/data/home/usp-a/miniconda3/envs/test-backend/bin/python",
         }
     else:  # prod
         return {
@@ -626,7 +629,155 @@ def get_env_config(environment):
             "SupBackend": "openrobot",
             "SupAi": "openrobotAI",
             "NpmScript": "build:prod",
+            # 与 supervisor 启动后端的解释器一致（command=<此路径> main.py），依赖齐全。
+            # 注意：系统 /usr/bin/python3.12 未装 sqlalchemy，不可用。
+            "SchemaPython": "/data/apps/OpenRobotService/backend/.venv/bin/python",
         }
+
+
+# ---------- 数据库结构一致性（部署前置门禁） ----------
+SCHEMA_MODES = ("off", "check", "sync")
+
+
+def _schema_expected_dir(cfg: SshConfig, repo_root: Path) -> str:
+    """准备「本次要部署的后端代码」并返回目标机上可访问的目录。
+
+    期望结构必须取自新代码：若取自目标机现有目录，本次新增的列根本检测不出来。
+    local（自托管 runner 即目标机）时 artifact 展开的 repo_root/backend 直接可用；
+    否则打包投递到暂存目录解压。
+    """
+    src = repo_root / "backend"
+    if not (src / "app").is_dir():
+        raise RuntimeError(f"找不到后端源码（生成期望结构用）: {src}")
+
+    if cfg.local:
+        return str(src)
+
+    tarball, tar_name = component_artifact("backend", repo_root, dry_run=cfg.dry_run)
+    remote_tar = send_tarball(cfg, tarball, tar_name)
+    bash_tmp = to_bash_path(validate_remote_path(cfg.remote_tmp, "远端暂存目录"))
+    remote_dir = f"{bash_tmp}/_ors_schema_src"
+    run_remote_script(
+        cfg,
+        f'mkdir -p "{remote_dir}" && tar -xzf "{remote_tar}" -C "{remote_dir}" '
+        f'-m --no-same-permissions --no-same-owner && rm -f "{remote_tar}" '
+        f'&& echo SCHEMA_SRC_READY',
+        label="投递后端源码（结构校验用）",
+    )
+    return remote_dir
+
+
+def _schema_result(output: str) -> dict:
+    """从脚本输出里抓取 SCHEMA_* 标记（键值对形式）。"""
+    values = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if "=" in line:
+            key, val = line.split("=", 1)
+            if key.startswith("SCHEMA_"):
+                values[key] = val.strip()
+    return values
+
+
+def deploy_schema_sync(cfg: SshConfig, repo_root: Path, env: dict, mode: str) -> str:
+    """部署前数据库结构门禁 / 自动补列，返回一行摘要。
+
+    A（check）：只读比对；库结构落后于新代码即中止。此刻新代码尚未上传、线上仍跑旧版，
+               中止部署不会造成任何影响。
+    B（sync） ：自动补齐 AUTOMATIC 项（加列 / 建索引），剩余 MANUAL 项仍然中止。
+
+    脚本退出码：0 通过；2 有未解决缺失（中止）；1 执行失败（中止）；3 无可用解释器。
+    """
+    write_step("【数据库】结构一致性校验")
+    if mode not in SCHEMA_MODES:
+        raise RuntimeError(f"无效的 schema 模式: {mode}")
+
+    script_local = Path(__file__).resolve().parent / "schema_sync.py"
+    if not script_local.is_file():
+        # 自托管 runner 从 artifact 部署时脚本在 deploy/ 同目录（workflow 已 cp 进来）；
+        # 源码树直跑（本地 / GUI）时回退到后端源码里的脚本。
+        script_local = repo_root / "backend" / "scripts" / "schema_sync.py"
+    if not script_local.is_file():
+        raise RuntimeError("缺少结构校验脚本（deploy/ 与 backend/scripts/ 均未找到）")
+
+    expected_dir = _schema_expected_dir(cfg, repo_root)
+
+    rel_script = "tmp/ors_schema_sync.py"
+    send_file(cfg, str(script_local), rel_script)
+    script_path = f"$HOME/{rel_script}"
+
+    env_file = f"{env['BackendRemote']}/.env"
+    candidates = " ".join(
+        f'"{p}"'
+        for p in (
+            env.get("SchemaPython", ""),
+            f"{env['BackendRemote']}/.venv/bin/python",
+            f"{env['BackendRemote']}/venv/bin/python",
+        )
+        if p
+    )
+    execute_flag = " --execute" if mode == "sync" else ""
+    remote_script = f"""set -uo pipefail
+# 解释器选择：优先「存在且能 import sqlalchemy/pymysql」的候选，避免误选到
+# 存在但没装后端依赖的 python（如系统 python3.12）而把部署卡在依赖检查上。
+PY=""
+FALLBACK=""
+for cand in {candidates}; do
+  [ -x "$cand" ] || continue
+  [ -n "$FALLBACK" ] || FALLBACK="$cand"
+  if "$cand" -c 'import sqlalchemy, pymysql' 2>/dev/null; then PY="$cand"; break; fi
+done
+[ -n "$PY" ] || PY="$FALLBACK"
+[ -n "$PY" ] || PY="$(command -v python3 || true)"
+if [ -z "$PY" ]; then
+  echo "SCHEMA_EXIT=3"
+  exit 0
+fi
+"$PY" -c 'import sqlalchemy, pymysql' 2>/dev/null || echo "SCHEMA_PY_DEPS_MISSING=$PY"
+"$PY" "{script_path}" --backend-root "{expected_dir}" --env-file "{env_file}"{execute_flag}
+rc=$?
+echo "SCHEMA_EXIT=$rc"
+exit 0
+"""
+    write_info(f"模式={mode}；期望结构={expected_dir}；解释器={env.get('SchemaPython')}")
+    if cfg.dry_run:
+        # 干跑：上面的 command 已按 [dryrun] 打印，这里不再真的连库（否则拿不到
+        # SCHEMA_EXIT 会被误判成「远端执行异常」而中断干跑）
+        return f"（dry-run 未执行；模式={mode}）"
+    output = run_remote_script(cfg, remote_script, label="数据库结构校验")
+
+    values = _schema_result(output)
+    if values.get("SCHEMA_PY_DEPS_MISSING"):
+        raise RuntimeError(
+            f"校验解释器缺少 sqlalchemy/pymysql: {values['SCHEMA_PY_DEPS_MISSING']}"
+            "（请检查 env 中的 SchemaPython 配置）"
+        )
+    exit_code = values.get("SCHEMA_EXIT")
+    if exit_code is None:
+        raise RuntimeError("结构校验未返回结果（远端执行异常，详见上方输出）")
+
+    summary = (
+        f"库={values.get('SCHEMA_DATABASE', '?')} "
+        f"缺列={values.get('SCHEMA_MISSING_COLUMNS', '?')} "
+        f"缺索引={values.get('SCHEMA_MISSING_INDEXES', '?')} "
+        f"可自动={values.get('SCHEMA_AUTOMATIC', '?')} "
+        f"需人工={values.get('SCHEMA_MANUAL', '?')} "
+        f"已补={values.get('SCHEMA_APPLIED', '0')}"
+    )
+
+    if exit_code == "3":
+        raise RuntimeError("目标机找不到可用 Python 解释器（检查 env 的 SchemaPython）")
+    if exit_code == "1":
+        raise RuntimeError(f"结构校验执行失败（连库或 DDL 出错），详见上方输出。{summary}")
+    if exit_code == "2":
+        raise RuntimeError(
+            f"库结构落后于代码，已中止部署以避免上线后报 1054。{summary}\n"
+            "        处理：MANUAL 项需人工迁移（backend/alembic/versions/ 或 "
+            "backend/scripts/apply_schema_patch.py）；确认可忽略时加 --schema-mode off。"
+        )
+
+    write_ok(f"结构校验通过：{summary}")
+    return summary
 
 
 # ---------- 各组件部署 ----------
@@ -1230,6 +1381,12 @@ def main_cli(args):
             # 固定格式输出，供 CI 抓取：部署失败时据此自动回滚到「本次部署前」
             print(f"DEPLOY_BACKUP_ID={backup_id}")
 
+        # ---------- 数据库结构门禁（放在上传代码之前：失败即中止，线上仍在跑旧版）----------
+        if "backend" in components and args.schema_mode != "off":
+            schema_summary = deploy_schema_sync(cfg, repo_root, env, args.schema_mode)
+            # 固定格式输出，供 CI 抓取后写进部署摘要与通知
+            print(f"DEPLOY_SCHEMA_SUMMARY={schema_summary}")
+
         if "frontend" in components:
             deploy_frontend(cfg, repo_root, env, args.skip_build)
         if "backend" in components:
@@ -1526,6 +1683,8 @@ class DeployApp:
             if "frontend" in comps:
                 deploy_frontend(cfg, repo_root, env, self.skip_build_var.get())
             if "backend" in comps:
+                # GUI 部署同样先做结构门禁（只读），避免「部署成功但接口 1054」
+                deploy_schema_sync(cfg, repo_root, env, "check")
                 deploy_backend(cfg, repo_root, env, self.clean_remote_var.get())
             if "ai" in comps:
                 deploy_ai(cfg, repo_root, env)
@@ -1610,6 +1769,11 @@ def build_parser():
     parser.add_argument("--remote-tmp", dest="remote_tmp", default="~/tmp",
                         help="远端暂存目录，默认 ~/tmp（scp 自动展开 ~，bash 侧自动转 $HOME）；"
                              "家目录亦不可写时可用绝对路径覆盖。")
+    parser.add_argument("--schema-mode", dest="schema_mode", default="check",
+                        choices=["off", "check", "sync"],
+                        help="部署后端的数据库结构处理：off=跳过；check=只读校验，库落后于"
+                             "代码即中止（默认）；sync=先自动补齐可安全补的列/索引，"
+                             "NOT NULL 等需人工的项仍中止。")
     parser.add_argument("--no-backup", dest="no_backup", action="store_true",
                         help="跳过部署前自动备份（不推荐：将失去本次回滚能力）。")
     parser.add_argument("--backup-keep", dest="backup_keep", type=int,

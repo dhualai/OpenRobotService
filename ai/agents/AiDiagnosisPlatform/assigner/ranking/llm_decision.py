@@ -214,7 +214,7 @@ class LlmDecision:
             f"L1原因={l1 or '-'} / tags={tags or '-'}（不进 tip）"
         )
 
-    async def adecide(self, ticket, engineers, recall_result, ranked_scores, product: str = ""):
+    async def adecide(self, ticket, engineers, recall_result, ranked_scores, product: str = "", dialogue=None):
         """Step6 统一 LLM 最终决策入口。
 
         合法出口：选中某人，或 None（很难决策 / 调用失败 / 名单外 id / 窗口空）。
@@ -315,7 +315,10 @@ class LlmDecision:
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
-            response = await llm.complete(prompt, max_tokens=400, temperature=0.1)
+            if dialogue is not None:
+                response = await dialogue.complete(llm, prompt, max_tokens=400, temperature=0.1)
+            else:
+                response = await llm.complete(prompt, max_tokens=400, temperature=0.1)
             logger.info(
                 f"[派单:{getattr(ticket,'id','?')}] Step6 LLM最终决策原始输出: {response[:500]}"
             )

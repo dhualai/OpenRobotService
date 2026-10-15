@@ -18,6 +18,7 @@ import { TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { MacDonut, MacLegend, macTone } from '@/shared/components/macaronBits';
 import { MacChevronRight } from '@/shared/components/macaronIcons';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import QuestionModuleCard from './QuestionModuleCard';
 import {
   buildDashboardFilterKey, loadDashboardCache, saveDashboardCache,
 } from '@/stores/dashboardCache';
@@ -299,6 +300,7 @@ export default function TicketDashboard() {
             </section>
           </>
         )}
+        {canViewAll && <QuestionModuleCard key={username} />}
       </div>
     </div>
   );

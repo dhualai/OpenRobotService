@@ -212,62 +212,87 @@ def _known_ids(items: list) -> set:
     return found
 
 
-def _span_events_by_name(span_tree: list) -> dict:
-    grouped: dict = {}
-
-    def _walk(nodes: list) -> None:
-        for node in nodes or []:
-            if not isinstance(node, dict):
-                continue
-            name = str(node.get("name") or "")
-            if name:
-                grouped.setdefault(name, []).extend(node.get("events") or [])
-            _walk(node.get("children") or [])
-
-    _walk(span_tree or [])
-    return grouped
+# span 名 → 过程区显示名。能力名不列在这里：前端 CAP_LABELS 兜底，行自带 description 优先。
+_SPAN_LABELS = {
+    "supervisor.run": "分析",
+    "plan": "规划排查步骤",
+}
+# span 名 → 可能对应它的行 id/capability（plan 这一段的行 id 是 planning）
+_SPAN_ROW_ALIASES = {
+    "plan": ("planning", "plan"),
+}
 
 
-def _attach_span_events(todos: list, span_tree: list) -> list:
-    """把 span 事件挂到同名能力下面。过程区已经有的步骤 id 不重复挂。"""
-    grouped = _span_events_by_name(span_tree)
-    if not grouped:
-        return todos
-    known = _known_ids(todos)
-    out = []
-    for item in todos:
-        row = dict(item)
-        cap = str(row.get("capability") or "")
-        events = grouped.get(cap) or []
-        kids = list(row.get("children") or [])
-        for ev in events:
-            if not isinstance(ev, dict):
-                continue
-            attrs = ev.get("attributes") if isinstance(ev.get("attributes"), dict) else {}
-            eid = str(attrs.get("id") or "")
-            name = str(ev.get("name") or "").strip()
-            if not name or name == str(row.get("description") or ""):
-                continue
-            if eid and eid in known:
-                continue
-            status = str(attrs.get("status") or "completed")
-            if status in ("running", "in_progress"):
-                status = "in_progress"
-            else:
-                status = "completed"
-            child_id = eid or f"ev_{cap}_{ev.get('ts')}_{name}"
-            if child_id in known:
-                continue
-            known.add(child_id)
-            kids.append({
-                "id": child_id,
-                "description": name,
-                "status": status,
-                "capability": cap,
-            })
+def _event_child(ev: Any, cap: str, known: set, skip_name: str = "") -> Optional[dict]:
+    """span 事件 → 过程区子节点。行里已有的步骤 id 不重复挂。"""
+    if not isinstance(ev, dict):
+        return None
+    name = str(ev.get("name") or "").strip()
+    if not name or name == skip_name:
+        return None
+    attrs = ev.get("attributes") if isinstance(ev.get("attributes"), dict) else {}
+    eid = str(attrs.get("id") or "") or f"ev_{cap}_{ev.get('ts')}_{name}"
+    if eid in known:
+        return None
+    known.add(eid)
+    status = str(attrs.get("status") or "completed")
+    return {
+        "id": eid,
+        "description": name,
+        "status": "in_progress" if status in ("running", "in_progress") else "completed",
+        "capability": cap,
+    }
+
+
+def _span_forest(span_tree: list, rows: list) -> list:
+    """按真实 span 层级重排行，span 的 events 作为叶子子节点。
+
+    过程区因此与埋点同构：`supervisor.run`（分析）→ `plan`（规划）+ 各能力 → 各能力的
+    子步骤/事件。span 名匹配不到行的（如 supervisor.run / plan）生成合成节点；匹配不到
+    span 的行留在顶层，不丢。能力 span 与 plan 是兄弟——埋点里它们同属 run 下，这里照实
+    呈现，不为了好看的层级去搬动。
+    """
+    pool = [dict(r) for r in rows]
+    known = _known_ids(rows)
+    seq = 0
+
+    def _claim(span_name: str) -> Optional[dict]:
+        keys = {span_name, *_SPAN_ROW_ALIASES.get(span_name, ())}
+        for i, row in enumerate(pool):
+            if str(row.get("capability") or "") in keys or str(row.get("id") or "") in keys:
+                return pool.pop(i)
+        return None
+
+    def _build(span: dict) -> Optional[dict]:
+        nonlocal seq
+        seq += 1
+        name = str(span.get("name") or "")
+        row = _claim(name) if name else None
+        row = row or {}
+        kids = [dict(c) for c in row.get("children") or []]
+        kids += [n for n in (_build(c) for c in span.get("children") or [] if isinstance(c, dict)) if n]
+        for ev in span.get("events") or []:
+            child = _event_child(ev, name, known, skip_name=str(row.get("description") or ""))
+            if child is not None:
+                kids.append(child)
+        # 既没占到行又没有子节点/事件的 span（如刚开跑的 run）不输出，免得留个空壳
+        if not row and not kids:
+            return None
+        node: Dict[str, Any] = {
+            "id": row.get("id") if row.get("id") is not None else f"sp{seq}",
+            "description": row.get("description") or _SPAN_LABELS.get(name) or name,
+            "capability": row.get("capability") or name,
+            # 行自带状态优先：那是 supervisor 的权威声明，span 只用来给合成节点定状态
+            "status": row.get("status") or ("in_progress" if str(span.get("status")) == "running" else "completed"),
+        }
+        if row.get("phase"):
+            node["phase"] = row["phase"]
         if kids:
-            row["children"] = kids
-        out.append(row)
+            node["children"] = kids
+        return node
+
+    out = [n for n in (_build(s) for s in span_tree or [] if isinstance(s, dict)) if n]
+    out.extend(pool)
     return out
 
 
@@ -320,5 +345,5 @@ def nest_progress_todos(items: list, span_tree: list | None = None) -> list:
                 continue
             parent.setdefault("children", []).append(kid)
     if span_tree:
-        out = _attach_span_events(out, span_tree)
+        out = _span_forest(span_tree, out)
     return out

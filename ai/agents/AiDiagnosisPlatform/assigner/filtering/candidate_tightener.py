@@ -33,12 +33,15 @@ class CandidateTightener:
         self,
         ticket: TicketContext,
         engineers: List[EngineerProfile],
+        dialogue=None,
     ) -> TightenResult:
         ltag = f"[派单:{ticket.id}]"
         before = len(engineers)
 
         # Layer 1: 部门
-        candidates, dept_result = await self._dept_router.route(ticket, engineers)
+        candidates, dept_result = await self._dept_router.route(
+            ticket, engineers, dialogue=dialogue,
+        )
 
         # Layer 2: 产品（传入部门判定，便于车端类工单按部门映射到对应产品，而非默认调度USP）
         candidates, product_result = self._product_router.route(

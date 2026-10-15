@@ -45,9 +45,8 @@ cd D:\CodeHub\AI\OpenRobotService
 1. 先 push 功能分支  
 2. 对 Agent 说「提 PR」或「写合并 PR」，并给 **ORS 工单号**  
 3. 标题形如：`feature（ORS-xxx）：中文说明`  
-4. GitHub 合入选 **Create a merge commit**，不要 squash  
 
-Agent 可代跑 `gh pr create --base test --head ai-feature-dispatch`（需你明确说创建）。
+Agent 可代跑 `gh pr create --base test --head ai-feature-dispatch`（需你明确说创建）。创建之后只回 PR 链接，不提醒合入按钮。
 
 ## 不要做
 

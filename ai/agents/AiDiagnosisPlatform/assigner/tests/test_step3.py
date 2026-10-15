@@ -170,6 +170,12 @@ class TestL1PromptHasName:
         assert "待产品澄清" in prompt
         assert "产品已对齐" in prompt
         assert "分批打分时也必须遵守同一刻度" in prompt
+        assert "几个人都能独立解决" in prompt
+        assert "最高不要到 0.90" in prompt
+        assert "本批只有这一人能接" in prompt
+        assert "规划路径中" not in prompt
+        assert "不要因为可以分流或统筹给到 0.55 以上" in prompt
+        assert "需求单的产品分流不适用于报障" in prompt
         assert "Agent假设仅供参考" in prompt
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import ticket_fields_block
         assert ticket_fields_block(_ticket()).rstrip() in prompt
@@ -185,6 +191,27 @@ class TestL1PromptHasName:
         assert "当前阶段是「开发」，辅助偏向对口研发" in prompt
         assert "仍以正文的 1) 2) 为准" in prompt
 
+    def test_usp_brief_only_when_product_is_dispatch(self):
+        """正常流程：只有产品是调度USP 时，Step3 才带上调度链路说明。"""
+        usp = LlmRecall(_cfg())._build_prompt(
+            _ticket(), [_eng("u-a", "甲")], top_k=1, product="调度USP",
+        )
+        other = LlmRecall(_cfg())._build_prompt(
+            _ticket(), [_eng("u-a", "甲")], top_k=1, product="摇人吧服务号",
+        )
+        assert "【调度USP】" in usp
+        assert "规划路径中" in usp
+        assert "任务分配挑车" in usp
+        assert '"station"' in usp
+        assert "不要写「调度问题」" in usp
+        assert "【调度USP】" not in other
+        assert '"station"' not in other
+        locked = LlmRecall(_cfg())._build_prompt(
+            _ticket(), [_eng("u-a", "甲")], top_k=1, product="调度USP", station="路径规划",
+        )
+        assert "本单已经判定停在「路径规划」" in locked
+        assert "不要改站" in locked
+
 
 class TestL1ParseReason:
     """L1 JSON 解析分数 + 原因；缺 reason 不阻断打分。"""
@@ -197,6 +224,10 @@ class TestL1ParseReason:
         )
         assert scores == {"u-a": 0.9}
         assert reasons == {"u-a": "甲负责该模块"}
+        assert LlmRecall(_cfg())._read_station(
+            '{"station":"界面停在规划路径中，属路径规划","rankings":[]}'
+        ) == "路径规划"
+        assert LlmRecall(_cfg())._read_station('{"station":"调度问题","rankings":[]}') == ""
 
     def test_parse_without_reason_still_scores(self):
         """异常流程：没有 reason 字段 → 仍打分，原因为空串。"""
@@ -332,7 +363,7 @@ class TestL1TopKCap:
         import asyncio
         rec = LlmRecall(_cfg())
 
-        async def fake_batch(ticket, engineers, top_min, top_max):
+        async def fake_batch(ticket, engineers, top_min, top_max, dialogue=None, product=""):
             return {"u-a": 0.9}, {"u-a": "甲负责前端"}
 
         rec._llm_score_batch = fake_batch

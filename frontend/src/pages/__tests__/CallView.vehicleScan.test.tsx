@@ -1,6 +1,6 @@
 // 我要摇人页的「车体扫码进入」链路（本层只测编排）：
 //   解析 scene → 查一次码记录 → 仅「已发布（出厂）」才把车辆信息交给确认弹窗 → 确认后另起空白会话。
-//   未携带 / 查无此码 / 非已发布 / 查询异常一律静默不打扰。
+//   未携带 scene（Tab/登录/根路径等日常入口）静默；查无此码 / 非已发布 明确提示码不可用。
 //
 // 打桩边界（只打「进程边界」与「带副作用的子件」，渲染细节不在此层重复验）：
 //   - 网络：@/api/qrcode、@/api/ai 打桩，不触网
@@ -14,6 +14,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { VehicleConfirmDialogProps } from '@/shared/components/VehicleConfirmDialog';
+
+/** Toast 打桩（vi.hoisted 保证 mock 工厂能用）：验「坏码明确提示、日常入口静默」 */
+const { mockToast } = vi.hoisted(() => ({ mockToast: vi.fn() }));
 
 const mockFetchQrcodeByScene = vi.fn();
 
@@ -36,9 +39,10 @@ vi.mock('@/shared/components/VehicleConfirmDialog', () => ({
 }));
 
 vi.mock('@/shared/components/ChatPanel', () => ({ default: () => <div data-testid="chat-panel" /> }));
-// 顶栏来自 tdesign：只保留 Navbar 一个最小替身（真实 tdesign 会让本文件收集阶段卡住）
+// 顶栏/提示来自 tdesign：只保留 Navbar + Toast 最小替身（真实 tdesign 会让本文件收集阶段卡住）
 vi.mock('tdesign-mobile-react', () => ({
   Navbar: ({ title }: { title?: ReactNode }) => <div>{title}</div>,
+  Toast: mockToast,
 }));
 vi.mock('@/shared/components/ConversationDrawer', () => ({ default: () => null }));
 vi.mock('@/shared/components/UserAvatarMenu', () => ({ default: () => null }));
@@ -48,7 +52,8 @@ import CallView, { resolveSceneCode } from '../call/CallView';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 
-const SCENE = 'proj_abc123def456';
+// 2026-09-30 起 scene = str(qrcodes.id)（纯数字），后端按它精确取扫码那一行
+const SCENE = '101';
 
 const publishedRecord = {
   scene_str: SCENE,
@@ -101,6 +106,7 @@ describe('resolveSceneCode（URL 场景值解析）', () => {
 describe('CallView 车体扫码进入', () => {
   beforeEach(() => {
     dialogProps = null;
+    mockToast.mockClear();
     mockFetchQrcodeByScene.mockReset();
     useAuthStore.setState({ username: 'bob', isAdmin: false });
     useWorkbenchStore.setState({
@@ -111,11 +117,12 @@ describe('CallView 车体扫码进入', () => {
     });
   });
 
-  it('未携带 scene：不发请求、不给弹窗，现有对话行为不变', async () => {
+  it('未携带 scene：不发请求、不提示、不给弹窗，现有对话行为不变', async () => {
     renderCall();
 
     await waitFor(() => expect(screen.getByTestId('chat-panel')).toBeInTheDocument());
     expect(mockFetchQrcodeByScene).not.toHaveBeenCalled();
+    expect(mockToast).not.toHaveBeenCalled();
     expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument();
   });
 
@@ -160,21 +167,29 @@ describe('CallView 车体扫码进入', () => {
     });
   });
 
-  it('非「已发布」状态：静默降级，不给弹窗', async () => {
+  it('非「已发布」状态：不弹弹窗，提示码不可用', async () => {
     mockFetchQrcodeByScene.mockResolvedValue({ ...publishedRecord, status: 'confirming' });
     renderCall(`?scene=${SCENE}`);
 
     // 等异步边界（打桩的查询）落地，再看 UI 结果
     await waitFor(() => expect(mockFetchQrcodeByScene).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument();
+    expect(mockToast).toHaveBeenCalledWith({
+      message: '该二维码未录入信息或不可用，请联系管理员',
+      theme: 'warning',
+    });
   });
 
-  it('查无此码（api 返回 null）：静默降级，不给弹窗', async () => {
+  it('查无此码（api 返回 null）：不弹弹窗，提示码不可用', async () => {
     mockFetchQrcodeByScene.mockResolvedValue(null);
     renderCall(`?scene=${SCENE}`);
 
     await waitFor(() => expect(mockFetchQrcodeByScene).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument();
+    expect(mockToast).toHaveBeenCalledWith({
+      message: '该二维码未录入信息或不可用，请联系管理员',
+      theme: 'warning',
+    });
   });
 
   it('处理过就把 scene 从地址栏摘掉（保留其它参数），避免切 Tab 回来重弹', async () => {

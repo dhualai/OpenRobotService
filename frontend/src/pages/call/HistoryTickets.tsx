@@ -6,8 +6,9 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button, Popup, DialogPlugin } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { Search } from 'lucide-react';
+import { Search, Star } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
+import { toggleTaskFollow } from '@/api/taskFollow';
 import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket, fetchRedispatch } from '@/api/ticket';
 import type { RedispatchCandidate } from '@/api/ticket';
 import RedispatchCandidateList from '@/shared/components/RedispatchCandidateList';
@@ -29,6 +30,8 @@ const PAGE_SIZE = 20;
 // 避免「返回后回到全部工单」而非保持筛选结果页。
 const HISTORY_FILTER_STATUS_KEY = 'call.history.statusFilter';
 const HISTORY_FILTER_SEARCH_KEY = 'call.history.search';
+// 「我关注的」开关（与状态筛选叠加）：同样随会话恢复，返回列表页保持上次视图
+const HISTORY_FILTER_FOLLOWED_KEY = 'call.history.followedOnly';
 
 const readSession = (key: string, fallback: string): string => {
   try { return sessionStorage.getItem(key) ?? fallback; } catch { return fallback; }
@@ -90,17 +93,26 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   // 筛选状态初值从 sessionStorage 恢复（详情页返回后保持上次筛选结果）
   const [search, setSearch] = useState(() => readSession(HISTORY_FILTER_SEARCH_KEY, ''));
   const [statusFilter, setStatusFilter] = useState(() => readSession(HISTORY_FILTER_STATUS_KEY, ''));
+  // 「我关注的」：与状态 tab 叠加的独立开关（关闭时不传该参数，后端行为与改造前一致）
+  const [followedOnly, setFollowedOnly] = useState(() => readSession(HISTORY_FILTER_FOLLOWED_KEY, '') === '1');
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
 
   // 构造筛选参数：admin 不过滤，其余按当前用户过滤；「全部」= 除已关闭外全部
   const buildFilters = useCallback(() => {
-    const f: { status?: string; keyword?: string; username?: string; exclude_status?: string } = {};
+    const f: {
+      status?: string; keyword?: string; username?: string; exclude_status?: string;
+      viewer?: string; followed?: boolean;
+    } = {};
     if (statusFilter) f.status = statusFilter;
     else f.exclude_status = 'closed';
     if (search.trim()) f.keyword = search.trim();
     if (!isAdmin && username) f.username = username;
+    // 关注维度与「看谁的工单」解耦：viewer 恒传当前登录用户（admin 虽不过滤创建者，
+    // 但仍需回填自己的星标态）；followed 为独立的「我关注的」开关，与状态筛选叠加。
+    if (username) f.viewer = username;
+    if (followedOnly) f.followed = true;
     return f;
-  }, [statusFilter, search, username, isAdmin]);
+  }, [statusFilter, search, username, isAdmin, followedOnly]);
 
   // 首屏 / 下拉刷新：重置分页
   const loadInitial = useCallback(async () => {
@@ -138,12 +150,16 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   // 筛选变化即持久化，返回列表页时恢复保持筛选结果
   useEffect(() => { writeSession(HISTORY_FILTER_SEARCH_KEY, search); }, [search]);
   useEffect(() => { writeSession(HISTORY_FILTER_STATUS_KEY, statusFilter); }, [statusFilter]);
+  useEffect(() => { writeSession(HISTORY_FILTER_FOLLOWED_KEY, followedOnly ? '1' : ''); }, [followedOnly]);
   const prevStatus = useRef(statusFilter);
+  const prevFollowed = useRef(followedOnly);
   useEffect(() => {
     const statusChanged = prevStatus.current !== statusFilter;
+    const followedChanged = prevFollowed.current !== followedOnly;
     prevStatus.current = statusFilter;
-    // status 切换 / search 为空 → 立即加载；search 非空 → 防抖（避免每次按键请求）
-    if (statusChanged || !search.trim()) {
+    prevFollowed.current = followedOnly;
+    // status / 我关注的 切换、或 search 为空 → 立即加载；search 非空 → 防抖（避免每次按键请求）
+    if (statusChanged || followedChanged || !search.trim()) {
       loadInitialRef.current();
       return;
     }
@@ -151,7 +167,20 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     return () => clearTimeout(t);
     // isAdmin 变化（刷新后 fetchUserDetails 异步回填，false→true）需重载：
     // admin 不加 username 过滤，避免首屏只显示自己创建的工单
-  }, [statusFilter, search, isAdmin]);
+  }, [statusFilter, search, isAdmin, followedOnly]);
+
+  // 星标关注切换：乐观更新 + 失败回滚（口径同系统任务页 TasksView.handleToggleFollow）。
+  // 正在「我关注的」视图里取消关注时，该卡片应从列表消失，静默重拉一次。
+  const handleToggleFollow = useCallback(async (id: number, follow: boolean) => {
+    setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, is_followed: follow } : t)));
+    const ok = await toggleTaskFollow(id, follow);
+    if (!ok) {
+      setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, is_followed: !follow } : t)));
+      Toast({ message: follow ? '关注失败，请重试' : '取消关注失败，请重试', theme: 'error' });
+      return;
+    }
+    if (followedOnly && !follow) loadInitialRef.current();
+  }, [followedOnly]);
 
   // 后端已按 keyword 搜索，前端无需再过滤
   const displayedTickets = tickets;
@@ -364,6 +393,20 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               </div>
             );
           })}
+          {/* 「我关注的」开关：放在状态 tabs 末尾，与状态筛选叠加（可查「我关注的 + 处理中」）。
+              用独立类名 + 星标图标与互斥单选的状态 tab 区分，避免被误读成单选。 */}
+          <div className="history-tab-wrap">
+            <button
+              type="button"
+              className={`history-tab history-tab--follow${followedOnly ? ' is-active' : ''}`}
+              aria-pressed={followedOnly}
+              title={followedOnly ? '不再只看我关注的' : '只看我关注的'}
+              onClick={() => setFollowedOnly((v) => !v)}
+            >
+              <Star size={13} strokeWidth={2} fill={followedOnly ? 'currentColor' : 'none'} />
+              我关注的
+            </button>
+          </div>
         </div>
       </div>
 
@@ -378,7 +421,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
         {loading ? (
           <Loading text="加载中…" />
         ) : displayedTickets.length === 0 ? (
-          <div className="history-tickets__empty">{search ? '无匹配工单' : '暂无历史工单'}</div>
+          <div className="history-tickets__empty">
+            {search ? '无匹配工单' : followedOnly ? '暂无关注的工单' : '暂无历史工单'}
+          </div>
         ) : (
           displayedTickets.map((t) => {
             const statusMeta = STATUS_META[t.status || ''] || { label: t.status || '', color: 'var(--muted-foreground)', bg: 'var(--secondary)' };
@@ -398,6 +443,18 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                 <TitleEllipsis text={t.title || '(无标题)'} lines={2} titleClassName="history-row__title" as="span" fontSize={14.5} lineHeight={1.4} />
                 <span className="history-row__id">#{t.id}</span>
                 <span className="history-row__date">{formatDateTime(t.created_at ?? '').slice(0, 10)}</span>
+                {/* 关注星标：视觉复用系统任务页的 .task-card2__star；
+                    stopPropagation 阻止冒泡到整行 onClick（避免点星标误开详情），乐观更新见 handleToggleFollow */}
+                <button
+                  type="button"
+                  className={`task-card2__star${t.is_followed ? ' is-followed' : ''}`}
+                  aria-label={t.is_followed ? '取消关注' : '添加关注'}
+                  title={t.is_followed ? '取消关注' : '添加关注'}
+                  aria-pressed={!!t.is_followed}
+                  onClick={(e) => { e.stopPropagation(); handleToggleFollow(t.id, !t.is_followed); }}
+                >
+                  <Star size={17} strokeWidth={2} fill={t.is_followed ? 'currentColor' : 'none'} />
+                </button>
               </div>
               {t.description && <span className="history-row__summary">{t.description}</span>}
               {t.project && <span className="history-row__project">所属项目：{t.project}</span>}

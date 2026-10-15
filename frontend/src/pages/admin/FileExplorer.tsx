@@ -78,7 +78,6 @@ export default function FileExplorer() {
   // 拉取当前层级的子节点。skipCache 保证文件列表实时性
   const fetchFolder = useCallback(
     async (crumb: Breadcrumb) => {
-      console.log('[FileExplorer] fetchFolder start, crumb=', crumb);
       setLoading(true);
       try {
         let children: ChildItem[];
@@ -93,7 +92,6 @@ export default function FileExplorer() {
             .catch(() => setFolderInfo(null));
         }
         const normalized = normalizeList<ChildItem>(children);
-        console.log('[FileExplorer] fetchFolder ok, count=', normalized.length, normalized);
         setItems(normalized);
       } catch (err) {
         console.error('[FileExplorer] fetchFolder error', err);
@@ -107,7 +105,6 @@ export default function FileExplorer() {
   );
 
   useEffect(() => {
-    console.log('[FileExplorer] mounted, breadcrumb=', breadcrumb);
     fetchFolder(breadcrumb[breadcrumb.length - 1]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

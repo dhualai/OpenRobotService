@@ -40,20 +40,28 @@ async def run_knowledge_worker(stop_event: asyncio.Event):
 
     while not stop_event.is_set():
         try:
-            candidates = [
-                row for row in solution_sink.load_candidates(limit=20)
+            # 两条路：closed 路（提炼评论 → pending 卡 → 人工放行）＋
+            # 归档路（归档审核通过 → 归档报告直接写 approved 卡）
+            jobs = [
+                (row, solution_sink.process_ticket)
+                for row in solution_sink.load_candidates(limit=20)
                 if fail_counts.get(row["id"], 0) < _FAIL_RETRY_LIMIT
             ]
-            if candidates:
-                logger.info(f"[knowledge] 待沉淀 {len(candidates)} 张工单")
+            jobs += [
+                (row, solution_sink.process_archived_ticket)
+                for row in solution_sink.load_archived_candidates(limit=20)
+                if fail_counts.get(row["id"], 0) < _FAIL_RETRY_LIMIT
+            ]
+            if jobs:
+                logger.info(f"[knowledge] 待沉淀 {len(jobs)} 张工单")
                 if retriever is None:
                     retriever = await get_retrieval_service()
-                for row in candidates:
+                for row, process in jobs:
                     if stop_event.is_set():
                         break
                     tid = row["id"]
                     try:
-                        status = await solution_sink.process_ticket(row, retriever)
+                        status = await process(row, retriever)
                         fail_counts.pop(tid, None)
                         logger.info(f"[knowledge] #{tid}: {status}")
                     except Exception as e:

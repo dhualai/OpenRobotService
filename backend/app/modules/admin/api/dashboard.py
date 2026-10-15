@@ -10,14 +10,17 @@
 - 工单统计：系统任务模块 tasks 表（app.models.task.Task）
 - 项目统计：admin 模块 projects 表（app.modules.admin.models_das.models.Project）
 
-所有接口支持 project_ids 查询参数（逗号分隔），用于按当前用户关联项目过滤：
+工单、项目统计接口支持 project_ids 查询参数（逗号分隔），用于按当前用户关联项目过滤：
 - 不传 project_ids：不过滤（向后兼容）
 - 传 project_ids（即使为空）：仅统计指定项目内的数据
+
+问题模块只读 external_record，当前仅对拥有全部项目查看权限的用户开放。
 """
 import asyncio
 import logging
 import re
 import time
+from datetime import date
 
 from fastapi import APIRouter, Depends, Query
 from starlette.concurrency import run_in_threadpool
@@ -30,10 +33,25 @@ from app.models.delivery import UNDERTAKE_PENDING, UNDERTAKE_YES
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
 from app.modules.admin.services.project_service import project_service, NO_TASK_EXECUTION_STATS
 from app.modules.admin.services.risk_service import risk_service
+from app.modules.admin.api.auth import require_permission
+from app.modules.admin.services.question_dashboard_service import get_questions
 
 dashboard_router = APIRouter(prefix="/dashboard", tags=["admin-dashboard"])
 
 logger = logging.getLogger(__name__)
+
+
+@dashboard_router.get("/questions", summary="按上报日期查询问题模块")
+async def get_dashboard_questions(
+    report_date: date = Query(...),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = require_permission("backend:project:all"),
+):
+    data = await get_questions(db, report_date, page, page_size)
+    return {"code": 0, "data": data}
+
 
 PROJECT_STAGE_MAP = {
     "pre_sales": ["售前方案"],

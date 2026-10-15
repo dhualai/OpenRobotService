@@ -33,7 +33,7 @@ const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
 ];
 import { parseBackendDayjs, formatBackendTime } from '@/shared/utils/time';
 import type { UserItem } from '@/api/users';
-import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
+import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent, updateConversationMeta, readVehicleTag } from '@/api/conversation';
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import { compressImage } from '@/shared/utils/imageCompress';
@@ -97,8 +97,16 @@ interface Message {
   // 车型追问/开场引导选项（0930）：气泡下方渲染可点按钮（不带序号），点击=发送
   // 选项全文（源自知识库，下轮检索 query 质量更好）；答后整组禁用，所选加深
   vehicle_choices?: Array<string> | null;
+  // 折叠的剩余类目（1012 v2）：仅开场题带，点「展开全部」后并入按钮组渲染
+  vehicle_collapsed?: Array<string> | null;
   // 开场大方向引导题标记：题面大字渲染（区别于追问条的普通题面）
   vehicleOpening?: boolean;
+  // 车型资料引导条标记（1012）：题面走普通渲染、不显示「其他情况」提示语
+  // （该提示语只属于「您遇到了什么问题」这类大方向题，引导条下面挂会误导）
+  vehicleGuide?: boolean;
+  // 车辆确认气泡标记（1014）：扫码确认后立即插入（confirm 响应前），
+  // confirm 成功时把车型介绍按钮回填到这条气泡上（合并展示，不再另开一条）
+  vehicleConfirm?: boolean;
   // 后端落库的 assistant 消息 DB id（event:message_created 回传）。不替换气泡 id
   // （流式闭包持续以本地 id 引用），仅作 mergeDbMessages 对账锚点——打字机排空
   // 未完时 content 与 DB 全文不等，role+content 匹配会失手产生幽灵重复气泡
@@ -197,10 +205,30 @@ const looksLikeJsonHead = (text: string): boolean => {
 };
 
 /** DB 会话消息 → 前端 Message：附件恢复 + AI 文本清洗 + 空白 AI 气泡过滤（历史异常数据不上屏） */
+/** 存量扫码会话自愈：会话里有车型引导消息（vehicle_confirm）但 metadata 缺
+ *  vehicle 角标（角标功能上线前的老会话）→ 从确认气泡 key-value 行提取车型名
+ *  回填 metadata。fire-and-forget：补写成功后下次拉列表即有角标，无需 SQL。 */
+function selfHealVehicleBadge(
+  full: { id: number; metadata_: string | null; messages?: Array<{ content: string; metadata_?: string | null }> },
+): void {
+  if (readVehicleTag(full)) return;
+  const confirmMsg = (full.messages || []).find((m) => (m.metadata_ || '').includes('vehicle_confirm'));
+  if (!confirmMsg) return;
+  const vehicle = /车型\*\*：(.+)/.exec(confirmMsg.content)?.[1]?.trim();
+  if (!vehicle) return;
+  let meta: Record<string, unknown> = {};
+  try {
+    let obj: unknown = full.metadata_ ? JSON.parse(full.metadata_) : {};
+    if (typeof obj === 'string') obj = JSON.parse(obj);
+    if (obj && typeof obj === 'object') meta = obj as Record<string, unknown>;
+  } catch { /* 空 metadata 兜底 */ }
+  meta.vehicle = vehicle;
+  void updateConversationMeta(full.id, meta);
+}
+
 const mapDbMessages = (
   full: { messages?: Array<{ id: number; role: string; content: string; created_at: string; file_urls?: string | null; message_type?: string; metadata_?: string | null }> },
-): Message[] => {
-  // metadata_ 经后端 safe_json_dumps 二次编码：可能是 对象 或 嵌套字符串，统一解析两次得到对象
+): Message[] => {  // metadata_ 经后端 safe_json_dumps 二次编码：可能是 对象 或 嵌套字符串，统一解析两次得到对象
   const parseMeta = (s?: string | null): Record<string, unknown> | null => {
     if (!s) return null;
     try {
@@ -238,11 +266,20 @@ const mapDbMessages = (
       if (Array.isArray(pc) && pc.length > 0) {
         msg.project_choices = pc as NonNullable<Message['project_choices']>;
       }
-      // 车型追问选项持久化恢复（metadata_.vehicle_choices，后端 SSE 落库，0930）
+      // 车型引导持久化恢复：追问选项（metadata_.vehicle_choices，后端 SSE 落库）+
+      // 开场题/确认气泡（1014 前端落库，见 registerVehicleModeNow）——按钮组、
+      // 折叠区、题面样式全部按 metadata 重建，切会话/刷新后引导不丢
       const vc = meta?.vehicle_choices;
       if (Array.isArray(vc) && vc.length > 0) {
         msg.vehicle_choices = vc as NonNullable<Message['vehicle_choices']>;
       }
+      const vcol = meta?.vehicle_collapsed;
+      if (Array.isArray(vcol) && vcol.length > 0) {
+        msg.vehicle_collapsed = vcol as NonNullable<Message['vehicle_collapsed']>;
+      }
+      if (meta?.vehicle_opening) msg.vehicleOpening = true;
+      if (meta?.vehicle_guide) msg.vehicleGuide = true;
+      if (meta?.vehicle_confirm) msg.vehicleConfirm = true;
       const extraMsgs: Message[] = [];
       if (m.file_urls) {
         try {
@@ -331,7 +368,7 @@ const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice, answered, selectedChoice, onVehicleChoice, vehicleAnswered, vehiclePicked,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice, answered, selectedChoice, onVehicleChoice, vehicleAnswered, vehiclePicked, vehicleExpanded, onToggleVehicleExpand,
   selectMode, checked, onCheck, onLongPress, selActive,
 }: {
   msg: Message;
@@ -357,6 +394,9 @@ const MessageBubble = memo(function MessageBubble({
   onVehicleChoice?: (msgId: string, choice: string) => void;
   vehicleAnswered?: boolean;
   vehiclePicked?: string;
+  // 开场题折叠态（1012 v2）：展开后常驻与折叠类目并排渲染，开关文案切「收起」
+  vehicleExpanded?: boolean;
+  onToggleVehicleExpand?: (msgId: string) => void;
   // 转发多选（0911）：多选模式下点击整条切换勾选；长按唤起操作菜单（复制/多选，微信式）
   selectMode?: boolean;
   checked?: boolean;
@@ -607,6 +647,12 @@ const MessageBubble = memo(function MessageBubble({
               // 发送选项全文；答后整组禁用、所选实心加深，打字走「其他」不打断。
               (() => {
                 const answeredV = vehicleAnswered ?? false;
+                const base = msg.vehicle_choices || [];
+                const collapsed = msg.vehicle_collapsed || [];
+                // 展开态、或「所选就在折叠里」时并排渲染折叠类目——答完后仍能看见
+                // 自己点的是哪一条（否则折叠组一收，选中的那条直接消失）
+                const showAll = (vehicleExpanded ?? false) || collapsed.includes(vehiclePicked ?? '');
+                const shown = showAll ? [...base, ...collapsed] : base;
                 return (
                   <>
                     {msg.vehicleOpening ? (
@@ -614,12 +660,12 @@ const MessageBubble = memo(function MessageBubble({
                     ) : (
                       <MarkdownRenderer content={msg.content} compact={compact} />
                     )}
-                    <div className="chat-veh-choices">
-                      {msg.vehicle_choices.map((c) => (
+                    <div className={`chat-veh-choices${msg.vehicleGuide ? ' chat-veh-choices--intro' : ''}`}>
+                      {shown.map((c) => (
                         <button
                           key={c}
                           type="button"
-                          className={`chat-veh-chip${answeredV ? (c === vehiclePicked ? ' chat-veh-chip--selected' : ' chat-veh-chip--done') : ''}`}
+                          className={`chat-veh-chip${msg.vehicleGuide ? ' chat-veh-chip--intro' : ''}${answeredV ? (c === vehiclePicked ? ' chat-veh-chip--selected' : ' chat-veh-chip--done') : ''}`}
                           disabled={answeredV}
                           onClick={() => onVehicleChoice?.(msg.id, c)}
                         >
@@ -627,7 +673,16 @@ const MessageBubble = memo(function MessageBubble({
                         </button>
                       ))}
                     </div>
-                    <div className="chat-veh-hint">若是其他情况，请在下方输入框描述</div>
+                    {collapsed.length > 0 && !answeredV && (
+                      <button
+                        type="button"
+                        className="chat-veh-expand"
+                        onClick={() => onToggleVehicleExpand?.(msg.id)}
+                      >
+                        {showAll ? '收起' : `展开全部（还有 ${collapsed.length} 类）`}
+                      </button>
+                    )}
+                    {!msg.vehicleGuide && <div className="chat-veh-hint">若是其他情况，请在下方输入框描述</div>}
                   </>
                 );
               })()
@@ -1248,6 +1303,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       return next;
     });
   }, []);
+  // 开场题「展开全部」折叠态（1012 v2）：与气泡长文本展开分开记，语义不混
+  const [expandedVehicleIds, setExpandedVehicleIds] = useState<Set<string>>(new Set());
+  const toggleVehicleExpanded = useCallback((id: string) => {
+    setExpandedVehicleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
@@ -1446,6 +1511,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 未落库消息覆盖丢失。会话消息只增不改，条数相同即一致，无需回滚。
       getConversation(conversationId).then((full) => {
         if (convRef.current !== conversationId) return; // 校正期间又切走了，丢弃
+        selfHealVehicleBadge(full);
         const fresh = mapDbMessages(full);
         // 增量合并（不再整体覆盖）：以本地顺序/身份为基准并入 DB 快照——既同步派单状态
         // （切走期间已派单/重新派单换人 → DB assigned_to_name 为准），又绝不丢未落库的
@@ -1467,6 +1533,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         const full = await getConversation(conversationId);
         if (cancelled) return;
         convRef.current = full.id;
+        selfHealVehicleBadge(full);
         // mapDbMessages 统一做：附件恢复 + AI 文本清洗（带 }/JSON 残留）+ 空白 AI 气泡过滤
         const restored: Message[] = mapDbMessages(full);
         // 增量合并而非整体替换：首轮问答完成触发会话定位（conversationId 从 null
@@ -1552,6 +1619,20 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 车体扫码进入：待注册「车型定制模式」的车辆身份（确认后记账，首次发送前注册掉即清空）
   const pendingVehicleModeRef = useRef<VehicleContext | null>(null);
 
+  // 确认气泡文案模板（渲染与落库共用）：key-value 分行 + 加粗标签——
+  // 标签挤在长句里没有标识性（1014 用户反馈「很随意」）
+  // MarkdownRenderer 只挂 remark-gfm（无 remark-breaks）：单 \n 是软换行会被合并
+  // 成一段（实测「项目一行、客户车型挤一行」）。key-value 行尾补两个空格 =
+  // markdown 标准硬换行，三行各占一行——这两个尾随空格是语义，别清理。
+  const vehicleConfirmText = (ctx: VehicleContext) =>
+    `**车辆信息已确认**\n\n**项目**：${ctx.projectName || '—'}  \n**客户**：${ctx.customerName || '—'}  \n**车型**：${ctx.vehicleModel || '—'}`;
+
+  // ensureConversation 的稳定引用（registerVehicleModeNow 是 useCallback([])，
+  // 直接闭包会锁死旧 sessionId；ref 转发与 pickVehicleChoiceRef 同款）
+  const ensureConvRef = useRef<(sid: string, firstContent: string, vehicle?: string) => Promise<number | null>>(
+    async () => null,
+  );
+
   // call 场景：扫码确认车辆信息后注入一条引导说明消息，并把车辆身份记下来待发送前注册。
   // 本 effect 必须声明在 [conversationId] 那个清空对话的 effect 之后：
   // 确认时 requestNewConversation() 与 setVehicleContext() 会被批到同一次 render，
@@ -1566,8 +1647,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         {
           id: uid(),
           role: 'assistant',
-          content: `已确认车辆信息：项目 ${ctx.projectName || '—'}、客户 ${ctx.customerName || '—'}、车型 ${ctx.vehicleModel || '—'}。\n接下来按该车型的引导流程协助你，直接描述现象或点下面的选项即可。`,
+          content: vehicleConfirmText(ctx),
           timestamp: new Date().toISOString(),
+          vehicleConfirm: true,
         },
       ]);
       // 确认即注册（0930 调整）：本地生成 sessionId 立即绑模式——原「发送前注册」
@@ -1595,38 +1677,89 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
    * 确认时本地生成 sid（ensureSessionId）即可立即注册；confirm 按 session_id
    * 幂等覆盖，此函数保留为发送前的兜底（pendingVehicleModeRef 已在确认时清空
    * 则直接 return，不重复调）。
-   * 注册失败（车型未建档 / 网络异常）只提示，不阻断用户提问。
+   * 注册失败（二维码不可用 / 网络异常）只提示，不阻断用户提问。
    */
   const registerVehicleModeNow = useCallback(async (ctx: VehicleContext, sid: string): Promise<void> => {
     pendingVehicleModeRef.current = null;
     try {
       const res = await qaModeConfirm({
         session_id: sid,
+        // scene = 行 id：后端据此精确取「扫的那一行」录入信息（车型/项目/客户）
+        scene: ctx.scene,
         model: ctx.vehicleModel,
         project_name: ctx.projectName,
         customer_name: ctx.customerName,
       });
       if (res?.code !== 0) {
-        Toast({ message: res?.message || '车型未建档，请确认扫码信息', theme: 'warning' });
+        Toast({ message: res?.message || '二维码不可用，请联系管理员', theme: 'warning' });
         return;
       }
       // SOP 外显按钮（0930）：除引导设施外一个文件一个气泡，点击在线查看
       if (res.data?.manual_docs?.length) {
         setVehicleSopDocs(res.data.manual_docs.map((d) => ({ title: d.title, url: d.url })));
       }
-      // 开场大方向引导题：confirm 响应直出，本地渲染气泡（demo 阶段不落库，
-      // 刷新后开场题不再显示，转正时再持久化）。
+      // 开场引导（1014 转正：confirm 响应直出 + 落库持久化，切会话/刷新后仍在）。
+      // ① 车型介绍按钮回填到确认气泡上（合并成一条——用户反馈三条气泡太多）；
+      // ② 大方向题独立气泡照旧；③ 两条消息带 metadata 落库，历史恢复靠同一
+      // metadata 重建（后端 SSE 落库的追问选项走同一条恢复链路）。
+      const guide = res.data?.vehicle_guide;
       const op = res.data?.opening;
+      const confirmContent = vehicleConfirmText(ctx);
+      if (guide?.choices?.length) {
+        setMessages((prev) => prev.map((m) => (
+          m.vehicleConfirm
+            ? { ...m, vehicle_choices: guide.choices, vehicleGuide: true }
+            : m
+        )));
+      }
+      const openingMsgs: Message[] = [];
       if (op?.choices?.length) {
-        setMessages((prev) => [...prev, {
+        openingMsgs.push({
           id: uid(),
           role: 'assistant',
           content: op.question,
           timestamp: new Date().toISOString(),
           vehicle_choices: op.choices,
+          vehicle_collapsed: op.collapsed_choices || [],
           vehicleOpening: true,
-        }]);
+        });
       }
+      if (openingMsgs.length) {
+        setMessages((prev) => [...prev, ...openingMsgs]);
+        // 扫码确认后的引导气泡是新会话的第一批消息：沿用「追加即贴底」会把
+        // 「车辆信息已确认」顶出视口上方（开场题+折叠区内容长，实测首屏只剩
+        // 尾部）。引导该从上往下读——强制回顶部。双层 rAF 等批量 setMessages
+        // commit 完成后执行；atBottom 同步置 false，防后续追加 effect 再拉底。
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const el = messagesContainerRef.current;
+          if (el) {
+            el.scrollTop = 0;
+            atBottomRef.current = false;
+          }
+        }));
+      }
+      // 落库（增强路径，失败静默——本地渲染不受影响，只是刷新后引导气泡不再显示）
+      void (async () => {
+        try {
+          const convId = await ensureConvRef.current(sid, '车型引导', ctx.vehicleModel);
+          if (!convId) return;
+          await appendMessage(convId, 'assistant', confirmContent, {
+            metadata: JSON.stringify({
+              ...(guide?.choices?.length ? { vehicle_choices: guide.choices, vehicle_guide: true } : {}),
+              vehicle_confirm: true,
+            }),
+          });
+          if (op?.choices?.length) {
+            await appendMessage(convId, 'assistant', op.question, {
+              metadata: JSON.stringify({
+                vehicle_choices: op.choices,
+                vehicle_collapsed: op.collapsed_choices || [],
+                vehicle_opening: true,
+              }),
+            });
+          }
+        } catch { /* 落库失败不阻塞引导渲染 */ }
+      })();
     } catch {
       Toast({ message: '车型引导模式注册失败，已按常规问答继续', theme: 'warning' });
     }
@@ -1650,13 +1783,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   }, [sessionId, newSessionId]);
 
   /** 确保 DB 会话存在：首条消息时创建（title 用占位「新会话」，第2轮由 AI 生成后同步），后续复用 convRef */
-  const ensureConversation = async (sid: string, firstContent: string): Promise<number | null> => {
+  const ensureConversation = async (sid: string, firstContent: string, vehicle?: string): Promise<number | null> => {
+    // vehicle 标记只在首次建会话时写入（后续 send 复用 convRef 不会覆盖）
     if (convRef.current) return convRef.current;
     try {
       const conv = await createConversation({
         title: '新会话',
         scene,
         aiSessionId: sid,
+        vehicle,
       });
       convRef.current = conv.id;
       return conv.id;
@@ -1664,6 +1799,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       return null;
     }
   };
+  ensureConvRef.current = ensureConversation;
 
   /** 带附件发送：文件(可附文字)一起上传 /qa/upload（SSE 流式），逐步推送 VLM 分析 + 诊断。
    * 方案一（乐观渲染）：点发送即插入用户气泡（附件+文字，内嵌上传进度遮罩）+ AI 分析占位气泡，
@@ -3343,7 +3479,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             if (nextUserV) {
               vehicleAnswered = true;
               const tv = (nextUserV.content || '').trim();
-              if (msg.vehicle_choices.includes(tv)) vehiclePicked = tv;
+              // 折叠类目也算命中：用户展开后点的那条要能在收起时保持加深显示
+              if ([...msg.vehicle_choices, ...(msg.vehicle_collapsed || [])].includes(tv)) vehiclePicked = tv;
             }
           }
           return (
@@ -3367,6 +3504,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onVehicleChoice={handleVehicleChoice}
             vehicleAnswered={vehicleAnswered}
             vehiclePicked={vehiclePicked}
+            vehicleExpanded={expandedVehicleIds.has(msg.id)}
+            onToggleVehicleExpand={toggleVehicleExpanded}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
             selectMode={isCall && selectMode}

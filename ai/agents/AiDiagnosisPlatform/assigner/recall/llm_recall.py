@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.tags import llm_person_label, match_engineer_from_llm
+from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import normalize_usp_station
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
@@ -80,26 +81,39 @@ class LlmRecall:
         engineers: List[EngineerProfile],
         top_min: int,
         top_max: int,
-    ) -> Tuple[Dict[str, float], Dict[str, str]]:
-        """对一组工程师调 LLM；按 top_max 封顶，不强制凑到 top_min。失败返回空。"""
+        dialogue=None,
+        product: str = "",
+        station: str = "",
+    ) -> Tuple[Dict[str, float], Dict[str, str], str]:
+        """对一组工程师调 LLM；按 top_max 封顶，不强制凑到 top_min。失败返回空。
+
+        第三项是本批写出的停站。调度USP 以外为空。
+        """
         if not engineers:
-            return {}, {}
+            return {}, {}, ""
         hi = min(max(1, top_max), len(engineers))
         lo = min(max(1, top_min), hi)
-        prompt = self._build_prompt(ticket, engineers, top_min=lo, top_max=hi)
+        prompt = self._build_prompt(
+            ticket, engineers, top_min=lo, top_max=hi,
+            product=product, station=station,
+        )
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
-            response = await llm.complete(prompt, max_tokens=1200, temperature=0.0)
+            if dialogue is not None:
+                response = await dialogue.complete(llm, prompt, max_tokens=1200, temperature=0.0)
+            else:
+                response = await llm.complete(prompt, max_tokens=1200, temperature=0.0)
             logger.info(
                 f"[派单:{ticket.id}] Step3 画像 LLM原始输出"
                 f"(候选{len(engineers)}人,要{lo}～{hi}): {response[:800]}"
             )
             scores, reasons = self._parse(response, engineers)
-            return self._clip_top(scores, reasons, hi)
+            named = self._read_station(response)
+            return self._clip_top(scores, reasons, hi) + (named,)
         except Exception as e:
             logger.warning(f"[派单:{ticket.id}] Step3 画像召回失败: {e}")
-            return {}, {}
+            return {}, {}, ""
 
     @staticmethod
     def unpack_arecall(result) -> Tuple[Dict[str, float], Dict[str, str]]:
@@ -120,6 +134,7 @@ class LlmRecall:
 
     async def arecall(
         self, ticket: TicketContext, engineers: List[EngineerProfile],
+        dialogue=None, product: str = "",
     ) -> Tuple[Dict[str, float], Dict[str, str]]:
         """人少单轮按 3～6 选；人多分批每批 2～4，合并后全部进精排，不再决选。"""
         self.last_reasons = {}
@@ -128,17 +143,22 @@ class LlmRecall:
 
         n = len(engineers)
         reasons: Dict[str, str] = {}
+        locked = ""
 
         if n <= self._single_round_max:
-            scores, reasons = await self._llm_score_batch(
+            scores, reasons, named = self._unpack_batch(await self._llm_score_batch(
                 ticket, engineers,
                 top_min=self._single_top_min,
                 top_max=self._single_top_max,
-            )
+                dialogue=dialogue,
+                product=product,
+            ))
+            locked = self._lock_station(ticket, dialogue, locked, named)
             self.last_reasons = reasons
             logger.info(
                 f"[派单:{ticket.id}] Step3 画像 单轮 {self._single_top_min}～"
                 f"{self._single_top_max} 人数={n} 输出={len(scores)}人"
+                + (f" 停站={locked}" if locked else "")
             )
             return scores, reasons
 
@@ -153,11 +173,15 @@ class LlmRecall:
             f"（合并后全部进精排，不再决选）"
         )
         for bi, batch in enumerate(batches, 1):
-            scores, batch_reasons = await self._llm_score_batch(
+            scores, batch_reasons, named = self._unpack_batch(await self._llm_score_batch(
                 ticket, batch,
                 top_min=self._batch_top_min,
                 top_max=self._batch_top_max,
-            )
+                dialogue=dialogue,
+                product=product,
+                station=locked,
+            ))
+            locked = self._lock_station(ticket, dialogue, locked, named)
             hi = min(self._batch_top_max, len(batch))
             top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:hi]
             stage1.update(dict(top))
@@ -183,6 +207,7 @@ class LlmRecall:
         logger.info(
             f"[派单:{ticket.id}] Step3 画像 分批合并 {n}→{len(scores)}人"
             f"（各批最多 Top{self._batch_top_max} 全保留）"
+            + (f" 停站={locked}" if locked else "")
         )
         return scores, reasons
 
@@ -196,7 +221,8 @@ class LlmRecall:
         return dict(stage1), {eid: (reasons or {}).get(eid, "") for eid in stage1}
 
     def _build_prompt(
-        self, ticket, engineers, top_min: int = 3, top_max: int = 6, top_k: int | None = None,
+        self, ticket, engineers, top_min: int = 3, top_max: int = 6,
+        top_k: int | None = None, product: str = "", station: str = "",
     ):
         """top_k 仅兼容旧调用：当作 top_max，且 top_min=top_max（钉死人数的旧测例）。"""
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.step3 import build_l1
@@ -209,7 +235,44 @@ class LlmRecall:
             top_max=top_max,
             keywords_map=getattr(self._config, "module_keywords", None),
             anchors_map=getattr(self._config, "module_anchor_texts", None),
+            product=product,
+            station=station,
         )
+
+    @staticmethod
+    def _unpack_batch(packed) -> Tuple[Dict[str, float], Dict[str, str], str]:
+        """兼容只返回分数和理由的测试替身。"""
+        if not packed:
+            return {}, {}, ""
+        scores = packed[0] if len(packed) > 0 else {}
+        reasons = packed[1] if len(packed) > 1 else {}
+        station = packed[2] if len(packed) > 2 else ""
+        return dict(scores or {}), dict(reasons or {}), str(station or "")
+
+    def _lock_station(self, ticket, dialogue, locked: str, named: str) -> str:
+        """第一批写出的停站固定下来，后面各批和 Step6 沿用。"""
+        if locked or not named:
+            return locked
+        logger.info(f"[派单:{ticket.id}] Step3 本单停站: {named}")
+        if dialogue is not None:
+            dialogue.note(
+                "本单停站",
+                f"这张单停在「{named}」。后面各批和最终选人都按这一站看责任模块，不要改站。",
+            )
+        return named
+
+    @staticmethod
+    def _read_station(response: str) -> str:
+        m = re.search(r"\{.*\}", response or "", re.DOTALL)
+        if not m:
+            return ""
+        try:
+            data = json.loads(m.group())
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        return normalize_usp_station(str(data.get("station") or ""))
 
     def _parse(
         self, response: str, engineers: List[EngineerProfile],

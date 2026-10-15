@@ -132,6 +132,47 @@ async def get_pipeline() -> AiDiagnosisPlatform:
     return await get_diagnosis_platform()
 
 
+archive_router = APIRouter(prefix="/api/ai/archive", tags=["archive-ai"])
+
+
+class ArchiveGenerateRequest(BaseModel):
+    task_id: int
+
+
+@archive_router.post("/generate/stream", summary="归档报告 AI 初稿（SSE 流式生成）")
+async def archive_generate_stream(
+    req: ArchiveGenerateRequest,
+    http_req: Request,
+):
+    """处理人点「开始归档」后由前端调用。SSE 事件：
+    status{msg} / title{text} / delta{text} / done{report_id,version,chars}
+    / error{msg} / skipped{msg}（处理人已手写，AI 初稿弃用）。
+
+    生成与连接解耦：断开后台任务照常完成落库；同单进行中 409（前端走轮询兜底）。"""
+    username, _ = _current_user(http_req)
+    if not username:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+    from ai.core import archive_flow
+    queue: asyncio.Queue = asyncio.Queue()
+    ok = archive_flow.spawn_generation(req.task_id, queue, username)
+    if not ok:
+        raise HTTPException(status_code=409, detail="该工单报告正在生成中")
+
+    async def sse():
+        import asyncio as _aio
+        try:
+            while True:
+                ev = await queue.get()
+                yield f"event: {ev['type']}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                if ev["type"] in ("done", "error"):
+                    break
+        except _aio.CancelledError:
+            # 连接断开：后台任务继续完成落库，前端走轮询兜底
+            return
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
 def _current_user(request: Request) -> tuple[str, bool]:
     """从 Authorization 头解出 (username, is_admin)；无效/缺失返回 ('', False)。"""
     auth = request.headers.get("Authorization", "")
@@ -1414,15 +1455,19 @@ async def list_all_tickets(
     keyword: str = Query("", description="模糊搜索标题/描述"),
     username: str = Query("", description="按创建者用户名过滤"),
     exclude_status: str = Query("", description="排除的状态，逗号分隔（如 closed）"),
+    viewer: str = Query("", description="当前登录用户 username（关注态回填 +「我关注的」筛选）"),
+    followed: bool = Query(False, description="只看 viewer 关注的工单（当前登录用户的收藏）"),
 ) -> dict:
     """查询 tasks 表，分页返回所有历史工单（含 AI 生成与系统手动创建）
     
     当 username 参数不为空时，只返回该用户创建的工单（created_by 字段匹配）。
     支持 source='ai'（AI 生成）和 source='manual'（系统任务手动创建）两类工单。
+    viewer 为当前登录用户，与 username（看谁的工单）语义解耦：关注是「谁的收藏夹」，
+    只由 viewer 决定，用于 followed 过滤与每条工单的 is_followed 回填。
     """
     try:
         from ai.core.task_adapter import task_to_dict
-        from app.models.task import Task, TaskStatus, TaskType
+        from app.models.task import Task, TaskFollower, TaskStatus, TaskType
         from app.models.task_proxy_relation import TaskProxyRelation
         from app.core.db import SessionLocal
         from app.core.user_identity import identity_keys
@@ -1456,7 +1501,22 @@ async def list_all_tickets(
                     return query.filter(own)
                 return query.filter(or_(own, Task.id.in_(_principal_task_ids)))
 
-            q = _apply_owner_filter(db.query(Task).filter(Task.source.in_(["ai", "manual"])))
+            # 「我关注的」：只看 viewer 在 task_followers 中登记的工单。
+            # viewer（谁的收藏夹）与 username（看谁的工单）解耦；与归属过滤 AND 叠加，
+            # 不因关注而突破「非 admin 只看与自己相关工单」的隔离口径。
+            def _apply_followed_filter(query):
+                if not followed:
+                    return query
+                if not viewer:
+                    # 无用户上下文（未登录/未传 viewer）不命中任何工单，避免退化成全量下发
+                    return query.filter(Task.id.is_(None))
+                return query.filter(Task.id.in_(
+                    db.query(TaskFollower.task_id).filter(TaskFollower.username == viewer)
+                ))
+
+            q = _apply_followed_filter(
+                _apply_owner_filter(db.query(Task).filter(Task.source.in_(["ai", "manual"])))
+            )
             # status/type 字符串 → 枚举；非法值（如旧值 dispatched）降级为不过滤
             if status:
                 try:
@@ -1484,11 +1544,12 @@ async def list_all_tickets(
                         q = q.filter(Task.status != TaskStatus(s))
                     except ValueError:
                         pass
-            # 各状态数量分布（口径：source + username，不含 status/type/keyword/exclude 等筛选），
-            # 复用本接口一并返回，供前端各状态 Tab 计数与 badge 使用，无需额外统计接口
-            stat_q = _apply_owner_filter(
+            # 各状态数量分布（口径：source + username + followed，不含 status/type/keyword/exclude 等筛选），
+            # 复用本接口一并返回，供前端各状态 Tab 计数与 badge 使用，无需额外统计接口。
+            # 含 followed：勾选「我关注的」后 Tab 角标与列表同步收敛，避免「角标 42 / 列表 3 条」。
+            stat_q = _apply_followed_filter(_apply_owner_filter(
                 db.query(Task.status, func.count(Task.id)).filter(Task.source.in_(["ai", "manual"]))
-            )
+            ))
             by_status = {s.value: 0 for s in TaskStatus}
             for st, cnt in stat_q.group_by(Task.status).all():
                 key = st.value if isinstance(st, TaskStatus) else st
@@ -1502,6 +1563,17 @@ async def list_all_tickets(
             # 二次派单感知增强（M3）：批量取各工单最新一条派单日志 → redispatch_tip（避免 N+1）
             from app.models.task_dispatch_log import TaskDispatchLog
             _ids = [r.id for r in rows]
+
+            # 关注态回填（卡片星标）：一次 IN 查询，避免 N+1。
+            # 仅 viewer 非空时回填——未传 viewer 的调用方（如 admin 代理）保持原响应形态。
+            followed_ids: set = set()
+            if viewer and _ids:
+                followed_ids = {
+                    row[0] for row in db.query(TaskFollower.task_id).filter(
+                        TaskFollower.username == viewer,
+                        TaskFollower.task_id.in_(_ids),
+                    ).all()
+                }
 
             # 代他人提单（代理关系）：批量回填，单次 IN 查询避免 N+1。
             # 视角标记按当前登录用户判定；姓名仅对参与人下发（脱敏口径与
@@ -1573,6 +1645,8 @@ async def list_all_tickets(
                     "assigned_to_name": user_map.get(assigned_to, assigned_to) if assigned_to else "",
                     # 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null）
                     "redispatch_tip": tip_map.get(r.id) or None,
+                    # 关注态（卡片星标）：viewer 是否已关注本工单；未传 viewer 时恒为 False
+                    "is_followed": r.id in followed_ids,
                     # 评论区参与人头像堆叠（发起人 | 堆叠 | 处理人），
                     # 复用后端同一聚合服务，保证两个列表口径一致（含红点 has_unread）。
                     "participants": participants_map.get(r.id, []),

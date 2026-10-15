@@ -169,7 +169,8 @@ class TestProductAppendix:
             [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
         )
         assert "【产品附录 · 调度USP】" in prompt
-        assert "地面侧" in prompt
+        assert "规划路径中" in prompt
+        assert "任务分配挑车" in prompt
         assert "本产品暂无额外规则" not in prompt
         assert "【产品附录 · 摇人吧服务号】" not in prompt
 
@@ -232,12 +233,13 @@ class TestParseExits:
         assert low.decision_type == "fallback"
 
     def test_usp_appendix_has_symptom_hints(self):
-        """正常流程：调度USP 附录含路径/锁区现象对照。"""
+        """正常流程：调度USP 附录用同一份链路说明。"""
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.step6 import build_product_appendix
         text = build_product_appendix("调度USP")
-        assert "NO_SOLUTION" in text
-        assert "路径规划" in text
-        assert "锁区" in text
+        assert "【调度USP】" in text
+        assert "规划路径中" in text
+        assert "路径下发到车" in text
+
     def test_can_decide_false_is_none(self):
         """异常流程：can_decide=false → None，即使填了人。"""
         out = LlmDecision(_cfg())._parse(

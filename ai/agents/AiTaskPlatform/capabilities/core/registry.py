@@ -4,12 +4,13 @@
 - key 用 module.QualifiedName 保证唯一
 - list_available() 只返回当前环境可用能力（过滤 is_available()==False）
 - match_by_tags() 供 Router / Orchestrator 按标签/描述匹配能力（衔接 G1）
-- get_singleton() 复用能力单例（如 code_skill 的单例懒加载索引）
+- get() 每次新建实例（不复用）：能力实例上的用量计数因此**不会跨调用累计**，
+  所以 `max_usage_per_session` 从未生效过（详见 AiTaskPlatform/issues.md #10）
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional, Type, TYPE_CHECKING
+from typing import Optional, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability
@@ -44,17 +45,28 @@ class CapabilityRegistry:
 
     @classmethod
     def get(cls, name: str) -> Optional["BaseCapability"]:
-        """取能力实例。优先复用单例（能力类可提供 _instantiate）。"""
+        """取能力实例（每次新建）。
+
+        注：这里曾有一个 `_instantiate` 自定义实例化钩子（注释称 code_skill 用它复用
+        单例），但全仓无任何能力类实现该属性，分支恒不生效；code_search 实际是在
+        run() 内部自取 get_code_skill() 单例。已删除该死分支，避免误以为实例被复用。
+        """
         cap_cls = cls._capabilities.get(name)
         if cap_cls is None:
             return None
-        # 支持能力类自定义实例化（如 code_skill 用 get_code_skill() 单例）
-        inst_factory = getattr(cap_cls, "_instantiate", None)
-        if callable(inst_factory):
-            inst = inst_factory()
-        else:
-            inst = cap_cls()
-        return inst
+        return cap_cls()
+
+    @classmethod
+    def limit_of(cls, name: str) -> Optional[int]:
+        """读能力类声明的「每次请求调度上限」（不实例化能力类）。None = 不限。
+
+        供 `capabilities/core/usage.py` 的配额机制使用。刻意读类属性：能力实例每次
+        新建，任何挂在实例上的计数都活不过一次调用（issues.md #10）。
+        """
+        cap_cls = cls._capabilities.get(name)
+        if cap_cls is None:
+            return None
+        return getattr(cap_cls, "max_usage_per_session", None)
 
     @classmethod
     def match_by_tags(cls, query: str) -> list[str]:

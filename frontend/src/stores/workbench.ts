@@ -26,7 +26,7 @@ export interface ChatContext {
 
 /** 车体扫码确认后的车辆上下文（CallView 写入 → ChatPanel 消费后置空） */
 export interface VehicleContext {
-  /** 本次扫码的场景值（scene_str），仅作追溯用 */
+  /** 本次扫码的场景值（= str(qrcodes.id)）：注册车型模式时按它精确取扫码那一行录入信息 */
   scene: string;
   /** 项目名称（缺值传空串，UI 层显示占位符） */
   projectName: string;

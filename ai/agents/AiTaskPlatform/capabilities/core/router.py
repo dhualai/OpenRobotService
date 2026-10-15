@@ -60,8 +60,12 @@ class Router:
             "- history       : 查历史相似工单/参考以前案例\n"
             "- code          : 要看代码/源码/实现逻辑\n"
             "- general       : 综合问题，需要知识库/方案建议\n\n"
+            "# 另一个字段（顺带判，不要为它多花心思）\n"
+            "- challenge：用户是否在**质疑/推翻此前的结论**"
+            "（「你上次分析错了」「不对吧」「重新看一遍」「之前那个判断有问题」）。\n"
+            "  仅在明确质疑时 true；追问细节、补充信息、换个问法都算 false。\n\n"
             "输出 JSON（无其他文字）：\n"
-            '{"intent": "<one of>", "confidence": 0.0~1.0}'
+            '{"intent": "<one of>", "confidence": 0.0~1.0, "challenge": true|false}'
         )
 
     @staticmethod
@@ -80,8 +84,48 @@ class Router:
         except Exception:
             return None
         if isinstance(data, dict) and data.get("intent") in INTENTS:
-            return {"intent": data["intent"], "confidence": float(data.get("confidence", 0))}
+            return {
+                "intent": data["intent"],
+                "confidence": float(data.get("confidence", 0)),
+                # challenge：用户是否在质疑此前的结论。分类器没给就按「不是」处理（保守）。
+                "challenge": bool(data.get("challenge", False)),
+            }
         return None
+
+    @classmethod
+    async def classify_full(
+        cls,
+        llm_client,
+        query: str,
+        has_attachments: bool = False,
+        has_logs: bool = False,
+    ) -> Optional[dict]:
+        """完整分类结果：{"intent","confidence","challenge"}。
+
+        调用失败 / 解析失败 / 置信度低于阈值 → **返回 None**，调用方须回退到
+        关键词或默认行为（这是本模块的既定约定，不要在这里编一个默认值糊过去）。
+        """
+        if not query or not llm_client:
+            return None
+        try:
+            raw = await llm_client.complete(
+                prompt=cls._build_prompt(query, has_attachments, has_logs),
+                system_prompt=cls._SYSTEM_PROMPT,
+                max_tokens=60,
+                temperature=0.0,
+            )
+        except Exception as e:
+            logger.warning(f"[router] 意图分类失败: {e}")
+            return None
+
+        parsed = cls._parse(raw)
+        if parsed is None:
+            logger.warning("[router] 意图解析失败")
+            return None
+        if parsed["confidence"] < CONFIDENCE_THRESHOLD:
+            logger.info(f"[router] 置信度低({parsed['confidence']})，交由调用方回退")
+            return None
+        return parsed
 
     @classmethod
     async def classify(
@@ -92,28 +136,6 @@ class Router:
         has_logs: bool = False,
         fallback: str = "general",
     ) -> str:
-        """对 query 做意图分类，返回 intent 字符串。
-
-        解析失败或置信度低于阈值 → 返回 fallback（默认 general）。
-        """
-        if not query or not llm_client:
-            return fallback
-        try:
-            raw = await llm_client.complete(
-                prompt=cls._build_prompt(query, has_attachments, has_logs),
-                system_prompt=cls._SYSTEM_PROMPT,
-                max_tokens=40,
-                temperature=0.0,
-            )
-        except Exception as e:
-            logger.warning(f"[router] 意图分类失败，回退 {fallback}: {e}")
-            return fallback
-
-        parsed = cls._parse(raw)
-        if parsed is None:
-            logger.warning("[router] 意图解析失败，回退 general")
-            return fallback
-        if parsed["confidence"] < CONFIDENCE_THRESHOLD:
-            logger.info(f"[router] 置信度低({parsed['confidence']})，回退 {fallback}")
-            return fallback
-        return parsed["intent"]
+        """只要 intent 的便捷入口；拿不到就返回 fallback。"""
+        full = await cls.classify_full(llm_client, query, has_attachments, has_logs)
+        return full["intent"] if full else fallback

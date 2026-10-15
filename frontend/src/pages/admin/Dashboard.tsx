@@ -302,7 +302,7 @@ export default function Dashboard() {
             <div style={{ textAlign: 'center', fontSize: 13, color: '#999', padding: '8px 0 12px' }}>数据资源</div>
             {canReadResource && (
               <div
-                onClick={() => { console.log('[Dashboard] click 资源管理 → navigate /admin/file-explorer'); setDataResourceSheetVisible(false); navigate('/admin/file-explorer'); }}
+                onClick={() => { setDataResourceSheetVisible(false); navigate('/admin/file-explorer'); }}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 8px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
               >
                 <span style={{ fontSize: 18 }}>🗂️</span>

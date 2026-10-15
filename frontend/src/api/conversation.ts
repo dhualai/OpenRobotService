@@ -53,8 +53,11 @@ export function readAiSessionId(conv: { metadata_: string | null; service_ticket
   return conv.service_ticket_id || '';
 }
 
-/** 创建会话 */
-export const createConversation = (params: { title: string; scene: ChatScene; aiSessionId?: string }) => {
+/** 创建会话。vehicle：车型定制会话标记（如 XQE），历史列表渲染角标用 */
+export const createConversation = (params: { title: string; scene: ChatScene; aiSessionId?: string; vehicle?: string }) => {
+  const meta: Record<string, unknown> = {};
+  if (params.aiSessionId) meta.ai_session_id = params.aiSessionId;
+  if (params.vehicle) meta.vehicle = params.vehicle;
   return request<Conversation>('/conversations', {
     method: 'POST',
     body: JSON.stringify({
@@ -62,10 +65,32 @@ export const createConversation = (params: { title: string; scene: ChatScene; ai
       user_id: '', // 后端按 token 覆盖
       service_ticket_id: params.aiSessionId || '', // 纯聊天会话用 aiSessionId 占位，建立会话↔session 映射（rename_conversation 按此查）
       scene_type: SCENE_TO_DB[params.scene],
-      metadata_: params.aiSessionId ? JSON.stringify({ ai_session_id: params.aiSessionId }) : null,
+      metadata_: Object.keys(meta).length ? JSON.stringify(meta) : null,
     }),
   });
 };
+
+/** 车型定制会话标记（metadata_.vehicle，列表角标用）。后端 safe_json_dumps 会把
+ *  metadata_ 再编码一层，读取照 readAiSessionId 同款双 parse 兜底。 */
+export function readVehicleTag(conv: { metadata_: string | null }): string {
+  if (!conv.metadata_) return '';
+  try {
+    let obj: unknown = JSON.parse(conv.metadata_);
+    if (typeof obj === 'string') obj = JSON.parse(obj);
+    const v = (obj as Record<string, unknown> | null)?.vehicle;
+    return typeof v === 'string' ? v : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 补写会话 metadata（自愈：存量扫码会话缺 vehicle 角标时，恢复时检测到引导
+ *  消息即回填；只传 metadata_，title 等其余字段不动）。 */
+export const updateConversationMeta = (id: number, meta: Record<string, unknown>) =>
+  request<Conversation>(`/conversations/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ metadata_: JSON.stringify(meta) }),
+  });
 
 /** 当前用户在指定场景下的会话列表（最新在前）；skipCache 确保删除/新建后列表是最新的 */
 export const listMyConversations = (scene: ChatScene, limit = 5) =>

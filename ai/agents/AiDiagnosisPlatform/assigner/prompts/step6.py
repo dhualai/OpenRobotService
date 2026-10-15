@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import (
+    USP_DISPATCH_BRIEF,
     feature_role_routing_guidance,
     person_anti_hallucination,
 )
@@ -52,15 +53,7 @@ PRODUCT_SCOPES = {
         "按子界面区分（我要摇人 / 系统任务 / 后台管理 / Agent / 数据分析），"
         "不要硬套前端/后端。下列负责人仅供参考，不是强制派给。"
     ),
-    "调度USP": (
-        "地面侧：任务下发/阻塞、路径规划、锁区、地图路网。"
-        "不是车上软件，也不是能拧的硬件。\n"
-        "现象对照（辅助认模块，不替代候选人卡片）：\n"
-        "  - 路径无解 / NO_SOLUTION / DPP失败 / 路径拒收 → 路径规划、锁区、动态地图\n"
-        "  - 任务分不出去 / 拍卖 / 任务池 → 任务管理\n"
-        "  - 不在地图层 / LOCATE FAILED / 非强连通 → 地图与上轨\n"
-        "按界面/功能对照候选人卡片判断谁能接，不要硬套前端/后端。"
-    ),
+    "调度USP": USP_DISPATCH_BRIEF,
     "车端软件": (
         "车上跑的：定位/SLAM、雷达、控制器、车载通信。"
         "不是地面调度，也不是能拧的硬件。\n"

@@ -39,6 +39,7 @@
 | `DEPLOY_TEST_HEALTH_URLS` | Variable | 否 | 见「健康检查默认地址」 |
 | `DEPLOY_PROD_HEALTH_URLS` | Variable | 否 | 见「健康检查默认地址」 |
 | `DEPLOY_BACKUP_KEEP` | Variable | 否 | 保留备份份数，缺省 `10` |
+| `DEPLOY_SCHEMA_MODE` | Variable | 否 | 后端部署前的数据库结构处理：`off` / `check`（默认 prod）/ `sync`（默认 test）。见「数据库结构门禁」 |
 
 即 **零新增配置也能直接跑**：SSH 连接信息从既有的 `UI_REGRESSION_*` 回退，健康地址内置实测默认值。
 
@@ -83,13 +84,36 @@
 
 1. **guard**：校验生产确认词，解析分支与健康检查地址，输出「部署计划」表格；
 2. **gate**：`backend|all → pytest --ignore=tests/tasks`、`frontend|all → vitest run`；
-   失败即硬拦（不构建不部署）。`ai` 组件无自动门禁（`ai/tests` 依赖外部服务），需人工验证；
+   **非阻塞**（2026-10-08 起）：用例失败只红步骤、不拦部署——gate 跑的是上游 test 代码，
+   上游用例漂移的红与本次发布源码无关，稳定发布优先；失败会如实写进 Summary 与通知的
+   「测试门禁」栏（「有失败用例（非阻塞放行）」），不谎报「已通过」。
+   `ai` 组件无自动门禁（`ai/tests` 依赖外部服务），需人工验证；
 3. **deploy**：`npm ci` → `deploy.py` 备份远端 → 构建打包上传 → `supervisorctl restart` →
    健康检查（默认重试 20 次 × 间隔 3 秒）；
 4. 健康检查失败 → **自动回滚到本次部署前的备份**并重启，流水线标记失败；
 5. Summary 与通知给出备份 id、是否发生回滚、Actions 链接；`deploy.log` 作为 artifact 保留 30 天。
 
 同一环境并发互斥（`concurrency`），不会出现两人同时发布互相覆盖。
+
+### 数据库结构门禁 / 自动补列（`--schema-mode`）
+
+**为什么需要**：`Base.metadata.create_all` 只会建新表、**不会给已有表加新列**，而部署健康检查是纯探活、不查库，
+所以「代码比库新」时流水线照样绿灯，直到业务接口报 `1054 Unknown column` 才暴露。该步骤在**上传代码之前**
+比对「本次要部署的后端代码（SQLAlchemy 模型）」与「目标库 information_schema」，把这类漂移变成部署前的硬门禁。
+
+| 模式 | 行为 | 默认用于 |
+| --- | --- | --- |
+| `off` | 跳过（`--schema-mode off`） | 手动应急 |
+| `check` | 只读比对；库结构落后于代码即**中止部署** | prod |
+| `sync` | 先自动补齐**可安全补**的项，补齐后仍缺才中止 | test |
+
+- **只加不减**：自动修补范围仅限「新增列 / 新增索引」，且仅当该列可空或有 `server_default`（即加列不会
+  影响存量数据）。主键、自增列、`NOT NULL` 且无默认值、改类型 / 改枚举 / 改约束、删列 —— 一律标为
+  **需人工**，只报告不执行（例如 `wechat_qrcodes.project_id/scene_str` 的删除带业务收尾，绝不允许自动）。
+- **期望结构取自新代码**：从本次要部署的后端源码运行模型（不是目标机上跑着的旧版），否则「本次新增的列」根本查不出来。
+- **中止即零影响**：门禁在**上传代码之前**执行，失败时线上仍跑旧版；DDL 执行不可回滚（回滚只还原代码，不含库结构）。
+- **幂等**：靠 `information_schema` 判重，重复执行不会重复补列。
+- 结果写进部署摘要的「数据库结构」一行，并随通知卡片展示（自动补了几列 / 是否因结构中止）。
 
 ## 三、回滚（Rollback）
 
@@ -124,16 +148,19 @@ $HOME/deploy_backups/test/20260923-152741-381030/
 | --- | --- |
 | Deploy 页面没有 Run workflow 按钮 | 文件尚未合入默认分支 `main` |
 | `unrecognized arguments: --yes / --rollback` | 目标分支 `test` / `dev` 上的 `deploy.py` 仍是旧版，需先合入 |
-| 门禁失败（gate 红） | 看 gate 日志跑对应测试；紧急发布可勾选 `skip_gate`（会被显著标注） |
+| 门禁有用例失败（gate 步骤红但 job 绿） | 已按非阻塞放行，Summary / 通知标注「有失败用例」；到 gate 日志看明细，判定是本仓改动还是上游用例漂移；紧急情况可勾选 `skip_gate` 连测试都不跑（会被显著标注） |
 | 前端构建失败在 `tsc -b` | 类型检查未过，本地 `npm run build:test` 可复现 |
 | SSH 连接失败 | 检查 `TEST_SSH_PRIVATE_KEY` 与 `DEPLOY_SSH_*`；preflight 步骤会打印远端 `supervisorctl status` |
 | 健康检查失败并自动回滚 | Summary 标注「自动回滚=是」，需人工确认服务；必要时再 Rollback 到更早备份 |
+| 部署前报「库结构落后于代码，已中止部署」 | 说明模型里有库中缺的列/索引。test 默认 `sync` 会自动补可空/有默认值的列；`需人工>0` 的项（NOT NULL 无默认值、改类型、删列等）需人工迁移（`backend/alembic/versions/` 或 `backend/scripts/apply_schema_patch.py`）。确认可忽略时用 `--schema-mode off`（或把 `DEPLOY_SCHEMA_MODE` 设为 `off`） |
 | 没收到通知 | 未配置 `NOTIFY_WEBHOOKS` / `NOTIFY_WEBHOOK` 会跳过；Webhook 域名仅允许企业微信 / 飞书（防 SSRF）；某群策略与本次结果不匹配时也会跳过（如 `failure` 群在部署成功时不发）；目标配了 `envs` 且不在本次环境时同样跳过（如只配 `prod` 的群在 test 部署时不发）。日志会逐条打印每个目标的发送 / 跳过原因 |
 | 备份占用磁盘 | 调小 `DEPLOY_BACKUP_KEEP`，或到服务器清理 `~/deploy_backups/<env>/` |
 
 ## 六、通知脚本测试（deploy/tests）
 
-发布说明解析 / 群路由 envs / 版面选择 / 三种版面渲染的回归测试：
+发布说明解析 / 群路由 envs / 版面选择 / 数据库结构栏 / 三种版面渲染的回归测试：
+
+（后端 `schema_sync.py` 的纯逻辑单测在 `backend/tests/test_schema_sync.py`，随 gate 的 `pytest` 一起跑。）
 
 ```bash
 python -m pytest deploy/tests -q

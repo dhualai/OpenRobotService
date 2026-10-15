@@ -123,5 +123,8 @@ paramiko>=3.5.0
 
 # ---- 测试 / 调试（可选）----
 pytest>=9.1.1
+# pytest.ini 设了 asyncio_mode=auto，缺它 ai/tests 下的 async 用例会在收集阶段
+# 直接报 'asyncio' not found in markers 而整批中断（backend/requirements-test.txt 已声明）
+pytest-asyncio>=0.23.0
 iniconfig>=2.3.0
 pluggy>=1.6.0

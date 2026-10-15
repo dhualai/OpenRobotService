@@ -152,7 +152,7 @@ SSE 事件：`first_token`、`token`（裸 data）、`done`、`error`。
 
 ### 4.3 `GET /api/ai/memory/tickets/all` — 历史工单列表
 
-返回已生成的历史工单。
+返回已生成的历史工单。查询参数（均可选）：`status`、`type`、`keyword`、`username`（按创建者过滤）、`exclude_status`，以及 `viewer`（当前登录用户，用于回填每条工单的 `is_followed`）与 `followed=true`（只看 `viewer` 关注的工单，即「我关注的」，与 `username` 语义解耦）。
 
 ### 4.4 `DELETE /api/ai/memory/clear-all` — 清除所有会话
 

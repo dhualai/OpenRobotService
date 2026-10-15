@@ -17,7 +17,7 @@ from ai.core.logging import get_logger
 
 logger = get_logger("TASK_AGENT")
 
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 
 
 # ── 字段提取 ──
@@ -114,11 +114,6 @@ def _body_start(line: str) -> int:
 
 def _squash(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
-
-
-def _split_level_body(line: str) -> str:
-    """取级别标记后的正文片段（调用方自行再截断）。"""
-    return line[_body_start(line):]
 
 
 def evidence_body(line: str, limit: int = _MSG_LIMIT) -> str:
@@ -494,18 +489,6 @@ class LogIndex:
             if fval in key:
                 return key
         return None
-
-    def count_in_window(self, time_start: str, time_end: str) -> int:
-        """统计时间窗口 [time_start, time_end] 内索引到的行数（用于太宽查询拦截）。"""
-        if not (time_start and time_end):
-            return 0
-        t0 = _norm_ts_bound(time_start, end=False)
-        t1 = _norm_ts_bound(time_end, end=True)
-        cnt = 0
-        for ts, lines in self._ts_idx.items():
-            if t0 <= ts <= t1:
-                cnt += len(lines)
-        return cnt
 
     def query(self, q: LogQuery) -> str:
         if not self._built: self.build()

@@ -74,6 +74,7 @@ const mockAskStream = vi.fn();
 const mockGetConversation = vi.fn();
 const mockCreateConversation = vi.fn();
 const mockAppendMessage = vi.fn();
+const mockUpdateConversationMeta = vi.fn();
 
 vi.mock('@/api/ai', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/ai')>();
@@ -93,11 +94,12 @@ vi.mock('@/api/conversation', async (importOriginal) => {
     createConversation: (p: { title: string; scene: string; aiSessionId?: string }) => mockCreateConversation(p),
     appendMessage: (cid: number, role: string, content: string, opts?: unknown) => mockAppendMessage(cid, role, content, opts),
     updateMessageContent: vi.fn().mockResolvedValue(undefined),
+    updateConversationMeta: (...args) => mockUpdateConversationMeta(...args),
   };
 });
 
 const VEHICLE_CTX = {
-  scene: 'proj_abc123def456',
+  scene: '101',
   projectName: '项目A',
   customerName: '客户A',
   vehicleModel: 'XQE',
@@ -121,6 +123,7 @@ describe('ChatPanel 车体扫码：车型模式注册与首问同 session_id', (
     mockGetConversation.mockReset();
     mockCreateConversation.mockReset();
     mockAppendMessage.mockReset();
+    mockUpdateConversationMeta.mockReset();
 
     // 初始态：页面进入时已自动选中最近会话（conversationId=7），
     // 其 ai_session_id 会被 Effect A 恢复进 sessionId（旧 sid 来源）。
@@ -151,7 +154,8 @@ describe('ChatPanel 车体扫码：车型模式注册与首问同 session_id', (
         ? { id: 7, title: '旧会话', messages: [], metadata_: JSON.stringify({ ai_session_id: OLD_SID }) }
         : { id, title: '新会话', messages: [], metadata_: null },
     );
-    // confirm 成功：带开场大方向引导题（点类目即走 send 主路径）
+    // confirm 成功：带开场大方向引导题（点类目即走 send 主路径）+ 1012 新增的
+    // 车型资料引导条与折叠类目
     mockModeConfirm.mockResolvedValue({
       code: 0,
       data: {
@@ -159,9 +163,14 @@ describe('ChatPanel 车体扫码：车型模式注册与首问同 session_id', (
         model: 'XQE',
         domain: 'company',
         manual_docs: [],
+        vehicle_guide: {
+          question: '想了解 XQE 车型信息？点击查看型号介绍',
+          choices: ['XQE122 车型介绍', 'XQE151 车型介绍'],
+        },
         opening: {
           question: '您遇到了什么问题？',
-          choices: ['故障码', '界面报故障码', '自检失败 / 开机异常'],
+          choices: ['界面报故障码', '多车调度', '卸货', '取货'],
+          collapsed_choices: ['建图与定位', '充电异常', '避障异常', '自检失败 / 开机异常', '远程接管'],
           hint: '若是其他情况，请在下方输入框描述',
         },
       },
@@ -203,10 +212,18 @@ describe('ChatPanel 车体扫码：车型模式注册与首问同 session_id', (
 
     // 3. 确认即注册：qaModeConfirm 被调用，捕获注册 sid
     await waitFor(() => expect(mockModeConfirm).toHaveBeenCalledTimes(1));
-    const registeredSid = (mockModeConfirm.mock.calls[0][0] as { session_id: string }).session_id;
+    const confirmPayload = mockModeConfirm.mock.calls[0][0] as {
+      session_id: string;
+      scene: string;
+      model: string;
+    };
+    const registeredSid = confirmPayload.session_id;
     expect(registeredSid).toMatch(/^sess_/);
     // 不能用恢复出来的旧会话 sid（扫码 = 这次专用的空白会话）
     expect(registeredSid).not.toBe(OLD_SID);
+    // 必须透传 scene（= 行 id）：后端按它精确取「扫的那一行」录入信息，缺了注册就失败
+    expect(confirmPayload.scene).toBe('101');
+    expect(confirmPayload.model).toBe('XQE');
 
     // 4. 开场题气泡渲染后点类目（= 用户真实路径：点选项即发送全文）
     const chip = await waitFor(() => screen.getByRole('button', { name: '界面报故障码' }));
@@ -220,7 +237,139 @@ describe('ChatPanel 车体扫码：车型模式注册与首问同 session_id', (
     expect(askBody.session_id).toBe(registeredSid);
     // 建会话时落库的 aiSessionId 也与该 sid 一致（会话↔session 映射不错位）
     expect(mockCreateConversation).toHaveBeenCalledWith(
-      expect.objectContaining({ aiSessionId: registeredSid }),
+      expect.objectContaining({ aiSessionId: registeredSid, vehicle: 'XQE' }),
     );
+  });
+
+  it('开场引导：车型介绍并入确认气泡，开场题常驻 4、展开后九类齐全、两条气泡落库', async () => {
+    storeRef = useWorkbenchStore as unknown as typeof storeRef;
+    renderPanel();
+
+    await waitFor(() => expect(mockGetConversation).toHaveBeenCalledWith(7));
+    await flush();
+    await act(async () => {
+      storeRef.setState({ conversationId: null, vehicleContext: VEHICLE_CTX });
+    });
+    await waitFor(() => expect(mockModeConfirm).toHaveBeenCalledTimes(1));
+    await flush();
+
+    // ① 确认气泡：车型介绍按钮并入这条气泡（1014 合并），不再有独立的引导题面
+    expect(await screen.findByText(/车辆信息已确认/)).toBeTruthy();
+    expect(screen.queryByText('想了解 XQE 车型信息？点击查看型号介绍')).toBeNull();
+    const intro122 = screen.getByRole('button', { name: /XQE122 车型介绍/ });
+    const intro151 = screen.getByRole('button', { name: /XQE151 车型介绍/ });
+    // 视觉区分（1014）：车型介绍按钮用 intro 变体（区别于开场题的蓝色胶囊）
+    expect(intro122.className).toContain('chat-veh-chip--intro');
+    expect(intro151.className).toContain('chat-veh-chip--intro');
+
+    // ② 开场题常驻 4 全渲染，折叠 5 类默认不出现；开场题按钮不带 intro 变体
+    for (const c of ['界面报故障码', '多车调度', '卸货', '取货']) {
+      expect(screen.getByRole('button', { name: c })).toBeTruthy();
+    }
+    expect(screen.getByRole('button', { name: '界面报故障码' }).className).not.toContain('chat-veh-chip--intro');
+    for (const c of ['建图与定位', '充电异常', '远程接管']) {
+      expect(screen.queryByRole('button', { name: c })).toBeNull();
+    }
+
+    // ③ 「其他情况」提示语只属于大方向题：确认气泡下面不挂
+    expect(screen.getAllByText('若是其他情况，请在下方输入框描述')).toHaveLength(1);
+
+    // ④ 落库（1014 持久化）：建会话 + 两条 assistant 消息带 metadata
+    await waitFor(() => expect(mockAppendMessage).toHaveBeenCalledTimes(2));
+    const first = mockAppendMessage.mock.calls[0] as [number, string, string, { metadata?: string }];
+    const second = mockAppendMessage.mock.calls[1] as [number, string, string, { metadata?: string }];
+    expect(first[1]).toBe('assistant');
+    expect(first[2]).toContain('**车辆信息已确认**');
+    // 尾句「接下来按该车型的引导流程…」已删（用户反馈多余）：确认气泡只有
+    // 标题 + 三行 key-value
+    expect(first[2]).not.toContain('接下来按该车型的引导流程');
+    // key-value 行尾双空格 = markdown 硬换行（renderer 无 remark-breaks，
+    // 单 \n 会被合并成一段——实测「项目一行、客户车型挤一行」）
+    expect(first[2]).toContain('**项目**：项目A  \n**客户**：客户A  \n**车型**：XQE');
+    expect(JSON.parse(first[3].metadata || '{}')).toMatchObject({
+      vehicle_confirm: true,
+      vehicle_guide: true,
+      vehicle_choices: ['XQE122 车型介绍', 'XQE151 车型介绍'],
+    });
+    expect(second[2]).toBe('您遇到了什么问题？');
+    expect(JSON.parse(second[3].metadata || '{}')).toMatchObject({
+      vehicle_opening: true,
+      vehicle_choices: ['界面报故障码', '多车调度', '卸货', '取货'],
+      vehicle_collapsed: ['建图与定位', '充电异常', '避障异常', '自检失败 / 开机异常', '远程接管'],
+    });
+
+    // ⑤ 点「展开全部」：折叠 5 类补齐（九大类全部可达），开关文案切「收起」
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /展开全部/ }));
+    });
+    for (const c of ['建图与定位', '充电异常', '避障异常', '自检失败 / 开机异常', '远程接管']) {
+      expect(screen.getByRole('button', { name: c })).toBeTruthy();
+    }
+    expect(screen.getByRole('button', { name: '收起' })).toBeTruthy();
+
+    // ⑥ 点折叠里的类目 = 按选项原文发送（走正常检索链路）
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '建图与定位' }));
+    });
+    await waitFor(() => expect(mockAskStream).toHaveBeenCalledTimes(1));
+    const askBody = JSON.parse((mockAskStream.mock.calls[0][1] as RequestInit).body as string);
+    expect(askBody.query).toBe('建图与定位');
+  });
+
+  it('历史恢复：落库的引导气泡按 metadata 重建按钮（切会话/刷新后引导不丢）', async () => {
+    // 旧会话 7 带两条落库的引导消息（1014 持久化的形态）
+    mockGetConversation.mockImplementation(async (id: number) =>
+      id === 7
+        ? {
+            id: 7,
+            title: '扫码会话',
+            metadata_: null,
+            messages: [
+              {
+                id: 101,
+                role: 'assistant',
+                content: '**车辆信息已确认**\n\n**项目**：项目A\n**客户**：客户A\n**车型**：XQE\n\n接下来按该车型的引导流程协助你，直接描述现象或点下面的选项即可。',
+                created_at: '2026-10-14T01:00:00Z',
+                metadata_: JSON.stringify({
+                  vehicle_confirm: true,
+                  vehicle_guide: true,
+                  vehicle_choices: ['XQE122 车型介绍', 'XQE151 车型介绍'],
+                }),
+              },
+              {
+                id: 102,
+                role: 'assistant',
+                content: '您遇到了什么问题？',
+                created_at: '2026-10-14T01:00:01Z',
+                metadata_: JSON.stringify({
+                  vehicle_opening: true,
+                  vehicle_choices: ['界面报故障码', '多车调度'],
+                  vehicle_collapsed: ['充电异常'],
+                }),
+              },
+            ],
+          }
+        : { id, title: '新会话', messages: [], metadata_: null },
+    );
+
+    storeRef = useWorkbenchStore as unknown as typeof storeRef;
+    renderPanel();
+
+    // 恢复完成：两条气泡的按钮组都按 metadata 重建（intro 变体 + 折叠开关）
+    expect(await screen.findByRole('button', { name: /XQE122 车型介绍/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /XQE151 车型介绍/ }).className).toContain('chat-veh-chip--intro');
+    expect(screen.getByRole('button', { name: '界面报故障码' }).className).not.toContain('chat-veh-chip--intro');
+    expect(screen.getByRole('button', { name: /展开全部（还有 1 类）/ })).toBeTruthy();
+
+    // 开场题大字题面（vehicleOpening 标记恢复）
+    expect(screen.getByText('您遇到了什么问题？')).toBeTruthy();
+    // 提示语只挂在开场题下（确认气泡 vehicleGuide 恢复后不挂）
+    expect(screen.getAllByText('若是其他情况，请在下方输入框描述')).toHaveLength(1);
+
+    // 存量自愈：会话有 vehicle_confirm 引导消息但 metadata 缺 vehicle 标记
+    // （角标功能上线前的老扫码会话）→ 恢复时自动从确认气泡提取车型回填，
+    // 下次拉列表即有角标（fire-and-forget，无需 SQL 补数据）
+    await waitFor(() => expect(mockUpdateConversationMeta).toHaveBeenCalledTimes(1));
+    expect(mockUpdateConversationMeta).toHaveBeenCalledWith(7, { vehicle: 'XQE' });
   });
 });

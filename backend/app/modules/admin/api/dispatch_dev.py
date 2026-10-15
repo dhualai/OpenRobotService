@@ -123,6 +123,100 @@ async def save_cluster_params(
     return DataResponse(code=0, message="success", data=data)
 
 
+def _archive_reviewers_helpers():
+    """直接读写 archive_review.store（叶子模块），不经 AI 代理、不拉派单 pipeline。"""
+    import sys
+    from pathlib import Path
+
+    # backend/app/modules/admin/api/dispatch_dev.py → repo root = parents[5]
+    repo = Path(__file__).resolve().parents[5]
+    root = str(repo)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from ai.agents.AiDiagnosisPlatform.assigner.archive_review.store import (
+        effective_archive_reviewers,
+        save_archive_reviewers_overrides,
+    )
+    return effective_archive_reviewers, save_archive_reviewers_overrides
+
+
+def _label_archive_reviewers(data: Dict[str, Any]) -> Dict[str, Any]:
+    """给审核人 id 补显示名。"""
+    from app.core.db import SessionLocal
+    from app.models.identity import UserDB
+
+    domains = data.get("domains") or {}
+    ids: list[str] = []
+    for raw in domains.values():
+        for uid in raw or []:
+            uid = str(uid or "").strip()
+            if uid and uid not in ids:
+                ids.append(uid)
+    names: Dict[str, str] = {}
+    if ids:
+        try:
+            db = SessionLocal()
+            try:
+                rows = db.query(UserDB.id, UserDB.name, UserDB.username).filter(
+                    UserDB.id.in_(ids)
+                ).all()
+                for row in rows:
+                    names[str(row.id)] = (row.name or row.username or row.id)
+            finally:
+                db.close()
+        except Exception:
+            names = {}
+    labeled: Dict[str, list] = {}
+    for domain, uid_list in domains.items():
+        labeled[domain] = [
+            {"id": uid, "name": names.get(uid) or uid}
+            for uid in (uid_list or [])
+            if str(uid or "").strip()
+        ]
+    out = dict(data)
+    out["reviewers"] = labeled
+    return out
+
+
+@router.get("/archive-reviewers", response_model=DataResponse, summary="归档审核人配置")
+async def get_archive_reviewers(
+    current_user: Dict[str, Any] = require_permission(PERM),
+):
+    """问题领域 → 审核人多人名单（开发者模式可编辑）。
+
+    直接读 runtime_overrides / config.yaml，不依赖 AI 服务。
+    """
+    ensure_dispatch_dev_permission()
+    try:
+        effective_archive_reviewers, _ = _archive_reviewers_helpers()
+        data = _label_archive_reviewers(effective_archive_reviewers())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取归档审核人失败: {e}") from e
+    return DataResponse(code=0, message="success", data=data)
+
+
+@router.put("/archive-reviewers", response_model=DataResponse, summary="保存归档审核人配置")
+async def save_archive_reviewers(
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any] = require_permission(PERM),
+):
+    """保存到 assigner/config/runtime_overrides.yaml，供提交派审读取。"""
+    ensure_dispatch_dev_permission()
+    body = payload or {}
+    try:
+        effective_archive_reviewers, save_archive_reviewers_overrides = _archive_reviewers_helpers()
+        save_archive_reviewers_overrides(
+            domains=body.get("domains"),
+            on_empty=body.get("on_empty") or "fail",
+        )
+        data = _label_archive_reviewers(effective_archive_reviewers())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"保存归档审核人失败: {e}") from e
+    return DataResponse(code=0, message="success", data=data)
+
+
 @router.get("/test-branches", response_model=DataResponse, summary="派单测试分支树")
 async def test_branches(
     current_user: Dict[str, Any] = require_permission(PERM),

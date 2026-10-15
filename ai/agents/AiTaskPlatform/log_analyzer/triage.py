@@ -221,26 +221,6 @@ class ManualGuide:
         for m in re.finditer(r"(?:全链路|时间线)([^\n]{0,300})", text):
             self.normal_timeline.append(m.group(1)[:120])
 
-    # ── 对外查询：根据用户问题/症状，挑出最相关信号 ──
-    def relevant_signals(self, user_question: str = "", top_n: int = 20) -> List[Dict]:
-        """基于用户问题关键词，把手册信号做一次粗排序（后续交给 Discovery 命中统计）。"""
-        if not user_question:
-            return self.signals[:top_n]
-        words = [w for w in re.split(r"[\s,，。：:;；/\\|]+", user_question) if len(w) >= 2]
-        scored = []
-        for sig in self.signals:
-            score = 0
-            for w in words:
-                if any(w in k or k in w for k in sig["keywords"]):
-                    score += 1
-                if w in sig["name"]:
-                    score += 2
-            if score:
-                scored.append((score, sig))
-        scored.sort(key=lambda x: -x[0])
-        return [s for _, s in scored[:top_n]]
-
-
 # 含这些词的信号视为"日志语义词"，即使无中文也不是纯字段名，必须保留
 _LOG_SEMANTIC_KW = (
     "ERROR", "WARN", "FAIL", "FATAL", "EXCEPTION", "TIMEOUT", "ABORTED",

@@ -10,10 +10,10 @@ from sqlalchemy.orm.attributes import set_committed_value
 from starlette.concurrency import run_in_threadpool
 
 from app.modules.tasks.models.ticket import Ticket, TicketComment, TicketStatus, TicketPriority, TicketType
-from app.models.task import TaskFollower, TaskParticipant, TaskStep
+from app.models.task import TaskFollower, TaskParticipant, TaskRelation, RelationType, TaskStep, ArchiveReport
 from app.models.task_proxy_relation import TaskProxyRelation, ProxyRelationStatus
 from app.models.identity import UserDB
-from app.modules.tasks.schemas.ticket import TicketCreate, TicketUpdate, TicketCommentCreate, TicketCommentUpdate, TicketQueryParams, TicketFilterRequest, QuotedComment
+from app.modules.tasks.schemas.ticket import TicketCreate, TicketUpdate, TicketCommentCreate, TicketCommentUpdate, TicketQueryParams, TicketFilterRequest, TicketListItemResponse, QuotedComment
 from app.core.config import settings
 from app.utils.notification_utils import NotificationUtils
 from app.utils.image_processor import ImageProcessor
@@ -708,6 +708,13 @@ class TicketService:
         for ticket in tickets:
             setattr(ticket, "redispatch_tip", tip_map.get(ticket.id))
 
+        # 父子工单 / 前置依赖关系：批量注入 parent_id、predecessor_ids、child_count、child_done
+        extra_tickets = await TicketService._attach_relation_fields(
+            db, tickets, with_relations=query_params.with_relations, user_map=user_map, token=token,
+        )
+
+        related_items = [TicketListItemResponse.model_validate(t) for t in extra_tickets]
+
         pages = (total + size - 1) // size
 
         return {
@@ -715,11 +722,123 @@ class TicketService:
             "total": total,
             "page": page,
             "size": size,
-            "pages": pages
+            "pages": pages,
+            "related_tickets": related_items,
         }
 
     @staticmethod
-    async def _build_single_filter(query, f, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username=None):
+    async def _attach_relation_fields(
+        db: AsyncSession,
+        tickets: list,
+        with_relations: bool = False,
+        user_map: Optional[Dict[str, Any]] = None,
+        token: Optional[str] = None,
+    ) -> list:
+        """批量注入父子工单 / 前置依赖关系字段（避免 N+1）。
+
+        同时被 get_tickets（GET /）和 filter_tickets（POST /filter）调用。
+
+        :param with_relations: 若为 True，会额外查出"在关联表中存在但不在当前页 tickets 里"
+                               的工单，返回它们的 ORM 列表（供调用方组装 related_tickets）；
+                               False 时仅回填字段并返回空列表，省掉额外查询。
+        :param user_map:       可选，用于给 extra_tickets 回填 created_by_name / assigned_to_name
+                               等展示字段，便于直接 model_validate 为 TicketListItemResponse。
+        :param token:          可选，user_map 缺失时回退调用 _get_user_map。
+        """
+        ticket_ids = [t.id for t in tickets]
+        parent_of = {}              # child_id -> parent_id
+        predecessor_map = {}        # ticket_id -> [target_task_id]
+        child_count_map = {}        # parent_id -> int
+        child_of_parent = {}        # parent_id -> [child_id, ...]（用于后续查 child_done）
+        relations = []
+        all_rel_ids = set(ticket_ids)
+        if ticket_ids:
+            # BFS 扩展关联闭包：从当前页 ticket_ids 出发，迭代查询所有
+            # 父子 / 前置依赖关系，直到没有新工单被发现。这样多层子工单
+            # （A→B→C）也能完整暴露给前端，而不是只停在第一层。
+            frontier = set(ticket_ids)
+            seen_rel_ids = set()
+            while frontier:
+                rel_stmt = select(TaskRelation).where(
+                    TaskRelation.relation_type.in_([RelationType.SUBTASK, RelationType.PREDECESSOR])
+                ).where(
+                    or_(
+                        TaskRelation.source_task_id.in_(frontier),
+                        TaskRelation.target_task_id.in_(frontier),
+                    )
+                )
+                rel_result = await db.execute(rel_stmt)
+                new_batch = [r for r in rel_result.scalars().all() if r.id not in seen_rel_ids]
+                if not new_batch:
+                    break
+                for r in new_batch:
+                    seen_rel_ids.add(r.id)
+                    relations.append(r)
+                    all_rel_ids.add(r.source_task_id)
+                    all_rel_ids.add(r.target_task_id)
+                frontier = all_rel_ids - frontier
+
+            child_ids_for_status = set()
+            for r in relations:
+                if r.relation_type == RelationType.SUBTASK:
+                    # 所有 relations 都进 map（不加 ticket_ids 限制）——这样 extra_tickets 里的关联工单
+                    # 也能拿到 parent_id / child_count / child_done，不用等 with_relations 才查
+                    parent_of[r.target_task_id] = r.source_task_id
+                    child_count_map[r.source_task_id] = child_count_map.get(r.source_task_id, 0) + 1
+                    child_of_parent.setdefault(r.source_task_id, []).append(r.target_task_id)
+                    child_ids_for_status.add(r.target_task_id)
+                elif r.relation_type == RelationType.PREDECESSOR:
+                    predecessor_map.setdefault(r.source_task_id, []).append(r.target_task_id)
+
+            child_done_map = {}
+            if child_ids_for_status:
+                status_stmt = select(Ticket.id, Ticket.status).where(Ticket.id.in_(list(child_ids_for_status)))
+                status_result = await db.execute(status_stmt)
+                child_status = dict(status_result.all())
+                done_statuses = {TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.ARCHIVED}
+                for pid, cids in child_of_parent.items():
+                    child_done_map[pid] = sum(1 for cid in cids if child_status.get(cid) in done_statuses)
+
+        for ticket in tickets:
+            setattr(ticket, "parent_id", parent_of.get(ticket.id))
+            setattr(ticket, "predecessor_ids", predecessor_map.get(ticket.id, []))
+            setattr(ticket, "child_count", child_count_map.get(ticket.id, 0))
+            setattr(ticket, "child_done", child_done_map.get(ticket.id, 0))
+
+        # ── with_relations：把"关系里出现但不在当前页"的工单完整查出来 ──────────
+        if not with_relations or not relations:
+            return []
+
+        ticket_id_set = set(ticket_ids)
+        extra_ids = list(all_rel_ids - ticket_id_set)
+        if not extra_ids:
+            return []
+
+        extra_stmt = select(Ticket).where(Ticket.id.in_(extra_ids))
+        extra_result = await db.execute(extra_stmt)
+        extra_tickets = list(extra_result.scalars().all())
+
+        # extra_tickets 也需要展示字段，方便 model_validate 为 TicketListItemResponse
+        if user_map is None:
+            user_map = await TicketService._get_user_map(token)
+        for ticket in extra_tickets:
+            setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
+            setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
+            if ticket.assigned_to:
+                setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+            if ticket.customer:
+                setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
+            # 复用上面已构建的关系 map：extra_tickets.id 恰好在 map 的 key 或 value 里
+            setattr(ticket, "parent_id", parent_of.get(ticket.id))
+            setattr(ticket, "predecessor_ids", predecessor_map.get(ticket.id, []))
+            setattr(ticket, "child_count", child_count_map.get(ticket.id, 0))
+            setattr(ticket, "child_done", child_done_map.get(ticket.id, 0))
+
+        return extra_tickets
+
+    @staticmethod
+    async def _build_single_filter(query, f, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username=None, current_user_id=None):
         field = f.field
         op = f.op
         value = f.value
@@ -774,6 +893,27 @@ class TicketService:
             if op == 'ne':
                 return query.where(Ticket.id.notin_(rel_subq))
             return query.where(Ticket.id.in_(rel_subq))
+
+        # 「我归档的」：ArchiveReport.created_by = 当前用户（id + username 双键）
+        if field_type == 'archive_creator':
+            keys = [k for k in (current_user_id, current_username) if k]
+            if not keys:
+                return query.where(Ticket.id.is_(None))
+            archive_creator_subq = select(ArchiveReport.task_id).where(
+                ArchiveReport.created_by.in_(keys)
+            ).distinct()
+            return query.where(Ticket.id.in_(archive_creator_subq))
+
+        # 「待我审核」：ArchiveReport.reviewer = 当前用户（双键） 且 submit_status='submitted'
+        if field_type == 'archive_reviewer_pending':
+            keys = [k for k in (current_user_id, current_username) if k]
+            if not keys:
+                return query.where(Ticket.id.is_(None))
+            archive_reviewer_subq = select(ArchiveReport.task_id).where(
+                ArchiveReport.reviewer.in_(keys),
+                ArchiveReport.submit_status == 'submitted',
+            ).distinct()
+            return query.where(Ticket.id.in_(archive_reviewer_subq))
 
         if op == 'is_null':
             return query.where(column.is_(None))
@@ -859,18 +999,18 @@ class TicketService:
         return query
 
     @staticmethod
-    async def _apply_nested_filter(query, filter_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username=None):
+    async def _apply_nested_filter(query, filter_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username=None, current_user_id=None):
         if filter_item.or_conditions:
             or_conditions = []
             for or_item in filter_item.or_conditions:
                 if or_item.and_conditions:
                     and_query = select(Ticket).where(Ticket.id.isnot(None))
                     for and_item in or_item.and_conditions:
-                        and_query = await TicketService._apply_nested_filter(and_query, and_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
+                        and_query = await TicketService._apply_nested_filter(and_query, and_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username, current_user_id)
                     or_conditions.append(and_query.whereclause)
                 elif or_item.field:
                     simple_query = select(Ticket).where(Ticket.id.isnot(None))
-                    simple_query = await TicketService._build_single_filter(simple_query, or_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
+                    simple_query = await TicketService._build_single_filter(simple_query, or_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username, current_user_id)
                     if simple_query.whereclause is not None:
                         or_conditions.append(simple_query.whereclause)
             if or_conditions:
@@ -879,16 +1019,16 @@ class TicketService:
 
         if filter_item.and_conditions:
             for and_item in filter_item.and_conditions:
-                query = await TicketService._apply_nested_filter(query, and_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
+                query = await TicketService._apply_nested_filter(query, and_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username, current_user_id)
             return query
 
         if filter_item.field:
-            return await TicketService._build_single_filter(query, filter_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
+            return await TicketService._build_single_filter(query, filter_item, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username, current_user_id)
 
         return query
 
     @staticmethod
-    async def _build_filter_query(filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None):
+    async def _build_filter_query(filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None, current_user_id: Optional[str] = None):
         """构建复合过滤查询（含排序），供列表查询与纯计数（角标）共用。"""
         query = select(Ticket).where(Ticket.id.isnot(None))
 
@@ -928,6 +1068,10 @@ class TicketService:
             'principalBy': (None, 'principal'),
             # 代理关系状态：pending / acknowledged / declined
             'proxyRelationStatus': (None, 'proxy_status'),
+            # 「我归档的」：走 archive_reports 表子查询，created_by 双键匹配
+            'archiveCreatedBy': (None, 'archive_creator'),
+            # 「待我审核」：走 archive_reports 表子查询，reviewer 双键匹配 + submit_status='submitted'
+            'archiveReviewerPending': (None, 'archive_reviewer_pending'),
         }
         # 注意：新增字段必须进白名单（不接受任意字段名），并在此处集中校验（见 _build_single_filter）。
 
@@ -937,7 +1081,7 @@ class TicketService:
         DATETIME_OPS = {'gt', 'lt', 'ge', 'le', 'eq', 'ne', 'is_null', 'not_null'}
 
         for f in filter_request.filters:
-            query = await TicketService._apply_nested_filter(query, f, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username)
+            query = await TicketService._apply_nested_filter(query, f, FIELD_MAPPING, NUMBER_OPS, TEXT_OPS, ENUM_OPS, DATETIME_OPS, token, current_username, current_user_id)
 
         if filter_request.sorts:
             for sort in filter_request.sorts:
@@ -982,14 +1126,14 @@ class TicketService:
         return total_result.scalar_one()
 
     @classmethod
-    async def count_tickets(cls, db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None) -> int:
+    async def count_tickets(cls, db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None, current_user_id: Optional[str] = None) -> int:
         """纯计数：只统计复合过滤命中的总数，不取明细、不拼用户名（批量角标接口复用）。"""
-        query = await cls._build_filter_query(filter_request, token, current_username)
+        query = await cls._build_filter_query(filter_request, token, current_username, current_user_id)
         return await cls._count_by_query(db, query)
 
     @staticmethod
-    async def filter_tickets(db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None) -> Dict[str, Any]:
-        query = await TicketService._build_filter_query(filter_request, token, current_username)
+    async def filter_tickets(db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None, current_username: Optional[str] = None, current_user_id: Optional[str] = None) -> Dict[str, Any]:
+        query = await TicketService._build_filter_query(filter_request, token, current_username, current_user_id)
 
         total = await TicketService._count_by_query(db, query)
 
@@ -1045,6 +1189,13 @@ class TicketService:
                 db, tickets, user_map, current_username
             )
 
+        # 父子工单 / 前置依赖关系：批量注入 parent_id、predecessor_ids、child_count、child_done
+        extra_tickets = await TicketService._attach_relation_fields(
+            db, tickets, with_relations=filter_request.with_relations, user_map=user_map, token=token,
+        )
+
+        related_items = [TicketListItemResponse.model_validate(t) for t in extra_tickets]
+
         pages = (total + size - 1) // size
 
         return {
@@ -1052,7 +1203,8 @@ class TicketService:
             "total": total,
             "page": page,
             "size": size,
-            "pages": pages
+            "pages": pages,
+            "related_tickets": related_items,
         }
 
     @staticmethod
@@ -1129,6 +1281,41 @@ class TicketService:
         elif ticket:
             # 未请求评论时也设空列表，避免序列化时触发 lazy load → MissingGreenlet
             set_committed_value(ticket, 'comments', [])
+
+        # ── 填充 current_archive_report（用于前端 archiving 状态下显示编辑入口 / 审核入口）──
+        if ticket:
+            try:
+                report_result = await db.execute(
+                    select(ArchiveReport)
+                    .where(ArchiveReport.task_id == ticket.id)
+                    .order_by(ArchiveReport.version.desc())
+                    .limit(1)
+                )
+                latest_report = report_result.scalar_one_or_none()
+                if latest_report:
+                    from app.modules.tasks.schemas.archive_report import ArchiveReportResponse
+                    report_resp = ArchiveReportResponse.model_validate(latest_report)
+                    ids_to_lookup = {
+                        latest_report.created_by,
+                        latest_report.updated_by,
+                        latest_report.reviewer,
+                    } - {None, ""}
+                    if ids_to_lookup:
+                        user_rows = (await db.execute(
+                            select(UserDB.id, UserDB.username, UserDB.name)
+                            .where(UserDB.id.in_(ids_to_lookup))
+                        )).all()
+                        user_map = {row.id: (row.name or row.username or row.id) for row in user_rows}
+                        report_resp.created_by_name = user_map.get(latest_report.created_by)
+                        report_resp.updated_by_name = user_map.get(latest_report.updated_by)
+                        report_resp.reviewer_name = user_map.get(latest_report.reviewer)
+                    ticket.current_archive_report = report_resp
+                else:
+                    ticket.current_archive_report = None
+            except Exception as _archive_err:
+                logger.warning(f"填充 current_archive_report 失败 task_id={ticket_id}: {_archive_err}")
+                ticket.current_archive_report = None
+
         return ticket
 
     @staticmethod

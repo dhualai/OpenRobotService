@@ -12,6 +12,38 @@ import type { TicketStatusKey, UrgencyKey } from '@/shared/constants/dashboard';
 const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 const tasksRequest = createRequest(API_CONFIG.TASKS.BASE_URL, 'Tasks');
 
+export interface DashboardQuestion {
+  record_id: string;
+  reported_at: string;
+  problem_description: string;
+  solution_description: string;
+  vehicle_number: string;
+  vehicle_model: string;
+  vehicle_info: string;
+}
+
+export interface DashboardQuestions {
+  report_date: string;
+  total: number;
+  page: number;
+  page_size: number;
+  items: DashboardQuestion[];
+  last_sync_at: string | null;
+}
+
+export async function fetchDashboardQuestions(
+  reportDate: string, page = 1, pageSize = 20,
+): Promise<DashboardQuestions> {
+  const query = new URLSearchParams({
+    report_date: reportDate, page: String(page), page_size: String(pageSize),
+  });
+  const res = await adminRequest<{ code: number; data?: DashboardQuestions }>(
+    `/dashboard/questions?${query}`, { skipCache: true },
+  );
+  if (res.code !== 0 || !res.data) throw new Error('问题列表加载失败');
+  return res.data;
+}
+
 /**
  * 将 projectIds 拼接为 project_ids 查询参数。
  * - undefined：不附加参数（向后兼容，不过滤）

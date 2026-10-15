@@ -56,7 +56,7 @@ class LlmDeptSignal:
         out.sort(key=lambda x: x["confidence"], reverse=True)
         return out[:3]
 
-    async def classify(self, ticket: TicketContext, feedback: str = "") -> Dict[str, float]:
+    async def classify(self, ticket: TicketContext, feedback: str = "", dialogue=None) -> Dict[str, float]:
         """返回 {部门名: confidence}。feedback 可选：附加"上一轮审查意见"供重判参考。"""
         if not self.enabled:
             return {}
@@ -70,11 +70,19 @@ class LlmDeptSignal:
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
-            response = await llm.complete(
-                prompt,
-                max_tokens=int(self._llm_cfg.get("max_tokens", 250)),
-                temperature=float(self._llm_cfg.get("temperature", 0)),
-            )
+            if dialogue is not None:
+                response = await dialogue.complete(
+                    llm,
+                    prompt,
+                    max_tokens=int(self._llm_cfg.get("max_tokens", 250)),
+                    temperature=float(self._llm_cfg.get("temperature", 0)),
+                )
+            else:
+                response = await llm.complete(
+                    prompt,
+                    max_tokens=int(self._llm_cfg.get("max_tokens", 250)),
+                    temperature=float(self._llm_cfg.get("temperature", 0)),
+                )
         except Exception as e:
             logger.warning(f"[派单:{ticket.id}] R2-LLM部门分类失败: {e}")
             return {}
