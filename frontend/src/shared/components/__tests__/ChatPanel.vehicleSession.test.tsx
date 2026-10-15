@@ -94,7 +94,7 @@ vi.mock('@/api/conversation', async (importOriginal) => {
     createConversation: (p: { title: string; scene: string; aiSessionId?: string }) => mockCreateConversation(p),
     appendMessage: (cid: number, role: string, content: string, opts?: unknown) => mockAppendMessage(cid, role, content, opts),
     updateMessageContent: vi.fn().mockResolvedValue(undefined),
-    updateConversationMeta: (...args) => mockUpdateConversationMeta(...args),
+    updateConversationMeta: (...args: [number, Record<string, unknown>]) => mockUpdateConversationMeta(...args),
   };
 });
 
