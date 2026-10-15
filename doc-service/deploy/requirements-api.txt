@@ -1,0 +1,9 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sqlalchemy>=2.0.36
+alembic>=1.14
+psycopg[binary]>=3.2
+pydantic-settings>=2.6
+cryptography>=44
+python-multipart>=0.0.17
+markdown>=3.7

@@ -1,0 +1,50 @@
+# Customer-shaped install: Postgres is not published to the host network.
+# Secrets come from a host file that install.sh generates (never baked into the image).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-topo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:-topo}
+    volumes:
+      - topo_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-topo} -d ${POSTGRES_DB:-topo}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - topo_internal
+
+  api:
+    image: ${TOPO_API_IMAGE:-topo-portal-api:local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-topo}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-topo}
+      SESSION_SECRET: ${SESSION_SECRET:?}
+      TOPO_CONTENT_KEY: ${TOPO_CONTENT_KEY:?}
+      DEBUG: "false"
+      OPENAPI_ENABLED: "false"
+      BIND_HOST: 0.0.0.0
+      BIND_PORT: 8767
+      USP_TEST_BASE_URL: ${USP_TEST_BASE_URL:-http://10.10.10.202:9200}
+      USP_TEST_ADMIN_LICENSE: ${USP_TEST_ADMIN_LICENSE:-}
+    ports:
+      - "127.0.0.1:8767:8767"
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    networks:
+      - topo_internal
+
+volumes:
+  topo_pg_data:
+
+networks:
+  topo_internal:
+    driver: bridge

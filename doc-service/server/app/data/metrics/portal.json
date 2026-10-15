@@ -1,0 +1,73 @@
+{
+  "title": "AGV 调度评价指标体系",
+  "lead": "总导航：点击模块进入详情。上半理论向下，下半商业向上，中间是观测层；编码规格为副产物。",
+  "page_title_suffix": "AGV 评价指标",
+  "detail_dir": "m",
+  "index_file": "index.html",
+  "redirect_portal": true,
+  "layers": [
+    {"id": "L0", "hint": "理论定义 ↓"},
+    {"id": "L1", "hint": "问题域 ↓"},
+    {"id": "L2", "hint": "算法层指标 ↓"},
+    {"id": "L3", "hint": "观测层：需求与架构"},
+    {"id": "L4", "hint": "联合读数 / 事实 ↑"},
+    {"id": "L5", "hint": "运力效率看板与感官"},
+    {"id": "L6", "hint": "干系人 ↑"},
+    {"id": "L7", "hint": "商业需求 ↑"}
+  ],
+  "surfaces": {
+    "enabled": true,
+    "legend": [
+      {"id": "algo", "label": "算法自用仿真（测试&评估）"},
+      {"id": "system", "label": "系统级仿真 / 实测"},
+      {"id": "both", "label": "两边共用（定义 / 观测规划）"}
+    ]
+  },
+  "modules": [
+    {"id": "theory", "layer": "L0", "title": "理论顶层", "sub": "多车调度评价与优化", "file": "01-theory.md", "surface": "both"},
+    {"id": "mapf", "layer": "L1", "title": "MAPF", "sub": "含跟随冲突·ADG/TPG", "file": "02-mapf.md", "surface": "algo"},
+    {"id": "assign", "layer": "L1", "title": "任务子域", "sub": "业务分配‖休息‖充电", "file": "03-assign.md", "surface": "algo"},
+    {"id": "method", "layer": "L1", "title": "评价方法", "sub": "可复现·分层·消融", "file": "04-method.md", "surface": "algo"},
+    {"id": "lmapf", "layer": "L2", "title": "L-MAPF 指标", "sub": "Makespan·吞吐量·冲突·耗时", "file": "05-l-mapf.md", "surface": "algo"},
+    {"id": "lassign", "layer": "L2", "title": "L-Assign 指标", "sub": "业务·休息·充电分节", "file": "06-l-assign.md", "surface": "algo"},
+    {"id": "bridge", "layer": "L3", "title": "观测层", "sub": "用户需求到架构", "file": "07-bridge.md", "surface": "both", "highlight": true},
+    {"id": "obsCoding", "layer": "L3", "title": "观测编码规格", "sub": "实现与验收", "file": "17-obs-coding.md", "surface": "both"},
+    {"id": "ljoint", "layer": "L4", "title": "L-Joint", "sub": "吞吐·时效·完成率", "file": "08-l-joint.md", "surface": "system"},
+    {"id": "fact", "layer": "L4", "title": "事实抽象", "sub": "实体·事件·定义", "file": "09-fact.md", "surface": "both"},
+    {"id": "boardA", "layer": "L5", "title": "看板A 吞吐", "sub": "完成量/积压", "file": "10-board-a.md", "surface": "system"},
+    {"id": "boardB", "layer": "L5", "title": "看板B 时效", "sub": "均值·分位·可选超时", "file": "11-board-b.md", "surface": "system"},
+    {"id": "boardC", "layer": "L5", "title": "看板C 运力发挥", "sub": "使用率·空驶率·等待", "file": "12-board-c.md", "surface": "system"},
+    {"id": "boardD", "layer": "L5", "title": "看板D 可靠", "sub": "失败/介入/死锁", "file": "13-board-d.md", "surface": "system"},
+    {"id": "sense", "layer": "L5", "title": "感官看板", "sub": "认可与反直觉", "file": "18-sense.md", "surface": "both"},
+    {"id": "client", "layer": "L6", "title": "甲方需求", "sub": "运力效率好不好", "file": "14-client.md", "surface": "system"},
+    {"id": "delivery", "layer": "L6", "title": "交付需求", "sub": "可解释可验收可排障", "file": "15-delivery.md", "surface": "system"},
+    {"id": "biz", "layer": "L7", "title": "商业需求", "sub": "运力效率（多看板）", "file": "16-biz.md", "surface": "system"}
+  ],
+  "edges": [
+    ["theory", "mapf"],
+    ["theory", "assign"],
+    ["theory", "method"],
+    ["mapf", "lmapf"],
+    ["assign", "lassign"],
+    ["method", "bridge"],
+    ["lmapf", "bridge"],
+    ["lassign", "bridge"],
+    ["bridge", "obsCoding"],
+    ["bridge", "ljoint"],
+    ["bridge", "fact"],
+    ["obsCoding", "fact"],
+    ["ljoint", "boardA"],
+    ["ljoint", "boardB"],
+    ["fact", "boardC"],
+    ["fact", "boardD"],
+    ["fact", "sense"],
+    ["boardA", "client"],
+    ["boardB", "client"],
+    ["boardC", "delivery"],
+    ["boardD", "delivery"],
+    ["sense", "client"],
+    ["sense", "delivery"],
+    ["client", "biz"],
+    ["delivery", "biz"]
+  ]
+}

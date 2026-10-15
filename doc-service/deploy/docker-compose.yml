@@ -1,0 +1,96 @@
+# NEW portal (topo-ng). Isolated from the live legacy stack.
+#
+# NEVER: legacy container name, legacy host ports, bind-mount of the old app path.
+# NEVER: docker compose down -v  (that would wipe Postgres)
+#
+# Browser: host 8776 → nginx (SPA + /api proxy)
+# Agent SSH: host 9122 → api container sshd (user topo)
+# Postgres: internal only. Code updates never touch this volume.
+# Project name is COMPOSE_PROJECT_NAME=topo-ng (set by run-docker.sh).
+# version 2.4: old docker-compose 1.x rejects Compose Spec top-level `name:`.
+
+version: "2.4"
+
+services:
+  db:
+    image: topo-ng-db:local
+    container_name: topo-ng-db
+    env_file:
+      - secrets/install.env
+    environment:
+      POSTGRES_USER: topo
+      POSTGRES_DB: topo
+    volumes:
+      - topo_ng_pg_data:/var/lib/postgresql/data
+    networks: [topo_ng_internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U topo -d topo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: topo-ng-api:local
+    container_name: topo-ng-api
+    env_file:
+      - secrets/install.env
+    environment:
+      BIND_HOST: 0.0.0.0
+      BIND_PORT: "8767"
+      DEBUG: "false"
+      OPENAPI_ENABLED: "false"
+      TOPO_SSH_PUBLIC_KEY: ${TOPO_SSH_PUBLIC_KEY:-}
+      TOPO_SSH_PASSWORD: ${TOPO_SSH_PASSWORD:-}
+    volumes:
+      - topo_ng_app:/app/app
+      - topo_ng_www:/app/www
+      - topo_ng_bin:/app/bin
+      - ./install:/opt/install:ro
+    networks: [topo_ng_internal]
+    ports:
+      - "${TOPO_NG_BIND:-0.0.0.0}:${TOPO_NG_SSH_PORT:-9122}:22"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import pathlib,sys; sys.exit(0 if pathlib.Path('/app/app/main.py').exists() else 1)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: topo-ng-web:local
+    container_name: topo-ng-web
+    volumes:
+      - topo_ng_www:/usr/share/nginx/html:ro
+    networks: [topo_ng_internal]
+    ports:
+      - "${TOPO_NG_BIND:-0.0.0.0}:${TOPO_NG_WEB_PORT:-8776}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  topo_ng_pg_data:
+  topo_ng_app:
+  topo_ng_www:
+  topo_ng_bin:
+
+networks:
+  topo_ng_internal:
+    driver: bridge
