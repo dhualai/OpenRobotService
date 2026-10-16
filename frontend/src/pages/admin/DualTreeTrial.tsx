@@ -284,14 +284,14 @@ function withStarterDomains(saved: Saved | null): Saved {
     const applied = applyOrgSeed(
       seeded,
       keptMounts,
-      (parentId, name, orgKind) => ({
+      (draft) => ({
         id: uid('org'),
-        parentId,
+        parentId: draft.parentId,
         kind: 'org' as const,
-        orgKind,
-        name,
-        description: '',
-        vehicleModels: '',
+        orgKind: draft.orgKind,
+        name: draft.name,
+        description: draft.description || '',
+        vehicleModels: draft.vehicleModels || '',
       }),
       (nodeId, userId, role) => ({ nodeId, userId, role }),
     );
