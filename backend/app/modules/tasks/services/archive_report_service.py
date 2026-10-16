@@ -257,7 +257,7 @@ class ArchiveReportService:
             .with_for_update().execution_options(populate_existing=True))
         task = task_result.scalar_one_or_none()
         await require_assigned_reviewer(db, report, task, operator_id)
-        await prepare_archive_rewards(db, task, report, operator_id)
+        all_auto_pass = await prepare_archive_rewards(db, task, report, operator_id)
         report.review_comment = review_comment.strip()
         report.value_point = value_point.strip()
         report.submit_status = 'approved'
@@ -266,9 +266,17 @@ class ArchiveReportService:
         report.updated_by = operator_id
 
         if task:
-            task.status = TaskStatus.ARCHIVING
-            task.archived_by = None
-            task.archived_at = None
+            if all_auto_pass:
+                # 全部奖励自动过审 → 工单直接进 ARCHIVED，闭环一次完成
+                task.status = TaskStatus.ARCHIVED
+                task.archived_by = operator_id
+                task.archived_at = func.now()
+                await publish_report(db, task, report)
+            else:
+                # 有至少一条 pending_audit → 工单保持 ARCHIVING，等财务审核推进
+                task.status = TaskStatus.ARCHIVING
+                task.archived_by = None
+                task.archived_at = None
 
             db.add(ArchiveReviewDecision(task_id=task.id, report_id=report.id, version=report.version,
                 reviewer_id=operator_id, outcome="approved", review_comment=report.review_comment,

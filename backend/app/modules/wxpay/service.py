@@ -973,7 +973,7 @@ class AuditDecisionEngine:
                 await db.execute(
                     select(func.coalesce(func.sum(RewardRecord.amount), 0)).where(
                         RewardRecord.user_id == user_id,
-                        func.func("DATE", RewardRecord.created_at) == str(today_start),
+                        func.DATE(RewardRecord.created_at) == str(today_start),
                     )
                 )
             ).scalar() or 0

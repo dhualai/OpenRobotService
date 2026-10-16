@@ -9,15 +9,17 @@ from app.models.task import ArchiveReport, OperationType, Task, TaskOperationLog
 from app.models.wxpay import RewardRecord, RewardStatus
 from app.modules.admin.services import knowledge_service
 from app.modules.wxpay.schemas import GrantRewardIn
-from app.modules.wxpay.service import RewardService
+from app.modules.wxpay.service import AuditDecisionEngine, RewardService
 
 
 ARCHIVE_FINANCE_SOURCE = "task_archive"
 ARCHIVE_REWARD_ROLES = {"reporter", "assignee", "reviewer"}
 
 
-async def prepare_archive_rewards(db, task, report, reviewer_id):
+async def prepare_archive_rewards(db, task, report, reviewer_id) -> bool:
+    """生成三方闭环奖励，返回 True 表示全部自动过审（无 pending_audit）。"""
     config = await RewardService.resolve_config(db, "task_archive")
+    policy = await RewardService.resolve_config(db, "audit_policy")
     if not config:
         raise HTTPException(422, "请先在奖励管理中启用并配置三方闭环奖励")
     users = await knowledge_service.users_by_identity(db)
@@ -30,19 +32,36 @@ async def prepare_archive_rewards(db, task, report, reviewer_id):
         amount = config.get(f"{role}_fen")
         if not user or not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
             raise HTTPException(422, f"{label}身份或奖励金额未正确配置")
-        payloads.append((role, GrantRewardIn(user_id=user.id, amount=amount,
+        payloads.append((role, user, amount, GrantRewardIn(user_id=user.id, amount=amount,
             scene_name="工单闭环奖励", reward_desc=f"工单{label}奖励",
             source_type=ARCHIVE_FINANCE_SOURCE, source_id=str(task.id))))
-    for role, payload in payloads:
+
+    now = knowledge_service.utcnow()
+    any_pending_audit = False
+    for role, user, amount, payload in payloads:
         reward, duplicated = await RewardService.grant(db, payload, role=role,
             status=RewardStatus.PENDING_AUDIT, auto_commit=False)
         if duplicated:
             raise HTTPException(409, "该工单已有闭环奖励，请先处理原财务审核记录")
-        reward.expire_at = None
+        # 审核决策引擎分流：小额/低风险自动过审，强制审核条件触发则进 pending_audit
+        if policy:
+            auto_pass = await AuditDecisionEngine.evaluate(db, user.id, amount, policy)
+            if auto_pass:
+                reward.status = RewardStatus.PENDING
+                reward.audit_by = "AUTO"
+                reward.audit_at = now
+                reward.expire_at = now + timedelta(days=int(settings.WXPAY_REWARD_EXPIRE_DAYS or 30))
+            else:
+                reward.audit_remark = await AuditDecisionEngine.reason(db, user.id, amount, policy)
+                any_pending_audit = True
+        else:
+            # 没有 audit_policy 配置 → 全部走 pending_audit（兜底行为）
+            any_pending_audit = True
     publication = await db.get(KnowledgePublication, task.id)
     if publication:
         publication.active = False
     await db.flush()
+    return not any_pending_audit
 
 
 async def archive_finance_detail(db, task_id):
@@ -82,10 +101,10 @@ async def audit_archive_rewards(db, ids, operator_id, approved, remark=""):
         ).with_for_update().execution_options(populate_existing=True))).scalars().all()
         if not any(reward.status == RewardStatus.PENDING_AUDIT for reward in rewards):
             continue
-        if len(rewards) != 3 or {reward.role for reward in rewards} != ARCHIVE_REWARD_ROLES or any(
-            reward.status != RewardStatus.PENDING_AUDIT for reward in rewards
-        ):
-            raise HTTPException(409, "工单三方奖励状态不完整，不能部分发放")
+        # 有 pending 的（自动过审）可以和 pending_audit 混合——只处理 pending_audit 那些
+        audit_rewards = [r for r in rewards if r.status == RewardStatus.PENDING_AUDIT]
+        if not audit_rewards:
+            continue
         report = (await db.execute(select(ArchiveReport).where(
             ArchiveReport.task_id == task_id
         ).order_by(ArchiveReport.version.desc(), ArchiveReport.id.desc()).limit(1)
@@ -93,23 +112,20 @@ async def audit_archive_rewards(db, ids, operator_id, approved, remark=""):
         if not task or task.status != TaskStatus.ARCHIVING or not report or report.submit_status != "approved":
             raise HTTPException(409, "工单或归档报告状态已变更，请刷新后处理")
         now = knowledge_service.utcnow()
-        for reward in rewards:
+        for reward in audit_rewards:
             reward.status = RewardStatus.PENDING if approved else RewardStatus.REJECTED
             reward.audit_by, reward.audit_at = operator_id, now
             reward.audit_remark = remark.strip() or ("工单财务审核通过" if approved else "财务驳回")
             if approved:
                 reward.expire_at = now + timedelta(days=int(settings.WXPAY_REWARD_EXPIRE_DAYS or 30))
+        # 工单归档 + 知识库发布：只要存在至少一条 pending_audit 且 approved，就推进
+        # （自动过审的 pending 奖励不需要财务干预，工单状态仍由财务审核最终决定）
         if approved:
             task.status, task.archived_at, task.archived_by = TaskStatus.ARCHIVED, now, report.reviewer
             publication = await db.get(KnowledgePublication, task.id)
             if publication and not publication.active:
                 publication.first_approved_at = now
             await knowledge_service.publish_report(db, task, report, now)
-        description = "财务审核通过，三方奖励入账，工单完成归档闭环" if approved else "财务审核驳回，三方奖励不发放，工单暂不进入知识榜"
-        db.add(TaskOperationLog(task_id=task.id, operation_type=OperationType.STATUS_CHANGE,
-            operator=operator_id, operator_name="财务审核", description=description,
-            to_status=task.status.value, detail={"finance_outcome": "approved" if approved else "rejected",
-                "audit_remark": remark.strip(), "report_id": report.id}))
-        processed.extend(rewards)
+        processed.extend(audit_rewards)
     await db.flush()
     return processed
