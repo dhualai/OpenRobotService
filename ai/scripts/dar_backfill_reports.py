@@ -16,7 +16,9 @@ import sys
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dar_weekly import DATA  # noqa: E402  复用 dar_weekly 的数据目录解析（--env 同款）
+# 注意：不能用 dar_weekly 的模块级 DATA——它硬编码 test，--env 在 main 里才生效，
+# 这里 import 时还未执行（1016 实测坑）。按 --env 自行拼目录。
+from dar_weekly import DATA_ROOT, _push_env  # noqa: E402
 
 
 def main():
@@ -25,14 +27,14 @@ def main():
     args = ap.parse_args()
     os.environ["DAR_ENV"] = args.env
 
-    base = (os.getenv("DAR_PUSH_BASE") or "").rstrip("/")
-    user, pwd = os.getenv("DAR_PUSH_USER") or "", os.getenv("DAR_PUSH_PASS") or ""
+    base, user, pwd = _push_env()   # shell 环境变量优先，其次 ai/.env
     if not (base and user and pwd):
         sys.exit("请先配 DAR_PUSH_BASE / DAR_PUSH_USER / DAR_PUSH_PASS")
 
-    files = sorted(glob.glob(os.path.join(DATA, "processed", "weekly_*.json")))
+    data_dir = os.path.join(DATA_ROOT, args.env, "processed")
+    files = sorted(glob.glob(os.path.join(data_dir, "weekly_*.json")))
     if not files:
-        sys.exit(f"未找到周报: {DATA}/processed/weekly_*.json")
+        sys.exit(f"未找到周报: {data_dir}/weekly_*.json")
 
     req = urllib.request.Request(f"{base}/api/auth/login",
                                  json.dumps({"username": user, "password": pwd}).encode(),

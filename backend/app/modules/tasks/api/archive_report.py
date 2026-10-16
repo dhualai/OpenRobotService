@@ -24,6 +24,7 @@ from app.modules.tasks.schemas.archive_report import (
     ArchiveReportSaveRequest,
     ArchiveReportSubmitRequest,
     ArchiveReportRejectRequest,
+    ArchiveReportApproveRequest,
     ArchiveReportResponse,
 )
 from app.modules.tasks.schemas.ticket import TicketResponse
@@ -33,30 +34,32 @@ from app.modules.tasks.services.ticket_service import TicketService
 
 logger = logging.getLogger(__name__)
 
+from app.modules.tasks.services.knowledge_review import (
+    pending_reviews, own_review_history, projected_report, review_detail,
+)
+
 # prefix=/archive-report：避免被 GET /tasks/{task_id} 抢路径；与前端 /archive-report/... 对齐
 router = APIRouter(prefix="/archive-report", tags=["archive-report"])
 
 
-async def _enrich_report_response(db: AsyncSession, report: ArchiveReport) -> ArchiveReportResponse:
+async def _enrich_report_response(db: AsyncSession, report: ArchiveReport, actor=None) -> ArchiveReportResponse:
     """查用户表补全 created_by / updated_by / reviewer 的显示名。"""
-    response = ArchiveReportResponse.model_validate(report)
+    return await projected_report(db, report, actor or {})
 
-    ids_to_lookup = {report.created_by, report.updated_by, report.reviewer} - {None, ""}
-    if ids_to_lookup:
-        result = await db.execute(
-            select(UserDB.id, UserDB.username, UserDB.name).where(UserDB.id.in_(ids_to_lookup))
-        )
-        user_map: dict[str, str] = {}
-        for row in result.all():
-            display_name = row.name or row.username
-            if display_name:
-                user_map[row.id] = display_name
 
-        response.created_by_name = user_map.get(report.created_by)
-        response.updated_by_name = user_map.get(report.updated_by)
-        response.reviewer_name = user_map.get(report.reviewer)
+@router.get("/reviews")
+async def my_pending_reviews(db=Depends(get_db), actor=Depends(get_current_active_user_from_token)):
+    return await pending_reviews(db, actor)
 
-    return response
+
+@router.get("/my-review-history")
+async def my_review_history(db=Depends(get_db), actor=Depends(get_current_active_user_from_token)):
+    return await own_review_history(db, actor)
+
+
+@router.get("/reviews/{report_id}")
+async def anonymous_review(report_id: int, db=Depends(get_db), actor=Depends(get_current_active_user_from_token)):
+    return await review_detail(db, actor, report_id)
 
 
 async def _operator_info(current_user) -> tuple[str, str, str]:
@@ -170,7 +173,12 @@ async def get_latest_archive_report(
     report = await ArchiveReportService.get_latest_by_task(db, task_id)
     if not report:
         raise HTTPException(status_code=404, detail="该工单暂无归档报告")
-    return await _enrich_report_response(db, report)
+    task = await db.get(Task, task_id)
+    if report.submit_status != "approved" and not user_matches(
+        current_user, report.created_by, report.reviewer, task.created_by, task.assigned_to
+    ):
+        raise HTTPException(status_code=403, detail="无权限查看该报告")
+    return await _enrich_report_response(db, report, current_user)
 
 
 # ==================== 保存草稿 ====================
@@ -224,7 +232,7 @@ async def save_draft(
     await db.commit()
     await db.refresh(updated_report)
 
-    return await _enrich_report_response(db, updated_report)
+    return await _enrich_report_response(db, updated_report, current_user)
 
 
 # ==================== 提交审核 ====================
@@ -254,20 +262,7 @@ async def submit_report(
     )
 
     user_name = await _user_display_name(db, operator_id) or username
-    reviewer_id = updated_report.reviewer or ""
-    reviewer_name = await _user_display_name(db, reviewer_id) or reviewer_id
-    domain = getattr(assignment, "domain", None) or ""
-
-    log_detail = {"report_id": report_id, "reviewer": reviewer_id, "domain": domain}
-    extra = getattr(assignment, "_log_detail", None)
-    if isinstance(extra, dict):
-        log_detail.update(extra)
-    else:
-        try:
-            from app.modules.tasks.services.archive_review_dispatch import assignment_log_detail
-            log_detail.update(assignment_log_detail(assignment))
-        except Exception:
-            pass
+    log_detail = {"report_id": report_id}
 
     # 操作日志（含派审负荷/概率快照；与 submit 业务一并 commit）
     await OperationLogService.log(
@@ -277,9 +272,7 @@ async def submit_report(
         operator=username,
         operator_name=user_name,
         description=(
-            f"{user_name} 提交了归档报告，系统派审 "
-            f"{reviewer_name} 为审核人"
-            + (f"（领域：{domain}）" if domain else "")
+            "已提交归档报告，等待匿名审核"
         ),
         detail=log_detail,
         auto_commit=False,
@@ -290,12 +283,11 @@ async def submit_report(
     # 系统评论单独 commit，失败不回滚派审结果
     await _add_system_comment(
         db, report.task_id,
-        f"{user_name} 提交了归档报告，系统派审 {reviewer_name} 为审核人"
-        + (f"（领域：{domain}）" if domain else ""),
+        "已提交归档报告，等待匿名审核",
         username, token,
     )
 
-    return await _enrich_report_response(db, updated_report)
+    return await _enrich_report_response(db, updated_report, current_user)
 
 
 # ==================== 审核通过 ====================
@@ -304,6 +296,7 @@ async def submit_report(
 @router.post("/archive-reports/{report_id}/approve")
 async def approve_report(
     report_id: int,
+    body: ArchiveReportApproveRequest = Body(...),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_active_user_from_token),
 ):
@@ -315,11 +308,16 @@ async def approve_report(
         raise HTTPException(status_code=404, detail="归档报告未找到")
 
     # 权限：reviewer 本人或 admin
-    if not (user_matches(current_user, report.reviewer) or is_admin_user(current_user)):
+    if not user_matches(current_user, report.reviewer):
         raise HTTPException(status_code=403, detail="无权限审核该归档报告")
 
     # 业务调用
-    approved_report, task_new = await ArchiveReportService.approve(db, report_id, operator_id)
+    task = await db.get(Task, report.task_id)
+    if user_matches(current_user, task.created_by, task.assigned_to, report.created_by):
+        raise HTTPException(403, "不能审核本人参与的问题")
+    approved_report, task_new = await ArchiveReportService.approve(
+        db, report_id, operator_id, body.review_comment, body.value_point, body.revision
+    )
 
     user_name = await _user_display_name(db, operator_id) or username
 
@@ -328,10 +326,10 @@ async def approve_report(
         db=db,
         task_id=report.task_id,
         op_type=OperationType.ARCHIVE_APPROVE,
-        operator=username,
-        operator_name=user_name,
+        operator="knowledge_review",
+        operator_name="匿名审核人",
         to_status=TaskStatus.ARCHIVED.value,
-        description=f"{user_name} 审核通过归档报告，工单状态变更为「已归档」",
+        description="归档报告审核通过，工单状态变更为「已归档」",
         detail={"report_id": report_id},
         auto_commit=False,
     )
@@ -340,15 +338,14 @@ async def approve_report(
     # 系统评论单独 commit
     await _add_system_comment(
         db, report.task_id,
-        f"{user_name} 审核通过归档报告，工单状态变更为「已归档」",
-        username, token,
+        "归档报告审核通过，工单状态变更为「已归档」",
+        "system", None,
     )
 
     # WS 广播
     await ws_broadcast_task_updated(report.task_id, task_new)
 
-    ticket = await TicketService.get_ticket_by_id(db, report.task_id, load_comments=True, token=token)
-    return TicketResponse.model_validate(ticket)
+    return {"report_id": report_id, "submit_status": "approved"}
 
 
 # ==================== 审核驳回 ====================
@@ -370,12 +367,15 @@ async def reject_report(
         raise HTTPException(status_code=404, detail="归档报告未找到")
 
     # 权限：reviewer 本人或 admin
-    if not (user_matches(current_user, report.reviewer) or is_admin_user(current_user)):
+    if not user_matches(current_user, report.reviewer):
         raise HTTPException(status_code=403, detail="无权限审核该归档报告")
 
     # 业务调用
+    task = await db.get(Task, report.task_id)
+    if user_matches(current_user, task.created_by, task.assigned_to, report.created_by):
+        raise HTTPException(403, "不能审核本人参与的问题")
     rejected_report, task_new = await ArchiveReportService.reject(
-        db, report_id, body.review_comment, operator_id
+        db, report_id, body.review_comment, operator_id, body.revision
     )
 
     user_name = await _user_display_name(db, operator_id) or username
@@ -385,10 +385,10 @@ async def reject_report(
         db=db,
         task_id=report.task_id,
         op_type=OperationType.ARCHIVE_REJECT,
-        operator=username,
-        operator_name=user_name,
-        description=f"{user_name} 驳回了归档报告",
-        detail={"report_id": report_id, "reason": body.review_comment},
+        operator="knowledge_review",
+        operator_name="匿名审核人",
+        description="归档报告已驳回，请当事人查看意见后补充",
+        detail={"report_id": report_id},
         auto_commit=False,
     )
     await db.commit()
@@ -397,8 +397,8 @@ async def reject_report(
     # 系统评论单独 commit
     await _add_system_comment(
         db, report.task_id,
-        f"{user_name} 驳回了归档报告",
-        username, token,
+        "归档报告已驳回，请当事人查看意见后补充",
+        "system", None,
     )
 
-    return await _enrich_report_response(db, rejected_report)
+    return {"report_id": report_id, "submit_status": "rejected"}

@@ -82,6 +82,8 @@ type APIError struct {
 	Message    string      // 错误描述
 	Detail     interface{} // detail 字段原文
 	RequestID  string      // Request-ID，排障必用
+	Method     string      // 请求方法，排障用（哪个接口报的错）
+	Path       string      // 请求路径（含 query 已脱敏由调用方控制，不落日志）
 	Body       string      // 原始应答体（已脱敏风险由调用方控制，不落日志）
 }
 
@@ -143,7 +145,7 @@ func (c *Client) Do(ctx context.Context, method, path string, body interface{}) 
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newAPIError(resp, respBody)
+		return nil, newAPIError(resp, respBody, method, path)
 	}
 
 	// 2xx 必须验签后才可信任应答内容。
@@ -182,10 +184,12 @@ func (c *Client) verifyResponse(header http.Header, body []byte) error {
 	return VerifySignature(pub, timestamp, nonce, string(body), signature)
 }
 
-func newAPIError(resp *http.Response, body []byte) error {
+func newAPIError(resp *http.Response, body []byte, method, path string) error {
 	apiErr := &APIError{
 		StatusCode: resp.StatusCode,
 		RequestID:  resp.Header.Get("Request-ID"),
+		Method:     method,
+		Path:       path,
 		Body:       string(body),
 	}
 	var parsed struct {

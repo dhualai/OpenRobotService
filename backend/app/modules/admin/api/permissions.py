@@ -57,6 +57,8 @@ async def get_all_permissions(
         ensure_dispatch_dev_permission()
         from app.modules.admin.api.task_policy import ensure_task_policy_permission
         ensure_task_policy_permission()
+        from app.modules.admin.services.knowledge_permissions import ensure_knowledge_contribution_permission
+        ensure_knowledge_contribution_permission()
         permissions = db_manager.get_all_permissions()
         return DataResponse(
             code=0,

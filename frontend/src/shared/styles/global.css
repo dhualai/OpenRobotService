@@ -3103,6 +3103,65 @@ html, body, #root {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 欢迎区右侧「我的奖励」入口（原「我的历史奖励」，由个人资料页迁移而来）。
+   沿用本页 mac-sync-btn / mac-monthbars__select 的胶囊语言：999px 圆角 + 细描边
+   + mac-shadow-soft；margin-left:auto 顶到最右，flex-shrink:0 保证用户名过长时
+   入口不被压扁（让 .admin-welcome__text 自己走省略号收缩）。 */
+.admin-welcome__rewards {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 5px 8px 5px 6px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid var(--mac-border);
+  box-shadow: var(--mac-shadow-soft);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.admin-welcome__rewards:active {
+  transform: scale(0.96);
+  border-color: var(--mac-blue-4);
+  box-shadow: 0 1px 2px rgba(80, 90, 100, 0.06);
+}
+/* 图标 chip：blue-soft 底 + blue-2 描线，与后台「奖励管理」入口同色系 */
+.admin-welcome__rewards-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--mac-blue-soft);
+  color: var(--mac-blue-2);
+}
+.admin-welcome__rewards-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--mac-fg);
+  white-space: nowrap;
+}
+/* 待提现金额胶囊：tabular-nums 等宽数字，金额位数变化时不跳宽 */
+.admin-welcome__rewards-amount {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--mac-blue-soft);
+  color: var(--mac-blue-1);
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 尾部箭头：降存在感，不与文字/金额抢视觉焦点（仅直接子级，不含 icon chip 内的 svg） */
+.admin-welcome__rewards > svg {
+  flex-shrink: 0;
+  color: var(--mac-gray-light);
+}
 
 /* 工单数据来源分析：类型分布 / 提单人角色分布各占一张卡片（上下排列），
    卡片内环图在左、图例在右占满剩余宽度，保证角色名/数值完整展示 */
@@ -4649,6 +4708,18 @@ html, body, #root {
 
 /* ===== 后台管理入口 ===== */
 .admin-view { padding-top: 56px; }
+/* 「我的奖励」页：与 .admin-view 同一口径——TDesign Navbar 带 fixed 后会脱离文档流
+   且不生成占位块，容器必须自己让出顶栏高度，否则第一张「待提现」汇总卡会被压在顶栏下。
+   flex:1 + min-height:0 让它在 .tabbar-shell__content（flex column + overflow auto）里
+   可靠收缩：短内容也能铺满渐变底色，长内容只由外层滚动，不额外产生双层滚动条。 */
+.rewards-page {
+  flex: 1;
+  min-height: 0;
+  padding-top: var(--td-navbar-height, 56px);
+  background: var(--gradient-surface);
+}
+/* .page-container 的全局 min-height:100vh 在本页会凭空撑出一屏空白滚动 */
+.rewards-page > .page-container { min-height: auto; }
 .admin-view__slogan {
   text-align: center;
   color: var(--primary);

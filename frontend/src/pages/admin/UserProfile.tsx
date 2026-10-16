@@ -12,8 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { Input, Button, Dialog, Toast, Popup } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import FilterableSelect from '@/shared/components/FilterableSelect';
-import { UserCircleIcon, AddIcon, ChevronRightIcon } from 'tdesign-icons-react';
-import { fetchRewardStats, fenToYuan } from '@/api/wxpay';
+import { UserCircleIcon, AddIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import {
   getMyProfile, getProfileOptions, generateUspUsername, updateMyProfile,
@@ -67,24 +66,6 @@ export default function UserProfile() {
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [avatarError, setAvatarError] = useState(false);
-  // 我的历史奖励入口上展示的待提现金额；接口失败/未启用时静默隐藏，不影响资料页
-  const [pendingReward, setPendingReward] = useState<{ amount: number; count: number } | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    fetchRewardStats()
-      .then((s) => {
-        if (alive && (s.pending_count > 0 || s.pending_amount > 0)) {
-          setPendingReward({ amount: s.pending_amount, count: s.pending_count });
-        }
-      })
-      .catch(() => {
-        // 微信支付未启用或接口异常：入口照常显示，只是不带金额
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   useEffect(() => {
     (async () => {
@@ -450,31 +431,7 @@ export default function UserProfile() {
         <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>点击编辑</div>
       </div>
 
-      {/* 我的历史奖励：微信商家转账的用户侧唯一入口（点进去可「立即提现」到微信零钱） */}
-      <div
-        data-testid="rewards-entry"
-        onClick={() => navigate('/rewards')}
-        style={{
-          background: '#fff',
-          borderRadius: 12,
-          padding: '14px 16px',
-          marginBottom: 16,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          cursor: 'pointer',
-        }}
-      >
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14, color: '#333', fontWeight: 500 }}>我的历史奖励</div>
-          <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
-            {pendingReward
-              ? `待提现 ¥${fenToYuan(pendingReward.amount)}（${pendingReward.count} 笔）`
-              : '查看奖励记录并提现到微信零钱'}
-          </div>
-        </div>
-        <ChevronRightIcon size="18px" />
-      </div>
+      {/* 「我的奖励」入口已迁移至后台管理首页欢迎区（头像与用户名右侧），见 Dashboard.tsx */}
 
       <div style={{ background: '#fff', borderRadius: 12, padding: 16 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: '#333', marginBottom: 12 }}>

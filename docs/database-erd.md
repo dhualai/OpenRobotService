@@ -3,6 +3,8 @@
 > 生成方式：以代码中的 **ORM 真实定义**为准（唯一定义点 `backend/app/models/`），并与本地库 `helpdesk_7_16` 实测的 37 张表、14 条物理外键逐一核对。
 > 生成日期：2026-09-14 ｜ 库：MySQL 8（字符集 utf8mb4） ｜ 时间字段统一 **naive UTC**
 
+> 增量说明（2026-10-15）：下文37表为2026-09-14实测基线，并非当前ORM总表数。本次贡献榜及讨论新增6张表及归档报告价值点，详见2.7；本机dev已迁移至 `d0e3f6a9b215`，生产及其他环境未执行，不能把ORM定义视为所有环境的已部署结构。
+
 ## 0. 数据来源与口径
 
 | 项 | 说明 |
@@ -479,6 +481,35 @@ erDiagram
 ```
 
 ---
+
+### 2.7 一期知识贡献榜与匿名审核（2026-10-15增量）
+
+ORM：`backend/app/models/knowledge.py`。Alembic：`b8c1d4e7f203 → c9d2e5f8a104 → d0e3f6a9b215`，后一版本仅增加公开知识讨论表。以下ID关系均为逻辑关联，无新增物理外键；时间按naive UTC保存，活动按北京时间自然月计算。
+
+| 表 / 字段 | 主键与关键口径 |
+|---|---|
+| `knowledge_publications` | `task_id`主键，一工单一条；关联当前通过报告 `report_id`，固定首次提单/解答人和 `first_approved_at`，保存公开正文与匿名意见快照；正文MySQL LONGTEXT |
+| `knowledge_question_likes` | `(task_id, user_id)`联合主键；保存激活状态、风险状态、当前原因、标记人及更新时间 |
+| `knowledge_like_events` | 自增 `id`，关联工单与用户；记录每次点赞/取消状态及时间，用于还原月末状态 |
+| `archive_review_decisions` | 自增 `id`，`(report_id, version)`唯一；保存审核人、通过/驳回意见、价值点和当时报告，正文MySQL LONGTEXT；仅意见作者可查询本人历史 |
+| `knowledge_settlements` | `month`主键；一期固定11月和12月，保存修订版本、综合排名JSON、核验/发放状态及审计JSON |
+| `knowledge_discussions` | 自增INTEGER `id`；BIGINT `task_id`、VARCHAR(64) `author_id`、TEXT `content`、DATETIME `created_at`；工单、作者和时间各有索引。正文1—2000字，登录用户仅可读写仍有效公开的问题讨论；不复用 `task_comments`，不计贡献或奖励 |
+| `archive_reports.value_point` | 新增可空TEXT，通过审核时必填；审核意见继续使用现有 `review_comment` |
+
+```mermaid
+erDiagram
+    tasks ||--o| knowledge_publications : "一工单一条发布"
+    archive_reports ||--o{ knowledge_publications : "当前公开报告"
+    archive_reports ||--o{ archive_review_decisions : "按提交版本留存"
+    users ||--o{ archive_review_decisions : "非公开审核人"
+    knowledge_publications ||--o{ knowledge_question_likes : "点赞明细"
+    knowledge_publications ||--o{ knowledge_like_events : "点赞时间线"
+    users ||--o{ knowledge_question_likes : "每人每题一条"
+    tasks ||--o{ knowledge_discussions : "公开知识讨论(逻辑)"
+    users ||--o{ knowledge_discussions : "讨论作者(逻辑)"
+```
+
+`knowledge_settlements.rankings`固化名次、贡献/获赞数及预计奖金；入账复用 `reward_record`，来源类型 `knowledge_monthly`，来源ID按一期/月份/用户生成幂等键，不新增另一套余额或支付流水。
 
 ## 3. 关系总表（父子 + 基数 + 是否物理约束）
 

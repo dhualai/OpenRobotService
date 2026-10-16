@@ -89,6 +89,8 @@ class User(UserBase):
         from_attributes = True
 
 class UserDetail(User):
+    can_view_knowledge_contribution: bool = False
+
     class Config:
         from_attributes = True
 

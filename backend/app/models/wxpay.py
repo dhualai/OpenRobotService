@@ -32,12 +32,26 @@ from app.models.base import Base
 
 
 class RewardStatus:
-    """奖励记录状态（商户侧，与微信转账单状态取值域不同）。"""
+    """奖励记录状态（商户侧，与微信转账单状态取值域不同）。
 
-    PENDING = "pending"          # 待提现
-    WITHDRAWING = "withdrawing"  # 提现中：存在非终态转账单
-    SUCCESS = "success"          # 已到账（终态）
-    EXPIRED = "expired"          # 已失效（终态，超期未提现）
+    审核决策引擎分流：
+    - pending_audit  强制财务审核（默认态，需人工操作）
+    - rejected       财务驳回（终态，不发钱）
+    - pending        审核已通过，可提现（自动通过或人工通过后进入，可直接调 withdraw）
+    - withdrawing    提现中
+    - success        已到账（终态）
+    - expired        已失效（终态，超期未提现）
+    """
+
+    PENDING_AUDIT = "pending_audit"  # 待财务审核
+    REJECTED = "rejected"             # 已驳回（终态）
+    PENDING = "pending"               # 审核通过，可提现
+    WITHDRAWING = "withdrawing"       # 提现中
+    SUCCESS = "success"               # 已到账（终态）
+    EXPIRED = "expired"               # 已失效（终态）
+
+    # 不可提现状态（WithdrawService 前置校验用）
+    NON_WITHDRAWABLE = frozenset({PENDING_AUDIT, REJECTED})
 
 
 class TransferBillState:
@@ -100,16 +114,26 @@ class RewardRecord(Base):
 
     source_type = Column(String(32), nullable=False, default="", comment="奖励来源类型")
     source_id = Column(String(64), nullable=True, comment="来源业务 ID，防重复发放")
+    role = Column(
+        String(32),
+        nullable=True,
+        comment="奖励角色: reporter/assignee/reviewer/liker/ranker/manual",
+    )
 
     status = Column(
         String(20),
         nullable=False,
-        default=RewardStatus.PENDING,
+        default=RewardStatus.PENDING_AUDIT,
         index=True,
-        comment="pending/withdrawing/success/expired",
+        comment="pending_audit/rejected/pending/withdrawing/success/expired",
     )
     expire_at = Column(DateTime, nullable=True, comment="奖励有效期，超期未提现 → expired")
     withdrawn_at = Column(DateTime, nullable=True, comment="到账时间")
+
+    # 审核字段：自动通过时 audit_by="AUTO"，audit_at 写入当前时间
+    audit_by = Column(String(64), nullable=True, comment="审核人 users.id（自动通过时为 AUTO）")
+    audit_at = Column(DateTime, nullable=True, comment="审核时间")
+    audit_remark = Column(String(255), nullable=True, comment="审核备注（驳回原因或风控标记）")
 
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间（UTC）")
     updated_at = Column(
@@ -118,8 +142,13 @@ class RewardRecord(Base):
 
     __table_args__ = (
         Index("ix_reward_user_status", "user_id", "status"),
-        # 防重复发放；source_id 为 NULL 时 MySQL 不参与唯一性判定
-        UniqueConstraint("source_type", "source_id", name="uq_reward_source"),
+        Index("ix_reward_audit_status", "status"),
+        Index("ix_reward_task_role", "source_id", "role"),
+        Index("ix_reward_user_created", "user_id", "created_at"),
+        # 防重复发放；role 参与唯一约束，同一工单不同角色各发一次
+        UniqueConstraint(
+            "source_type", "source_id", "role", name="uq_reward_source_role"
+        ),
     )
 
 
@@ -186,3 +215,26 @@ class WxpayNotifyLog(Base):
 
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间（UTC）")
     processed_at = Column(DateTime, nullable=True, comment="处理完成时间（UTC）")
+
+
+class RewardConfig(Base):
+    """奖励规则配置（JSON 灵活结构，每行一种规则）。
+
+    预设四类：
+    - task_archive   基础闭环奖励金额（reporter/assignee/reviewer 各档分值）
+    - monthly_rank    月度排名阶梯（top3 / top4-10 分值）
+    - quality_like    优质点赞（per_like_fen + daily_limit）
+    - audit_policy    审核决策引擎阈值（自动通过条件 + 强制审核条件）
+    """
+
+    __tablename__ = "reward_config"
+
+    config_key = Column(
+        String(64), primary_key=True, comment="配置键，如 task_archive / audit_policy"
+    )
+    enabled = Column(Boolean, nullable=False, default=True, comment="是否启用")
+    config = Column(JSON, nullable=False, default=dict, comment="规则 JSON，结构由 config_key 决定")
+    updated_by = Column(String(64), nullable=True, comment="最近修改人 users.id")
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间（UTC）"
+    )

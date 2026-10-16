@@ -124,6 +124,10 @@ const WxpayRewardManage = lazyImport(() => import('@/pages/admin/WxpayRewardMana
 const Dashboard = lazyImport(() => import('@/pages/admin/Dashboard'));
 // 工单数据看板：工单监测/类型分布/接单人响应时间三张看板（首页「工单数据看板」小节的「其他数据统计」进入）
 const TicketDashboard = lazyImport(() => import('@/pages/admin/TicketDashboard'));
+const KnowledgeCenter = lazyImport(() => import('@/pages/admin/KnowledgeCenter'));
+const KnowledgeQuestionDetail = lazyImport(() => import('@/pages/admin/KnowledgeQuestionDetail'));
+const KnowledgeContributorPage = lazyImport(() => import('@/pages/admin/KnowledgeContributorPage'));
+const KnowledgeReviewPage = lazyImport(() => import('@/pages/admin/KnowledgeReviewPage'));
 const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
 const DispatchDev = lazyImport(() => import('@/pages/admin/DispatchDev'));
 const TaskPolicyPage = lazyImport(() => import('@/pages/admin/TaskPolicyPage'));
@@ -217,6 +221,10 @@ const router = createBrowserRouter([
             children: [
               // 默认首页：上中下三段式仪表盘（工单数据看板 / 跨项目看板 / 更多功能）
               { index: true, element: <Dashboard /> },
+              { path: 'knowledge', element: <KnowledgeCenter /> },
+              { path: 'knowledge/questions/:taskId', element: <KnowledgeQuestionDetail /> },
+              { path: 'knowledge/contributors/:userId', element: <KnowledgeContributorPage /> },
+              { path: 'knowledge/reviews/:reportId', element: <KnowledgeReviewPage /> },
               // 工单数据看板：工单监测/类型分布/接单人响应时间三张看板（首页「工单数据看板」小节右侧「其他数据统计」进入）
               { path: 'ticket-dashboard', element: <TicketDashboard /> },
               // 仪表盘下钻明细：点击状态/分类标签后展示对应列表
@@ -235,6 +243,7 @@ const router = createBrowserRouter([
               { path: 'project-info-template', element: <ProjectInfoTemplate /> },
               // 次级入口：三大功能传统列表页 + 管理员工具
               { path: 'entries', element: <AdminEntries /> },
+              { path: 'entries/:category', element: <AdminEntries /> },
               {
                 element: <AdminLayout />,
                 children: [

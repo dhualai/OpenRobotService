@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 
@@ -158,6 +158,10 @@ class TicketRedispatch(BaseModel):
 
 
 class TicketResponse(TicketBase):
+    @field_serializer("archived_by")
+    def private_reviewer(self, value):
+        return None
+
     id: int
     status: TicketStatus
     redispatch: Optional[TicketRedispatch] = Field(None, description="最新一轮派单评估（无记录为 None）")

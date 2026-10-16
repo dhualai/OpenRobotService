@@ -9,6 +9,7 @@ from app.models import UserDB, Role, Permission, Project, role_permissions, user
 from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
 from app.models.organization import Company, Department
 from app.core.security import get_password_hash, verify_password
+from app.services.permission_service import invalidate_user_roles_cache
 
 logger = logging.getLogger(__name__)
 
@@ -542,6 +543,7 @@ class IdentityService:
                 permission_id=permission_id
             ))
             db.commit()
+            invalidate_user_roles_cache()
             return True
         except Exception as e:
             db.rollback()
@@ -559,6 +561,7 @@ class IdentityService:
                 (role_permissions.c.permission_id == permission_id)
             ))
             db.commit()
+            invalidate_user_roles_cache()
             return result.rowcount > 0
         except Exception as e:
             db.rollback()
@@ -633,6 +636,7 @@ class IdentityService:
 
             db.delete(permission)
             db.commit()
+            invalidate_user_roles_cache()
             return True
         except Exception as e:
             db.rollback()
@@ -662,6 +666,7 @@ class IdentityService:
 
             db.query(Permission).filter(Permission.id == permission_id).update(update_fields)
             db.commit()
+            invalidate_user_roles_cache()
             return True
         except Exception as e:
             db.rollback()

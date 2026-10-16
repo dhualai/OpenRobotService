@@ -1,9 +1,14 @@
 """直答率周报接口（ORS-#981：AI 直答率上服务号后台）。
 
-数据链：本地 dar_weekly SOP 产出周报 → report 步骤自动 POST 本接口（admin
-鉴权，同 (week_date, env) upsert）→ 「工单数据看板」页 AI 直答率区块读
-latest/list 展示。payload 为 dar_weekly 周报原样 JSON；fails 明细（含用户
-对话）存表但展示侧不透出。
+数据链：本地 dar_weekly SOP 产出周报 → report 步骤自动 POST 本接口（写口
+保留 backend:project:all——仅 admin 级账号推）→ 「工单数据看板」页 AI 直答率
+区块读 latest/list 展示。payload 为 dar_weekly 周报原样 JSON；fails 明细
+（含用户对话）存表但展示侧不透出。
+
+读接口不设权限：与同页 /dashboard/summary-all 一致（那页所有数据口都靠前端
+UI 权限门 frontend:admin:other:show 控制可见性）。曾要求 backend:project:all
+——有 other:show 无 project:all 的角色会「看得到区块入口但数据静默为空」
+（1016 实锤）。
 """
 import json
 from typing import Any, Dict
@@ -11,7 +16,6 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
 
 from app.core.database import get_async_db as get_db
 from app.models.dar_report import DarWeeklyReport
@@ -76,7 +80,6 @@ async def upsert_dar_report(
 async def latest_dar_report(
     env: str = Query("prod"),
     db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = require_permission("backend:project:all"),
 ):
     row = (await db.execute(
         select(DarWeeklyReport).where(DarWeeklyReport.env == env)
@@ -92,7 +95,6 @@ async def list_dar_reports(
     env: str = Query("prod"),
     limit: int = Query(12, ge=1, le=52),
     db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = require_permission("backend:project:all"),
 ):
     rows = (await db.execute(
         select(DarWeeklyReport).where(DarWeeklyReport.env == env)

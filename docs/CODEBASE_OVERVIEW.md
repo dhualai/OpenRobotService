@@ -14,6 +14,36 @@
 
 ## 一、项目定位
 
+### 2026-10-16 增量：知识贡献榜首页卡片可见权限
+
+- 权限管理列表注册“显示知识贡献榜”开关，权限码 `frontend:admin:knowledge:show`；通过既有角色管理勾选/取消，可配置任意系统或项目角色。不再写死角色名称，未显式授权的角色默认隐藏，admin用户名和通配权限不绕过该独立配置；权限关闭时所有已授权角色也隐藏。
+- `PermissionService.get_user_with_roles` 按实际角色关联的该权限及其 `enabled` 状态计算 `can_view_knowledge_contribution`。原全局角色派生权限保持不变；角色权限授予/撤销、权限更新/删除后清除当前进程的用户角色缓存，多进程其余实例沿用现有60秒TTL。
+- `GET /api/admin/users/{username}/detail` 返回该布尔标记，`AuthState.canViewKnowledgeContribution` 默认false且不持久化；登录/恢复会话先隐藏，当前用户详情明确返回true才显示，失败/退出清除，旧账号的迟到响应不恢复新账号的卡片。
+- `Dashboard` 同时隐藏标题、“查看榜单”和完整卡片；`KnowledgeContributionCard` 自身也受控，未获可见标记时不挂载取数组件。只调整首页入口展示，不修改知识中心、公开问题或匿名审核接口权限；复用现有权限表及角色权限关联表，不新增数据库结构或自动给角色授权。
+
+### 2026-10-16 增量：知识榜单每日点赞限额
+
+- `knowledge_service.set_like` 按北京时间自然日限制每位用户每天成功点赞5个不同问题，超额返回429；同题重试/重赞不重复占额，取消不返还名额，旧日有效点赞不占当天名额。复用 `knowledge_like_events` 统计，不新增表或迁移。
+- 点赞请求的第一次数据库读取即对规范用户行执行 `FOR UPDATE`，在现有每请求独立会话中先串行化同一用户的跨题请求，再建立一致性读快照及统计额度；限额校验在写入点赞状态/事件之前完成，取消保持可用。
+- 首页卡片与榜单顶部复用 `knowledgeLikeRule` 和原有 `knowledge-note` 样式展示限制与重置说明。新增后端额度、幂等/取消、北京时间日界、身份归并、请求并发及API回归，前端覆盖文案位置和列表/详情超额提示。
+
+### 2026-10-16 增量：移除异常观察与月度结算界面
+
+- 激励方式改由专门入口说明：知识首页卡片、榜单总览、知识列表和人员榜不再展示奖金规则、叠加领奖、核验/发放或结算状态提示，也不直接展示后端 `rule_notice`。保留原有头像、名次、贡献/获赞数据和奖金数额；删除无用的结算状态文案映射，未新增专门提醒入口或占位文案。
+- 知识榜单总览及三个完整榜单页均移除“异常观察与月度结算”展开入口，管理员也不再显示。删除 `KnowledgeRiskPanel.tsx`、对应前端风险/结算API封装和专用样式。
+- 月度综合榜、前三/前十、预计奖金、公开知识、点赞、讨论和匿名评审保持不变；不删除既有奖励或结算数据，后端受限接口仅保留兼容，前端不再调用，也不因此自动发奖。本次不涉及数据库迁移或后端重启。
+
+### 2026-10-15 增量：知识贡献榜与匿名审核
+
+- 前端：`frontend/src/pages/admin/KnowledgeContributionCard.tsx` 位于后台首页用户头像/名字下方、工单数据看板之前；“知识贡献榜”标题复用看板的 `SectionTitle`。`KnowledgeRankCard` 统一横向榜单卡片：左侧榜单标识、右侧前三行。`KnowledgeCenter` 默认展示问题榜、最佳提单人榜、最佳接单人榜三个预览模块，点击进入完整列表；两个用户模块沿用同一综合月榜，月份及问题排序保留在URL中。`KnowledgeQuestionDetail`、`KnowledgeReviewPage` 负责公开问题与匿名审核。实际路由注册在 `frontend/src/main.tsx`，样式复用 `mac-card` 与现有颜色变量。
+- 后端：`modules/admin/api/knowledge.py` 提供登录用户开放的读/点赞接口和受限的风险/结算接口；`knowledge_service.py` 负责活动资格、发布投影、综合月榜与点赞截止口径；`knowledge_settlement.py` 负责修订快照、核验与现有奖励服务入账。
+- 审核复用 `Task` / `ArchiveReport`；`modules/tasks/services/knowledge_review.py` 提供匿名投影、本人意见及原始任务读取限制。报告审批要求意见、价值点、revision及指定审核人回避校验，AI初稿与手写模板同步为八章节。
+- 新模型集中在 `backend/app/models/knowledge.py`：`knowledge_publications`、`knowledge_question_likes`、`knowledge_like_events`、`archive_review_decisions`、`knowledge_settlements`、`knowledge_discussions`；扩展 `archive_reports.value_point`。迁移链为 `b8c1d4e7f203 → c9d2e5f8a104 → d0e3f6a9b215`；2026-10-15 已对本机 dev 的 `127.0.0.1:3306/helpdesk` 执行增量迁移，生产及其他环境仍需独立执行。
+- 知识列表使用 `KnowledgeQuestionCard`，列表右侧及详情均可点赞；`KnowledgeDiscussion` 通过独立讨论接口展示公开知识讨论，不复用原工单内部评论。人员完整榜采用前十名三列头像网格，`KnowledgeContributorPage` 提供当月公开归档工单及提单/接单筛选；人员归属沿用首次有效发布记录。
+- 评审工作台在榜单总览提供直接入口。平台指定名单人员即使尚无任务也能看到；历史分配人员及管理员可进入，但只能查看/处理本人被分配的报告及本人意见。名单、队列、历史、审批和匿名访问限制统一匹配用户ID/账号/OpenID，待审任务不按活动月份过滤；本机当前有效审核名单为空，须在开发者模式的归档审核面板配置后才能派审。
+- 结算来源 `knowledge_monthly` 与其他奖项分离，可叠加；本次不新增每题6元或优质问题金额未定的结算。管理权限为admin或 `backend:knowledge_incentive:manage`，微信到账仍通过已有提现链路。
+- 完整范围、待定规则和隔离验证记录见 `docs/PRODUCT/后台知识贡献榜与匿名审核实现方案.md` 第10节。
+
 **OpenRobotService**（公共实例：**「摇人吧」**）是面向工业移动机器人（AGV/AMR）项目交付场景的微信服务号平台：现场遇到问题 → 微信里 AI 咨询 / 提交工单 → 自动派给对应工程师 / 项目经理 → 工单内协作讨论 → 疑难一键上报 → 闭环解决，并把处理经验沉淀进知识库。
 
 不仅是一个工单系统，还覆盖**项目交付管理**（项目 / 风险 / 日报 / 授权 / 人员画像）与**机器人运行数据**（USP 调度平台上传统计），由 **AI 沿"需求 / 供给 / 管理"三视角全流程参与**，配合**专业知识库（RAG）**提升响应效率。

@@ -14,7 +14,9 @@ from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, Ticket
 from app.modules.tasks.services.ticket_service import TicketService
 from app.core.ticket_roles import get_ticket_roles
 
-router = APIRouter(prefix="/my-tasks", tags=["call-my-tasks"])
+from app.modules.tasks.services.knowledge_review import raw_access_guard
+
+router = APIRouter(prefix="/my-tasks", tags=["call-my-tasks"], dependencies=[Depends(raw_access_guard)])
 
 
 @router.get("/", response_model=TicketListResponse, summary="获取我的任务列表")

@@ -917,16 +917,31 @@ def step_report():
     _push_report(rep)
 
 
+def _push_env():
+    """推送凭据：shell 环境变量优先，其次 ai/.env（override=False，与项目其他配置一致）。
+
+    dar 链路不 import ai.config，ai/.env 不会自动进环境——此前只能每次 export，
+    1016 起显式 load 一次，用户配置处统一到 ai/.env。
+    """
+    try:
+        from dotenv import load_dotenv
+        _env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+        load_dotenv(_env_file, override=False)
+    except Exception:
+        pass
+    return ((os.getenv("DAR_PUSH_BASE") or "").rstrip("/"),
+            os.getenv("DAR_PUSH_USER") or "",
+            os.getenv("DAR_PUSH_PASS") or "")
+
+
 def _push_report(rep: dict):
     """周报落盘后自动推服务号后台（ORS-#981）：失败只警告不中断 SOP。
 
-    凭据从环境变量读（本地 .env 或 export 前手动 set）：
-      DAR_PUSH_BASE   服务号地址（如 https://usp.ep-zl.com）
+    凭据（shell 环境变量或 ai/.env）：
+      DAR_PUSH_BASE   服务号地址（测试 https://usp.ep-zl.com/t；生产 /p）
       DAR_PUSH_USER / DAR_PUSH_PASS   admin 账号密码
     """
-    base = (os.getenv("DAR_PUSH_BASE") or "").rstrip("/")
-    user = os.getenv("DAR_PUSH_USER") or ""
-    pwd = os.getenv("DAR_PUSH_PASS") or ""
+    base, user, pwd = _push_env()
     if not (base and user and pwd):
         print("（未配 DAR_PUSH_BASE/USER/PASS，跳过推送到服务号后台）")
         return

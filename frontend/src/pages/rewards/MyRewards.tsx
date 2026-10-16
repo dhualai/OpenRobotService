@@ -33,6 +33,8 @@ const STATUS_TABS: { key: RewardStatus | ''; label: string }[] = [
 ];
 
 const STATUS_META: Record<RewardStatus, { label: string; color: string; bg: string }> = {
+  pending_audit: { label: '待财务审核', color: '#b76e00', bg: 'rgba(255,167,38,0.16)' },
+  rejected: { label: '已驳回', color: '#8a8f92', bg: 'rgba(138,143,146,0.14)' },
   pending: { label: '待提现', color: '#227197', bg: 'rgba(54,151,195,0.12)' },
   withdrawing: { label: '提现中', color: '#b76e00', bg: 'rgba(255,167,38,0.16)' },
   success: { label: '已到账', color: '#2ba471', bg: 'rgba(43,164,113,0.14)' },
@@ -41,6 +43,8 @@ const STATUS_META: Record<RewardStatus, { label: string; color: string; bg: stri
 
 /** 按钮文案：withdrawing 也允许点击 —— 后端会复用未过期的 package 再拉一次确认页 */
 function actionLabel(status: RewardStatus): string {
+  if (status === 'pending_audit') return '待审核';
+  if (status === 'rejected') return '已驳回';
   if (status === 'pending') return '立即提现';
   if (status === 'withdrawing') return '继续确认';
   if (status === 'success') return '已到账';
@@ -183,11 +187,10 @@ export default function MyRewards() {
   const hasMore = items.length < total;
 
   return (
-    <div
-      className="rewards-page"
-      style={{ background: 'var(--gradient-surface)', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-    >
-      <Navbar title="我的历史奖励" leftArrow onLeftClick={() => navigate(-1)} />
+    // 布局见 global.css 的 .rewards-page：Navbar 带 fixed 后脱离文档流，
+    // 容器需自己让出顶栏高度，否则「待提现」汇总卡会被压在顶栏下
+    <div className="rewards-page">
+      <Navbar title="我的奖励" fixed leftArrow onLeftClick={() => navigate(-1)} />
 
       <div className="page-container" style={{ paddingTop: 16, paddingBottom: 24 }}>
         {/* 汇总：待提现 / 累计已到账 */}

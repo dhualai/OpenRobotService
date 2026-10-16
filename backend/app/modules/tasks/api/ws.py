@@ -46,6 +46,17 @@ router = APIRouter()
 MAX_CONN_PER_USER = 5
 
 
+def restricted_review_room(task_id, user):
+    from sqlalchemy import select
+    from app.models.task import ArchiveReport
+    from app.core.user_identity import user_matches
+
+    with SessionLocal() as review_db:
+        report = review_db.execute(select(ArchiveReport.reviewer, ArchiveReport.submit_status)
+            .where(ArchiveReport.task_id == task_id).order_by(ArchiveReport.version.desc()).limit(1)).first()
+        return bool(report and report.submit_status != "approved" and user_matches(user, report.reviewer))
+
+
 def _build_redis_url() -> Optional[str]:
     """跨进程广播用的 Redis 地址；可用环境变量关闭（关闭后纯本地广播）。"""
     flag = os.getenv("WS_HUB_REDIS_ENABLED", "true").strip().lower()
@@ -69,6 +80,13 @@ class WsConnection:
         self.last_ping = time.monotonic()
 
     async def send(self, payload: dict) -> None:
+        try:
+            if await run_in_threadpool(restricted_review_room, self.task_id, {"username": self.username}):
+                await self.ws.close(code=4403)
+                return
+        except Exception:
+            await self.ws.close(code=4503)
+            return
         try:
             await self.ws.send_text(json.dumps(payload, ensure_ascii=False))
         except Exception:  # pragma: no cover - 连接已断
@@ -147,6 +165,12 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
                 avatar_resource_id = user.get("avatar_resource_id")
 
     # 先 accept 再 close，避免 Starlette 在未 accept 的 WS 上拒绝 close
+    if auth_code is None:
+        try:
+            if await run_in_threadpool(restricted_review_room, task_id, user):
+                auth_code = 4403
+        except Exception:
+            auth_code = 4503
     await websocket.accept()
     if auth_code is not None:
         await websocket.close(code=auth_code)

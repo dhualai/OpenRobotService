@@ -31,6 +31,8 @@ import {
   buildDashboardFilterKey, loadDashboardCache, saveDashboardCache,
 } from '@/stores/dashboardCache';
 import { avatarUrl } from '@/api/profile';
+import KnowledgeContributionCard from './KnowledgeContributionCard';
+import { fetchRewardStats, fenToYuan } from '@/api/wxpay';
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
 
@@ -107,7 +109,7 @@ const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { hasPermission, projectIds, username, name, avatarResourceId } = useAuthStore();
+  const { hasPermission, projectIds, username, name, avatarResourceId, canViewKnowledgeContribution } = useAuthStore();
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
@@ -128,6 +130,8 @@ export default function Dashboard() {
   const [projects, setProjects] = useState<ProjectBriefItem[]>(cachedRef.current?.projects_brief ?? []);
   const [syncing, setSyncing] = useState(false);
   const [dataResourceSheetVisible, setDataResourceSheetVisible] = useState(false);
+  // 「我的奖励」汇总卡数据：待提现金额/笔数 + 累计已到账；接口失败/未启用时静默降级为 0，不影响看板渲染
+  const [pendingReward, setPendingReward] = useState<{ amount: number; count: number; withdrawn: number } | null>(null);
 
   const loadAll = useCallback(async () => {
     // canViewAll 时不传 projectIds（后端不过滤，返回全部）；否则仅统计当前用户关联项目
@@ -171,6 +175,23 @@ export default function Dashboard() {
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
+  // 奖励汇总数据独立拉取：失败不影响看板，新 Section 照常渲染（0/暂无）
+  useEffect(() => {
+    let alive = true;
+    fetchRewardStats()
+      .then((s) => {
+        if (alive) {
+          setPendingReward({ amount: s.pending_amount, count: s.pending_count, withdrawn: s.withdrawn_amount ?? 0 });
+        }
+      })
+      .catch(() => {
+        // 微信支付未启用或接口异常：静默降级为 null
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   return (
     <div className="dashboard-page">
       <SubscriptionReminder username={username} />
@@ -195,6 +216,57 @@ export default function Dashboard() {
             <span className="admin-welcome__name">{name || username || '用户'}</span>
           </div>
         </div>
+
+        {canViewKnowledgeContribution && <>
+          <SectionTitle title="知识贡献榜" moreText="查看榜单" onMore={() => navigate('/admin/knowledge')} />
+          <KnowledgeContributionCard key={username} />
+        </>}
+
+        {/* ============ 奖励汇总卡：待提现 / 累计已到账；点击整张卡进入 /rewards ============ */}
+        <SectionTitle title="我的奖励" moreText="奖励记录" onMore={() => navigate('/rewards')} />
+        <section
+          className="mac-card mac-card--pad"
+          style={{ cursor: 'pointer' }}
+          onClick={() => navigate('/rewards')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              navigate('/rewards');
+            }
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+            <span style={{ fontSize: 12, color: '#8a8f92' }}>待提现（元）</span>
+            <span style={{ fontSize: 12, color: '#8a8f92', marginLeft: 'auto' }}>
+              {pendingReward?.count ?? 0} 笔可提
+            </span>
+          </div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#227197', lineHeight: 1.3 }}>
+            ¥{fenToYuan(pendingReward?.amount ?? 0)}
+          </div>
+          <div
+            style={{
+              marginTop: 8,
+              paddingTop: 8,
+              borderTop: '1px dashed var(--border)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: 12,
+              color: '#8a8f92',
+            }}
+          >
+            <span>累计已到账</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ color: '#2ba471' }}>
+                ¥{fenToYuan(pendingReward?.withdrawn ?? 0)}
+              </span>
+              <MacChevronRight size={13} />
+            </span>
+          </div>
+        </section>
 
         {/* ============ 上：工单数据看板 ============ */}
         {/* 状态环图 + 图例（点图例下钻工单明细）+ 四指标卡；
