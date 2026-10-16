@@ -30,6 +30,7 @@ class WxpayServiceError(Exception):
         request_id: str = "",
     ):
         super().__init__(message)
+        self.message = message
         self.code = code
         self.status_code = status_code
         self.system_error = system_error
