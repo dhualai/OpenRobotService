@@ -14,6 +14,13 @@
 
 ## 一、项目定位
 
+### 2026-10-16 增量：内容审核接入既有财务审核
+
+- `backend/app/modules/wxpay/archive_finance.py` 复用 `reward_record` 的 `source_type=task_archive`、`source_id=工单ID` 及 `reporter/assignee/reviewer` 三个角色；幂等键沿用已有唯一约束，不新增表、字段或迁移。
+- 内容审核通过后报告 `approved`、工单保持 `archiving`，三条奖励为 `pending_audit`。现有奖励管理财务批量通过/驳回接口按工单整体处理；自动通过接口排除闭环奖励。财务通过时三方 `pending` 入账、工单 `archived` 和知识发布同事务完成，首次闭环时间决定贡献月份。
+- 原“后台管理 → 运营与数据 → 奖励管理 → 待财务审核”中可查看工单、报告、审核意见和价值点；详情接口 `GET /api/wxpay/admin/archive-finance/{task_id}` 复用财务审核权限，匿名评审入口和原卡片样式不变。
+- 存量归档和资金记录不自动回填或重发；未启用或未正确设置三方 `task_archive` 奖励配置时，内容审核提交返回明确错误，不落入无奖励的半闭环。
+
 ### 2026-10-16 增量：知识贡献榜首页卡片可见权限
 
 - 权限管理列表注册“显示知识贡献榜”开关，权限码 `frontend:admin:knowledge:show`；通过既有角色管理勾选/取消，可配置任意系统或项目角色。不再写死角色名称，未显式授权的角色默认隐藏，admin用户名和通配权限不绕过该独立配置；权限关闭时所有已授权角色也隐藏。

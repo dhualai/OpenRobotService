@@ -562,13 +562,14 @@ describe('匿名审核UI', () => {
     openReview();
     await screen.findByText('匿名充电问题');
     expect(screen.getByRole('button', { name: '驳回补充' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '通过并归档' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '通过并提交财务' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('审核意见（通过 / 驳回均必填）'), { target: { value: '报告完整' } });
     expect(screen.getByRole('button', { name: '驳回补充' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: '通过并归档' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '通过并提交财务' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('价值点（通过时必填）'), { target: { value: '可复用' } });
-    fireEvent.click(screen.getByRole('button', { name: '通过并归档' }));
+    fireEvent.click(screen.getByRole('button', { name: '通过并提交财务' }));
     await waitFor(() => expect(api.submitKnowledgeReview).toHaveBeenCalledWith(report, 'approve', '报告完整', '可复用'));
+    expect(Toast).toHaveBeenCalledWith(expect.objectContaining({ message: '内容审核通过，已提交财务审核' }));
     expect(await screen.findByText('返回待审列表')).toBeInTheDocument();
   });
 

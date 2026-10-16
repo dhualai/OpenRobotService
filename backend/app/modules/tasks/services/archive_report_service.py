@@ -56,6 +56,17 @@ class ArchiveReportService:
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="工单未找到")
 
+        from app.modules.wxpay.archive_finance import ARCHIVE_FINANCE_SOURCE
+        from app.models.wxpay import RewardRecord, RewardStatus
+        finance_reward = (await db.execute(select(RewardRecord.id).where(
+            RewardRecord.source_type == ARCHIVE_FINANCE_SOURCE,
+            RewardRecord.source_id == str(task_id),
+            RewardRecord.status.in_([RewardStatus.PENDING_AUDIT, RewardStatus.REJECTED])
+        ).limit(1))).scalar_one_or_none()
+        if finance_reward:
+            from fastapi import HTTPException
+            raise HTTPException(409, "该工单尚未完成财务审核，不能重新发起归档")
+
         # 幂等：已有未完成归档则直接复用
         existing = await db.execute(
             select(ArchiveReport)
@@ -223,10 +234,7 @@ class ArchiveReportService:
     @staticmethod
     async def approve(db: AsyncSession, report_id: int, operator_id: str, review_comment: str,
                       value_point: str, revision: int) -> tuple[ArchiveReport, Task]:
-        """审核通过：submit_status→approved，reviewed_at 写入，工单→ARCHIVED，archived_by/archived_at 写入。
-
-        同时自动生成三条闭环奖励（reporter / assignee / reviewer），走审核决策引擎分流。
-        """
+        """内容审核通过，工单保持归档中，三方奖励交由财务整单审核。"""
         result = await db.execute(select(ArchiveReport).where(ArchiveReport.id == report_id)
             .with_for_update().execution_options(populate_existing=True))
         report = result.scalar_one_or_none()
@@ -239,7 +247,8 @@ class ArchiveReportService:
 
         from fastapi import HTTPException
         from app.models.knowledge import ArchiveReviewDecision
-        from app.modules.admin.services.knowledge_service import publish_report, utcnow
+        from app.modules.admin.services.knowledge_service import utcnow
+        from app.modules.wxpay.archive_finance import prepare_archive_rewards
         if report.revision != revision:
             raise HTTPException(409, "报告已更新，请刷新后审核")
         if not review_comment.strip() or not value_point.strip():
@@ -248,6 +257,7 @@ class ArchiveReportService:
             .with_for_update().execution_options(populate_existing=True))
         task = task_result.scalar_one_or_none()
         await require_assigned_reviewer(db, report, task, operator_id)
+        await prepare_archive_rewards(db, task, report, operator_id)
         report.review_comment = review_comment.strip()
         report.value_point = value_point.strip()
         report.submit_status = 'approved'
@@ -256,68 +266,13 @@ class ArchiveReportService:
         report.updated_by = operator_id
 
         if task:
-            task.status = TaskStatus.ARCHIVED
-            task.archived_by = operator_id
-            task.archived_at = func.now()
+            task.status = TaskStatus.ARCHIVING
+            task.archived_by = None
+            task.archived_at = None
 
             db.add(ArchiveReviewDecision(task_id=task.id, report_id=report.id, version=report.version,
                 reviewer_id=operator_id, outcome="approved", review_comment=report.review_comment,
                 value_point=report.value_point, content=report.content, created_at=utcnow()))
-            await publish_report(db, task, report)
-
-        # ── 自动生成闭环奖励（flush 前注入，保证 task/report/reward 同事务）──
-        try:
-            from app.modules.wxpay.schemas import GrantRewardIn
-            from app.modules.wxpay.service import RewardService
-
-            cfg = await RewardService.resolve_config(db, "task_archive")
-            policy = await RewardService.resolve_config(db, "audit_policy")
-            if cfg is not None and task is not None:
-                task_id_str = str(task.id)
-                scene_name = "工单闭环奖励"
-                items: list[GrantRewardIn] = []
-
-                # 提单人
-                if task.created_by and int(cfg.get("reporter_fen", 0) or 0) > 0:
-                    items.append(GrantRewardIn(
-                        user_id=task.created_by,
-                        amount=int(cfg["reporter_fen"]),
-                        scene_name=scene_name,
-                        reward_desc="工单提单人奖励",
-                        source_type="task",
-                        source_id=task_id_str,
-                    ))
-                # 接单人
-                if task.assigned_to and int(cfg.get("assignee_fen", 0) or 0) > 0:
-                    items.append(GrantRewardIn(
-                        user_id=task.assigned_to,
-                        amount=int(cfg["assignee_fen"]),
-                        scene_name=scene_name,
-                        reward_desc="工单接单人奖励",
-                        source_type="task",
-                        source_id=task_id_str,
-                    ))
-                # 审核人（即当前 operator_id，刚通过了解决报告审核）
-                if operator_id and int(cfg.get("reviewer_fen", 0) or 0) > 0:
-                    items.append(GrantRewardIn(
-                        user_id=operator_id,
-                        amount=int(cfg["reviewer_fen"]),
-                        scene_name=scene_name,
-                        reward_desc="归档审核人奖励",
-                        source_type="task",
-                        source_id=task_id_str,
-                    ))
-
-                if items:
-                    await RewardService.grant_batch(
-                        db, items, role="task", audit_policy=policy, auto_commit=False
-                    )
-        except Exception as e:
-            from app.services.logging import get_logger
-            get_logger(__name__).error(
-                f"[reward] 闭环奖励自动发放失败: task_id={task.id if task else '?'} err={e}"
-            )
-            # 奖励发放失败不阻断归档主流程
 
         await db.flush()
         return report, task

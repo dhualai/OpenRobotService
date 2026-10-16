@@ -1596,6 +1596,18 @@ class TicketService:
         ticket = await TicketService.get_ticket_by_id(db, ticket_id)
         if not ticket:
             return None
+
+        if status == TicketStatus.ARCHIVED:
+            from fastapi import HTTPException
+            from app.models.wxpay import RewardRecord, RewardStatus
+            from app.modules.wxpay.archive_finance import ARCHIVE_FINANCE_SOURCE
+            awaiting_finance = (await db.execute(select(RewardRecord.id).where(
+                RewardRecord.source_type == ARCHIVE_FINANCE_SOURCE,
+                RewardRecord.source_id == str(ticket_id),
+                RewardRecord.status.in_([RewardStatus.PENDING_AUDIT, RewardStatus.REJECTED])
+            ).limit(1))).scalar_one_or_none()
+            if awaiting_finance:
+                raise HTTPException(409, "该工单须在奖励管理中完成财务审核后才能归档")
         
         ticket.status = status
         

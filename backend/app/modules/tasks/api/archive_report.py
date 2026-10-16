@@ -300,7 +300,7 @@ async def approve_report(
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_active_user_from_token),
 ):
-    """POST /tasks/archive-reports/{report_id}/approve — 审核通过（工单状态→ARCHIVED，终态）。"""
+    """内容审核通过后进入现有奖励管理财务队列，工单保持归档中。"""
     operator_id, username, token = await _operator_info(current_user)
 
     report = await ArchiveReportService.get_by_id(db, report_id)
@@ -328,8 +328,8 @@ async def approve_report(
         op_type=OperationType.ARCHIVE_APPROVE,
         operator="knowledge_review",
         operator_name="匿名审核人",
-        to_status=TaskStatus.ARCHIVED.value,
-        description="归档报告审核通过，工单状态变更为「已归档」",
+        to_status=TaskStatus.ARCHIVING.value,
+        description="归档报告内容审核通过，已提交财务审核，工单暂未完成归档",
         detail={"report_id": report_id},
         auto_commit=False,
     )
@@ -338,7 +338,7 @@ async def approve_report(
     # 系统评论单独 commit
     await _add_system_comment(
         db, report.task_id,
-        "归档报告审核通过，工单状态变更为「已归档」",
+        "归档报告内容审核通过，已提交财务审核，工单暂未完成归档",
         "system", None,
     )
 

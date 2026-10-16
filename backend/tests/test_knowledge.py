@@ -14,7 +14,7 @@ from app.models.base import Base
 from app.models.identity import UserDB
 from app.models.knowledge import ArchiveReviewDecision, KnowledgeLike, KnowledgeLikeEvent, KnowledgePublication, KnowledgeSettlement, KnowledgeDiscussion
 from app.models.task import ArchiveReport, Task, TaskStatus
-from app.models.wxpay import RewardRecord
+from app.models.wxpay import RewardConfig, RewardRecord, RewardStatus
 from app.modules.admin.api.knowledge import router
 from app.modules.admin.services import knowledge_service as service
 from app.modules.admin.services import knowledge_settlement as settlement
@@ -58,16 +58,19 @@ def db(monkeypatch):
     monkeypatch.setattr(archive_review_dispatch, 'archive_reviewer_ids', lambda: set())
     engine = create_engine('sqlite://', poolclass=StaticPool, connect_args={'check_same_thread': False})
     metadata = MetaData()
-    names = ['companies', 'departments', 'users', 'tasks', 'archive_reports', 'reward_record',
+    names = ['companies', 'departments', 'users', 'tasks', 'archive_reports', 'reward_record', 'reward_config', 'transfer_bill', 'task_operation_logs',
              'knowledge_publications', 'knowledge_question_likes', 'knowledge_like_events',
              'archive_review_decisions', 'knowledge_settlements', 'knowledge_discussions']
     for name in names:
         Base.metadata.tables[name].to_metadata(metadata)
     metadata.tables['users'].c.job_level.type = Integer()
+    metadata.tables['task_operation_logs'].c.id.type = Integer()
     metadata.create_all(engine)
     with Session(engine, expire_on_commit=False) as session:
         for user_id, name in [('alice', '提单甲'), ('bob', '接单乙'), ('reviewer', '审核丙'), ('voter', '点赞丁')]:
             session.add(UserDB(id=user_id, username=f'{user_id}-account', name=name, status='active', password_hash='test'))
+        session.add(RewardConfig(config_key='task_archive', enabled=True,
+            config={'reporter_fen': 200, 'assignee_fen': 300, 'reviewer_fen': 100}))
         session.commit()
         monkeypatch.setattr(service, 'utcnow', lambda: datetime(2026, 11, 20))
         yield AsyncDb(session)
@@ -217,7 +220,7 @@ async def test_rejection_private_and_history_survives_resubmission(db):
 
 
 @pytest.mark.asyncio
-async def test_approve_requires_current_revision_and_records_publication(db):
+async def test_approve_requires_current_revision_and_queues_finance_without_publication(db):
     task, report = seed(db)
     db.session.delete(await db.get(KnowledgePublication, 1))
     task.status, report.submit_status = TaskStatus.ARCHIVING, 'submitted'
@@ -227,8 +230,14 @@ async def test_approve_requires_current_revision_and_records_publication(db):
     assert error.value.status_code == 409
     await ArchiveReportService.approve(db, 1, 'reviewer', '通过意见', '价值点', 1)
     await db.commit()
-    assert task.status == TaskStatus.ARCHIVED
-    assert (await db.get(KnowledgePublication, 1)).answerer_id == 'bob'
+    assert task.status == TaskStatus.ARCHIVING
+    assert task.archived_at is None
+    assert await db.get(KnowledgePublication, 1) is None
+    rewards = db.session.scalars(select(RewardRecord)).all()
+    assert len(rewards) == 3
+    assert {reward.role for reward in rewards} == {'reporter', 'assignee', 'reviewer'}
+    assert all(reward.status == RewardStatus.PENDING_AUDIT for reward in rewards)
+    assert all(reward.expire_at is None for reward in rewards)
     with pytest.raises(HTTPException):
         await ArchiveReportService.approve(db, 1, 'reviewer', '通过意见', '价值点', 1)
     assert len(db.session.scalars(select(ArchiveReviewDecision)).all()) == 1

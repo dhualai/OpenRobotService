@@ -593,7 +593,7 @@ export default function TaskDetailPage() {
           const BTN_PRIMARY2 = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
           const BTN_DANGER2 = { backgroundColor: 'var(--destructive)', color: 'var(--destructive-foreground)', borderRadius: '999px', border: 'none' };
           return [
-            { label: '通过归档', nextStatus: 'archived', theme: 'primary', actionType: 'archive-approve', customStyle: BTN_PRIMARY2 },
+            { label: '审核并提交财务', nextStatus: 'archiving', theme: 'primary', actionType: 'archive-approve', customStyle: BTN_PRIMARY2 },
             { label: '驳回归档', nextStatus: 'archiving', theme: 'danger', actionType: 'archive-reject', customStyle: BTN_DANGER2 },
           ];
         }

@@ -10,6 +10,7 @@
    并发由 reward_record 行锁（SELECT ... FOR UPDATE）串行化。
 """
 
+import json
 import secrets
 import string
 import uuid
@@ -160,7 +161,12 @@ class RewardService:
         ).scalar_one_or_none()
         if row is None or not row.enabled:
             return None
-        return row.config or {}
+        # config 列是 Text，手动 loads（ORM 层已从 JSON 改为 Text，避开 asyncmy 的 escape_dict bug）
+        raw = row.config or "{}"
+        try:
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     @staticmethod
     async def grant_batch(
@@ -922,12 +928,13 @@ class AuditDecisionEngine:
         force_daily = int(policy.get("force_audit_user_daily_fen", 0) or 0)
         if force_daily > 0:
             today_start = _now().date()
-            # SQLite / MySQL 兼容写法：DATE(created_at)
+            # func.DATE 在 MySQL / SQLite 下都正确渲染为 DATE(created_at)，
+            # func.func("DATE", ...) 会被渲染成 helpdesk_724.DATE(...) 导致 MySQL 报 "FUNCTION ... does not exist"
             daily_sum = (
                 await db.execute(
                     select(func.coalesce(func.sum(RewardRecord.amount), 0)).where(
                         RewardRecord.user_id == user_id,
-                        func.func("DATE", RewardRecord.created_at) == str(today_start),
+                        func.DATE(RewardRecord.created_at) == str(today_start),
                     )
                 )
             ).scalar() or 0

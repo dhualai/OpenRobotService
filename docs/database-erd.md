@@ -511,6 +511,8 @@ erDiagram
 
 `knowledge_settlements.rankings`固化名次、贡献/获赞数及预计奖金；入账复用 `reward_record`，来源类型 `knowledge_monthly`，来源ID按一期/月份/用户生成幂等键，不新增另一套余额或支付流水。
 
+2026-10-16 财务闭环增量：无新增表字段或迁移。单题闭环奖励复用 `reward_record`，`source_type=task_archive`、`source_id=工单ID`，`role=reporter/assignee/reviewer` 各一条，复用 `(source_type, source_id, role)` 唯一约束。内容通过只创建 `pending_audit` 奖励；财务整单通过后三方为 `pending`，填充 `audit_by/audit_at/audit_remark` 并从此时计算 `expire_at`，工单终态归档和 `knowledge_publications` 发布同事务落库。新增发布的 `first_approved_at` 表示首次财务闭环时间，作为月榜归属；存量已归档记录不重计。财务结果同时写入既有 `task_operation_logs`。
+
 ## 3. 关系总表（父子 + 基数 + 是否物理约束）
 
 ### 3.1 物理外键
