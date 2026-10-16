@@ -40,8 +40,8 @@ vi.mock('@/api/knowledge', async (importOriginal) => ({
 const person = { user_id: 'alice', name: '贡献甲', avatar_resource_id: null, rank: 1,
   question_count: 4, answer_count: 6, contribution_count: 10, valid_like_count: 8,
   estimated_reward_fen: 10000, tied: false };
-const overview: api.KnowledgeOverview = { month: '2026-11', months: ['2026-11', '2026-12'],
-  starts_at: '2026-10-31T16:00:00Z', ends_at: '2026-12-31T16:00:00Z', campaign_status: 'active',
+const overview: api.KnowledgeOverview = { month: '2026-11', months: ['2026-10', '2026-11', '2026-12'],
+  starts_at: '2026-09-30T16:00:00Z', ends_at: '2026-12-31T16:00:00Z', campaign_status: 'active',
   settlement_status: 'live', top_three: [person], can_review: false, rule_notice: '综合贡献统一计奖' };
 const question: api.KnowledgeQuestion = { task_id: 7, title: '充电桩故障处理', problem: '充电无法启动',
   content: '检查供电后恢复', review_comment: '验证完整', value_point: '可复用排查方法',
@@ -203,9 +203,9 @@ describe('知识贡献榜UI', () => {
 
   it('三个入口共用综合榜，不另造接单奖金', async () => {
     render(<MemoryRouter initialEntries={['/admin/knowledge']}><Routes><Route path="/admin/knowledge" element={<KnowledgeCenter />} /></Routes></MemoryRouter>);
-    fireEvent.click(await screen.findByRole('link', { name: '查看最佳接单人榜单' }));
+    fireEvent.click(await screen.findByRole('link', { name: '查看最佳解答人榜单' }));
     expect(await screen.findAllByRole('tab')).toHaveLength(3);
-    fireEvent.click(screen.getByRole('tab', { name: '最佳接单人榜单' }));
+    fireEvent.click(screen.getByRole('tab', { name: '最佳解答人榜单' }));
     expect(await screen.findByText('接单6')).toBeInTheDocument();
     expect(screen.getByText('¥100')).toBeInTheDocument();
     expect(api.fetchContributors).toHaveBeenCalledWith('2026-11');
@@ -233,10 +233,11 @@ describe('知识贡献榜UI', () => {
     expect(screen.queryByText('已入奖励账户')).not.toBeInTheDocument();
   });
 
-  it('活动开始前明确提示，不拿历史数据冒充活动榜单', async () => {
+  it('暂无贡献时不宣传具体开始日期，不伪造榜单数据', async () => {
     vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue({ ...overview, campaign_status: 'upcoming', top_three: [] });
     render(<MemoryRouter><KnowledgeContributionCard /></MemoryRouter>);
-    expect(await screen.findByText('11月1日开启 · 历史工单不计入')).toBeInTheDocument();
+    expect(await screen.findByText('按月统计 · 以有效归档贡献排名')).toBeInTheDocument();
+    expect(screen.queryByText(/11月1日|活动未开始|活动将于/)).not.toBeInTheDocument();
     expect(screen.queryByText('¥100')).not.toBeInTheDocument();
   });
 });
@@ -335,7 +336,7 @@ describe('奖金激励说明由专门入口承载', () => {
   it.each(['live', 'reviewing', 'held', 'approved', 'granting', 'granted', 'stale'])('状态为%s时首页及总览不显示发奖/结算提示', async (status) => {
     vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue({ ...overview, settlement_status: status });
     const rendered = render(<MemoryRouter><KnowledgeContributionCard /><KnowledgeCenter /></MemoryRouter>);
-    await screen.findByRole('link', { name: '查看最佳提单人榜单' });
+    await screen.findByRole('link', { name: '查看最佳提问人榜单' });
     expect(rendered.container).not.toHaveTextContent(/预计月度奖励|月度奖励已发放|已入奖励账户|核验|发放|结算|计奖|规则待定|奖励待公布/);
     expect(screen.getAllByText('¥100')).toHaveLength(3);
   });
@@ -363,12 +364,12 @@ describe('横向榜单预览', () => {
     await screen.findByText('充电桩故障处理');
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
     expect(rendered.container.querySelectorAll('.knowledge-board-card__body')).toHaveLength(3);
-    for (const title of ['问题榜单', '最佳提单人榜单', '最佳接单人榜单']) {
+    for (const title of ['问题榜单', '最佳提问人榜单', '最佳解答人榜单']) {
       const board = screen.getByRole('region', { name: title });
       expect(within(board).getAllByRole('listitem')).toHaveLength(3);
       expect(within(board).getByRole('link', { name: `查看${title}` })).toHaveAttribute('href', expect.stringContaining('month=2026-11'));
     }
-    for (const title of ['最佳提单人榜单', '最佳接单人榜单']) {
+    for (const title of ['最佳提问人榜单', '最佳解答人榜单']) {
       const board = screen.getByRole('region', { name: title });
       const rows = within(board).getAllByRole('listitem');
       expect(rows[0]).toHaveTextContent('贡献甲');
@@ -382,7 +383,7 @@ describe('横向榜单预览', () => {
     expect(api.fetchKnowledgeQuestions).toHaveBeenCalledWith('2026-11', 'likes', 1, 3);
   });
 
-  it.each(['问题榜单', '最佳提单人榜单', '最佳接单人榜单'])('%s可进入完整列表并返回概览，月份保持不变', async (title) => {
+  it.each(['问题榜单', '最佳提问人榜单', '最佳解答人榜单'])('%s可进入完整列表并返回概览，月份保持不变', async (title) => {
     openBoards('2026-12');
     fireEvent.click(await screen.findByRole('link', { name: `查看${title}` }));
     expect(await screen.findByText(title === '问题榜单' ? '完整列表第四题' : '完整榜第四名')).toBeInTheDocument();
@@ -404,7 +405,7 @@ describe('横向榜单预览', () => {
     openBoards();
     vi.mocked(api.fetchKnowledgeQuestions).mockRejectedValueOnce(new Error('问题预览暂不可用'));
     expect(await screen.findByRole('alert')).toHaveTextContent('问题预览暂不可用');
-    expect(within(screen.getByRole('region', { name: '最佳提单人榜单' })).getByText('贡献甲')).toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: '最佳提问人榜单' })).getByText('贡献甲')).toBeInTheDocument();
     expect(screen.queryByText('暂无上榜问题')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
     expect(await screen.findByText('充电桩故障处理')).toBeInTheDocument();
@@ -417,21 +418,22 @@ describe('横向榜单预览', () => {
     expect(await screen.findAllByText('暂无上榜问题')).toHaveLength(3);
     expect(screen.getAllByText('虚位以待')).toHaveLength(6);
     expect(screen.queryByText('¥100')).not.toBeInTheDocument();
-    expect(screen.getByText(/活动将于2026年11月1日开启/)).toBeInTheDocument();
+    expect(screen.getByText(/按月统计 · 以有效归档贡献排名/)).toBeInTheDocument();
+    expect(screen.queryByText(/11月1日|活动未开始|活动将于/)).not.toBeInTheDocument();
   });
 
-  it('切换月份刷新三个预览，不残留上一月的用户和问题', async () => {
+  it.each(['2026-10', '2026-12'])('切换到%s刷新三个预览，不残留上一月的用户和问题', async (month) => {
     openBoards();
     await screen.findByText('充电桩故障处理');
-    vi.mocked(api.fetchKnowledgeOverview).mockResolvedValueOnce({ ...overview, month: '2026-12', top_three: [{ ...person, name: '十二月贡献者' }] });
-    vi.mocked(api.fetchKnowledgeQuestions).mockResolvedValueOnce({ items: [{ ...question, title: '十二月归档问题' }], total: 1 });
-    fireEvent.change(screen.getByLabelText('榜单月份'), { target: { value: '2026-12' } });
-    expect(await screen.findByText('十二月归档问题')).toBeInTheDocument();
-    expect(screen.getAllByText('十二月贡献者')).toHaveLength(2);
+    vi.mocked(api.fetchKnowledgeOverview).mockResolvedValueOnce({ ...overview, month, top_three: [{ ...person, name: '当月贡献者' }] });
+    vi.mocked(api.fetchKnowledgeQuestions).mockResolvedValueOnce({ items: [{ ...question, title: '当月归档问题' }], total: 1 });
+    fireEvent.change(screen.getByLabelText('榜单月份'), { target: { value: month } });
+    expect(await screen.findByText('当月归档问题')).toBeInTheDocument();
+    expect(screen.getAllByText('当月贡献者')).toHaveLength(2);
     expect(screen.queryByText('贡献甲')).not.toBeInTheDocument();
     expect(screen.queryByText('充电桩故障处理')).not.toBeInTheDocument();
-    expect(api.fetchKnowledgeOverview).toHaveBeenLastCalledWith('2026-12');
-    expect(api.fetchKnowledgeQuestions).toHaveBeenLastCalledWith('2026-12', 'likes', 1, 3);
+    expect(api.fetchKnowledgeOverview).toHaveBeenLastCalledWith(month);
+    expect(api.fetchKnowledgeQuestions).toHaveBeenLastCalledWith(month, 'likes', 1, 3);
   });
 
   it('从问题卡进入完整列表后，仍可查看解答报告与匿名审核意见', async () => {

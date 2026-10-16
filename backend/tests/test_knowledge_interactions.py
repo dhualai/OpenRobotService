@@ -100,7 +100,7 @@ async def test_review_queue_history_and_permissions_use_same_normalized_identity
 async def test_contributor_filters_use_first_published_attribution_and_public_tasks_only(db):
     seed(db, 1)
     seed(db, 2, questioner='bob', answerer='alice')
-    seed(db, 3, questioner='alice', created=datetime(2026, 10, 1))
+    seed(db, 3, questioner='alice', created=datetime(2026, 9, 30, 15, 59))
     task, report = seed(db, 4, questioner='alice')
     task.status, report.submit_status = TaskStatus.ARCHIVING, 'submitted'
     await db.commit()
@@ -175,6 +175,7 @@ async def test_discussions_are_not_exposed_for_unpublished_questions(db):
 
 def test_discussion_and_contributor_api_validate_input_and_authentication(db):
     seed(db)
+    seed(db, 2, created=datetime(2026, 10, 1), archived=datetime(2026, 10, 15))
     app = FastAPI()
     app.include_router(router)
 
@@ -194,7 +195,8 @@ def test_discussion_and_contributor_api_validate_input_and_authentication(db):
         assert client.get('/knowledge/questions/1/discussions?page=0').status_code == 422
         assert client.get('/knowledge/contributors/alice/questions?month=2026-11').json()['total'] == 1
         assert client.get('/knowledge/contributors/alice/questions?role=private').status_code == 422
-        assert client.get('/knowledge/contributors/alice/questions?month=2026-10').status_code == 422
+        assert client.get('/knowledge/contributors/alice/questions?month=2026-10').status_code == 200
+        assert client.get('/knowledge/contributors/alice/questions?month=2026-09').status_code == 422
         app.dependency_overrides.pop(get_current_active_user_from_token)
         assert client.get('/knowledge/questions/1/discussions').status_code == 401
         assert client.post('/knowledge/questions/1/discussions', json={'content': '未登录'}).status_code == 401

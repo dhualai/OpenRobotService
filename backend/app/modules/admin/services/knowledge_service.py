@@ -18,9 +18,9 @@ from app.models.task import ArchiveReport, Task, TaskStatus
 
 
 BEIJING = timezone(timedelta(hours=8))
-CAMPAIGN_START = datetime(2026, 10, 31, 16)
+CAMPAIGN_START = datetime(2026, 9, 30, 16)
 CAMPAIGN_END = datetime(2026, 12, 31, 16)
-CAMPAIGN_MONTHS = ("2026-11", "2026-12")
+CAMPAIGN_MONTHS = ("2026-10", "2026-11", "2026-12")
 DAILY_QUESTION_LIKE_LIMIT = 5
 
 
@@ -34,7 +34,7 @@ def iso(value):
 
 def month_bounds(month):
     if month not in CAMPAIGN_MONTHS:
-        raise HTTPException(422, "请选择活动月份：2026-11或2026-12")
+        raise HTTPException(422, f"请选择活动月份：{'、'.join(CAMPAIGN_MONTHS)}")
     start = datetime.strptime(month, "%Y-%m").replace(tzinfo=BEIJING)
     end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
     return start.astimezone(timezone.utc).replace(tzinfo=None), end.astimezone(timezone.utc).replace(tzinfo=None)

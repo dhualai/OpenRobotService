@@ -98,13 +98,44 @@ def seed(db, task_id=1, questioner='alice', answerer='bob', created=None, archiv
 async def test_combines_roles_once_and_excludes_history_and_other_month(db):
     seed(db, 1)
     seed(db, 2, 'bob', 'voter')
-    seed(db, 3, created=datetime(2026, 10, 31, 15, 59))
+    seed(db, 3, created=datetime(2026, 9, 30, 15, 59))
     seed(db, 4, archived=datetime(2026, 11, 30, 16))
     items = await service.rankings(db, '2026-11')
     assert items[0]['user_id'] == 'bob'
     assert (items[0]['question_count'], items[0]['answer_count'], items[0]['contribution_count']) == (1, 1, 2)
     assert len(items) == len({item['user_id'] for item in items}) == 3
     assert {item['estimated_reward_fen'] for item in items} == {10000}
+
+
+@pytest.mark.asyncio
+async def test_october_contributions_use_beijing_month_and_exclude_older_history(db, monkeypatch):
+    monkeypatch.setattr(service, 'utcnow', lambda: datetime(2026, 10, 16))
+    seed(db, 1, created=datetime(2026, 9, 30, 16), archived=datetime(2026, 9, 30, 16))
+    seed(db, 2, created=datetime(2026, 9, 30, 15, 59), archived=datetime(2026, 10, 10))
+    seed(db, 3, created=datetime(2026, 10, 1), archived=datetime(2026, 10, 31, 16))
+    overview = await service.overview(db, actor('voter'))
+    assert overview['month'] == '2026-10'
+    assert overview['months'] == ['2026-10', '2026-11', '2026-12']
+    assert overview['campaign_status'] == 'active'
+    assert {entry['user_id'] for entry in overview['top_three']} == {'alice', 'bob'}
+    assert all(entry['contribution_count'] == 1 for entry in overview['top_three'])
+    questions = await service.question_items(db, actor('voter'), '2026-10')
+    assert [item['task_id'] for item in questions['items']] == [1]
+    november = await service.question_items(db, actor('voter'), '2026-11')
+    assert [item['task_id'] for item in november['items']] == [3]
+
+
+@pytest.mark.asyncio
+async def test_report_can_publish_during_silent_october_start(db, monkeypatch):
+    monkeypatch.setattr(service, 'utcnow', lambda: datetime(2026, 10, 16))
+    task, report = seed(db, created=datetime(2026, 10, 1), archived=datetime(2026, 10, 15))
+    db.session.delete(await db.get(KnowledgePublication, task.id))
+    await db.flush()
+    await service.publish_report(db, task, report)
+    publication = await db.get(KnowledgePublication, task.id)
+    assert publication.first_approved_at == datetime(2026, 10, 16)
+    assert publication.active is True
+    assert len(await service.rankings(db, '2026-10')) == 2
 
 
 @pytest.mark.asyncio
@@ -345,7 +376,8 @@ def test_api_open_to_logged_users_but_management_and_review_private(db):
         assert client.get('/knowledge/risk?month=2026-11').status_code == 403
         assert client.get('/archive-report/archive-report/reviews/1').status_code == 404
         assert client.post('/archive-report/archive-report/archive-reports/1/approve', json={}).status_code == 422
-        assert client.get('/knowledge/rankings?month=2026-10').status_code == 422
+        assert client.get('/knowledge/rankings?month=2026-10').status_code == 200
+        assert client.get('/knowledge/rankings?month=2026-09').status_code == 422
 
 
 def test_migration_adds_column_and_is_repeatable():

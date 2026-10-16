@@ -747,10 +747,10 @@ export default function WxpayRewardManage() {
       updateDraft(configKey, { config: newConfig });
     };
 
-    const CLOSED_LOOP_KEY = 'closed_loop';
+    const CLOSED_LOOP_KEY = 'task_archive';
     const MONTHLY_RANK_KEY = 'monthly_rank';
     const QUALITY_LIKE_KEY = 'quality_like';
-    const AUDIT_STRATEGY_KEY = 'audit_strategy';
+    const AUDIT_STRATEGY_KEY = 'audit_policy';
 
     return (
       <>

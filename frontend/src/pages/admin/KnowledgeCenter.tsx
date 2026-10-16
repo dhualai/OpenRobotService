@@ -13,7 +13,7 @@ import {
 import KnowledgeRankCard, { contributorPreviewEntries } from './KnowledgeRankCard';
 import KnowledgeQuestionCard from './KnowledgeQuestionCard';
 
-const tabs = [['questions', '问题榜单'], ['questioners', '最佳提单人榜单'], ['answerers', '最佳接单人榜单']] as const;
+const tabs = [['questions', '问题榜单'], ['questioners', '最佳提问人榜单'], ['answerers', '最佳解答人榜单']] as const;
 
 function Questions({ month }: { month: string }) {
   const [params, setParams] = useSearchParams();
@@ -45,10 +45,10 @@ function BoardPreviews({ overview, month }: { overview: KnowledgeOverview; month
       entries={(resource.data?.items || []).slice(0, 3).map((question, position) => ({ id: question.task_id, rank: position + 1, label: question.title, description: `提单：${question.questioner.name} · 接单：${question.answerer.name}`, metric: `${question.valid_like_count}赞` }))}
       loading={resource.loading && !resource.data} error={resource.error} retry={resource.reload}
       footer={<span>按有效点赞排序，点击查看完整问题与解答</span>} />
-    <KnowledgeRankCard title="最佳提单人榜单" kind="questioners" subtitle={`${period} · 综合月榜前三`}
+    <KnowledgeRankCard title="最佳提问人榜单" kind="questioners" subtitle={`${period} · 综合月榜前三`}
       to={`/admin/knowledge?tab=questioners&month=${month}`} entries={contributorPreviewEntries(overview.top_three, 'questioners')}
       footer={<span>提单、接单合并排名 · 当前展示提单贡献</span>} />
-    <KnowledgeRankCard title="最佳接单人榜单" kind="answerers" subtitle={`${period} · 综合月榜前三`}
+    <KnowledgeRankCard title="最佳解答人榜单" kind="answerers" subtitle={`${period} · 综合月榜前三`}
       to={`/admin/knowledge?tab=answerers&month=${month}`} entries={contributorPreviewEntries(overview.top_three, 'answerers')}
       footer={<span>提单、接单合并排名 · 当前展示接单贡献</span>} />
   </div>;
@@ -107,7 +107,7 @@ export default function KnowledgeCenter() {
       <div className="knowledge-toolbar"><h2>让每一次解决，都成为知识</h2><select className="knowledge-select" aria-label="榜单月份" value={selectedMonth} onChange={(event) => setParams((previous) => { const next = new URLSearchParams(previous); next.set('month', event.target.value); return next; })}>{(overview?.months || ['2026-11', '2026-12']).map((value) => <option key={value} value={value}>{value.replace('-', '年')}月</option>)}</select></div>
       <KnowledgeState error={resource.error} loading={resource.loading && !overview} retry={resource.reload} />
       {overview && <>
-        <div className="knowledge-note">{overview.campaign_status === 'upcoming' ? '活动将于2026年11月1日开启，历史工单不计入。' : overview.campaign_status === 'ended' ? '本期活动已结束，可查看归档知识与贡献榜单。' : '活动进行中 · 2026年12月31日截止'}<br />提单、接单合并排名，贡献数相同按有效获赞数排序。<br />{knowledgeLikeRule}</div>
+        <div className="knowledge-note">{overview.campaign_status === 'ended' ? '本期统计已结束，可查看归档知识与贡献榜单。' : '按月统计 · 以有效归档贡献排名'}<br />提单、接单合并排名，贡献数相同按有效获赞数排序。<br />{knowledgeLikeRule}</div>
         {!tab && <div className="knowledge-review-entry">{overview.can_review ? <><button type="button" className="knowledge-link" aria-label="进入评审工作台" onClick={() => showTab('questions', 'review')}>评审工作台 · 待审{overview.pending_review_count || 0} →</button><span className="knowledge-muted">查看分配给你的匿名报告及本人审核意见</span></> : <span className="knowledge-muted">评审视角仅向平台指定名单及已有审核任务的人员开放。</span>}</div>}
         {!tab ? <BoardPreviews overview={overview} month={selectedMonth} /> : <>
           <button type="button" className="knowledge-link" onClick={showBoards}>← 返回榜单概览</button>
