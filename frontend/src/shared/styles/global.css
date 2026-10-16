@@ -3103,6 +3103,65 @@ html, body, #root {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 欢迎区右侧「我的奖励」入口（原「我的历史奖励」，由个人资料页迁移而来）。
+   沿用本页 mac-sync-btn / mac-monthbars__select 的胶囊语言：999px 圆角 + 细描边
+   + mac-shadow-soft；margin-left:auto 顶到最右，flex-shrink:0 保证用户名过长时
+   入口不被压扁（让 .admin-welcome__text 自己走省略号收缩）。 */
+.admin-welcome__rewards {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 5px 8px 5px 6px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid var(--mac-border);
+  box-shadow: var(--mac-shadow-soft);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.admin-welcome__rewards:active {
+  transform: scale(0.96);
+  border-color: var(--mac-blue-4);
+  box-shadow: 0 1px 2px rgba(80, 90, 100, 0.06);
+}
+/* 图标 chip：blue-soft 底 + blue-2 描线，与后台「奖励管理」入口同色系 */
+.admin-welcome__rewards-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--mac-blue-soft);
+  color: var(--mac-blue-2);
+}
+.admin-welcome__rewards-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--mac-fg);
+  white-space: nowrap;
+}
+/* 待提现金额胶囊：tabular-nums 等宽数字，金额位数变化时不跳宽 */
+.admin-welcome__rewards-amount {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--mac-blue-soft);
+  color: var(--mac-blue-1);
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 尾部箭头：降存在感，不与文字/金额抢视觉焦点（仅直接子级，不含 icon chip 内的 svg） */
+.admin-welcome__rewards > svg {
+  flex-shrink: 0;
+  color: var(--mac-gray-light);
+}
 
 /* 工单数据来源分析：类型分布 / 提单人角色分布各占一张卡片（上下排列），
    卡片内环图在左、图例在右占满剩余宽度，保证角色名/数值完整展示 */
@@ -4649,6 +4708,18 @@ html, body, #root {
 
 /* ===== 后台管理入口 ===== */
 .admin-view { padding-top: 56px; }
+/* 「我的奖励」页：与 .admin-view 同一口径——TDesign Navbar 带 fixed 后会脱离文档流
+   且不生成占位块，容器必须自己让出顶栏高度，否则第一张「待提现」汇总卡会被压在顶栏下。
+   flex:1 + min-height:0 让它在 .tabbar-shell__content（flex column + overflow auto）里
+   可靠收缩：短内容也能铺满渐变底色，长内容只由外层滚动，不额外产生双层滚动条。 */
+.rewards-page {
+  flex: 1;
+  min-height: 0;
+  padding-top: var(--td-navbar-height, 56px);
+  background: var(--gradient-surface);
+}
+/* .page-container 的全局 min-height:100vh 在本页会凭空撑出一屏空白滚动 */
+.rewards-page > .page-container { min-height: auto; }
 .admin-view__slogan {
   text-align: center;
   color: var(--primary);
@@ -10581,3 +10652,224 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 .wsm-sheets__title { flex: 1; font-size: 12.5px; color: var(--mac-fg); overflow-wrap: anywhere; }
 .wsm-sheets__id { font-size: 10.5px; color: var(--mac-muted-fg); overflow-wrap: anywhere; }
 .wsm-sheets__tag { flex-shrink: 0; font-size: 10.5px; color: var(--mac-blue-1); }
+
+/* ===== 活动中心：首页顶部公告条 + 全屏抽屉 ===== */
+/* 公告条：贴顶栏下方的一条细窄行（在 .chat-view 的 flex 列里不吃滚动），点击开抽屉 */
+.announcement-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  border: none;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  background: var(--primary-soft);
+  color: var(--foreground);
+  font-size: 12.5px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.announcement-bar:active { background: var(--blue-soft); }
+.announcement-bar__icon { flex-shrink: 0; color: var(--sky); }
+.announcement-bar__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.announcement-bar__more {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--sky);
+  font-weight: 500;
+}
+
+/* 抽屉：全屏右侧滑出（宽屏封顶 480px），标题栏沿用 .conv-drawer__close */
+.activity-drawer {
+  position: fixed; top: 0; right: 0; width: 100%; max-width: 480px; height: 100%;
+  background: var(--background); z-index: 100;
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: var(--shadow-float);
+}
+.activity-drawer.open { transform: translateX(0); }
+.activity-drawer__header {
+  position: relative; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+.activity-drawer__title {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 15px; font-weight: 600; color: var(--foreground);
+}
+.activity-drawer__body {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+}
+.activity-section + .activity-section { margin-top: 24px; }
+.activity-section__title {
+  margin: 0 0 10px;
+  font-size: 13px; font-weight: 600; color: var(--foreground);
+}
+.activity-empty {
+  padding: 24px 0; text-align: center;
+  font-size: 13px; color: var(--muted-foreground);
+}
+
+/* 公告卡：标题行（含置顶角标）+ 时间 + 正文（pre-wrap 保留换行） */
+.activity-announcement {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  box-shadow: var(--shadow-soft);
+}
+.activity-announcement + .activity-announcement { margin-top: 10px; }
+.activity-announcement__head { display: flex; align-items: center; gap: 6px; }
+.activity-announcement__title { font-size: 14px; font-weight: 600; color: var(--foreground); }
+.activity-announcement__pin {
+  flex-shrink: 0; padding: 1px 6px; border-radius: 6px;
+  background: var(--primary-soft); color: var(--sky);
+  font-size: 10.5px; line-height: 1.5;
+}
+.activity-announcement__time { margin-top: 3px; font-size: 11px; color: var(--muted-foreground); }
+.activity-announcement__content {
+  margin: 8px 0 0;
+  font-size: 13px; line-height: 22px; color: var(--foreground);
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* 精品工单榜：名次 + 标题/项目 + 点赞胶囊 */
+.featured-list { list-style: none; margin: 0; padding: 0; }
+.featured-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  box-shadow: var(--shadow-soft);
+}
+.featured-item + .featured-item { margin-top: 8px; }
+.featured-item__main {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0; border: none; background: none; text-align: left; cursor: pointer;
+}
+.featured-item__rank {
+  flex-shrink: 0; width: 20px; height: 20px; border-radius: 6px;
+  display: grid; place-items: center;
+  background: var(--secondary); color: var(--muted-foreground);
+  font-size: 11px; font-weight: 700;
+}
+.featured-item__rank.is-top { background: var(--primary-soft); color: var(--sky); }
+.featured-item__info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.featured-item__title {
+  font-size: 13px; font-weight: 500; color: var(--foreground);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.featured-item__project {
+  font-size: 11px; color: var(--muted-foreground);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.featured-item__like {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 9px; border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  background: var(--background); color: var(--muted-foreground);
+  font-size: 12px; cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+.featured-item__like:disabled { opacity: 0.6; cursor: default; }
+.featured-item__like.is-liked {
+  background: var(--primary-soft); color: var(--sky);
+  border-color: color-mix(in oklab, var(--primary) 35%, var(--card));
+}
+
+/* 工单详情页点赞（标题下方独立一行；归档工单无操作按钮行，故不复用 detail-card__action-btn） */
+.detail-like-row { display: flex; justify-content: flex-end; margin-top: 4px; }
+.detail-like-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  background: var(--secondary); color: var(--muted-foreground);
+  font-size: 12.5px; cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+.detail-like-btn:disabled { opacity: 0.6; cursor: default; }
+.detail-like-btn.is-liked {
+  background: var(--primary-soft); color: var(--sky);
+  border-color: color-mix(in oklab, var(--primary) 35%, var(--card));
+}
+
+/* ===== 后台：公告管理（活动中心数据源） ===== */
+/* 沿用 admin 马卡龙色板（--mac-*），与「工单策略 / 二维码管理」等页观感一致 */
+.ann-manage { padding: 12px 14px 32px; }
+.ann-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.ann-toolbar__select,
+.ann-toolbar__input {
+  height: 32px; padding: 0 10px;
+  border: 1px solid var(--mac-border); border-radius: 8px;
+  background: #fff; color: var(--mac-fg); font-size: 13px;
+  outline: none; min-width: 0;
+}
+.ann-toolbar__select { flex: 0 0 auto; }
+.ann-toolbar__input { flex: 1 1 auto; }
+.ann-toolbar__select:focus,
+.ann-toolbar__input:focus { border-color: var(--mac-blue-3); }
+
+.ann-loading { padding: 40px 0; display: flex; justify-content: center; }
+.ann-empty {
+  padding: 48px 16px; text-align: center;
+  color: var(--mac-muted-fg); font-size: 13px;
+}
+
+.ann-card {
+  padding: 12px 14px; margin-bottom: 10px;
+  border-radius: 12px; background: #fff;
+  border: 1px solid var(--mac-border); box-shadow: var(--mac-shadow-soft);
+}
+.ann-card__head { display: flex; align-items: center; gap: 6px; }
+.ann-card__title {
+  flex: 1; min-width: 0;
+  font-size: 14px; font-weight: 600; color: var(--mac-fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ann-card__content {
+  margin: 6px 0 0;
+  font-size: 13px; line-height: 20px; color: var(--mac-fg);
+  white-space: pre-wrap; word-break: break-word;
+  /* 列表里只露 3 行，正文全文在编辑弹层看 */
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ann-card__meta { margin-top: 8px; font-size: 11px; color: var(--mac-muted-fg); }
+.ann-card__actions { display: flex; gap: 8px; margin-top: 10px; }
+
+.ann-editor { padding: 16px 16px calc(20px + env(safe-area-inset-bottom)); }
+.ann-editor__title { margin: 0 0 14px; font-size: 15px; font-weight: 600; color: var(--mac-fg); }
+.ann-editor__field { display: block; margin-bottom: 14px; }
+.ann-editor__label {
+  display: block; margin-bottom: 6px;
+  font-size: 12.5px; color: var(--mac-muted-fg);
+}
+.ann-editor__input {
+  width: 100%; height: 36px; padding: 0 10px;
+  border: 1px solid var(--mac-border); border-radius: 8px;
+  background: #fff; color: var(--mac-fg); font-size: 13.5px; outline: none;
+  box-sizing: border-box;
+}
+.ann-editor__input:focus { border-color: var(--mac-blue-3); }
+.ann-editor__switch-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 16px;
+}
+.ann-editor__switch-row .ann-editor__label { margin-bottom: 0; }
+.ann-editor__btns { display: flex; gap: 10px; }

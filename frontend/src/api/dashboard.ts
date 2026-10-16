@@ -102,10 +102,9 @@ export async function fetchTicketSummary(projectIds?: string[]): Promise<TicketS
 
 export interface TicketSourceAnalysis {
   by_type: { key: string; count: number }[];   // 工单类型分布（key 为 task_type 枚举值，显示名见 TICKET_TYPE_DISPLAY_MAP）
-  by_role: { label: string; count: number }[]; // 提单人角色分布（count = 该角色提单人工单数，角色名含「未分配角色」「其他」）
 }
 
-const EMPTY_SOURCE_ANALYSIS: TicketSourceAnalysis = { by_type: [], by_role: [] };
+const EMPTY_SOURCE_ANALYSIS: TicketSourceAnalysis = { by_type: [] };
 
 /**
  * GET /api/admin/dashboard/tickets/source-analysis?project_ids=id1,id2
@@ -123,6 +122,46 @@ export async function fetchTicketSourceAnalysis(projectIds?: string[]): Promise<
     return EMPTY_SOURCE_ANALYSIS;
   } catch {
     return EMPTY_SOURCE_ANALYSIS;
+  }
+}
+
+/** 公司/部门下拉选项与组织分布条目 */
+export interface OrgOptionItem {
+  id: string;
+  name: string;
+}
+
+export interface TicketCreatorOrgAnalysis {
+  dimension: 'company' | 'department';  // company=按公司统计 / department=选公司后按部门统计
+  companies: OrgOptionItem[];           // 公司下拉框选项（全部公司）
+  by_org: { label: string; count: number }[]; // 组织维度工单数（含「未分配公司」「未分配部门」「其他」）
+}
+
+const EMPTY_CREATOR_ORG: TicketCreatorOrgAnalysis = { dimension: 'company', companies: [], by_org: [] };
+
+/**
+ * GET /api/admin/dashboard/tickets/creator-org-analysis?project_ids=id1,id2&company_id=c1
+ * 响应：{ code: 0, data: TicketCreatorOrgAnalysis }
+ * 数据来源：tasks.created_by → users.company_id / department_id → companies / departments 主数据表
+ * （companies.id ↔ departments.company_id），见 task_dashboard_service.get_creator_org_analysis。
+ * 不传 companyId 按公司归组；传入后仅统计该公司提单人的工单并按部门归组。
+ */
+export async function fetchTicketCreatorOrgAnalysis(
+  projectIds?: string[],
+  companyId?: string,
+): Promise<TicketCreatorOrgAnalysis> {
+  try {
+    const params = new URLSearchParams();
+    if (projectIds !== undefined) params.set('project_ids', projectIds.join(','));
+    if (companyId) params.set('company_id', companyId);
+    const qs = params.toString();
+    const res = await adminRequest<{ code: number; data: TicketCreatorOrgAnalysis }>(
+      `/dashboard/tickets/creator-org-analysis${qs ? `?${qs}` : ''}`,
+    );
+    if (res.code === 0 && res.data) return res.data;
+    return EMPTY_CREATOR_ORG;
+  } catch {
+    return EMPTY_CREATOR_ORG;
   }
 }
 
@@ -416,5 +455,63 @@ export async function fetchDashboardSummaryAll(projectIds?: string[]): Promise<D
     return EMPTY_SUMMARY_ALL;
   } catch {
     return EMPTY_SUMMARY_ALL;
+  }
+}
+
+// ==================== AI 直答率周报（ORS-#981） ====================
+// 数据链：本地 dar_weekly SOP 生成周报 → report 步自动 POST 到后端
+// （dar_weekly 读 DAR_PUSH_BASE/USER/PASS）→ 本接口给「工单数据看板」页
+// AI 直答率区块展示。摘要不含 fails 明细（含用户对话，不上服务号）。
+
+export interface DarReportSummary {
+  week_date: string;
+  env: string;
+  /** 三口径文本（L1/L2/L3），dar_weekly 原样 */
+  dar_rates: Record<string, string>;
+  /** 环比（同分母）：{ "L2_人工": { prev, curr, delta }, ... } */
+  wow: Record<string, { prev: number; curr: number; delta: number }>;
+  kb_gap: string | null;
+  manual_progress: string | null;
+  this_week: { from?: string; to?: string; n_convs?: number; n_segs?: number; n_ticketed?: number; L1_rate?: string };
+  /**
+   * 工作台展示值快照（推送时 dar_studio.metrics 原样取）——区块按这份渲染，
+   * 与工作台首页那张卡同数。老周报没有这个字段，退回上面的周报口径字段。
+   */
+  workbench?: {
+    hero?: DarWorkbenchCard[];
+    small?: DarWorkbenchCard[];
+    manual_progress?: string | null;
+    export_at?: string | null;
+    date?: string | null;
+  } | null;
+  updated_at: string | null;
+}
+
+/** 工作台指标卡（label/value/sub 三元组，与 dar_studio hero/small 同构） */
+export interface DarWorkbenchCard {
+  label: string;
+  value: string;
+  sub?: string;
+}
+
+export async function fetchDarLatest(env = 'prod'): Promise<DarReportSummary | null> {
+  try {
+    const res = await adminRequest<{ code: number; data: DarReportSummary | null }>(
+      `/dashboard/dar-reports/latest?env=${env}`,
+    );
+    return res.code === 0 ? res.data ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchDarList(env = 'prod', limit = 12): Promise<DarReportSummary[]> {
+  try {
+    const res = await adminRequest<{ code: number; data: DarReportSummary[] }>(
+      `/dashboard/dar-reports/list?env=${env}&limit=${limit}`,
+    );
+    return res.code === 0 ? res.data ?? [] : [];
+  } catch {
+    return [];
   }
 }

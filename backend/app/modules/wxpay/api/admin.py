@@ -22,7 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_db as get_db
 from app.models.identity import UserDB
-from app.models.wxpay import RewardRecord, TransferBill, TransferBillState
+from app.models.wxpay import (
+    RewardConfig,
+    RewardRecord,
+    RewardStatus,
+    TransferBill,
+    TransferBillState,
+)
 from app.modules.admin.api.auth import require_permission
 from app.modules.wxpay.client import WxpayServiceError, wxpay_client
 from app.modules.wxpay.schemas import (
@@ -34,12 +40,17 @@ from app.modules.wxpay.schemas import (
     AdminRewardOut,
     AdminUserOptionListOut,
     AdminUserOptionOut,
+    BatchAuditIn,
+    BatchAuditOut,
     GrantRewardIn,
     GrantRewardOut,
+    RewardAdminStatsOut,
+    RewardConfigOut,
+    RewardConfigUpdateIn,
     WithdrawIn,
     WithdrawOut,
 )
-from app.modules.wxpay.service import RewardService, WithdrawService
+from app.modules.wxpay.service import AuditDecisionEngine, RewardService, WithdrawService
 from app.services.identity_service import IdentityService
 from app.services.logging import get_logger
 
@@ -47,26 +58,39 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin-wxpay"])
 
-PERM = "frontend:admin:wxpay-rewards:show"
+PERM = "frontend:admin:wxpay-rewards:show"          # 页面入口（转账测试 + 转账单 + 奖励记录）
+PERM_AUDIT = "frontend:admin:reward-audit:write"     # 财务审核（通过/驳回 + 手动触发自动通过）
+PERM_CONFIG = "frontend:admin:reward-config:write"   # 规则配置编辑
 
 
 def ensure_permission() -> None:
-    """确保权限码已注册到 permissions 表（幂等，已存在则跳过）。
-
-    与 task_policy.py 同款写法：每次调用触发一次，避免新环境部署后
-    权限表里没有该码导致管理员全部 403。
-    """
+    """确保三个权限码已注册（幂等）。"""
     try:
         IdentityService.add_permission(
             permission_id="perm_frontend_admin_wxpay_rewards_show",
             code=PERM,
-            name="奖励管理",
+            name="奖励管理（页面入口）",
             resource_type="frontend",
             action="show",
-            description="后台管理-其他-奖励管理（微信商家转账：转账测试 / 转账单运维）",
+            description="后台管理-其他-奖励管理（转账测试 / 转账单运维 / 奖励记录查看）",
+        )
+        IdentityService.add_permission(
+            permission_id="perm_frontend_admin_reward_audit_write",
+            code=PERM_AUDIT,
+            name="奖励财务审核",
+            resource_type="frontend",
+            action="write",
+            description="审核待财务审核的奖励，通过/驳回/手动触发自动通过",
+        )
+        IdentityService.add_permission(
+            permission_id="perm_frontend_admin_reward_config_write",
+            code=PERM_CONFIG,
+            name="奖励规则配置",
+            resource_type="frontend",
+            action="write",
+            description="编辑闭环奖励金额 / 月度排名阶梯 / 点赞单价 / 审核策略",
         )
     except Exception as e:  # noqa: BLE001
-        # 权限注册失败不应阻断业务（例如首次部署时表尚未就绪）
         logger.warning(f"[wxpay] 权限码注册失败（忽略）: {e}")
 
 
@@ -360,8 +384,10 @@ async def cancel_bill(
 async def list_rewards(
     user_id: Optional[str] = Query(None, description="按用户 ID 过滤"),
     status: Optional[str] = Query(
-        None, description="pending/withdrawing/success/expired"
+        None, description="pending_audit/rejected/pending/withdrawing/success/expired"
     ),
+    role: Optional[str] = Query(None, description="按角色过滤: reporter/assignee/reviewer/liker/ranker/manual"),
+    source_type: Optional[str] = Query(None, description="按来源类型过滤: task/task_like/monthly_rank/admin_test"),
     keyword: Optional[str] = Query(
         None, description="openid / scene_name / source_id 模糊匹配"
     ),
@@ -376,6 +402,10 @@ async def list_rewards(
         stmt = stmt.where(RewardRecord.user_id == user_id)
     if status:
         stmt = stmt.where(RewardRecord.status == status)
+    if role:
+        stmt = stmt.where(RewardRecord.role == role)
+    if source_type:
+        stmt = stmt.where(RewardRecord.source_type == source_type)
     if keyword:
         like = f"%{keyword.strip()}%"
         stmt = stmt.where(
@@ -401,7 +431,6 @@ async def list_rewards(
         .all()
     )
 
-    # 补当前有效转账单（与用户端 RewardService.to_out 同口径：取最近一笔非终态）
     items: list[AdminRewardOut] = []
     for r in rewards:
         bill = (
@@ -430,7 +459,11 @@ async def list_rewards(
                 remark=r.remark or "",
                 source_type=r.source_type or "",
                 source_id=r.source_id,
+                role=r.role,
                 status=r.status,
+                audit_by=r.audit_by,
+                audit_at=r.audit_at,
+                audit_remark=r.audit_remark,
                 bill_state=bill.state if bill else None,
                 out_bill_no=bill.out_bill_no if bill else None,
                 expire_at=r.expire_at,
@@ -450,7 +483,9 @@ async def grant_reward(
 ):
     """发放奖励，仅记账不建单；随后对返回的 id 调 withdraw 才会真正发起转账。"""
     ensure_permission()
-    record, duplicated = await RewardService.grant(db, payload)
+    record, duplicated = await RewardService.grant(
+        db, payload, role="manual", status=RewardStatus.PENDING
+    )
     return GrantRewardOut(
         id=record.id,
         user_id=record.user_id,
@@ -481,4 +516,247 @@ async def withdraw(
         raise HTTPException(status_code=404, detail="奖励记录不存在")
     return await WithdrawService.withdraw(
         db, reward_id, reward.user_id, (body.user_name if body else "") or ""
+    )
+
+
+# ── 奖励审核与规则配置 ──
+
+
+@router.get("/rewards/stats", response_model=RewardAdminStatsOut, summary="奖励状态分布概览")
+async def reward_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user=require_permission(PERM),
+):
+    """管理端 Tab 顶部角标数据（各状态笔数 / 待审核总额）。"""
+    ensure_permission()
+    rows = (
+        await db.execute(
+            select(
+                RewardRecord.status,
+                func.count().label("cnt"),
+                func.coalesce(func.sum(RewardRecord.amount), 0).label("amt"),
+            ).group_by(RewardRecord.status)
+        )
+    ).all()
+    by_status: dict[str, tuple[int, int]] = {
+        s or "": (int(cnt), int(amt)) for s, cnt, amt in rows
+    }
+    pending_audit_cnt, pending_audit_amt = by_status.get(
+        RewardStatus.PENDING_AUDIT, (0, 0)
+    )
+    rejected_cnt, _ = by_status.get(RewardStatus.REJECTED, (0, 0))
+    pending_cnt, _ = by_status.get(RewardStatus.PENDING, (0, 0))
+    withdrawing_cnt, _ = by_status.get(RewardStatus.WITHDRAWING, (0, 0))
+    success_cnt, _ = by_status.get(RewardStatus.SUCCESS, (0, 0))
+    expired_cnt, _ = by_status.get(RewardStatus.EXPIRED, (0, 0))
+    return RewardAdminStatsOut(
+        pending_audit_count=pending_audit_cnt,
+        pending_audit_amount=pending_audit_amt,
+        rejected_count=rejected_cnt,
+        pending_count=pending_cnt,
+        withdrawing_count=withdrawing_cnt,
+        success_count=success_cnt,
+        expired_count=expired_cnt,
+    )
+
+
+@router.post("/rewards/batch-audit", response_model=BatchAuditOut, summary="批量审核通过")
+async def batch_audit(
+    payload: BatchAuditIn,
+    db: AsyncSession = Depends(get_db),
+    current_user=require_permission(PERM_AUDIT),
+):
+    """将一批 pending_audit 奖励审核通过 → 状态置为 pending（可提现）。
+
+    仅 pending_audit 状态可处理，其它状态跳过。
+    到账发起由 wxpay 定时任务 `_flush_pending_rewards_to_withdraw` 统一扫事务外执行，
+    不在审核事务内调微信转账 API（规范 §5.2）。
+    """
+    ensure_permission()
+    ids = list(dict.fromkeys(payload.ids))  # 去重
+
+    rewards = (
+        (
+            await db.execute(
+                select(RewardRecord).where(
+                    RewardRecord.id.in_(ids),
+                    RewardRecord.status == RewardStatus.PENDING_AUDIT,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    valid_ids = {r.id for r in rewards}
+    skipped = [i for i in ids if i not in valid_ids]
+
+    now = func.now()
+    for r in rewards:
+        r.status = RewardStatus.PENDING
+        r.audit_by = current_user
+        r.audit_at = now
+
+    await db.commit()
+
+    return BatchAuditOut(
+        ok_count=len(rewards),
+        skipped_ids=skipped,
+        message=(
+            f"审核通过 {len(rewards)} 条，跳过 {len(skipped)} 条非待审核。"
+            f"转账将由系统定时任务异步发起。"
+        ),
+    )
+
+
+@router.post("/rewards/batch-reject", response_model=BatchAuditOut, summary="批量驳回")
+async def batch_reject(
+    payload: BatchAuditIn,
+    db: AsyncSession = Depends(get_db),
+    current_user=require_permission(PERM_AUDIT),
+):
+    """将一批 pending_audit 奖励驳回（终态，不发钱）。"""
+    ensure_permission()
+    ids = list(dict.fromkeys(payload.ids))
+
+    rewards = (
+        (
+            await db.execute(
+                select(RewardRecord).where(
+                    RewardRecord.id.in_(ids),
+                    RewardRecord.status == RewardStatus.PENDING_AUDIT,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    valid_ids = {r.id for r in rewards}
+    skipped = [i for i in ids if i not in valid_ids]
+
+    now = func.now()
+    for r in rewards:
+        r.status = RewardStatus.REJECTED
+        r.audit_by = current_user
+        r.audit_at = now
+        r.audit_remark = payload.audit_remark or "财务驳回"
+
+    await db.commit()
+
+    return BatchAuditOut(
+        ok_count=len(rewards),
+        skipped_ids=skipped,
+        message=f"驳回 {len(rewards)} 条",
+    )
+
+
+@router.post("/rewards/run-auto-pass", response_model=BatchAuditOut, summary="手动触发自动通过")
+async def run_auto_pass(
+    db: AsyncSession = Depends(get_db),
+    current_user=require_permission(PERM_AUDIT),
+):
+    """对所有 pending_audit 奖励重新跑审核决策引擎，符合条件的自动推进。
+
+    场景：财务调低 auto_pass_max_fen 阈值后，把之前因旧阈值卡进 pending_audit
+          但现在可自动通过的奖励"释放"出来。
+    """
+    ensure_permission()
+    policy = await RewardService.resolve_config(db, "audit_policy")
+    if not policy:
+        return BatchAuditOut(ok_count=0, skipped_ids=[], message="审核策略未启用")
+
+    pending_audit = (
+        (
+            await db.execute(
+                select(RewardRecord).where(
+                    RewardRecord.status == RewardStatus.PENDING_AUDIT
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    auto_passed: list[RewardRecord] = []
+    for r in pending_audit:
+        if await AuditDecisionEngine.evaluate(db, r.user_id, r.amount, policy):
+            r.status = RewardStatus.PENDING
+            r.audit_by = "AUTO"
+            r.audit_at = func.now()
+            auto_passed.append(r)
+
+    await db.commit()
+
+    return BatchAuditOut(
+        ok_count=len(auto_passed),
+        skipped_ids=[r.id for r in pending_audit if r not in auto_passed],
+        message=(
+            f"自动通过 {len(auto_passed)} 条"
+            f"（其余 {len(pending_audit) - len(auto_passed)} 条仍需人工审核）。"
+            f"转账将由系统定时任务异步发起。"
+        ),
+    )
+
+
+# ── 规则配置 ──
+
+
+@router.get("/reward-config", summary="规则配置列表")
+async def list_reward_config(
+    db: AsyncSession = Depends(get_db),
+    current_user=require_permission(PERM),
+):
+    ensure_permission()
+    rows = (
+        (
+            await db.execute(select(RewardConfig).order_by(RewardConfig.config_key))
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        RewardConfigOut(
+            config_key=r.config_key,
+            enabled=r.enabled,
+            config=r.config or {},
+            updated_by=r.updated_by,
+            updated_at=r.updated_at,
+        )
+        for r in rows
+    ]
+
+
+@router.put(
+    "/reward-config/{config_key}",
+    response_model=RewardConfigOut,
+    summary="更新规则配置",
+)
+async def update_reward_config(
+    config_key: str,
+    payload: RewardConfigUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    current_user=require_permission(PERM_CONFIG),
+):
+    ensure_permission()
+    row = (
+        await db.execute(
+            select(RewardConfig).where(RewardConfig.config_key == config_key)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"配置项 {config_key} 不存在")
+
+    if payload.enabled is not None:
+        row.enabled = payload.enabled
+    if payload.config is not None:
+        row.config = payload.config
+    row.updated_by = current_user
+    await db.commit()
+    await db.refresh(row)
+
+    return RewardConfigOut(
+        config_key=row.config_key,
+        enabled=row.enabled,
+        config=row.config or {},
+        updated_by=row.updated_by,
+        updated_at=row.updated_at,
     )

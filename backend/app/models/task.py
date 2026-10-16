@@ -272,6 +272,52 @@ class TaskFollower(Base):
         return f"<TaskFollower(task_id={self.task_id}, username='{self.username}')>"
 
 
+# 点赞风控状态（红包激励一期需求 §8.3.1 / §12.8）：
+# 有效点赞数只统计 risk_status == normal 的记录；pending/invalid 由后台核验后置位。
+LIKE_RISK_NORMAL = "normal"
+LIKE_RISK_PENDING = "pending"
+LIKE_RISK_INVALID = "invalid"
+
+
+class TaskLike(Base):
+    """工单点赞表：用户对工单点赞（活动中心「精品工单榜」按此计数倒序）。
+
+    与 TaskFollower 同构：task_id + username 唯一键保证幂等，
+    重复点赞只刷新 updated_at，不产生脏数据。
+
+    取消点赞为**软删除**（is_active 置 0）而非删行：保留取消痕迹，
+    供期末「有效点赞」核验与异常点赞追溯（需求 §8.3.1「保存最终有效点赞
+    与排名快照，剔除异常点赞」）。表名保持 task_likes 不变（改名需人工迁移，
+    收益低于风险），语义以本注释与落地规范为准。
+
+    榜单口径：只统计 status=archived 的工单（精品=沉淀下来的问答），
+    且只计 is_active=1 且 risk_status='normal' 的有效点赞。
+    「精品工单榜」点赞排名靠前者即优质问题，两个榜共用同一份点赞记录
+    （2026-10-15 决策：不另建 knowledge_question_likes）。
+    """
+    __tablename__ = "task_likes"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="点赞记录ID")
+    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"),
+                     nullable=False, index=True, comment="任务ID")
+    username = Column(String(50), nullable=False, index=True, comment="点赞人username")
+    is_active = Column(Boolean, nullable=False, server_default=text("1"),
+                       comment="是否为有效点赞：1 点赞中，0 已取消（保留痕迹）")
+    risk_status = Column(String(16), nullable=False, server_default="normal",
+                         comment="风控状态：normal 正常 / pending 待核验 / invalid 无效")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="首次点赞时间")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(),
+                        nullable=True, comment="最近变更时间（点赞/取消/风控）")
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "username", name="uq_task_likes"),
+    )
+
+    def __repr__(self):
+        return (f"<TaskLike(task_id={self.task_id}, username='{self.username}', "
+                f"is_active={self.is_active}, risk_status='{self.risk_status}')>")
+
+
 class TaskParticipant(Base):
     """任务参与人表：记录与工单相关度较高的多个人（工单视角）。
 
@@ -550,6 +596,7 @@ class ArchiveReport(Base):
                       comment="审核人 users.id（submit 时指定，approve/reject 后保留最后审核人）")
     reviewed_at = Column(DateTime, nullable=True, comment="审核时间")
     review_comment = Column(Text, nullable=True, comment="驳回理由（rejected 时填）")
+    value_point = Column(Text, nullable=True, comment="审核通过的知识价值点")
     revision = Column(Integer, nullable=False, server_default="1", default=1,
                       comment="乐观锁（保存草稿时比对，不一致返回 409）")
 

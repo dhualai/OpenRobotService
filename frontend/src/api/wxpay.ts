@@ -11,8 +11,20 @@ import API_CONFIG from '@/config/api';
 //    漏写会直接 404（历史上 fetchRewards/fetchRewardStats/withdrawReward 都踩过）。
 const request = createRequest(API_CONFIG.WXPAY.BASE_URL, 'Wxpay');
 
-/** 奖励状态（与后端 RewardStatus 对齐） */
-export type RewardStatus = 'pending' | 'withdrawing' | 'success' | 'expired';
+/** 奖励状态（与后端 RewardStatus 对齐，含红包激励机制新增状态） */
+export type RewardStatus =
+  | 'pending_audit'
+  | 'rejected'
+  | 'pending'
+  | 'withdrawing'
+  | 'success'
+  | 'expired';
+
+/** 奖励角色 */
+export type RewardRole = 'reporter' | 'assignee' | 'reviewer' | 'liker' | 'ranker' | 'manual';
+
+/** 奖励来源类型 */
+export type RewardSourceType = 'task' | 'task_like' | 'monthly_rank' | 'admin_test';
 
 export interface RewardItem {
   id: string;
@@ -127,6 +139,10 @@ export function fenToYuan(fen: number): string {
 
 /** 「奖励管理」入口权限码（与后端 admin.py 的 PERM 常量必须一致） */
 export const PERM_WXPAY_ADMIN = 'frontend:admin:wxpay-rewards:show';
+/** 财务审核权限（通过 / 驳回 / 手动触发自动通过） */
+export const PERM_REWARD_AUDIT = 'frontend:admin:reward-audit:write';
+/** 规则配置编辑权限 */
+export const PERM_REWARD_CONFIG = 'frontend:admin:reward-config:write';
 
 export interface AdminBillItem {
   id: string;
@@ -182,7 +198,11 @@ export interface AdminRewardItem {
   remark: string;
   source_type: string;
   source_id?: string | null;
+  role?: string | null;
   status: string;
+  audit_by?: string | null;
+  audit_at?: string | null;
+  audit_remark?: string | null;
   bill_state?: string | null;
   out_bill_no?: string | null;
   expire_at?: string | null;
@@ -195,6 +215,36 @@ export interface AdminRewardListResp {
   page: number;
   size: number;
   items: AdminRewardItem[];
+}
+
+export interface AdminRewardStats {
+  pending_audit_count: number;
+  /** 待审核总额，单位：分 */
+  pending_audit_amount: number;
+  rejected_count: number;
+  pending_count: number;
+  withdrawing_count: number;
+  success_count: number;
+  expired_count: number;
+}
+
+export interface BatchAuditResp {
+  ok_count: number;
+  skipped_ids: string[];
+  message: string;
+}
+
+export interface RewardConfigItem {
+  config_key: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  updated_by?: string | null;
+  updated_at?: string | null;
+}
+
+export interface RewardConfigUpdateIn {
+  enabled?: boolean;
+  config?: Record<string, unknown>;
 }
 
 export interface GrantRewardResp {
@@ -251,6 +301,8 @@ export function cancelAdminBill(billId: string): Promise<AdminBillActionResp> {
 export function fetchAdminRewards(params?: {
   user_id?: string;
   status?: string;
+  role?: string;
+  source_type?: string;
   keyword?: string;
   page?: number;
   size?: number;
@@ -258,10 +310,54 @@ export function fetchAdminRewards(params?: {
   const qs = new URLSearchParams();
   if (params?.user_id) qs.set('user_id', params.user_id);
   if (params?.status) qs.set('status', params.status);
+  if (params?.role) qs.set('role', params.role);
+  if (params?.source_type) qs.set('source_type', params.source_type);
   if (params?.keyword) qs.set('keyword', params.keyword);
   qs.set('page', String(params?.page ?? 1));
   qs.set('size', String(params?.size ?? 20));
   return request<AdminRewardListResp>(`/admin/rewards?${qs.toString()}`, { skipCache: true });
+}
+
+/** 奖励状态分布概览（Tab 顶部角标） */
+export function fetchAdminRewardStats(): Promise<AdminRewardStats> {
+  return request<AdminRewardStats>('/admin/rewards/stats', { skipCache: true });
+}
+
+/** 批量审核通过（自动发起微信转账） */
+export function batchAuditRewards(ids: string[]): Promise<BatchAuditResp> {
+  return request<BatchAuditResp>('/admin/rewards/batch-audit', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  });
+}
+
+/** 批量驳回（终态，不发钱） */
+export function batchRejectRewards(ids: string[], remark?: string): Promise<BatchAuditResp> {
+  return request<BatchAuditResp>('/admin/rewards/batch-reject', {
+    method: 'POST',
+    body: JSON.stringify({ ids, audit_remark: remark || '' }),
+  });
+}
+
+/** 手动触发自动通过（对所有 pending_audit 重跑决策引擎） */
+export function runAutoPassRewards(): Promise<BatchAuditResp> {
+  return request<BatchAuditResp>('/admin/rewards/run-auto-pass', { method: 'POST' });
+}
+
+/** 规则配置列表 */
+export function fetchRewardConfig(): Promise<RewardConfigItem[]> {
+  return request<RewardConfigItem[]>('/admin/reward-config', { skipCache: true });
+}
+
+/** 更新单条规则配置 */
+export function updateRewardConfig(
+  configKey: string,
+  payload: RewardConfigUpdateIn,
+): Promise<RewardConfigItem> {
+  return request<RewardConfigItem>(`/admin/reward-config/${encodeURIComponent(configKey)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
 }
 
 /** 转账测试「收款用户」下拉候选：读 users 表，并给出可收款 openid */

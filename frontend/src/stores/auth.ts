@@ -79,6 +79,7 @@ export interface AuthState {
   token: string | null;
   isLoading: boolean;
   isAdmin: boolean;
+  canViewKnowledgeContribution: boolean;
   roles: Record<string, string[]> | null;
   permissions: string[];
   // 当前用户关联的项目 ID（取自 projectPermissions 的 keys），用于按项目过滤任务
@@ -104,6 +105,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   token: null,
   isLoading: true,
   isAdmin: false,
+  canViewKnowledgeContribution: false,
   roles: null,
   permissions: [],
   projectIds: [],
@@ -119,6 +121,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       token: authData.access_token,
       username: user,
+      canViewKnowledgeContribution: false,
       isLoggedIn: true,
       isLoading: false,
     });
@@ -144,6 +147,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       isLoggedIn: false,
       isLoading: false,
       isAdmin: false,
+      canViewKnowledgeContribution: false,
       roles: null,
       permissions: [],
       projectIds: [],
@@ -218,7 +222,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
-      const userData = await request<{ id?: string; roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null, permissions?: string[], projectPermissions?: Record<string, unknown> }>(
+      const userData = await request<{ id?: string; roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null, permissions?: string[], projectPermissions?: Record<string, unknown>, can_view_knowledge_contribution?: boolean }>(
         `/users/${encodeURIComponent(user)}/detail`,
         { skipCache: true },
       );
@@ -230,15 +234,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const userId = userData.id || '';
       // projectPermissions 的 keys 即当前用户关联的项目 ID（与 task.project_id 同源）
       const projectIds = Object.keys(userData.projectPermissions || {});
-      set({
+      set((state) => ({
         roles: (userData.roles as Record<string, string[]>) || null,
         isAdmin: hasAdminRole,
+        canViewKnowledgeContribution: state.isLoggedIn && state.username === user
+          ? userData.can_view_knowledge_contribution === true : state.canViewKnowledgeContribution,
         name,
         avatarResourceId,
         permissions,
         projectIds,
         userId,
-      });
+      }));
       try {
         if (userId) writeStored('USER_ID', userId);
         else removeStored('USER_ID');
@@ -252,7 +258,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       } catch { /* SSR safe */ }
       return hasAdminRole;
     } catch {
-      set({ isAdmin: false });
+      set((state) => ({ isAdmin: false, canViewKnowledgeContribution:
+        state.isLoggedIn && state.username === user ? false : state.canViewKnowledgeContribution }));
       return false;
     }
   },
@@ -293,6 +300,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({
           token: savedToken,
           username: savedUsername,
+          canViewKnowledgeContribution: false,
           userId: savedUserId,
           isLoggedIn: true,
           isLoading: false,
@@ -308,7 +316,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return;
       }
     } catch { /* SSR safe */ }
-    set({ isLoading: false });
+    set({ isLoading: false, canViewKnowledgeContribution: false });
   },
 
   hasPermission: (required: string) => {

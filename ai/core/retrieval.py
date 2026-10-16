@@ -1432,6 +1432,12 @@ class RetrievalService:
         from ai.config import get_active_collection_for, write_active_collection_for
         import time as _time
 
+        # 下面每个分支都要用 self._qdrant / self._embed_client，先初始化。
+        # （此前 override 分支在 _ensure_clients() 之前就取了 self._qdrant，而新构造的
+        # service 上它还是 None → 该分支必然 AttributeError 被吞掉，测试隔离集合因此
+        # 从来没被创建出来过。）
+        await self._ensure_clients()
+
         override = _ticket_card_collection()
         if override:
             # 测试隔离集合：独立存在，绝不写 company 指针（写指针会把整套
@@ -1440,7 +1446,6 @@ class RetrievalService:
                 client = await self._qdrant._ensure_client()
                 if await self._qdrant._to_thread(client.collection_exists, override):
                     return override
-                await self._ensure_clients()
                 vec_dim = await self._embed_client.get_dimension()
                 from qdrant_client.models import (Distance, VectorParams,
                                                   SparseVectorParams, SparseIndexParams)
@@ -1470,7 +1475,6 @@ class RetrievalService:
             except Exception:
                 pass
 
-        await self._ensure_clients()
         try:
             vec_dim = await self._embed_client.get_dimension()
             name = f"company_{_time.strftime('%Y%m%d_%H%M%S')}"
@@ -1526,8 +1530,12 @@ class RetrievalService:
         from ai.config import get_active_collection_for
         import uuid
 
-        col = _ticket_card_collection() or get_active_collection_for("company")
-        if not col:
+        # override（TICKET_CARD_COLLECTION）只是「该用哪个集合」的声明，Qdrant 里未必
+        # 有——测试隔离集合正是等这里第一次写卡才建出来的。所以 override 非空也必须走
+        # ensure（其 override 分支：存在即返回，不存在则以正确 schema 创建）。
+        override = _ticket_card_collection()
+        col = override or get_active_collection_for("company")
+        if not col or override:
             col = await self.ensure_task_resolutions_collection()
         if not col:
             return False

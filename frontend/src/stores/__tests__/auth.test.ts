@@ -10,6 +10,7 @@ describe('Auth Store', () => {
       token: null,
       isLoading: true,
       isAdmin: false,
+      canViewKnowledgeContribution: false,
       roles: null,
       permissions: [],
     });
@@ -177,6 +178,52 @@ describe('Auth Store', () => {
 
       const result = await useAuthStore.getState().refreshAuthToken();
       expect(result).toBe(false);
+    });
+  });
+
+  describe('knowledge contribution visibility', () => {
+    it.each([true, false, undefined, 'true'])('only accepts the current user explicit boolean flag %s', async (visible) => {
+      useAuthStore.setState({ isLoggedIn: true, username: 'flag-user', token: 'auth-token', canViewKnowledgeContribution: true });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ can_view_knowledge_contribution: visible, permissions: ['admin', '*'] }),
+      } as Response);
+      await useAuthStore.getState().fetchUserDetails('flag-user', 'auth-token');
+      expect(useAuthStore.getState().canViewKnowledgeContribution).toBe(visible === true);
+    });
+
+    it('resets visibility on login until current roles arrive', () => {
+      useAuthStore.setState({ canViewKnowledgeContribution: true });
+      const fetchDetails = vi.spyOn(useAuthStore.getState(), 'fetchUserDetails').mockResolvedValueOnce(false);
+      useAuthStore.getState().login({ access_token: 'new-token', refresh_token: 'new-refresh', expires_in: 3600 }, 'another-user');
+      expect(useAuthStore.getState().canViewKnowledgeContribution).toBe(false);
+      fetchDetails.mockRestore();
+    });
+
+    it('clears visibility on logout', () => {
+      useAuthStore.setState({ canViewKnowledgeContribution: true });
+      useAuthStore.getState().logout();
+      expect(useAuthStore.getState().canViewKnowledgeContribution).toBe(false);
+    });
+
+    it('clears visibility when current user profile cannot be loaded', async () => {
+      useAuthStore.setState({ isLoggedIn: true, username: 'failed-user', token: 'auth-token', canViewKnowledgeContribution: true });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false, status: 403, json: async () => ({ detail: '无权读取角色' }) } as Response);
+      await useAuthStore.getState().fetchUserDetails('failed-user', 'auth-token');
+      expect(useAuthStore.getState().canViewKnowledgeContribution).toBe(false);
+    });
+
+    it.each(['logout', 'switch'])('late authorized profile does not re-enable card after %s', async (action) => {
+      let resolveResponse!: (response: Response) => void;
+      const response = new Promise<Response>((resolve) => { resolveResponse = resolve; });
+      useAuthStore.setState({ isLoggedIn: true, username: 'old-user', token: 'old-token' });
+      vi.spyOn(globalThis, 'fetch').mockReturnValueOnce(response);
+      const pending = useAuthStore.getState().fetchUserDetails('old-user', 'old-token');
+      if (action === 'logout') useAuthStore.getState().logout();
+      else useAuthStore.setState({ username: 'new-user', token: 'new-token', canViewKnowledgeContribution: false });
+      resolveResponse({ ok: true, json: async () => ({ can_view_knowledge_contribution: true }) } as Response);
+      await pending;
+      expect(useAuthStore.getState().canViewKnowledgeContribution).toBe(false);
     });
   });
 

@@ -1294,21 +1294,13 @@ class TicketService:
                 latest_report = report_result.scalar_one_or_none()
                 if latest_report:
                     from app.modules.tasks.schemas.archive_report import ArchiveReportResponse
-                    report_resp = ArchiveReportResponse.model_validate(latest_report)
-                    ids_to_lookup = {
-                        latest_report.created_by,
-                        latest_report.updated_by,
-                        latest_report.reviewer,
-                    } - {None, ""}
-                    if ids_to_lookup:
-                        user_rows = (await db.execute(
-                            select(UserDB.id, UserDB.username, UserDB.name)
-                            .where(UserDB.id.in_(ids_to_lookup))
-                        )).all()
-                        user_map = {row.id: (row.name or row.username or row.id) for row in user_rows}
-                        report_resp.created_by_name = user_map.get(latest_report.created_by)
-                        report_resp.updated_by_name = user_map.get(latest_report.updated_by)
-                        report_resp.reviewer_name = user_map.get(latest_report.reviewer)
+                    from app.core.security import decode_token
+                    from app.modules.tasks.services.knowledge_review import projected_report
+                    payload = decode_token(token) if token else None
+                    viewer_name = (payload or {}).get("sub", "")
+                    viewer = (await db.execute(select(UserDB).where(UserDB.username == viewer_name))).scalar_one_or_none() if viewer_name else None
+                    actor = {"id": viewer.id, "username": viewer.username} if viewer else {}
+                    report_resp = await projected_report(db, latest_report, actor)
                     ticket.current_archive_report = report_resp
                 else:
                     ticket.current_archive_report = None

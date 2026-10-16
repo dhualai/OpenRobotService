@@ -2,12 +2,13 @@ import { Fragment, useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList, ThumbsUp } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { setupWechatShare, isPcWechat } from '@/shared/utils/wechatJsSdk';
+import { completeArchiveReportTemplate } from '@/shared/utils/archiveReport';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken, ApiError } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -42,6 +43,7 @@ import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { appUrlTransform } from '@/shared/utils/markdown';
+import { useTaskLike } from '@/shared/hooks/useTaskLike';
 
 // 状态文字色（设计稿 statusText 蓝阶：待处理 blue-3 / 处理中·进行中 blue-2 / 已解决 blue-1 / 关闭·取消 muted）
 const STATUS_TEXT_COLOR_MAP: Record<string, string> = {
@@ -129,7 +131,11 @@ interface Ticket {
   deadline_at?: string | null;
   // 二次派单感知增强（M3）：未派到指定人时的完整话术（详情页 redispatch.result.tip_detail）
   // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可见 → redispatch.result.reasoning）
-  redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null;
+  redispatch?: {
+    dispatch_round?: number;
+    reassign_reason?: string | null;
+    result?: { tip_detail?: string | null; reasoning?: string | null };
+  } | null;
   // 工单阶段性处理（协商节点）：当前节点 ID/名称/结束时间（naive UTC）
   curr_step_id?: number | null;
   curr_step_name?: string | null;
@@ -167,6 +173,7 @@ interface Ticket {
     submit_status: 'draft' | 'submitted' | 'approved' | 'rejected';
     reviewer?: string | null;
     reviewer_name?: string | null;
+    can_review?: boolean;
     reviewed_at?: string | null;
     review_comment?: string | null;
     revision: number;
@@ -207,6 +214,9 @@ export default function TaskDetailPage() {
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
   // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可看到）
   const [dispatchReason, setDispatchReason] = useState<string>('');
+  // 最近一次人工转派的原因（展示用）——和派单原因放一起展示；后端已按角色过滤。
+  // 注意别和下面 `reassignReason`（转派弹窗输入框）撞名。
+  const [lastReassignReason, setLastReassignReason] = useState<string>('');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; curr_step_endtime?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   // 当前阶段截止时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
@@ -334,6 +344,9 @@ export default function TaskDetailPage() {
   // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
   const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
 
+  // 点赞（活动中心「精品工单 TOP 榜」的计数来源）：拉取/乐观更新/回滚都在 hook 里
+  const { state: likeState, pending: likePending, toggle: toggleLike } = useTaskLike(detailId);
+
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
     setDetailLoading(true);
@@ -344,6 +357,7 @@ export default function TaskDetailPage() {
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
         // 二次派单感知增强：派单理由（后端对接单人/提单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(t.redispatch?.result?.reasoning || '');
+        setLastReassignReason(t.redispatch?.reassign_reason || '');
         // 代理关系（代他人提单）：独立接口，失败不阻断详情渲染（横幅缺失而已）
         getProxyRelations(detailId)
           .then((list) => setProxyRelation(list?.[0] || null))
@@ -374,9 +388,24 @@ export default function TaskDetailPage() {
           .then((u) => setAllUsers(u))
           .catch(() => setAllUsers([]));
       })
-      .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
+      .catch((err) => {
+        const body = err instanceof ApiError ? err.errorBody as { detail?: { code?: string; report_id?: number } } : undefined;
+        if (body?.detail?.code === 'BLIND_REVIEW_REQUIRED' && body.detail.report_id) {
+          navigate(`/admin/knowledge/reviews/${body.detail.report_id}`, { replace: true });
+          return;
+        }
+        Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      })
       .finally(() => setDetailLoading(false));
   }, [detailId]);
+
+  /** 点赞 / 取消：乐观更新与回滚在 useTaskLike 内完成，这里只负责失败提示 */
+  const handleToggleLike = async () => {
+    const liked = await toggleLike();
+    if (liked === null) {
+      Toast({ message: '点赞操作失败，请稍后重试', theme: 'error' });
+    }
+  };
 
   // 查看停留时长追踪：用户离开页面 / 切后台时回传累计可见秒数
   // 后端将累加到最近一条 VIEW 操作记录上（5 分钟去重窗口内同一条记录）
@@ -557,10 +586,10 @@ export default function TaskDetailPage() {
         const { isAssignee: isAssignee2 } = getCurrentUserRoles();
         const username = localStorage.getItem('username') || '';
         const reviewerMatch = report?.reviewer && (report.reviewer === username || report.reviewer === localStorage.getItem('user_id'));
-        const isReviewer = Boolean(reviewerMatch);
+        const isReviewer = Boolean(report?.can_review || reviewerMatch);
 
         // 审核人视角：submitted 状态下显示通过/驳回
-        if (report?.submit_status === 'submitted' && (isReviewer || canOperate2)) {
+        if (report?.submit_status === 'submitted' && isReviewer) {
           const BTN_PRIMARY2 = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
           const BTN_DANGER2 = { backgroundColor: 'var(--destructive)', color: 'var(--destructive-foreground)', borderRadius: '999px', border: 'none' };
           return [
@@ -757,21 +786,8 @@ export default function TaskDetailPage() {
 
   // ── 审核通过归档 ──
   const handleArchiveApprove = async () => {
-    if (archiveLoading) return;
     const reportId = detail?.current_archive_report?.id;
-    if (!reportId || !detail) return;
-    setArchiveLoading(true);
-    try {
-      // approve 后端返回 TicketResponse，但 archive report 状态也变了，统一 loadDetail
-      await request(`/archive-report/archive-reports/${reportId}/approve`, { method: 'POST' });
-      setArchiveEditorVisible(false);
-      loadDetail();
-      Toast({ message: '归档审核通过', theme: 'success' });
-    } catch (err) {
-      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setArchiveLoading(false);
-    }
+    if (reportId) navigate(`/admin/knowledge/reviews/${reportId}`);
   };
 
   // ── 审核驳回归档 ──
@@ -788,7 +804,7 @@ export default function TaskDetailPage() {
       // reject 后端返回 ArchiveReportResponse（不是 Ticket），不调 setDetail
       await request(`/archive-report/archive-reports/${reportId}/reject`, {
         method: 'POST',
-        body: JSON.stringify({ review_comment: archiveRejectReason }),
+        body: JSON.stringify({ review_comment: archiveRejectReason, revision: detail?.current_archive_report?.revision }),
       });
       setShowArchiveRejectPopup(false);
       setArchiveRejectReason('');
@@ -811,7 +827,8 @@ export default function TaskDetailPage() {
     setArchiveReportContent(report.content || '');
     setArchiveReportRevision(report.revision || 1);
     if (report.submit_status === 'submitted') {
-      setArchiveEditorMode('review');
+      navigate(`/admin/knowledge/reviews/${report.id}`);
+      return;
     } else {
       setArchiveEditorMode('edit');
     }
@@ -1556,6 +1573,7 @@ export default function TaskDetailPage() {
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
         // 二次派单感知增强：派单理由（后端对接单人/提单人/管理员返回 reasoning，非空即展示）
         setDispatchReason(t.redispatch?.result?.reasoning || '');
+        setLastReassignReason(t.redispatch?.reassign_reason || '');
       })
       .catch(() => {});
   };
@@ -1689,6 +1707,22 @@ export default function TaskDetailPage() {
           <h2 className="detail-card__title">
             <TitleEllipsis text={detail.title} lines={3} titleClassName="detail-card__title-inner" as="span" fontSize={19} lineHeight={1.3} />
           </h2>
+          {/* 点赞：归档工单没有操作按钮行（终态隐藏），故点赞独立成行常驻在标题下 */}
+          {likeState && (
+            <div className="detail-like-row">
+              <button
+                type="button"
+                className={`detail-like-btn ${likeState.liked ? 'is-liked' : ''}`}
+                disabled={likePending}
+                onClick={handleToggleLike}
+                aria-pressed={likeState.liked}
+                aria-label={likeState.liked ? '取消点赞' : '点赞'}
+              >
+                <ThumbsUp size={15} strokeWidth={2} fill={likeState.liked ? 'currentColor' : 'none'} />
+                <span data-testid="detail-like-count">{likeState.like_count}</span>
+              </button>
+            </div>
+          )}
           <div className="detail-card__info-grid">
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><User size={14} strokeWidth={2} /></span>
@@ -1769,17 +1803,28 @@ export default function TaskDetailPage() {
             return <DispatchFold label={tipLabel} text={redispatchTipDetail} variant="tip" />;
           })()}
 
-          {/* 派单原因：接单人 / 提单人 / 管理员 / 工单操作权限 可见。
+          {/* 派单原因 / 转派原因：接单人 / 提单人 / 管理员 / 工单操作权限 可见。
               提单人侧有 tip 时 tip 常已含说明，不重复展示 reason；
-              接单人可同时看「接单提醒」与「派单原因」。 */}
+              接单人可同时看「接单提醒」与「派单原因」。
+              转派原因放这一块（**不放工单动态**）——两者都是「为什么派给这个人」的说明。 */}
           {(() => {
-            if (!dispatchReason) return null;
             const { isAssignee, isReporter } = getCurrentUserRoles();
             const canOperate = isAdmin || hasPermission('backend:tasks:operate');
             if (!isAssignee && !isReporter && !canOperate) return null;
-            if (redispatchTipDetail && isReporter) return null;
+            // 「有 tip 就不重复展示」只针对**派单原因** —— tip 讲的是这次派单。
+            // 转派 tip 里根本没有，不能被连坐挡掉（否则提单人永远看不到转派原因）。
+            const showDispatch = !!dispatchReason && !(redispatchTipDetail && isReporter);
+            const showReassign = !!lastReassignReason;
+            if (!showDispatch && !showReassign) return null;
             return (
-              <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />
+              <>
+                {showDispatch ? (
+                  <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />
+                ) : null}
+                {showReassign ? (
+                  <DispatchFold label="转派原因" text={lastReassignReason} variant="reason" />
+                ) : null}
+              </>
             );
           })()}
         </div>
@@ -2650,7 +2695,7 @@ export default function TaskDetailPage() {
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
           </h4>
-          {archiveEditorMode === 'review' && detail?.current_archive_report?.review_comment && (
+          {archiveEditorMode === 'edit' && detail?.current_archive_report?.review_comment && (
             <div style={{ padding: '8px 12px', background: 'var(--destructive)/10%', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>
               <strong style={{ color: 'var(--destructive)' }}>上一次驳回理由：</strong>
               {detail.current_archive_report.review_comment}
@@ -2658,6 +2703,10 @@ export default function TaskDetailPage() {
           )}
           {archiveEditorMode === 'edit' ? (
             <>
+              <div style={{ marginBottom: 12, fontSize: 12, lineHeight: 1.8, color: 'var(--muted-foreground)' }}>
+                活动归档报告须填写问题概述、问题场景、复现条件、原因分析、解决方案、验证结果、适用范围、遗留问题；各章节须有正文，无遗留可写“无”。请勿写入人员姓名及联系方式。
+                <Button size="small" theme="default" disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐报告章节</Button>
+              </div>
               {archiveGenerating ? (
                 /* AI 生成中：只读直播，防止处理人同时手写（服务端 content='' 条件写回兜底） */
                 <div style={{ height: 320, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>

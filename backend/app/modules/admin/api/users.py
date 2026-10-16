@@ -756,6 +756,7 @@ async def get_user_detail(
         username=user['username'],
         permissions=user['permissions'],
         roles=user['roles'],
+        can_view_knowledge_contribution=user.get('can_view_knowledge_contribution', False),
         projectPermissions=user.get('projectPermissions', {}),
         name=user.get('name'),
         status=user.get('status', 'inactive'),

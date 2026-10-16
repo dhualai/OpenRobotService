@@ -43,7 +43,9 @@ from app.utils.spec_doc_parser import (
     parse_spec_document,
 )
 
-router = APIRouter(tags=["task-spec-doc"])
+from app.modules.tasks.services.knowledge_review import raw_access_guard
+
+router = APIRouter(tags=["task-spec-doc"], dependencies=[Depends(raw_access_guard)])
 logger = logging.getLogger(__name__)
 
 _UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')

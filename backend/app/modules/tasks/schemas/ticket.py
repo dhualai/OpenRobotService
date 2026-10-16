@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 
@@ -149,11 +149,19 @@ class RedispatchResult(BaseModel):
 class TicketRedispatch(BaseModel):
     """详情接口 redispatch 子对象（最新一轮派单完整评估）"""
     dispatch_round: int = Field(..., description="派单轮次")
+    # 最近一次「人工转派」的原因（operation_log.detail.reason）。与 result.reasoning 一起，
+    # 在详情页「派单原因」那一块并排展示；后端已按角色过滤（非接单人/提单人/管理员为 None）。
+    # ⚠️ 字段必须在这里声明 —— 这是个类型化响应模型，没声明的键会被 Pydantic 丢掉。
+    reassign_reason: Optional[str] = Field(None, description="最近一次人工转派的原因")
     candidates: Optional[List[RedispatchCandidate]] = Field(None, description="R2 本轮精排 Top10 快照")
     result: Optional[RedispatchResult] = Field(None, description="R3 本轮派单结果信息")
 
 
 class TicketResponse(TicketBase):
+    @field_serializer("archived_by")
+    def private_reviewer(self, value):
+        return None
+
     id: int
     status: TicketStatus
     redispatch: Optional[TicketRedispatch] = Field(None, description="最新一轮派单评估（无记录为 None）")

@@ -162,22 +162,45 @@ async def get_ticket_source_analysis(
     project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
     db: AsyncSession = Depends(get_db),
 ):
-    """工单数据来源分析 —— 供仪表盘「工单数据来源分析」看板（类型分布 + 提单人角色分布）。
-
-    by_role 的 count 为工单数量：按提单人主角色归组累加其提单工单数
-    （见 task_dashboard_service.get_source_analysis），供「提单人角色分布」看板。
+    """工单数据来源分析 —— 供仪表盘「工单类型分布」看板。
 
     响应结构：
     {
         "code": 0,
         "data": {
-            "by_type": [{"key": "bug", "count": 12}, ...],
-            "by_role": [{"label": "调度研发", "count": 3}, ...]
+            "by_type": [{"key": "bug", "count": 12}, ...]
         }
     }
     """
     pid_list = _parse_project_ids(project_ids)
     data = await task_dashboard_service.get_source_analysis(db, pid_list)
+    return {"code": 0, "data": data}
+
+
+@dashboard_router.get("/tickets/creator-org-analysis", response_model=Dict[str, Any])
+async def get_ticket_creator_org_analysis(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
+    company_id: Optional[str] = Query(None, description="公司ID：不传按公司统计，传入后按该公司下的部门统计"),
+    db: AsyncSession = Depends(get_db),
+):
+    """提单人公司/部门分布 —— 供工单数据看板「提单人公司/部门分布」卡片（饼图 + 公司下拉筛选）。
+
+    不传 company_id 时 dimension=company，按提单人所属公司归组累加工单数量；
+    传入 company_id 时 dimension=department，仅统计该公司提单人的工单并按部门归组
+    （见 task_dashboard_service.get_creator_org_analysis）。companies 供公司下拉框选项。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "dimension": "company",   # company=按公司 / department=按部门
+            "companies": [{"id": "c1", "name": "某某公司"}, ...],
+            "by_org": [{"label": "某某公司", "count": 12}, ...]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    data = await task_dashboard_service.get_creator_org_analysis(db, pid_list, company_id)
     return {"code": 0, "data": data}
 
 

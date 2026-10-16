@@ -50,6 +50,10 @@ const API_CONFIG = {
   WXPAY: {
     BASE_URL: `${API_ROOT}/wxpay`,
   },
+  /** 公告/活动中心 - /api/announcements (首页公告条 + 抽屉内公告列表) */
+  ANNOUNCEMENT: {
+    BASE_URL: `${API_ROOT}/announcements`,
+  },
 } as const;
 
 export default API_CONFIG;

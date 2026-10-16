@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from app.models.task import Task, TaskStatus, TaskOperationLog, OperationType
+from app.models.organization import Company, Department
+from app.models.identity import UserDB
 from app.services.user_service import user_service
 
 logger = logging.getLogger(__name__)
@@ -202,85 +204,102 @@ class TaskDashboardService:
         ]
         return {"items": items, "total": total}
 
-    # 角色分布饼图最多展示的角色数；超出部分并入「其他」
-    ROLE_DISPLAY_LIMIT = 8
+    # 组织分布饼图最多展示的组织数；超出部分并入「其他」
+    ORG_DISPLAY_LIMIT = 8
 
     @staticmethod
     async def get_source_analysis(
         db: AsyncSession,
         project_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """工单数据来源分析 —— 工单类型分布 + 提单人角色分布，供「工单数据来源分析」看板。
+        """工单数据来源分析 —— 工单类型分布，供「工单类型分布」看板。
 
-        - 类型分布：按 task_type（problem/feature/bug/support/other）分组计数，
-          统计全部工单（含 new，不做状态过滤：来源分析不关心状态）。
-        - 角色分布：对每个提单人取「主角色」（system 系统角色优先，否则取第一个
-          project 项目角色；无角色归入「未分配角色」），按角色名分组累加工单数量。
-          每个提单人的工单只归入一个角色，避免一人多角色导致重复计数；
-          提单人为空的工单不做角色归属，不参与该分布统计。
+        类型分布：按 task_type（problem/feature/bug/support/other）分组计数，
+        统计全部工单（含 new，不做状态过滤：来源分析不关心状态）。
+        提单人组织（公司/部门）分布另见 get_creator_org_analysis。
         """
         if project_ids is not None and len(project_ids) == 0:
-            return {"by_type": [], "by_role": []}
+            return {"by_type": []}
 
-        # 1) 工单类型分布
         type_query = select(Task.task_type, func.count(Task.id)).group_by(Task.task_type)
         if project_ids is not None:
             type_query = type_query.where(Task.project_id.in_(project_ids))
         type_rows = (await db.execute(type_query)).all()
         by_type = [{"key": k.value, "count": c} for k, c in type_rows]
 
-        # 2) 提单人角色分布：一条 GROUP BY 取「提单人 → 其提单工单数」
+        return {"by_type": by_type}
+
+    @staticmethod
+    async def get_creator_org_analysis(
+        db: AsyncSession,
+        project_ids: Optional[List[str]] = None,
+        company_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """提单人组织分布 —— 按提单人公司/部门归组累加工单数量，供工单数据看板
+        「提单人公司/部门分布」卡片（饼图 + 公司下拉筛选）。
+
+        - 不传 company_id：dimension=company，按提单人所属公司（companies.name）分组；
+        - 传 company_id：dimension=department，仅统计该公司提单人的工单，
+          按其所属部门（departments.name）分组；
+        - 关联关系：companies.id ↔ departments.company_id，users 表以
+          company_id / department_id 挂接公司/部门（工单 created_by = users.id）；
+        - 提单人无公司/部门归入「未分配公司」/「未分配部门」，每个提单人的工单
+          只归入一个组织；只展示 Top N，其余并入「其他」。
+        companies 字段供公司下拉框选项（全部公司，按名称排序）。
+        """
+        # 公司下拉选项 + 公司名映射（一条轻量查询）
+        company_rows = (await db.execute(select(Company.id, Company.name).order_by(Company.name))).all()
+        companies = [{"id": cid, "name": name} for cid, name in company_rows]
+        company_names = {cid: name for cid, name in company_rows}
+        dimension = "department" if company_id else "company"
+
+        if project_ids is not None and len(project_ids) == 0:
+            return {"dimension": dimension, "companies": companies, "by_org": []}
+
+        # 1) 一条 GROUP BY 取「提单人 → 其提单工单数」
         creator_query = select(Task.created_by, func.count(Task.id)).group_by(Task.created_by)
         if project_ids is not None:
             creator_query = creator_query.where(Task.project_id.in_(project_ids))
         creator_rows = (await db.execute(creator_query)).all()
         tickets_by_creator = {uid: cnt for uid, cnt in creator_rows if uid}
-        creator_ids = list(tickets_by_creator)
 
-        role_map: Dict[str, List[str]] = {}
-        if creator_ids:
-            from app.models.identity import user_project_roles, Role
-            role_query = (
-                select(user_project_roles.c.user_id, Role.name)
-                .join(Role, Role.id == user_project_roles.c.role_id)
-                .where(
-                    user_project_roles.c.user_id.in_(creator_ids),
-                    Role.role_type == "system",
-                )
-            )
-            system_rows = (await db.execute(role_query)).all()
-            for uid, rname in system_rows:
-                role_map.setdefault(uid, []).append(rname)
+        # 2) 批量取提单人的公司/部门归属（一条 SQL，避免循环内逐行查库）
+        user_org: Dict[str, tuple] = {}
+        if tickets_by_creator:
+            org_rows = (await db.execute(
+                select(UserDB.id, UserDB.company_id, UserDB.department_id)
+                .where(UserDB.id.in_(list(tickets_by_creator)))
+            )).all()
+            user_org = {uid: (cid, did) for uid, cid, did in org_rows}
 
-            project_role_query = (
-                select(user_project_roles.c.user_id, Role.name)
-                .join(Role, Role.id == user_project_roles.c.role_id)
-                .where(
-                    user_project_roles.c.user_id.in_(creator_ids),
-                    Role.role_type == "project",
-                )
-            )
-            project_rows = (await db.execute(project_role_query)).all()
-            for uid, rname in project_rows:
-                role_map.setdefault(uid, []).append(rname)
+        # 3) 部门维度需 部门id → 名称 映射（只取该公司下的部门）
+        dept_names: Dict[str, str] = {}
+        if company_id:
+            dept_rows = (await db.execute(
+                select(Department.id, Department.name).where(Department.company_id == company_id)
+            )).all()
+            dept_names = {did: name for did, name in dept_rows}
 
-        role_counter: Counter = Counter()
+        org_counter: Counter = Counter()
         for uid, ticket_count in tickets_by_creator.items():
-            roles = role_map.get(uid, [])
-            if not roles:
-                role_counter["未分配角色"] += ticket_count
-                continue
-            # 主角色：system 优先，否则取第一个 project 角色
-            role_counter[roles[0]] += ticket_count
+            cid, did = user_org.get(uid, (None, None))
+            if company_id:
+                # 选择公司后仅统计该公司提单人的工单
+                if cid != company_id:
+                    continue
+                label = dept_names.get(did or "", "未分配部门")
+            else:
+                label = company_names.get(cid or "", "未分配公司")
+            org_counter[label] += ticket_count
 
         # 只展示 Top N，其余并入「其他」，避免饼图图例过长
-        top = role_counter.most_common(TaskDashboardService.ROLE_DISPLAY_LIMIT - 1)
-        rest_count = sum(role_counter.values()) - sum(c for _, c in top)
-        by_role = [{"label": name, "count": c} for name, c in top]
+        top = org_counter.most_common(TaskDashboardService.ORG_DISPLAY_LIMIT - 1)
+        rest_count = sum(org_counter.values()) - sum(c for _, c in top)
+        by_org = [{"label": name, "count": c} for name, c in top]
         if rest_count > 0:
-            by_role.append({"label": "其他", "count": rest_count})
+            by_org.append({"label": "其他", "count": rest_count})
 
-        return {"by_type": by_type, "by_role": by_role}
+        return {"dimension": dimension, "companies": companies, "by_org": by_org}
 
     # 接单人响应时间分桶（秒）：≤15分钟 / ≤1小时 / ≤4小时 / 其他（>4小时）
     RESPONSE_BUCKETS = {

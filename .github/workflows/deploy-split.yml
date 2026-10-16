@@ -563,6 +563,60 @@ jobs:
           cp -r _artifacts/deploy "$dest/deploy"
           echo "已缓存部署脚本：$dest/deploy"
 
+      # 发版前 DB 快照：prod 已开 sync，部署可能改库结构；而每日快照固定在 02:30，
+      # 手动发版随时可能发生 —— 在「任何结构变更之前」补一份新鲜全量备份，让
+      # 「回滚代码」与「回滚数据」都有一份 ≤几分钟 的最新还原点。
+      # 仅对 prod 执行（脚本备的是 helpdesk_724）；test 库可随时重建，不做。
+      # 失败绝不阻断部署：脚本内部失败会自己发企微告警，这里只打 ::warning:: 并写进
+      # 摘要的「发版前 DB 备份」行；成功时不需要任何人关注。
+      - name: Pre-deploy DB backup (prod)
+        if: ${{ needs.plan.outputs.environment == 'prod' }}
+        env:
+          DB_BACKUP_SCRIPT: ${{ vars.DEPLOY_DB_BACKUP_SCRIPT || '/home/usp-a/bin/backup_mysql.sh' }}
+        run: |
+          set -uo pipefail
+          echo "DEPLOY_DB_BACKUP=（未执行）" >> "$GITHUB_ENV"
+          if [ ! -x "$DB_BACKUP_SCRIPT" ]; then
+            echo "::warning::DB 备份脚本不存在或不可执行：$DB_BACKUP_SCRIPT，已跳过发版前备份"
+            echo "DEPLOY_DB_BACKUP=脚本缺失（已跳过）" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # 库名/目录读脚本自身的定义，避免两处硬编码日后漂移；识别不了就跳过而不是猜
+          dest=$(sed -n 's/^DEST="\([^"]*\)".*/\1/p' "$DB_BACKUP_SCRIPT" | head -1)
+          db=$(sed -n 's/^DB="\([^"]*\)".*/\1/p' "$DB_BACKUP_SCRIPT" | head -1)
+          if [ -z "$dest" ] || [ -z "$db" ]; then
+            echo "::warning::无法从 $DB_BACKUP_SCRIPT 解析 DEST/DB（脚本格式变了？），已跳过发版前备份"
+            echo "DEPLOY_DB_BACKUP=脚本格式不识别（已跳过）" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # 用「日志新增行」判定本次产出：比 mtime/文件名排序更精确，且天然区分
+          # 成功与 ABORT/FAIL（脚本三种结局都各写一行日志）。
+          log="$dest/backup.log"
+          before=0
+          if [ -f "$log" ]; then before=$(wc -l < "$log"); fi
+          echo "开始发版前 DB 备份：库=$db 脚本=$DB_BACKUP_SCRIPT"
+          rc=0
+          "$DB_BACKUP_SCRIPT" || rc=$?
+          new_lines=$(tail -n +"$((before + 1))" "$log" 2>/dev/null || true)
+          printf '%s\n' "$new_lines"
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::发版前 DB 备份失败（rc=$rc；脚本已自行发企微告警），继续部署"
+            echo "DEPLOY_DB_BACKUP=**失败（rc=$rc，日志：$log）**" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          snap=$(printf '%s\n' "$new_lines" | sed -n 's/.*\] OK \([^ ]*\.sql\.gz\) .*/\1/p' | tail -1)
+          if [ -z "$snap" ]; then
+            snap=$(ls -1t "$dest/$db-"*.sql.gz 2>/dev/null | head -1 | xargs -r basename)
+          fi
+          if [ -n "$snap" ]; then
+            size=$(du -h "$dest/$snap" 2>/dev/null | cut -f1)
+            echo "发版前 DB 备份完成：$snap（${size:-未知}）"
+            echo "DEPLOY_DB_BACKUP=\`$snap\`（${size:-未知}）" >> "$GITHUB_ENV"
+          else
+            echo "::warning::备份脚本退出码 0 但未识别出新快照文件名，请查看 $log"
+            echo "DEPLOY_DB_BACKUP=已成功（文件名未识别）" >> "$GITHUB_ENV"
+          fi
+
       - name: Apply deployment
         env:
           ENV_NAME: ${{ needs.plan.outputs.environment }}
@@ -656,6 +710,7 @@ jobs:
             echo "| 测试门禁 | $gate_label |"
             echo "| 数据库结构 | $schema_info |"
             echo "| 部署前备份 | \`$backup_id\` |"
+            echo "| 发版前 DB 备份 | ${DEPLOY_DB_BACKUP:-（未执行，仅 prod 执行）} |"
             echo "| 自动回滚 | $rollback_label |"
             echo ""
             echo "需要回滚时：Actions → Deploy (split build/deploy) → action=rollback"

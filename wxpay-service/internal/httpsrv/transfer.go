@@ -144,6 +144,8 @@ func writeTransferError(w http.ResponseWriter, err error) {
 			"code", apiErr.Code,
 			"message", apiErr.Message,
 			"request_id", apiErr.RequestID,
+			"method", apiErr.Method,
+			"path", apiErr.Path,
 		)
 		writeJSON(w, status, apiErr.Code, apiErr.Message, map[string]interface{}{
 			"request_id":   apiErr.RequestID,

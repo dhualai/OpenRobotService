@@ -4,6 +4,7 @@ import { Navbar, Loading } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
 import UserAvatarMenu from './UserAvatarMenu';
 import { useAuthStore, PERMISSION_RESOURCE_READ } from '@/stores/auth';
+import { PERM_ANNOUNCEMENT } from '@/api/announcement';
 
 interface AdminLayoutProps {
   children?: ReactNode;
@@ -51,6 +52,8 @@ const adminMenuItems: MenuItem[] = [
 
   // === 系统日志 ===
   { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
+  // 公告管理：活动中心（首页公告条 + 精品工单榜）数据源，需公告管理权限
+  { path: '/admin/announcements', label: '公告管理', emoji: '📣', permission: PERM_ANNOUNCEMENT },
   { path: '/admin/dispatch-dev', label: '开发者模式', emoji: '🧪' },
 ];
 

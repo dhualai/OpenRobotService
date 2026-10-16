@@ -29,6 +29,18 @@ def _ensure_repo_on_path() -> None:
         sys.path.insert(0, root)
 
 
+def archive_reviewer_ids() -> set[str]:
+    _ensure_repo_on_path()
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.archive_review.store import effective_archive_reviewers
+
+        domains = effective_archive_reviewers().get("domains", {})
+        return {str(identity) for identities in domains.values() for identity in identities}
+    except Exception:
+        logger.exception("读取指定审核人名单失败")
+        return set()
+
+
 def _import_assigner():
     global _ASSIGNER_CACHE
     if _ASSIGNER_CACHE is not None:
