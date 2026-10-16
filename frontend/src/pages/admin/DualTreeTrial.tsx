@@ -8,13 +8,35 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { getProfileOptions } from '@/api/profile';
 import type { ProfileFieldOptions } from '@/api/profile';
-import { DISPATCH_SKILL_SEEDS, INTERFACE_DETAIL_NAMES, applyLeafSpecialists, dropInterfaceDetails, dropRolledSpecialists, ensureSkillSeeds, skillForFunction } from './dualTreeDispatchSkills';
+import { DISPATCH_OBSOLETE_SHELL_NAMES, DISPATCH_SKILL_SEEDS, INTERFACE_DETAIL_NAMES, applyLeafSpecialists, dropInterfaceDetails, dropRolledSpecialists, ensureSkillSeeds, skillForFunction } from './dualTreeDispatchSkills';
 import type { LeafOwner } from './dualTreeDispatchSkills';
 import { DOMAIN_OBSOLETE_SKILL_NAMES, DOMAIN_SKILL_SEED_MAP } from './dualTreeDomainSkills';
+import { applyOrgSeed, needsOrgSeed } from './dualTreeOrgSeed';
+import {
+  buildSnapshot,
+  parseSnapshot,
+  snapshotBrief,
+  snapshotFileName,
+} from './dualTreeTrialSnapshot';
+import type { TrialSnapshot } from './dualTreeTrialSnapshot';
 
-// 固定用 v2：升 key 会读不到本机已有组织树/挂人。误升过的 v3 只作候选回读。
+// 固定用 v2：升 key 会读不到本机已有组织树/挂人。旧 key 只作候选合并回读。
 const STORAGE_KEY = 'dual-tree-trial-v2';
-const STORAGE_CANDIDATES = ['dual-tree-trial-v2', 'dual-tree-trial-v3'] as const;
+const STORAGE_CANDIDATES = [
+  'dual-tree-trial-v2',
+  'dual-tree-trial-v3',
+  'dual-tree-trial-v1',
+  'dual-tree-trial',
+] as const;
+
+/** 历史域名 → 现行域名：组织树/挂人跟旧域名走时，并回现行域 */
+const DOMAIN_ALIASES: Record<string, string> = {
+  车端硬件: '车体硬件',
+};
+
+// 本机快照：另存一份到仓库 .local/责任双树/（已 gitignore），localStorage 丢了还能捞回来
+const SNAPSHOT_API = '/dual-tree-trial/snapshot';
+const SNAPSHOT_DEBOUNCE_MS = 2000;
 
 type NodeKind = 'domain' | 'org' | 'skill';
 type OrgKind = 'company' | 'department';
@@ -71,25 +93,134 @@ function parseSaved(raw: string | null): Saved | null {
   }
 }
 
+/** 后台接口外层是 {code, message, data}，取里面那层 */
+function unwrap<T>(raw: unknown): T {
+  if (raw && typeof raw === 'object' && 'data' in raw) {
+    return (raw as { data: T }).data;
+  }
+  return raw as T;
+}
+
+interface SnapshotInfo {
+  exists: boolean;
+  path: string;
+  saved_at: string | null;
+  nodes: number;
+  mounts: number;
+  snapshot?: unknown;
+}
+
+/** 页面上只显示仓库内的相对路径，绝对路径太长 */
+function shortSnapshotPath(path: string): string {
+  const idx = path.search(/[\\/]\.local[\\/]/);
+  return idx >= 0 ? path.slice(idx + 1).replace(/\\/g, '/') : path;
+}
+
 /** 优先用带组织节点/挂人的那份，避免升 key 后空种子盖掉旧数据 */
 function savedRichness(saved: Saved): number {
   const orgs = saved.nodes.filter((n) => n.kind === 'org').length;
   return orgs * 1000 + saved.mounts.length + saved.nodes.length;
 }
 
-function loadSaved(): Saved | null {
-  let best: Saved | null = null;
-  let bestScore = -1;
+/** 把各候选里的组织树并进来：同域名下缺的 org 从其它副本补回，避免某一版技能种子盖掉组织 */
+function mergeOrgTrees(base: Saved, extra: Saved): Saved {
+  const nodes = base.nodes.map((n) => ({ ...n }));
+  const mounts = [...base.mounts];
+  const domainIdByName = new Map(
+    nodes.filter((n) => n.kind === 'domain').map((n) => [n.name, n.id]),
+  );
+
+  const remap = new Map<string, string>();
+  extra.nodes.forEach((n) => {
+    if (n.kind !== 'domain') return;
+    const canonical = DOMAIN_ALIASES[n.name] || n.name;
+    const targetId = domainIdByName.get(canonical);
+    if (targetId) remap.set(n.id, targetId);
+  });
+
+  const existingOrgKey = new Set(
+    nodes
+      .filter((n) => n.kind === 'org')
+      .map((n) => `${n.parentId}::${n.orgKind || ''}::${n.name}`),
+  );
+
+  const addOrgDeep = (extraParentId: string, newParentId: string) => {
+    extra.nodes
+      .filter((n) => n.kind === 'org' && n.parentId === extraParentId)
+      .forEach((org) => {
+        const key = `${newParentId}::${org.orgKind || ''}::${org.name}`;
+        let id = org.id;
+        if (existingOrgKey.has(key)) {
+          const hit = nodes.find(
+            (n) => n.kind === 'org' && n.parentId === newParentId && n.name === org.name && (n.orgKind || '') === (org.orgKind || ''),
+          );
+          if (hit) {
+            remap.set(org.id, hit.id);
+            id = hit.id;
+          }
+        } else {
+          if (nodes.some((n) => n.id === org.id)) {
+            id = uid('org');
+          }
+          nodes.push({
+            ...org,
+            id,
+            parentId: newParentId,
+          });
+          existingOrgKey.add(key);
+          remap.set(org.id, id);
+        }
+        addOrgDeep(org.id, id);
+      });
+  };
+
+  extra.nodes.forEach((n) => {
+    if (n.kind !== 'domain') return;
+    const canonical = DOMAIN_ALIASES[n.name] || n.name;
+    const targetId = domainIdByName.get(canonical);
+    if (!targetId) return;
+    addOrgDeep(n.id, targetId);
+  });
+
+  // 补挂人：nodeId 经 remap 后并入
+  extra.mounts.forEach((m) => {
+    const nodeId = remap.get(m.nodeId) || m.nodeId;
+    if (!nodes.some((n) => n.id === nodeId)) return;
+    if (mounts.some((x) => x.nodeId === nodeId && x.userId === m.userId && x.role === m.role)) return;
+    mounts.push({ ...m, nodeId });
+  });
+
+  // 丢掉已并入的别名空域（无子组织且无其它子节点时）
+  const dropAlias = new Set(
+    nodes
+      .filter((n) => n.kind === 'domain' && DOMAIN_ALIASES[n.name])
+      .filter((n) => !nodes.some((c) => c.parentId === n.id))
+      .map((n) => n.id),
+  );
+  return {
+    nodes: nodes.filter((n) => !dropAlias.has(n.id)),
+    mounts: mounts.filter((m) => !dropAlias.has(m.nodeId)),
+  };
+}
+
+function loadSaved(extraCopies: Saved[] = []): Saved | null {
+  const copies: Saved[] = [...extraCopies];
   for (const key of STORAGE_CANDIDATES) {
     const data = parseSaved(localStorage.getItem(key));
-    if (!data) continue;
-    const score = savedRichness(data);
-    if (score > bestScore) {
-      best = data;
-      bestScore = score;
-    }
+    if (data) copies.push(data);
   }
-  return best;
+  if (copies.length === 0) return null;
+  copies.sort((a, b) => savedRichness(b) - savedRichness(a));
+  let merged = {
+    nodes: copies[0].nodes.map((n) => ({ ...n })),
+    mounts: [...copies[0].mounts],
+  };
+  for (let i = 1; i < copies.length; i += 1) {
+    merged = mergeOrgTrees(merged, copies[i]);
+  }
+  // 同副本内：别名域组织并到现行域名
+  merged = mergeOrgTrees(merged, merged);
+  return merged;
 }
 
 const STARTER_DOMAINS: { name: string; description: string }[] = [
@@ -139,6 +270,7 @@ function withStarterDomains(saved: Saved | null): Saved {
     DISPATCH_SKILL_SEEDS,
     makeSkill,
   );
+  seeded = dropInterfaceDetails(seeded, '调度系统', DISPATCH_OBSOLETE_SHELL_NAMES);
   Object.entries(DOMAIN_SKILL_SEED_MAP).forEach(([domainName, seeds]) => {
     seeded = ensureSkillSeeds(seeded, domainName, seeds, makeSkill);
     const obsolete = DOMAIN_OBSOLETE_SKILL_NAMES[domainName];
@@ -146,7 +278,27 @@ function withStarterDomains(saved: Saved | null): Saved {
   });
   seeded = dropInterfaceDetails(seeded, '调度系统', INTERFACE_DETAIL_NAMES);
   const alive = new Set(seeded.map((node) => node.id));
-  return { nodes: seeded, mounts: mounts.filter((mount) => alive.has(mount.nodeId)) };
+  let keptMounts = mounts.filter((mount) => alive.has(mount.nodeId));
+  // 本机那份组织树没了（清缓存 / 换浏览器 / 被别的 key 盖掉）时，用内置种子兜底
+  if (needsOrgSeed(seeded)) {
+    const applied = applyOrgSeed(
+      seeded,
+      keptMounts,
+      (parentId, name, orgKind) => ({
+        id: uid('org'),
+        parentId,
+        kind: 'org' as const,
+        orgKind,
+        name,
+        description: '',
+        vehicleModels: '',
+      }),
+      (nodeId, userId, role) => ({ nodeId, userId, role }),
+    );
+    seeded = applied.nodes;
+    keptMounts = applied.mounts;
+  }
+  return { nodes: seeded, mounts: keptMounts };
 }
 
 function companiesFromPeople(domainId: string, people: Person[], existing: TrialNode[]): TrialNode[] {
@@ -206,12 +358,13 @@ function NodeFacts({
   mounts: Mount[];
   personName: (id: string) => string;
 }) {
-  const heads = nodePeople(mounts, node.id, node.kind === 'skill' ? 'leader' : 'owner', personName);
+  const heads = nodePeople(mounts, node.id, 'owner', personName);
+  const leaders = node.kind === 'skill' ? nodePeople(mounts, node.id, 'leader', personName) : [];
   const body = nodePeople(mounts, node.id, node.kind === 'skill' ? 'specialist' : 'member', personName);
   const duty = node.description.trim();
   const vehicles = node.vehicleModels.trim();
   const rich = node.kind !== 'domain';
-  if (!rich && !duty && heads.length === 0) return null;
+  if (!rich && !duty && heads.length === 0 && leaders.length === 0) return null;
   const bodyLabel = node.kind === 'skill' ? '专人' : '成员';
   return (
     <div className="dt-facts">
@@ -232,6 +385,14 @@ function NodeFacts({
           <span className="dt-fact-k">负责人</span>
           {heads.length > 0
             ? <span className="dt-people">{heads.map((p) => <span key={p.id} className="dt-person dt-person--head">{p.name}</span>)}</span>
+            : <span className="dt-fact-miss">未指定</span>}
+        </div>
+      )}
+      {node.kind === 'skill' && (rich || leaders.length > 0) && (
+        <div className="dt-fact">
+          <span className="dt-fact-k">领导</span>
+          {leaders.length > 0
+            ? <span className="dt-people">{leaders.map((p) => <span key={p.id} className="dt-person dt-person--head">{p.name}</span>)}</span>
             : <span className="dt-fact-miss">未指定</span>}
         </div>
       )}
@@ -271,7 +432,11 @@ export default function DualTreeTrial() {
   const [keyword, setKeyword] = useState('');
   const [pickRole, setPickRole] = useState<MountRole>('member');
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [snapInfo, setSnapInfo] = useState<SnapshotInfo | null>(null);
+  const [snapBusy, setSnapBusy] = useState(false);
+  const [snapError, setSnapError] = useState('');
   const dragOrgRef = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -299,7 +464,19 @@ export default function DualTreeTrial() {
       } catch {
         if (!cancelled) Toast({ message: '公司部门名单没有加载到，仍可手写名称', theme: 'warning' });
       }
-      const data = withStarterDomains(loadSaved());
+      let savedFromServer: Saved | null = null;
+      try {
+        const info = unwrap<SnapshotInfo>(await request(SNAPSHOT_API, { skipCache: true }));
+        if (info?.exists) {
+          setSnapInfo(info);
+          const parsed = parseSnapshot<TrialNode, Mount>(info.snapshot);
+          if (parsed) savedFromServer = { nodes: parsed.nodes, mounts: parsed.mounts };
+        }
+      } catch {
+        // 拿不到本机快照不影响用浏览器里的树
+      }
+      if (cancelled) return;
+      const data = withStarterDomains(loadSaved(savedFromServer ? [savedFromServer] : []));
       let owners: LeafOwner[] = [];
       try {
         const tree = await request<Record<string, { interfaces?: { functions?: { name?: string; engineers?: string[] }[] }[] }>>('/module-tree/');
@@ -340,6 +517,28 @@ export default function DualTreeTrial() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ nodes, mounts }));
   }, [nodes, mounts, loading]);
 
+  const pushSnapshot = useCallback(async (nextNodes: TrialNode[], nextMounts: Mount[]) => {
+    try {
+      const info = unwrap<SnapshotInfo>(await request(SNAPSHOT_API, {
+        method: 'PUT',
+        body: JSON.stringify({ snapshot: buildSnapshot(nextNodes, nextMounts) }),
+      }));
+      if (info) setSnapInfo(info);
+      setSnapError('');
+    } catch {
+      setSnapError('本机快照没写进去，可以点「导出 JSON」自己留一份');
+    }
+  }, [request]);
+
+  // 改动停手两秒后写一份服务端快照（首屏这轮写的是「本地 + 快照」合并后的完整树，不会盖掉旧数据）
+  useEffect(() => {
+    if (loading) return;
+    const timer = setTimeout(() => {
+      void pushSnapshot(nodes, mounts);
+    }, SNAPSHOT_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [nodes, mounts, loading, pushSnapshot]);
+
   const selected = nodes.find((n) => n.id === selectedId) || null;
   const personById = useMemo(() => {
     const map = new Map<string, Person>();
@@ -356,6 +555,62 @@ export default function DualTreeTrial() {
       cur = nodes.find((n) => n.id === cur?.parentId);
     }
     return nodeId;
+  };
+
+  const applySaved = (saved: Saved) => {
+    const next = withStarterDomains(saved);
+    setNodes(next.nodes);
+    setMounts(next.mounts);
+    setSelectedId((prev) => (
+      next.nodes.some((n) => n.id === prev)
+        ? prev
+        : (next.nodes.find((n) => n.kind === 'domain')?.id || next.nodes[0]?.id || '')
+    ));
+    setExpanded(firstLevelOpen(next.nodes));
+  };
+
+  /** 导出成 JSON 文件：与 .local 快照同一份格式，可以互相顶替 */
+  const exportSnapshot = () => {
+    const snap = buildSnapshot(nodes, mounts);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = snapshotFileName(snap.saved_at);
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importSnapshot = async (file: File) => {
+    let parsed: TrialSnapshot<TrialNode, Mount> | null = null;
+    try {
+      parsed = parseSnapshot<TrialNode, Mount>(await file.text());
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) {
+      Toast({ message: '这个文件不是双树试做导出的 JSON，现有树没有动', theme: 'warning' });
+      return;
+    }
+    applySaved({ nodes: parsed.nodes, mounts: parsed.mounts });
+    Toast({ message: `已导入 ${snapshotBrief(parsed)}`, theme: 'success' });
+  };
+
+  const restoreFromServer = async () => {
+    setSnapBusy(true);
+    try {
+      const info = unwrap<SnapshotInfo>(await request(SNAPSHOT_API, { skipCache: true }));
+      const parsed = info?.exists ? parseSnapshot<TrialNode, Mount>(info.snapshot) : null;
+      if (!parsed) {
+        Toast({ message: '服务端还没有本机快照', theme: 'warning' });
+        return;
+      }
+      applySaved({ nodes: parsed.nodes, mounts: parsed.mounts });
+      Toast({ message: `已从本机快照恢复 ${snapshotBrief(parsed)}`, theme: 'success' });
+    } catch {
+      Toast({ message: '读本机快照失败，浏览器里的树没有动', theme: 'warning' });
+    } finally {
+      setSnapBusy(false);
+    }
   };
 
   const updateNode = (id: string, patch: Partial<TrialNode>) => {
@@ -464,7 +719,8 @@ export default function DualTreeTrial() {
   };
 
   const nodeMounts = selected ? mounts.filter((m) => m.nodeId === selected.id) : [];
-  const headRole: MountRole = selected?.kind === 'skill' ? 'leader' : 'owner';
+  // 组织/技能平台挂负责人(owner)；统筹可另挂领导(leader)；叶挂专人。
+  const headRole: MountRole = 'owner';
   const headMounts = nodeMounts.filter((m) => m.role === headRole);
   const otherMounts = nodeMounts.filter((m) => m.role !== headRole);
 
@@ -689,7 +945,7 @@ export default function DualTreeTrial() {
   if (loading) return <Loading text="加载双树试做..." />;
 
   const orgRoles: MountRole[] = ['member', 'owner'];
-  const skillRoles: MountRole[] = ['specialist', 'leader'];
+  const skillRoles: MountRole[] = ['specialist', 'owner', 'leader'];
   const roleChoices = selected?.kind === 'org' ? orgRoles : skillRoles;
 
   return (
@@ -701,7 +957,7 @@ export default function DualTreeTrial() {
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600 }}>双树试做</div>
           <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>
-            每个问题领域分成组织树和技能树。组织左侧的手柄可以拖去改上下级。只保存在这台浏览器，不改现网责任模块。
+            每个问题领域分成组织树和技能树。组织左侧的手柄可以拖去改上下级。浏览器里一份、仓库 .local 里再存一份，不改现网责任模块。
           </div>
         </div>
       </div>
@@ -864,6 +1120,34 @@ export default function DualTreeTrial() {
             把系统公司部门填进组织树
           </button>
         )}
+        <button type="button" className="mac-btn mac-btn--outline" onClick={exportSnapshot}>
+          导出 JSON
+        </button>
+        <button type="button" className="mac-btn mac-btn--outline" onClick={() => fileInputRef.current?.click()}>
+          导入 JSON
+        </button>
+        {snapInfo?.saved_at && (
+          <button type="button" className="mac-btn mac-btn--outline" disabled={snapBusy} onClick={() => void restoreFromServer()}>
+            从本机快照恢复
+          </button>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json,.json"
+          style={{ display: 'none' }}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (file) void importSnapshot(file);
+          }}
+        />
+      </div>
+      <div style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
+        {snapInfo?.saved_at
+          ? `本机快照 ${snapInfo.saved_at}（${snapInfo.nodes} 节点 / ${snapInfo.mounts} 挂人）：${shortSnapshotPath(snapInfo.path)}`
+          : '改动停手后会另存一份本机快照到仓库 .local/责任双树/，也可以随时「导出 JSON」自己留档。'}
+        {snapError ? ` ｜ ${snapError}` : ''}
       </div>
 
       <div className="dt-split">

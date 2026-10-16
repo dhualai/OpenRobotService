@@ -19,6 +19,7 @@ from app.modules.admin.api.dar_report import dar_report_router
 from app.modules.admin.api.module_tree import router as module_tree_router
 from app.modules.admin.api.module_tree_ws import router as module_tree_ws_router
 from app.modules.admin.api.dispatch_dev import router as dispatch_dev_router
+from app.modules.admin.api.dual_tree_trial import router as dual_tree_trial_router
 from app.modules.admin.api.ui_atlas import router as ui_atlas_router
 from app.modules.admin.api.usp_envs import admin_router as usp_envs_admin_router
 from app.modules.admin.api.info_nodes import info_node_router
@@ -46,6 +47,7 @@ admin_router.include_router(dar_report_router)
 admin_router.include_router(module_tree_router)
 admin_router.include_router(module_tree_ws_router)
 admin_router.include_router(dispatch_dev_router)
+admin_router.include_router(dual_tree_trial_router)
 admin_router.include_router(ui_atlas_router)
 admin_router.include_router(usp_envs_admin_router)
 admin_router.include_router(info_node_router)
