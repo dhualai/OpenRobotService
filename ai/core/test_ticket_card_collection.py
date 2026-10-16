@@ -61,6 +61,44 @@ async def test_override_collection_is_ensured_before_write(monkeypatch):
     assert upsert.await_args.kwargs["collection_name"] == "test_ticket_resolutions"
 
 
+async def test_ensure_override_branch_initializes_clients_first(monkeypatch):
+    """ensure 的 override 分支必须先把 client 建出来。
+
+    新构造的 service 上 `self._qdrant` 是 None，旧代码在 `_ensure_clients()` 之前
+    就取它 → AttributeError 被 except 吞掉、返回 ""，于是集合永远建不出来
+    （test 环境 `test_ticket_resolutions` 从未创建的真因）。
+    """
+    monkeypatch.setattr(retrieval_mod, "_ticket_card_collection",
+                        lambda: "test_ticket_resolutions")
+    svc = RetrievalService()
+    created: dict = {}
+
+    class _Client:
+        async def collection_exists(self, name):
+            return False
+
+        async def create_collection(self, **kwargs):
+            created.update(kwargs)
+
+    async def _to_thread(fn, *args, **kwargs):
+        return await fn(*args, **kwargs)
+
+    async def _ensure_clients():          # 复刻真实职责：把客户端建出来
+        svc._qdrant = SimpleNamespace(
+            _ensure_client=AsyncMock(return_value=_Client()),
+            _to_thread=_to_thread,
+        )
+        svc._embed_client = SimpleNamespace(
+            get_dimension=AsyncMock(return_value=1024))
+
+    svc._ensure_clients = _ensure_clients
+
+    assert await svc.ensure_task_resolutions_collection() == "test_ticket_resolutions"
+    assert created["collection_name"] == "test_ticket_resolutions"
+    assert set(created["vectors_config"]) == {"dense"}      # 与主入库链路同 schema
+    assert set(created["sparse_vectors_config"]) == {"sparse"}
+
+
 async def test_company_pointer_path_does_not_touch_collections(monkeypatch):
     """生产无 override：已有 company 指针就直接写，不触发建集合（保持原行为）。"""
     monkeypatch.setattr(retrieval_mod, "_ticket_card_collection", lambda: "")
