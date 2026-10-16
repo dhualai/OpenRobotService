@@ -452,6 +452,9 @@ async def process_ticket(row: dict, retriever, dry_run: bool = False,
 # 已归档、报告审核通过、且尚未按归档报告入库的单；取该单最高版本的 approved 报告。
 # 标记用独立的 archive_sink_status 而非 solution_indexed：归档单通常早在 closed
 # 阶段就被标过 solution_indexed，共用同一标记会让它永远进不了这条队列。
+# 兼容旧标记：archive_flow 早期版本（2026-10-14 那版）处理过的单打的是
+# archive_knowledge_indexed，语义同样是「已按归档报告入库」，一起排除，
+# 免得收口后把它们再跑一遍（已有卡的单那是白跑一趟提炼）。
 _ARCHIVED_CANDIDATES_SQL = (
     "SELECT t.id, t.title, t.description, t.assigned_to, t.metadata_info, "
     "       t.project_name, t.task_type, "
@@ -464,6 +467,7 @@ _ARCHIVED_CANDIDATES_SQL = (
     "                  WHERE r2.task_id = t.id AND r2.submit_status = 'approved') "
     "WHERE t.status = 'archived' "
     "  AND JSON_EXTRACT(t.metadata_info, '$.archive_sink_status') IS NULL "
+    "  AND JSON_EXTRACT(t.metadata_info, '$.archive_knowledge_indexed') IS NOT TRUE "
     "ORDER BY t.updated_at DESC "
     "LIMIT :lim OFFSET :off"
 )

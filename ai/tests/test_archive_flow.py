@@ -193,57 +193,75 @@ async def test_spawn_is_idempotent(monkeypatch):
 # ---------------- 入库：approved 报告 → 卡 → 打标 ----------------
 
 @pytest.mark.asyncio
-async def test_ingest_worker_uses_archive_content_and_marks(patch_db, monkeypatch):
-    """入库以 approved 报告全文为知识源（archive_content 覆盖），成功后打归档标记。"""
-    rows = [{"task_id": 7, "content": "# 归档报告全文", "version": 1, "title": "T",
-             "description": "D", "assigned_to": "", "metadata_info": {},
+async def test_ingest_worker_drives_archive_sink(patch_db, monkeypatch):
+    """入库只留一条驱动：队列与处理都走 solution_sink（2026-10-16 收口）。
+
+    此前这里自己拼 SQL、调 process_ticket(archive_content=…)、再补写
+    archive_knowledge_indexed，而 knowledge_worker 里还有一套归档分支，
+    两套并行（他重建向量、我们只 patch payload）。收口后：
+    load_archived_candidates + process_archived_ticket，worker 自己不碰 DB。
+    """
+    rows = [{"id": 7, "report_content": "# 归档报告全文", "report_version": 1,
+             "title": "T", "description": "D", "metadata_info": {},
              "project_name": "P", "task_type": "problem"}]
-    patch_db["db"] = FakeDB(select_rows=rows, update_rowcount=1)
     seen = {}
 
-    async def fake_process(row, retriever, dry_run=False, archive_content=None):
-        seen["archive_content"] = archive_content
+    def fake_load(limit):
+        seen["limit"] = limit
+        return rows
+
+    async def fake_process(row, retriever, dry_run=False):
         seen["row"] = row
         return "indexed"
 
-    monkeypatch.setattr(solution_sink, "process_ticket", fake_process)
+    async def no_process_ticket(*args, **kwargs):
+        raise AssertionError("收口后不应再走 process_ticket")
+
+    async def fake_retriever():
+        return object()
+
+    monkeypatch.setattr(solution_sink, "load_archived_candidates", fake_load)
+    monkeypatch.setattr(solution_sink, "process_archived_ticket", fake_process)
+    monkeypatch.setattr(solution_sink, "process_ticket", no_process_ticket)
+    monkeypatch.setattr("ai.core.get_retrieval_service", fake_retriever)
     stop = asyncio.Event()
-
-    class R:
-        async def get_retrieval_service(self=None):
-            return object()
-
-    monkeypatch.setattr("ai.core.get_retrieval_service",
-                        async_stub(object()))
     worker = asyncio.create_task(archive_flow.run_archive_ingest_worker(stop))
-    # 轮询一轮后停
     await asyncio.sleep(0.2)
     stop.set()
     await asyncio.wait_for(worker, timeout=5)
-    assert seen.get("archive_content") == "# 归档报告全文"
+
+    assert seen["row"] == rows[0]       # 行原样交给 process_archived_ticket
+    assert seen["limit"] == 10          # 批量大小沿用原来的 10
     upd = [s for s, _ in patch_db["db"].executed if "archive_knowledge_indexed" in s]
-    assert upd  # 归档标记已写
+    assert not upd                      # 打标在 process_archived_ticket 里，worker 不再自己写
 
 
 @pytest.mark.asyncio
-async def test_ingest_worker_failed_no_mark(patch_db, monkeypatch):
-    """入库失败（qdrant 异常等）不打标，下轮重试。"""
-    rows = [{"task_id": 7, "content": "x", "version": 1, "title": "T",
-             "description": "", "assigned_to": "", "metadata_info": {},
-             "project_name": "", "task_type": ""}]
-    patch_db["db"] = FakeDB(select_rows=rows)
+async def test_ingest_worker_failure_keeps_going_without_marking(patch_db, monkeypatch):
+    """入库失败（qdrant 异常等）不打标、不打挂 worker，下轮重试。"""
+    calls = []
 
-    async def fake_process(row, retriever, dry_run=False, archive_content=None):
+    async def fake_process(row, retriever, dry_run=False):
+        calls.append(row["id"])
         raise RuntimeError("qdrant down")
-    monkeypatch.setattr(solution_sink, "process_ticket", fake_process)
-    monkeypatch.setattr("ai.core.get_retrieval_service", async_stub(object()))
+
+    async def fake_retriever():
+        return object()
+
+    monkeypatch.setattr(solution_sink, "load_archived_candidates",
+                        lambda limit: [{"id": 7, "report_content": "x", "report_version": 1}])
+    monkeypatch.setattr(solution_sink, "process_archived_ticket", fake_process)
+    monkeypatch.setattr("ai.core.get_retrieval_service", fake_retriever)
     stop = asyncio.Event()
     worker = asyncio.create_task(archive_flow.run_archive_ingest_worker(stop))
     await asyncio.sleep(0.2)
     stop.set()
     await asyncio.wait_for(worker, timeout=5)
-    upd = [s for s, _ in patch_db["db"].executed if "UPDATE tasks" in s and "archive_knowledge_indexed" in s]
-    assert not upd  # 未打标
+
+    assert calls                          # 被调用过，异常没把 worker 打挂
+    upd = [s for s, _ in patch_db["db"].executed
+           if "UPDATE tasks" in s and "archive_knowledge_indexed" in s]
+    assert not upd                        # 未打标
 
 
 # ---------------- process_ticket：archive_content 覆盖 ----------------
