@@ -1526,8 +1526,12 @@ class RetrievalService:
         from ai.config import get_active_collection_for
         import uuid
 
-        col = _ticket_card_collection() or get_active_collection_for("company")
-        if not col:
+        # override（TICKET_CARD_COLLECTION）只是「该用哪个集合」的声明，Qdrant 里未必
+        # 有——测试隔离集合正是等这里第一次写卡才建出来的。所以 override 非空也必须走
+        # ensure（其 override 分支：存在即返回，不存在则以正确 schema 创建）。
+        override = _ticket_card_collection()
+        col = override or get_active_collection_for("company")
+        if not col or override:
             col = await self.ensure_task_resolutions_collection()
         if not col:
             return False
