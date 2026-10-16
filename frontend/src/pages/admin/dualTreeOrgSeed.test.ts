@@ -4,6 +4,7 @@ import {
   applyOrgSeed,
   needsOrgSeed,
   type OrgSeedKind,
+  type OrgSeedNodeDraft,
   type OrgSeedNodeLike,
   type OrgSeedRole,
 } from './dualTreeOrgSeed';
@@ -11,6 +12,8 @@ import {
 interface N extends OrgSeedNodeLike {
   kind: string;
   orgKind?: OrgSeedKind;
+  vehicleModels?: string;
+  description?: string;
 }
 
 interface M {
@@ -20,9 +23,17 @@ interface M {
 }
 
 let seq = 0;
-const makeNode = (parentId: string, name: string, orgKind?: OrgSeedKind): N => {
+const makeNode = (draft: OrgSeedNodeDraft): N => {
   seq += 1;
-  return { id: `org_${seq}`, parentId, kind: 'org', name, orgKind };
+  return {
+    id: `org_${seq}`,
+    parentId: draft.parentId,
+    kind: 'org',
+    name: draft.name,
+    orgKind: draft.orgKind,
+    vehicleModels: draft.vehicleModels,
+    description: draft.description,
+  };
 };
 const makeMount = (nodeId: string, userId: string, role: OrgSeedRole): M => ({ nodeId, userId, role });
 
@@ -47,6 +58,18 @@ describe('双树组织树种子', () => {
     const depts = nodes.filter((n) => n.kind === 'org' && n.parentId === company.id).map((n) => n.name);
     expect(depts).toEqual(['机器人事业部', '前移式事业部', '电动车事业部', '电叉事业部', 'E车事业部', 'EZ事业部']);
     expect(nodes.filter((n) => n.kind === 'org')).toHaveLength(12);
+  });
+
+  it('负责车型与职责描述一起带回来', () => {
+    const { nodes } = applyOrgSeed(domains, [], makeNode, makeMount);
+    const dept = (name: string) => nodes.find((n) => n.name === name && n.parentId !== 'd_hw')!;
+    expect(nodes.find((n) => n.name === '前移式事业部')!.vehicleModels).toBe('XQE122');
+    expect(dept('电动车事业部').vehicleModels).toBe('XSC121、XS081、XSC201、XCS151、EXP20、XPL201P');
+    expect(dept('EZ事业部').vehicleModels).toBe('EXP15、XCD101、XPG151、XFC001');
+    const robotDept = nodes.find((n) => n.name === '机器人事业部')!;
+    expect(robotDept.description).toContain('【负责】车体硬件');
+    expect(robotDept.description).toContain('【不负责】调度系统');
+    expect(dept('电叉事业部').vehicleModels).toBe('XFO151');
   });
 
   it('组织上的人一起带回来，且只补不删', () => {

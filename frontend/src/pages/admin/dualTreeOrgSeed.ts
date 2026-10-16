@@ -14,6 +14,8 @@ export interface OrgSeedPerson {
 export interface OrgSeedNode {
   name: string;
   orgKind?: OrgSeedKind;
+  vehicleModels?: string;
+  description?: string;
   people?: OrgSeedPerson[];
   children?: OrgSeedNode[];
 }
@@ -30,6 +32,7 @@ export const DUAL_TREE_ORG_SEED: OrgSeedGroup[] = [
       {
         name: '智能规划研究院',
         orgKind: 'department',
+        description: '【负责】调度USP、任务调度/下发/阻塞、路径规划/避让/锁区、地图编辑、\n        摇人吧服务号平台（前端/后端/AI/后台管理）。\n【不负责】车体机械、车载 SLAM/传感器驱动、纯硬件故障。\n【典型现象】任务无法下发、路径规划失败、地图保存失败、服务号功能异常。',
         people: [
           { id: 'oD5oY3Zu0l5jFSOsorAqoTNrlleM', role: 'member' },
           { id: 'oD5oY3ZegPAIBfliE1PdQG3R6SU0', role: 'member' },
@@ -71,6 +74,7 @@ export const DUAL_TREE_ORG_SEED: OrgSeedGroup[] = [
           {
             name: '机器人事业部',
             orgKind: 'department',
+            description: '【负责】车体硬件、机械结构、电池/电机/底盘、货叉/升降等行走与执行机构故障。\n【不负责】调度系统、路径规划、SLAM/定位、服务号软件、地图编辑。\n【典型现象】无法开机、充不进电、轮子脱落/卡死、车体碰撞变形、货叉不动。',
             people: [
               { id: 'user_77d3ac3f', role: 'owner' },
             ],
@@ -78,19 +82,25 @@ export const DUAL_TREE_ORG_SEED: OrgSeedGroup[] = [
           {
             name: '前移式事业部',
             orgKind: 'department',
+            vehicleModels: 'XQE122',
+            description: '负责特定车型的车体部分与机器人套件，并完成组装',
           },
           {
             name: '电动车事业部',
             orgKind: 'department',
+            vehicleModels: 'XSC121、XS081、XSC201、XCS151、EXP20、XPL201P',
           },
           {
             name: '电叉事业部',
+            vehicleModels: 'XFO151',
           },
           {
             name: 'E车事业部',
+            vehicleModels: 'XS1152、XP201',
           },
           {
             name: 'EZ事业部',
+            vehicleModels: 'EXP15、XCD101、XPG151、XFC001',
           },
         ],
       },
@@ -139,6 +149,15 @@ export interface OrgSeedMountLike {
   role: string;
 }
 
+/** 建组织节点时要带的信息：名称、类型、负责车型、职责描述 */
+export interface OrgSeedNodeDraft {
+  parentId: string;
+  name: string;
+  orgKind?: OrgSeedKind;
+  vehicleModels?: string;
+  description?: string;
+}
+
 /** 树里一个组织节点都没有，说明本机那份组织树没了（清缓存 / 换浏览器 / 被别的 key 盖掉），该用种子兜底 */
 export function needsOrgSeed(nodes: OrgSeedNodeLike[]): boolean {
   return !nodes.some((node) => node.kind === 'org');
@@ -146,12 +165,12 @@ export function needsOrgSeed(nodes: OrgSeedNodeLike[]): boolean {
 
 /**
  * 把内置组织树并进现有节点：按域名找挂载点，同名组织直接复用，挂人只补不删。
- * 域不在树里就跳过那一组，不往别的域里硬塞。
+ * 域不在树里就跳过那一组，不往别的域里硬塞。节点带名称/类型/负责车型/职责描述。
  */
 export function applyOrgSeed<TNode extends OrgSeedNodeLike, TMount extends OrgSeedMountLike>(
   nodes: TNode[],
   mounts: TMount[],
-  makeNode: (parentId: string, name: string, orgKind?: OrgSeedKind) => TNode,
+  makeNode: (draft: OrgSeedNodeDraft) => TNode,
   makeMount: (nodeId: string, userId: string, role: OrgSeedRole) => TMount,
 ): { nodes: TNode[]; mounts: TMount[] } {
   const nextNodes = [...nodes];
@@ -166,7 +185,13 @@ export function applyOrgSeed<TNode extends OrgSeedNodeLike, TMount extends OrgSe
       const found = nextNodes.find(
         (node) => node.kind === 'org' && node.parentId === parentId && node.name === seed.name,
       );
-      const target = found || makeNode(parentId, seed.name, seed.orgKind);
+      const target = found || makeNode({
+        parentId,
+        name: seed.name,
+        orgKind: seed.orgKind,
+        vehicleModels: seed.vehicleModels,
+        description: seed.description,
+      });
       if (!found) nextNodes.push(target);
       (seed.people || []).forEach((person) => {
         if (!hasMount(target.id, person.id, person.role)) {
