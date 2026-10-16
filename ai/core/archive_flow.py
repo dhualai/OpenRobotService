@@ -15,10 +15,15 @@ backend 归档流（closed → 处理人开始归档 → 写报告 → 提交审
    - 半截内容不进库，只有 done 时的完整全文一次写回。
 
 ② 知识入库（run_archive_ingest_worker）
-   轮询 submit_status='approved' 且未打标的归档报告 → 报告全文作为知识源
-   走 process_ticket（distiller 八条闸门照旧：测试单/无解法/敷衍跳过）→
+   轮询 submit_status='approved' 且未打标的归档报告（队列见 solution_sink.
+   load_archived_candidates）→ 处理内核 solution_sink.process_archived_ticket：
+   已有卡的单**只改 payload、向量不动**（与人工审核路逐字一致），没有卡的单
+   用同一个提炼器补建（distiller 八条闸门照旧：测试单/无解法/敷衍跳过）→
    入库 company/ticket_resolutions（归档人审已前置，直接 approved 可检索）
-   → 打 archive_knowledge_indexed 标记；失败不打标下轮重试。
+   → 打 archive_sink_status 标记；失败不打标下轮重试。
+   （2026-10-16 收口：此前这里自己拼 SQL + 调 process_ticket + 打
+   archive_knowledge_indexed，与 knowledge_worker 的归档分支是两套并行实现，
+   现在统一走 solution_sink，只留这一条驱动。）
 """
 import asyncio
 import json
@@ -230,10 +235,14 @@ def spawn_generation(task_id: int, queue: asyncio.Queue, username: str) -> bool:
 
 
 async def run_archive_ingest_worker(stop_event: asyncio.Event):
-    """入库 worker：approved 归档报告 → 提炼知识卡 → 入库 → 打标。
+    """入库 worker：approved 归档报告 → 放行 / 补建知识卡 → 打标。
 
-    人审（归档报告 approve）已前置，通过闸门的卡直接 approved 可检索；
-    失败不打标下轮重试；闸门跳过（empty）也打标防重复扫描。
+    队列与处理统一走 ai.core.solution_sink（load_archived_candidates /
+    process_archived_ticket），不再自己拼 SQL、不再调 process_ticket ——
+    否则会和 knowledge_worker 的归档分支各跑一遍、各打一个标记。
+    人审（归档报告 approve）已前置：**已有卡的单只改 payload、向量一个字不动**
+    （与人工审核路逐字一致），没有卡的单才用同一提炼器补建；标记统一写
+    archive_sink_status，失败不打标下轮重试，闸门跳过（empty）也打标防重复扫描。
     """
     from ai.core import get_retrieval_service, solution_sink
 
@@ -241,26 +250,7 @@ async def run_archive_ingest_worker(stop_event: asyncio.Event):
     retriever = None
     while not stop_event.is_set():
         try:
-            from ai.core.database import SessionLocal
-            from sqlalchemy import text
-            db = SessionLocal()
-            try:
-                rows = db.execute(text(
-                    "SELECT r.task_id, r.task_id AS id, r.content, r.version, "
-                    "       t.title, t.description, t.assigned_to, t.metadata_info, "
-                    "       t.project_name, t.task_type "
-                    "FROM archive_reports r JOIN tasks t ON t.id = r.task_id "
-                    "WHERE r.submit_status = 'approved' AND r.content <> '' "
-                    "  AND t.status = 'archived' "
-                    "  AND JSON_EXTRACT(t.metadata_info, "
-                    "      '$.archive_knowledge_indexed') IS NOT TRUE "
-                    "  AND r.version = (SELECT MAX(r2.version) FROM archive_reports r2 "
-                    "                   WHERE r2.task_id = r.task_id "
-                    "                     AND r2.submit_status = 'approved') "
-                    "ORDER BY r.task_id DESC LIMIT 10"
-                )).mappings().all()
-            finally:
-                db.close()
+            rows = solution_sink.load_archived_candidates(limit=10)
             if rows:
                 logger.info(f"[archive] 待入库归档报告 {len(rows)} 篇")
                 if retriever is None:
@@ -268,28 +258,11 @@ async def run_archive_ingest_worker(stop_event: asyncio.Event):
             for row in rows:
                 if stop_event.is_set():
                     break
-                tid = row["task_id"]
+                tid = row["id"]
                 try:
-                    status = await solution_sink.process_ticket(
-                        dict(row), retriever, archive_content=row["content"])
-                    # process_ticket 已写 solution_indexed 系标记；补归档专属标记
-                    # （failed 时不写——process_ticket failed 路径不打标，此处同样跳过）
-                    if status in ("indexed", "empty"):
-                        from ai.core.database import SessionLocal
-                        from sqlalchemy import text
-                        db2 = SessionLocal()
-                        try:
-                            db2.execute(text(
-                                "UPDATE tasks SET metadata_info = JSON_MERGE_PATCH("
-                                "  COALESCE(metadata_info, JSON_OBJECT()), "
-                                "  JSON_OBJECT('archive_knowledge_indexed', TRUE, "
-                                "              'archive_knowledge_indexed_at', :at)) "
-                                "WHERE id = :tid"),
-                                {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "tid": tid})
-                            db2.commit()
-                        finally:
-                            db2.close()
-                    logger.info(f"[archive] #{tid} v{row['version']}: {status}")
+                    # 打标在 process_archived_ticket 里（archive_sink_status）
+                    status = await solution_sink.process_archived_ticket(row, retriever)
+                    logger.info(f"[archive] #{tid} v{row.get('report_version')}: {status}")
                 except Exception as e:
                     logger.exception(f"[archive] #{tid} 入库失败（下轮重试）: {e}")
         except Exception:
