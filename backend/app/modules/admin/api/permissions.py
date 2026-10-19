@@ -59,6 +59,10 @@ async def get_all_permissions(
         ensure_task_policy_permission()
         from app.modules.admin.services.knowledge_permissions import ensure_knowledge_contribution_permission
         ensure_knowledge_contribution_permission()
+        # 公告管理：码在 permissions 表里存在才能在权限管理页勾给非超管角色。
+        # 必须放在这里（读权限列表时），不能放接口函数体内，否则 403 会先挡住注册。
+        from app.modules.admin.api.announcement import ensure_announcement_permission
+        ensure_announcement_permission()
         permissions = db_manager.get_all_permissions()
         return DataResponse(
             code=0,

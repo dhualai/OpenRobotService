@@ -7,7 +7,7 @@
   - `frontend_router`（prefix=/announcements，在 app/__init__.py 以 /api/announcements 挂载）
 
 鉴权：
-  - 后台：require_permission("frontend:admin:announcement:manage")
+  - 后台：require_permission(PERM_ANNOUNCEMENT)，码定义在 permission_service
   - 前台：仅要求登录（App 全量在 AuthGuard 内，无匿名场景）
 
 Status 用字符串列（draft/published/offline），见 app/models/announcement.py。
@@ -27,13 +27,16 @@ from app.core.user_identity import actor_username
 from app.models.announcement import Announcement, AnnouncementStatus
 from app.modules.admin.api.auth import require_permission
 from app.services.identity_service import IdentityService
+from app.services.permission_service import PERM_ANNOUNCEMENT
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/announcements", tags=["admin-announcements"])
 frontend_router = APIRouter(prefix="/announcements", tags=["announcements"])
 
-PERM_CODE = "frontend:admin:announcement:manage"
+# 与 permission_service 的派生表共用同一个常量：全局角色「超级管理员」默认拿到它，
+# 其他角色可在权限管理里勾选。两处若各写一份字符串，迟早漂移。
+PERM_CODE = PERM_ANNOUNCEMENT
 
 VALID_STATUS = (
     AnnouncementStatus.DRAFT,
@@ -50,7 +53,13 @@ _ORDER_BY = (
 
 
 def ensure_announcement_permission() -> None:
-    """确保权限码已注册到 permissions 表（幂等，已存在自动跳过）。"""
+    """确保权限码已注册到 permissions 表（幂等，已存在自动跳过）。
+
+    只在「权限管理」列表的注册块（permissions.get_all_permissions）里调用：
+    该码要在权限管理页可勾选，就必须在**读到权限列表时**先落库。切勿在下面各接口
+    函数体内调用——require_permission 是 FastAPI 依赖，先于函数体执行，没权限的
+    账号会先被 403 挡住，永远走不到注册那行（生产上就是这样自锁的）。
+    """
     IdentityService.add_permission(
         permission_id="perm_frontend_admin_announcement_manage",
         code=PERM_CODE,
@@ -153,7 +162,6 @@ async def admin_list_announcements(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     conds = []
     if status:
         conds.append(Announcement.status == _validate_status(status))
@@ -180,7 +188,6 @@ async def create_announcement(
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     st = _validate_status(payload.status)
     ann = Announcement(
         title=payload.title.strip(),
@@ -203,7 +210,6 @@ async def update_announcement(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     ann = await _get_or_404(db, aid)
 
     if payload.title is not None:
@@ -229,7 +235,6 @@ async def publish_announcement(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     ann = await _get_or_404(db, aid)
     ann.status = AnnouncementStatus.PUBLISHED
     if ann.published_at is None:
@@ -245,7 +250,6 @@ async def offline_announcement(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     ann = await _get_or_404(db, aid)
     ann.status = AnnouncementStatus.OFFLINE
     await db.commit()
@@ -259,7 +263,6 @@ async def delete_announcement(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     ann = await _get_or_404(db, aid)
     await db.delete(ann)
     await db.commit()
