@@ -15,7 +15,7 @@
 get_db 返回可编排的 Mock。权限码注册只应发生在 permissions.get_all_permissions
 的注册块里——接口路径里写 permissions 表会直接让本文件用例失败（回归钉）。
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -69,6 +69,20 @@ def _ann(**over):
     }
     data.update(over)
     return SimpleNamespace(**data)
+
+
+def _assert_is_utc(iso: str) -> None:
+    """断言接口写出的时间戳是「UTC 时刻」而不是进程本地时间。
+
+    回归钉（2026-10-19 生产）：原实现用 `datetime.now()`（容器本地时间，生产 +08:00）
+    写 published_at，前端 `parseUtcDate` 再把它当 UTC 转本地 → 线上「发布于 16:39」
+    被显示成次日 00:39。CI 容器多为 UTC 时区，这条断言在本地 +08 环境一定能抓到回归。
+    """
+    stamped = datetime.fromisoformat(iso)
+    assert stamped.tzinfo is None, "保持无时区 ISO 串，前端按 UTC 解析"
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    delta = abs((now_utc - stamped).total_seconds())
+    assert delta < 120, f"published_at 应为 UTC 时刻，实际 {stamped}，UTC 现在 {now_utc}"
 
 
 @pytest.fixture(autouse=True)
@@ -196,6 +210,7 @@ def test_create_published_stamps_published_at(make_client, db):
     item = response.json()["item"]
     assert item["status"] == "published"
     assert item["published_at"] is not None
+    _assert_is_utc(item["published_at"])
 
 
 def test_create_draft_has_no_published_at(make_client, db):
@@ -215,6 +230,7 @@ def test_publish_and_offline_transition(make_client, db):
 
     assert body["item"]["status"] == "published"
     assert body["item"]["published_at"] is not None
+    _assert_is_utc(body["item"]["published_at"])
 
 
 def test_offline_transition(make_client, db):
