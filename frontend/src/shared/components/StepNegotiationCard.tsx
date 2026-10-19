@@ -53,6 +53,8 @@ interface StepNegotiationCardProps {
   onReassign: () => void;
   /** 暂停请求回应：确认暂停（→pending，无理由）或驳回（→in_progress，必须带理由） */
   onPauseResponse?: (nextStatus: 'pending' | 'in_progress', rejectReason?: string) => void;
+  /** 无法解决请求回应：确认（→unsolvable，无理由）或驳回（→in_progress，必须带理由） */
+  onUnsolvableResponse?: (nextStatus: 'unsolvable' | 'in_progress', rejectReason?: string) => void;
 }
 
 /**
@@ -69,6 +71,7 @@ export default function StepNegotiationCard({
   onEscalate,
   onReassign,
   onPauseResponse,
+  onUnsolvableResponse,
 }: StepNegotiationCardProps) {
   const {
     stepTemplate, responding, completing,
@@ -109,11 +112,15 @@ export default function StepNegotiationCard({
   const isTerminal = ['resolved', 'closed', 'canceled', 'cancelled'].includes(status);
   // 暂停请求中：处理人已请求暂停、等待提单人确认——节点信息保留、回合协商冻结
   const isPauseRequested = status === 'pending_requested';
+  // 无法解决确认中：处理人标记无法解决、等待提单人确认——同暂停，协商冻结
+  const isUnsolvableRequested = status === 'unsolvable_requested';
   const total = stepTemplate.length;
   const currIdx = stepTemplate.findIndex((s) => s.id === detail?.curr_step_id);
   const stepName = detail?.curr_step_name || (currIdx >= 0 ? stepTemplate[currIdx].step_name : '');
   // 暂停请求理由（metadata_info.pause_reason，仅 pending_requested 状态存在）
   const pauseReason = (detail?.metadata_info as Record<string, unknown> | undefined)?.pause_reason as string | undefined;
+  // 无法解决理由（metadata_info.unsolvable_reason，仅 unsolvable_requested 状态存在）
+  const unsolvableReason = (detail?.metadata_info as Record<string, unknown> | undefined)?.unsolvable_reason as string | undefined;
   // 上一次驳回理由（metadata_info.reject_reason，仅 IN_PROGRESS 状态存在，处理人侧可见）
   const rejectReason = (detail?.metadata_info as Record<string, unknown> | undefined)?.reject_reason as string | undefined;
 
@@ -145,9 +152,9 @@ export default function StepNegotiationCard({
     return '';
   })();
   const stepAgreed = !!detail?.curr_step_agreed;
-  // 暂停请求期间冻结所有协商/响应操作，等待提单人侧确认或驳回
-  const canRespond = !isPauseRequested && !!detail?.curr_step_id && (status === 'new' || (status === 'in_progress' && !stepAgreed));
-  const canNegotiate = !isPauseRequested && !!detail?.curr_step_id;
+  // 暂停请求中 / 无法解决确认中 均冻结协商/响应操作
+  const canRespond = !isPauseRequested && !isUnsolvableRequested && !!detail?.curr_step_id && (status === 'new' || (status === 'in_progress' && !stepAgreed));
+  const canNegotiate = !isPauseRequested && !isUnsolvableRequested && !!detail?.curr_step_id;
   const currSeq = currIdx >= 0 ? stepTemplate[currIdx].sequence : null;
   const hasNext = currSeq === null ? true : stepTemplate.some((s) => s.sequence > currSeq);
   // 回合展示
@@ -176,7 +183,7 @@ export default function StepNegotiationCard({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <h4 className="detail-card__h" style={{ marginBottom: 0 }}>工单阶段性处理</h4>
-            {myTurn && !reachedMax && !stepAgreed && !isTerminal && !isPauseRequested && (
+            {myTurn && !reachedMax && !stepAgreed && !isTerminal && !isPauseRequested && !isUnsolvableRequested && (
               <span style={{ fontSize: 12, color: 'var(--blue-2)', fontWeight: 500 }}>
                 ● 轮到你确认/答复
               </span>
@@ -184,6 +191,11 @@ export default function StepNegotiationCard({
             {isPauseRequested && (
               <span style={{ fontSize: 12, color: 'var(--apricot)', fontWeight: 500 }}>
                 ● 处理人已请求暂停工单，等待提单人确认
+              </span>
+            )}
+            {isUnsolvableRequested && (
+              <span style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 500 }}>
+                ● 处理人标记无法解决，等待提单人确认
               </span>
             )}
             {reachedMax && !stepAgreed && (
@@ -416,6 +428,38 @@ export default function StepNegotiationCard({
               </div>
             )}
           </div>
+        ) : isUnsolvableRequested ? (
+          // 无法解决确认中：协商冻结，提单人侧显示确认/驳回按钮
+          <div style={{
+            padding: '10px 14px', background: 'var(--rose-soft)',
+            borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--danger)',
+            fontSize: 13, color: 'var(--foreground)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: unsolvableReason ? 8 : 0 }}>
+              <span style={{ fontSize: 18 }}>✕</span>
+              <span>
+                {isAssignee
+                  ? '无法解决请求已发送，等待提单人确认后工单进入"无法解决"终态。'
+                  : '处理人标记无法解决此工单，请查看理由后决定是否确认。'}
+              </span>
+            </div>
+            {unsolvableReason && (
+              <div style={{
+                padding: '8px 12px', background: 'var(--background)',
+                borderRadius: 'var(--radius-sm)', fontSize: 13, lineHeight: 1.6,
+                color: 'var(--foreground)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>
+                <span style={{ color: 'var(--muted-foreground)', fontSize: 12 }}>无法解决理由：</span>
+                {unsolvableReason}
+              </div>
+            )}
+            {isCreatorSide && onUnsolvableResponse && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 12 }}>
+                <Button size="small" theme="default" onClick={() => { setRejectReasonDraft(''); setShowRejectPopup(true); }}>驳回</Button>
+                <Button size="small" theme="primary" onClick={() => onUnsolvableResponse('unsolvable')}>确认无法解决</Button>
+              </div>
+            )}
+          </div>
         ) : rejectReason && isAssignee && status === 'in_progress' ? (
           // 刚被驳回暂停（IN_PROGRESS 状态保留 reject_reason），提示处理人上次为什么被驳回
           <div style={{
@@ -622,7 +666,7 @@ export default function StepNegotiationCard({
         );
       })()}
 
-      {/* 驳回暂停理由弹窗（仅提单人侧可触发） */}
+      {/* 驳回请求理由弹窗（暂停 / 无法解决 共用，文案与回调随当前状态切换） */}
       <Popup
         visible={showRejectPopup}
         onClose={() => { setShowRejectPopup(false); setRejectReasonDraft(''); }}
@@ -631,7 +675,7 @@ export default function StepNegotiationCard({
         destroyOnClose
       >
         <div className="ticket-edit">
-          <h4 className="ticket-edit__title">驳回暂停请求</h4>
+          <h4 className="ticket-edit__title">{isUnsolvableRequested ? '驳回无法解决请求' : '驳回暂停请求'}</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
             请说明驳回理由，处理人将看到。
           </p>
@@ -640,7 +684,7 @@ export default function StepNegotiationCard({
               <Textarea
                 value={rejectReasonDraft}
                 onChange={(v) => setRejectReasonDraft(String(v))}
-                placeholder="请说明为什么不同意暂停"
+                placeholder={isUnsolvableRequested ? '请说明为什么不同意标记无法解决' : '请说明为什么不同意暂停'}
                 autosize={{ minRows: 3, maxRows: 6 }}
                 maxlength={500}
               />
@@ -652,7 +696,11 @@ export default function StepNegotiationCard({
               theme="primary"
               disabled={!rejectReasonDraft.trim()}
               onClick={() => {
-                onPauseResponse?.('in_progress', rejectReasonDraft.trim());
+                if (isUnsolvableRequested) {
+                  onUnsolvableResponse?.('in_progress', rejectReasonDraft.trim());
+                } else {
+                  onPauseResponse?.('in_progress', rejectReasonDraft.trim());
+                }
                 setShowRejectPopup(false);
                 setRejectReasonDraft('');
               }}

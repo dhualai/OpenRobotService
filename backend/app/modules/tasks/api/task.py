@@ -88,6 +88,8 @@ STATUS_LABEL = {
     "in_progress": "处理中",
     "pending_requested": "暂停请求中",
     "pending": "已挂起",
+    "unsolvable_requested": "无法解决确认中",
+    "unsolvable": "无法解决",
     "resolved": "已解决",
     "canceled": "已取消",
     "closed": "已关闭",
@@ -2417,15 +2419,19 @@ async def update_task_status(
         if status_enum == TicketStatus.CANCELED and not is_admin and not user_matches(current_user, ticket.created_by):
             raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
 
-        # ── 请求暂停（→ pending_requested）权限收窄：仅**处理人**可发起，提单人/管理员不能替处理人请求暂停 ──
+        # ── 暂停（→ pending）直达：仅**管理员**可直接挂起处理中的工单 ──
+        if status_enum == TicketStatus.PENDING and ticket.status == TicketStatus.IN_PROGRESS:
+            if not is_admin:
+                raise HTTPException(status_code=403, detail="仅管理员可直接暂停工单")
+
+        # ── 请求暂停（→ pending_requested）两阶段路径：保留兼容历史数据，仅处理人可发起 ──
         if status_enum == TicketStatus.PENDING_REQUESTED:
             if ticket.status != TicketStatus.IN_PROGRESS:
                 raise HTTPException(status_code=400, detail="仅处理中的工单可发起暂停请求")
             if not _roles.is_assignee and not is_admin:
-                # 管理员可临时代处理人发起（运维兜底）
                 raise HTTPException(status_code=403, detail="仅处理人可请求暂停工单")
 
-        # ── 暂停请求后续操作权限收窄：必须由**提单人侧**（creator / principal / admin）来决定 ──
+        # ── 暂停请求后续操作权限收窄（pending_requested 两阶段，保留兼容） ──
         # pending_requested → pending  = 提单人确认暂停
         # pending_requested → in_progress = 提单人驳回（继续处理）
         if ticket.status == TicketStatus.PENDING_REQUESTED:
@@ -2434,20 +2440,45 @@ async def update_task_status(
             if status_enum not in (TicketStatus.PENDING, TicketStatus.IN_PROGRESS):
                 raise HTTPException(status_code=400, detail="暂停请求中仅可「确认暂停」或「驳回」")
 
+        # ── 请求无法解决（→ unsolvable_requested）权限收窄：仅**处理人**可发起 ──
+        if status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            if ticket.status != TicketStatus.IN_PROGRESS:
+                raise HTTPException(status_code=400, detail="仅处理中的工单可标记无法解决")
+            if not _roles.is_assignee and not is_admin:
+                raise HTTPException(status_code=403, detail="仅处理人可标记无法解决工单")
+
+        # ── 无法解决请求后续：必须由**提单人侧**处理 ──
+        # unsolvable_requested → unsolvable = 提单人确认（终态）
+        # unsolvable_requested → in_progress = 提单人驳回（继续处理）
+        if ticket.status == TicketStatus.UNSOLVABLE_REQUESTED:
+            if not (_roles.is_creator or _roles.is_principal or is_admin):
+                raise HTTPException(status_code=403, detail="仅提单人/被代理人/管理员可处理无法解决请求")
+            if status_enum not in (TicketStatus.UNSOLVABLE, TicketStatus.IN_PROGRESS):
+                raise HTTPException(status_code=400, detail="无法解决确认中仅可「确认无法解决」或「驳回」")
+
+        # ── 已无法解决 → 继续处理（回到 in_progress）：仅**处理人**可恢复 ──
+        if ticket.status == TicketStatus.UNSOLVABLE:
+            if status_enum == TicketStatus.IN_PROGRESS:
+                if not _roles.is_assignee and not is_admin:
+                    raise HTTPException(status_code=403, detail="仅处理人可恢复无法解决的工单")
+
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
         resolution_summary = None
         pause_reason = None
         reject_reason = None
+        unsolvable_reason = None
         try:
             if request:
                 body = await request.json()
                 resolution_summary = (body or {}).get("resolution_summary")
                 pause_reason = (body or {}).get("pause_reason")
                 reject_reason = (body or {}).get("reject_reason")
+                unsolvable_reason = (body or {}).get("unsolvable_reason")
         except Exception:
             resolution_summary = None
             pause_reason = None
             reject_reason = None
+            unsolvable_reason = None
 
         if status_enum == TicketStatus.RESOLVED:
             # 必填校验：去空白后非空（占位提示由前端 placeholder 控制，不入值）
@@ -2470,6 +2501,20 @@ async def update_task_status(
                 raise HTTPException(status_code=400, detail="驳回暂停必须填写理由")
             reject_reason = rr
 
+        if status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            # 标记无法解决必填理由
+            ur = (unsolvable_reason or "").strip()
+            if not ur:
+                raise HTTPException(status_code=400, detail="标记无法解决必须填写理由")
+            unsolvable_reason = ur
+
+        # 驳回无法解决（unsolvable_requested → in_progress）必填驳回理由
+        if ticket.status == TicketStatus.UNSOLVABLE_REQUESTED and status_enum == TicketStatus.IN_PROGRESS:
+            rr2 = (reject_reason or "").strip()
+            if not rr2:
+                raise HTTPException(status_code=400, detail="驳回无法解决必须填写理由")
+            reject_reason = rr2
+
         # ── 预加载工单关联策略（阻塞检查 + 重复同步共用一次读取） ──
         try:
             policies = await get_all_policies(db)
@@ -2490,14 +2535,22 @@ async def update_task_status(
 
         old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
 
-        # ── 回合累加：仅「驳回暂停」时 bump +1 ──
+        # ── 回合累加：仅「驳回暂停」或「驳回无法解决」时 bump +1 ──
         # 语义：驳回 = 双方没达成共识 → 算一次额外交涉
-        # 确认暂停（→ pending）= 达成共识，不加；请求暂停本身只是提案，等驳回再算
+        # 确认（→ pending / unsolvable）= 达成共识，不加；请求本身只是提案，等驳回再算
         # 注意：连续多次驳回都要 +1，不检查操作方是否切换（可能始终是同一方在重复驳回）
-        if old_status.upper() == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
+        if (old_status.upper() == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS) \
+                or (old_status.upper() == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS):
             ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
 
-        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username, resolution_summary=resolution_summary, pause_reason=pause_reason, reject_reason=reject_reason)
+        updated_ticket = await TicketService.update_ticket_status(
+            db, task_id, status_enum,
+            token=token, operator_id=username,
+            resolution_summary=resolution_summary,
+            pause_reason=pause_reason,
+            reject_reason=reject_reason,
+            unsolvable_reason=unsolvable_reason,
+        )
         # ── WS 实时广播：工单状态变更 ──
         try:
             await ws_broadcast_task_updated(task_id, updated_ticket)
@@ -2508,10 +2561,13 @@ async def update_task_status(
         user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
         _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
 
-        # 暂停请求三态转换的定制描述（语义比通用的"状态变更为"更明确）
+        # 暂停请求 / 无法解决 请求 定制描述（语义比通用的"状态变更为"更明确）
         old_status_upper = old_status.upper()
         pending_special_desc = None
-        if old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING_REQUESTED:
+        if old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING:
+            # 管理员直接暂停（两阶段请求暂停已下线，直达）
+            pending_special_desc = f"暂停工单，工单状态变更为「已挂起」"
+        elif old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING_REQUESTED:
             reason_suffix = f"\n理由：{pause_reason}" if pause_reason else ""
             pending_special_desc = f"请求暂停工单，状态变更为「暂停请求中」{reason_suffix}"
         elif old_status_upper == 'PENDING_REQUESTED' and status_enum == TicketStatus.PENDING:
@@ -2519,6 +2575,16 @@ async def update_task_status(
         elif old_status_upper == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
             reason_suffix = f"\n驳回理由：{reject_reason}" if reject_reason else ""
             pending_special_desc = f"驳回了暂停工单请求，工单状态变更为「处理中」{reason_suffix}"
+        elif old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            reason_suffix = f"\n理由：{unsolvable_reason}" if unsolvable_reason else ""
+            pending_special_desc = f"标记无法解决工单，状态变更为「无法解决确认中」{reason_suffix}"
+        elif old_status_upper == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.UNSOLVABLE:
+            pending_special_desc = f"确认无法解决工单，工单状态变更为「无法解决」"
+        elif old_status_upper == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
+            reason_suffix = f"\n驳回理由：{reject_reason}" if reject_reason else ""
+            pending_special_desc = f"驳回了无法解决请求，工单状态变更为「处理中」{reason_suffix}"
+        elif old_status_upper == 'UNSOLVABLE' and status_enum == TicketStatus.IN_PROGRESS:
+            pending_special_desc = f"恢复工单处理，状态变更为「处理中」"
 
         if pending_special_desc:
             op_log_desc = f"{_role}{user_name} {pending_special_desc}" if _role else f"{user_name} {pending_special_desc}"
