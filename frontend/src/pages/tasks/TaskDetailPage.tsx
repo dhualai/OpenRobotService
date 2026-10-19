@@ -557,16 +557,11 @@ export default function TaskDetailPage() {
     const actions: Record<string, { label: string; nextStatus: string; theme: string; actionType?: string; customStyle?: Record<string, string> }[]> = {
       // new 状态由处理人首次响应（协商节点时间/确认同意）自动转为 in_progress，不再提供「开始处理」按钮
       new: [],
-      // 有步骤模板的工单 → "处理完成"由阶段性处理卡的「最末阶段结束」流程控制，顶部不再提供快捷入口
-      // 无步骤模板的工单 → 保留「处理完成」作为 fallback 解决途径
-      in_progress: detail?.curr_step_id
-        ? [
-            { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
-          ]
-        : [
-            { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
-            { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
-          ],
+      // 有/无步骤模板的工单：处理人均可从顶部一键触发"处理完成"（走解决方式弹窗）
+      in_progress: [
+        { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
+        { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
+      ],
       // 暂停请求中：确认/驳回按钮已移至「工单阶段性处理」卡内，顶部不再重复
       pending_requested: [],
       pending: (isAssignee && isReporter)

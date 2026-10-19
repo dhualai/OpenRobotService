@@ -292,8 +292,9 @@ class TaskLike(Base):
 
     榜单口径：只统计 status=archived 的工单（精品=沉淀下来的问答），
     且只计 is_active=1 且 risk_status='normal' 的有效点赞。
-    「精品工单榜」点赞排名靠前者即优质问题，两个榜共用同一份点赞记录
-    （2026-10-15 决策：不另建 knowledge_question_likes）。
+    本表只服务**前台**工单点赞与「精品工单榜」；后台「优质问题榜」由
+    knowledge_question_likes（models/knowledge.py）独立承载，两者各自计数、
+    不共用点赞记录（2026-10-16 决策：后台榜以其表为准）。
     """
     __tablename__ = "task_likes"
 

@@ -12,7 +12,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore, type VehicleContext } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
 import { toAppUrl } from '@/shared/utils/markdown';
-import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, qaGetTicketSteps, qaModeConfirm, type TicketDraft, type TicketStep } from '@/api/ai';
+import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, qaGetTicketSteps, qaModeConfirm, qaProjectMatch, type TicketDraft, type TicketStep, type ProjectMatchItem } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
 import OnBehalfSelect from '@/shared/components/OnBehalfSelect';
@@ -1263,6 +1263,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 处理阶段：弹窗打开时按工单类型拉取的步骤列表（task_steps 模板，后续可配置）
   const [ticketSteps, setTicketSteps] = useState<TicketStep[]>([]);
   const [stepsLoading, setStepsLoading] = useState(false);
+  // ORS-713 智能项目匹配：弹窗打开时后台拉取（AI 按会话信号推荐），传给项目
+  // 选择器排在最前并标注「与当前问题最相关」。失败/空 = 退化原排序，不阻塞弹窗。
+  const [projectMatch, setProjectMatch] = useState<ProjectMatchItem[]>([]);
   // 远程方式截图（object_path 数组）：弹窗内选择远程方式后才出现，上传即本地暂存、关闭弹窗清空。
   // 走 uploadCommentAttachment 拿到 object_path → 提交时塞 overrides.attachments 透传至后端。
   const [remoteShots, setRemoteShots] = useState<{ objectPath: string; fileName: string }[]>([]);
@@ -2282,6 +2285,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             });
             // 按 AI 识别的工单类型拉取处理阶段列表
             void loadTicketSteps(String((data.draft as TicketDraft | undefined)?.type ?? ''));
+            // ORS-713：对话路径弹窗同样拉智能项目匹配
+            void loadProjectMatch(sessionId);
           }
         } catch { /* JSON 行解析出错则跳过 */ }
       };
@@ -2868,6 +2873,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
       // 按 AI 识别的工单类型拉取处理阶段列表，并回填默认阶段完成时间
       void loadTicketSteps(String(draft.type ?? ''));
+      // ORS-713：同步拉智能项目匹配（后台进行，弹窗不等待）
+      void loadProjectMatch(sessionId);
       if (missing_fields?.length) {
         // 缺失字段明细已在确认弹窗内逐字段展示，Toast 仅作短提示（避免长 prompt 被截断/喧宾夺主）
         Toast({ message: '请补全必填字段后提交', theme: 'warning', duration: 3000 });
@@ -2933,6 +2940,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setTicketSteps([]);
     } finally {
       setStepsLoading(false);
+    }
+  }, []);
+
+  /** ORS-713：弹窗打开时后台拉智能项目匹配（AI 读会话信号排序），失败置空退化为原排序 */
+  const loadProjectMatch = useCallback(async (sid: string | null | undefined) => {
+    if (!sid) return;
+    try {
+      setProjectMatch(await qaProjectMatch(sid));
+    } catch {
+      setProjectMatch([]);
     }
   }, []);
 
@@ -3120,6 +3137,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleCancelTicketConfirm = () => {
     const sid = ticketConfirm.draft?.source_conversation_id ?? sessionId;
     setTicketSteps([]); // 关闭弹窗即清空阶段列表
+    setProjectMatch([]); // ORS-713：清空智能匹配，下一单按新会话重新拉
     setRemoteShots([]); // 关闭弹窗即清空已上传的远程截图
     setSpecDoc(null); // 关闭弹窗即清空问题文档草稿
     setOnBehalfUser(null); // 关闭弹窗即清空被代理人，避免下一单被误代提
@@ -3262,6 +3280,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
 
       setTicketSteps([]); // 提交完成清空阶段列表
+      setProjectMatch([]); // ORS-713：提交完成清空智能匹配
       setRemoteShots([]); // 提交完成清空本地远程截图暂存
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
       setSpecDoc(null); // 提交成功后清空问题文档草稿
@@ -3985,6 +4004,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 <ProjectSelect
                   value={draftField('project_id') || null}
                   nameHint={draftField('project') || null}
+                  matched={projectMatch.length ? projectMatch : null}
                   onChange={(p) => {
                     setDraftField('project', p.name);
                     setDraftField('project_id', p.project_code);

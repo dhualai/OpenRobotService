@@ -176,6 +176,8 @@ async def test_discussions_are_not_exposed_for_unpublished_questions(db):
 def test_discussion_and_contributor_api_validate_input_and_authentication(db):
     seed(db)
     seed(db, 2, created=datetime(2026, 10, 1), archived=datetime(2026, 10, 15))
+    seed(db, 3, created=datetime(2026, 8, 1), archived=datetime(2026, 10, 15))
+    seed(db, 4, created=datetime(2026, 9, 1), archived=datetime(2026, 10, 15))
     app = FastAPI()
     app.include_router(router)
 
@@ -196,7 +198,16 @@ def test_discussion_and_contributor_api_validate_input_and_authentication(db):
         assert client.get('/knowledge/contributors/alice/questions?month=2026-11').json()['total'] == 1
         assert client.get('/knowledge/contributors/alice/questions?role=private').status_code == 422
         assert client.get('/knowledge/contributors/alice/questions?month=2026-10').status_code == 200
-        assert client.get('/knowledge/contributors/alice/questions?month=2026-09').status_code == 422
+        for month, task_id in [('2026-08', 3), ('2026-09', 4)]:
+            result = client.get(f'/knowledge/contributors/alice/questions?month={month}').json()
+            assert result['total'] == 1
+            assert result['months'] == list(service.CAMPAIGN_MONTHS)
+            assert result['items'][0]['task_id'] == task_id
+            questions = client.get(f'/knowledge/questions?month={month}&sort=created_at').json()
+            assert [item['task_id'] for item in questions['items']] == [task_id]
+            rankings = client.get(f'/knowledge/rankings?month={month}').json()
+            assert all(entry['contribution_count'] == 1 for entry in rankings['items'])
+        assert client.get('/knowledge/contributors/alice/questions?month=2026-07').status_code == 422
         app.dependency_overrides.pop(get_current_active_user_from_token)
         assert client.get('/knowledge/questions/1/discussions').status_code == 401
         assert client.post('/knowledge/questions/1/discussions', json={'content': '未登录'}).status_code == 401

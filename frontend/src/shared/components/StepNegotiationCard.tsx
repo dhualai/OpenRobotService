@@ -275,39 +275,9 @@ export default function StepNegotiationCard({
         {!isTerminal && !isPauseRequested ? (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {canOperate ? (
-              reachedMax ? (
-                stepAgreed ? (
-                  isAssignee ? (
-                    hasNext ? (
-                      <TestMarkedButton testId="task-complete-step" block size="small" theme="primary" loading={completing} disabled={completeDisabled} onClick={openCompleteStep}>
-                        当前阶段完成
-                      </TestMarkedButton>
-                    ) : (
-                      <TestMarkedButton testId="task-resolve" block size="small" theme="primary" onClick={onResolve}>
-                        最末阶段结束，处理完成
-                      </TestMarkedButton>
-                    )
-                  ) : null
-                ) : myTurn ? (
-                  <>
-                    <TestMarkedButton
-                      testId="task-accept"
-                      block
-                      size="small"
-                      theme="primary"
-                      loading={responding}
-                      disabled={!canRespond}
-                      onClick={handleRespond}
-                    >
-                      确认同意
-                    </TestMarkedButton>
-                    <Button block size="small" theme="danger" onClick={() => onEscalate(round, maxRound)}>
-                      有异议，升级上报
-                    </Button>
-                  </>
-                ) : null
-              ) : stepAgreed ? (
-                isAssignee ? (
+              <>
+                {/* 处理人：无论 stepAgreed 与否、回合在谁，都可直接完成当前阶段（创建人未确认节点时间也不阻止推进） */}
+                {isAssignee && (
                   hasNext ? (
                     <TestMarkedButton
                       testId="task-complete-step"
@@ -331,9 +301,21 @@ export default function StepNegotiationCard({
                       最末阶段结束，处理完成
                     </TestMarkedButton>
                   )
-                ) : null
-              ) : (
-                myTurn ? (
+                )}
+                {/* 处理人侧 · 对方待确认：允许修改之前设置的节点时间 */}
+                {isAssignee && !reachedMax && !stepAgreed && !myTurn && (
+                  <Button
+                    block
+                    size="small"
+                    theme="default"
+                    disabled={negotiateDisabled}
+                    onClick={openNegotiate}
+                  >
+                    重新协商节点时间
+                  </Button>
+                )}
+                {/* 协商/响应按钮：仅回合到我方、且未达成一致时显示 */}
+                {!reachedMax && !stepAgreed && myTurn && (
                   <>
                     {isAssignee && (
                       <Button
@@ -376,8 +358,26 @@ export default function StepNegotiationCard({
                       确认同意
                     </TestMarkedButton>
                   </>
-                ) : null
-              )
+                )}
+                {reachedMax && !stepAgreed && myTurn && (
+                  <>
+                    <TestMarkedButton
+                      testId="task-accept"
+                      block
+                      size="small"
+                      theme="primary"
+                      loading={responding}
+                      disabled={!canRespond}
+                      onClick={handleRespond}
+                    >
+                      确认同意
+                    </TestMarkedButton>
+                    <Button block size="small" theme="danger" onClick={() => onEscalate(round, maxRound)}>
+                      有异议，升级上报
+                    </Button>
+                  </>
+                )}
+              </>
             ) : (
               <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
                 仅工单创建人和处理人可执行操作

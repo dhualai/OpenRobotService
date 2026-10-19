@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -70,7 +71,7 @@ def db(monkeypatch):
         for user_id, name in [('alice', '提单甲'), ('bob', '接单乙'), ('reviewer', '审核丙'), ('voter', '点赞丁')]:
             session.add(UserDB(id=user_id, username=f'{user_id}-account', name=name, status='active', password_hash='test'))
         session.add(RewardConfig(config_key='task_archive', enabled=True,
-            config={'reporter_fen': 200, 'assignee_fen': 300, 'reviewer_fen': 100}))
+            config=json.dumps({'reporter_fen': 200, 'assignee_fen': 300, 'reviewer_fen': 100})))
         session.commit()
         monkeypatch.setattr(service, 'utcnow', lambda: datetime(2026, 11, 20))
         yield AsyncDb(session)
@@ -101,8 +102,8 @@ def seed(db, task_id=1, questioner='alice', answerer='bob', created=None, archiv
 async def test_combines_roles_once_and_excludes_history_and_other_month(db):
     seed(db, 1)
     seed(db, 2, 'bob', 'voter')
-    seed(db, 3, created=datetime(2026, 9, 30, 15, 59))
-    seed(db, 4, archived=datetime(2026, 11, 30, 16))
+    seed(db, 3, created=datetime(2026, 7, 31, 15, 59))
+    seed(db, 4, created=datetime(2026, 11, 30, 16), archived=datetime(2026, 12, 1))
     items = await service.rankings(db, '2026-11')
     assert items[0]['user_id'] == 'bob'
     assert (items[0]['question_count'], items[0]['answer_count'], items[0]['contribution_count']) == (1, 1, 2)
@@ -111,34 +112,109 @@ async def test_combines_roles_once_and_excludes_history_and_other_month(db):
 
 
 @pytest.mark.asyncio
-async def test_october_contributions_use_beijing_month_and_exclude_older_history(db, monkeypatch):
+async def test_october_contributions_use_question_time_and_beijing_month(db, monkeypatch):
     monkeypatch.setattr(service, 'utcnow', lambda: datetime(2026, 10, 16))
     seed(db, 1, created=datetime(2026, 9, 30, 16), archived=datetime(2026, 9, 30, 16))
     seed(db, 2, created=datetime(2026, 9, 30, 15, 59), archived=datetime(2026, 10, 10))
     seed(db, 3, created=datetime(2026, 10, 1), archived=datetime(2026, 10, 31, 16))
     overview = await service.overview(db, actor('voter'))
     assert overview['month'] == '2026-10'
-    assert overview['months'] == ['2026-10', '2026-11', '2026-12']
+    assert overview['months'] == ['2026-08', '2026-09', '2026-10', '2026-11', '2026-12']
     assert overview['campaign_status'] == 'active'
     assert {entry['user_id'] for entry in overview['top_three']} == {'alice', 'bob'}
-    assert all(entry['contribution_count'] == 1 for entry in overview['top_three'])
+    assert all(entry['contribution_count'] == 2 for entry in overview['top_three'])
     questions = await service.question_items(db, actor('voter'), '2026-10')
-    assert [item['task_id'] for item in questions['items']] == [1]
+    assert [item['task_id'] for item in questions['items']] == [3, 1]
+    september = await service.question_items(db, actor('voter'), '2026-09')
+    assert [item['task_id'] for item in september['items']] == [2]
     november = await service.question_items(db, actor('voter'), '2026-11')
-    assert [item['task_id'] for item in november['items']] == [3]
+    assert november['items'] == []
 
 
 @pytest.mark.asyncio
-async def test_report_can_publish_during_silent_october_start(db, monkeypatch):
+@pytest.mark.parametrize('month', ['2026-08', '2026-09', '2026-10'])
+async def test_historical_question_published_in_october_counts_in_question_month(db, monkeypatch, month):
     monkeypatch.setattr(service, 'utcnow', lambda: datetime(2026, 10, 16))
-    task, report = seed(db, created=datetime(2026, 10, 1), archived=datetime(2026, 10, 15))
+    created = datetime.strptime(f'{month}-01', '%Y-%m-%d')
+    task, report = seed(db, created=created, archived=datetime(2026, 10, 15))
     db.session.delete(await db.get(KnowledgePublication, task.id))
     await db.flush()
     await service.publish_report(db, task, report)
     publication = await db.get(KnowledgePublication, task.id)
     assert publication.first_approved_at == datetime(2026, 10, 16)
     assert publication.active is True
-    assert len(await service.rankings(db, '2026-10')) == 2
+    entries = await service.rankings(db, month)
+    assert {entry['user_id'] for entry in entries} == {'alice', 'bob'}
+    assert all(entry['contribution_count'] == 1 for entry in entries)
+    assert all(entry['last_contribution_at'] == service.iso(created) for entry in entries)
+    questions = await service.question_items(db, actor('voter'), month)
+    assert [item['task_id'] for item in questions['items']] == [task.id]
+    assert questions['items'][0]['created_at'] == service.iso(created)
+    assert questions['items'][0]['archived_at'] == service.iso(datetime(2026, 10, 16))
+    for user_id, role in [('alice', 'questioner'), ('bob', 'answerer')]:
+        result = await service.contributor_questions(db, actor('voter'), user_id, month, role)
+        assert result['total'] == 1
+        assert result['months'] == list(service.CAMPAIGN_MONTHS)
+    if month != '2026-10':
+        assert (await service.question_items(db, actor('voter'), '2026-10'))['total'] == 0
+        assert await service.rankings(db, '2026-10') == []
+        with pytest.raises(HTTPException) as missing:
+            await service.contributor_questions(db, actor('voter'), 'alice', '2026-10')
+        assert missing.value.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('created,month', [
+    (datetime(2026, 7, 31, 15, 59), None),
+    (datetime(2026, 7, 31, 16), '2026-08'),
+    (datetime(2026, 8, 31, 15, 59), '2026-08'),
+    (datetime(2026, 8, 31, 16), '2026-09'),
+    (datetime(2026, 9, 30, 16), '2026-10'),
+])
+async def test_question_month_boundaries_use_beijing_creation_time(db, created, month):
+    seed(db, created=created, archived=datetime(2026, 10, 19))
+    all_questions = await service.question_items(db, actor('voter'))
+    assert all_questions['total'] == int(month is not None)
+    for candidate in ('2026-08', '2026-09', '2026-10'):
+        questions = await service.question_items(db, actor('voter'), candidate)
+        assert questions['total'] == int(candidate == month)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sort', ['created_at', 'archived_at', 'likes'])
+async def test_time_sort_uses_question_time_instead_of_publication_time(db, sort):
+    seed(db, 1, created=datetime(2026, 8, 1), archived=datetime(2026, 10, 19))
+    seed(db, 2, created=datetime(2026, 9, 1), archived=datetime(2026, 10, 10))
+    result = await service.question_items(db, actor('voter'), sort=sort)
+    assert [item['task_id'] for item in result['items']] == [2, 1]
+
+
+@pytest.mark.asyncio
+async def test_equal_contribution_and_like_counts_use_question_time_as_final_tiebreaker(db):
+    seed(db, 1, created=datetime(2026, 8, 1), archived=datetime(2026, 10, 19))
+    seed(db, 2, 'voter', 'reviewer', created=datetime(2026, 8, 2), archived=datetime(2026, 10, 10))
+    result = await service.rankings(db, '2026-08')
+    assert {entry['user_id'] for entry in result[:2]} == {'alice', 'bob'}
+
+
+@pytest.mark.asyncio
+async def test_like_review_statistics_follow_question_month_without_moving_other_snapshots(db, monkeypatch):
+    seed(db, created=datetime(2026, 8, 1), archived=datetime(2026, 10, 19))
+    db.add(KnowledgeLike(task_id=1, user_id='voter', active=True, risk_status='pending',
+                         updated_at=datetime(2026, 10, 20)))
+    await db.commit()
+    monkeypatch.setattr(settlement, 'utcnow', lambda: datetime(2026, 11, 20))
+    await settlement.freeze_month(db, actor('reviewer'), '2026-08', '核对提问月份')
+    await settlement.freeze_month(db, actor('reviewer'), '2026-10', '核对公开月份')
+    assert (await settlement.risk_items(db, '2026-08'))['total'] == 1
+    assert (await settlement.risk_items(db, '2026-10'))['total'] == 0
+    with pytest.raises(HTTPException) as pending:
+        await settlement.review_snapshot(db, actor('reviewer'), '2026-08', True, '核验')
+    assert pending.value.status_code == 409
+    await settlement.mark_like_risk(db, actor('reviewer'), 1, 'voter', 'invalid', '异常点赞')
+    assert (await db.get(KnowledgeSettlement, '2026-08')).status == 'stale'
+    assert (await db.get(KnowledgeSettlement, '2026-10')).status == 'reviewing'
+    assert db.session.scalars(select(RewardRecord)).all() == []
 
 
 @pytest.mark.asyncio
@@ -386,7 +462,13 @@ def test_api_open_to_logged_users_but_management_and_review_private(db):
         assert client.get('/archive-report/archive-report/reviews/1').status_code == 404
         assert client.post('/archive-report/archive-report/archive-reports/1/approve', json={}).status_code == 422
         assert client.get('/knowledge/rankings?month=2026-10').status_code == 200
-        assert client.get('/knowledge/rankings?month=2026-09').status_code == 422
+        for month in ('2026-08', '2026-09'):
+            assert client.get(f'/knowledge/overview?month={month}').status_code == 200
+            assert client.get(f'/knowledge/rankings?month={month}').status_code == 200
+            assert client.get(f'/knowledge/questions?month={month}&sort=created_at').status_code == 200
+        assert client.get('/knowledge/rankings?month=2026-07').status_code == 422
+        assert client.get('/knowledge/questions?sort=archived_at').status_code == 200
+        assert client.get('/knowledge/questions?sort=invalid').status_code == 422
 
 
 def test_migration_adds_column_and_is_repeatable():

@@ -67,7 +67,7 @@ async def get_rankings(month: str | None = None, db=Depends(get_async_db), actor
 
 
 @router.get("/questions")
-async def questions(month: str | None = None, sort: Literal["archived_at", "likes"] = "archived_at",
+async def questions(month: str | None = None, sort: Literal["created_at", "archived_at", "likes"] = "created_at",
                     page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
                     db=Depends(get_async_db), actor=Depends(get_current_active_user_from_token)):
     if month:

@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.knowledge import KnowledgeLike, KnowledgePublication, KnowledgeSettlement
+from app.models.task import Task
 from app.modules.admin.services.knowledge_service import actor_id, iso, month_bounds, rankings, utcnow
 from app.modules.wxpay.schemas import GrantRewardIn
 from app.modules.wxpay.service import RewardService
@@ -20,8 +21,8 @@ def settlement_view(snapshot):
 async def risk_items(db, month, page=1, size=30):
     start, end = month_bounds(month)
     rows = (await db.execute(select(KnowledgeLike).join(KnowledgePublication,
-        KnowledgePublication.task_id == KnowledgeLike.task_id).where(
-        KnowledgePublication.first_approved_at >= start, KnowledgePublication.first_approved_at < end
+        KnowledgePublication.task_id == KnowledgeLike.task_id).join(Task, Task.id == KnowledgePublication.task_id).where(
+        Task.created_at >= start, Task.created_at < end
     ).order_by(KnowledgeLike.updated_at.desc(), KnowledgeLike.task_id, KnowledgeLike.user_id))).scalars().all()
     counts = {}
     for row in rows:
@@ -37,10 +38,10 @@ async def mark_like_risk(db, actor, task_id, user_id, status, note):
         KnowledgeLike.user_id == user_id).with_for_update())).scalar_one_or_none()
     if not row:
         raise HTTPException(404, "点赞记录不存在")
-    publication = await db.get(KnowledgePublication, task_id)
+    task = await db.get(Task, task_id)
     from app.modules.admin.services.knowledge_service import BEIJING
     from datetime import timezone
-    month = publication.first_approved_at.replace(tzinfo=timezone.utc).astimezone(BEIJING).strftime("%Y-%m")
+    month = task.created_at.replace(tzinfo=timezone.utc).astimezone(BEIJING).strftime("%Y-%m")
     snapshot = (await db.execute(select(KnowledgeSettlement).where(
         KnowledgeSettlement.month == month).with_for_update())).scalar_one_or_none()
     if snapshot and snapshot.status == "granting":
@@ -102,8 +103,8 @@ async def review_snapshot(db, actor, month, approved, note):
         raise HTTPException(409, reason)
     start, end = month_bounds(month)
     pending = (await db.execute(select(KnowledgeLike.task_id).join(KnowledgePublication,
-        KnowledgePublication.task_id == KnowledgeLike.task_id).where(KnowledgeLike.risk_status == "pending",
-        KnowledgePublication.first_approved_at >= start, KnowledgePublication.first_approved_at < end).limit(1))).first()
+        KnowledgePublication.task_id == KnowledgeLike.task_id).join(Task, Task.id == KnowledgePublication.task_id).where(
+        KnowledgeLike.risk_status == "pending", Task.created_at >= start, Task.created_at < end).limit(1))).first()
     if approved and pending:
         raise HTTPException(409, "仍有待核验点赞，请处理后重建快照")
     snapshot.status = "approved" if approved else "held"

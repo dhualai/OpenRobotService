@@ -193,7 +193,11 @@ export default function TicketDashboard() {
   const loadOrg = useCallback(async () => {
     // 口径与全页一致：canViewAll 时不传 projectIds；orgCompanyId 空=按公司，非空=按该公司部门
     const filterIds = canViewAll ? undefined : projectIds;
-    fetchTicketCreatorOrgAnalysis(filterIds, orgCompanyId || undefined).then(setOrgAnalysis);
+    fetchTicketCreatorOrgAnalysis(filterIds, orgCompanyId || undefined)
+      .then(setOrgAnalysis)
+      .catch(() => {
+        // 接口失败保持当前展示，不打断页面
+      });
   }, [projectIds, canViewAll, orgCompanyId]);
 
   useEffect(() => { loadOrg(); }, [loadOrg]);

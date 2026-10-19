@@ -7,7 +7,7 @@ import {
   fetchPendingReviews, type KnowledgeOverview,
 } from '@/api/knowledge';
 import {
-  KnowledgeAvatar, KnowledgeEmpty, KnowledgeState, knowledgeLikeRule, knowledgeMoney, knowledgeTime,
+  KnowledgeAvatar, KnowledgeEmpty, KnowledgeState, knowledgeCampaignMonths, knowledgeLikeRule, knowledgeMoney, knowledgeTime,
   useKnowledgeResource,
 } from './knowledgeShared';
 import KnowledgeRankCard, { contributorPreviewEntries } from './KnowledgeRankCard';
@@ -17,7 +17,7 @@ const tabs = [['questions', '问题榜单'], ['questioners', '最佳提问人榜
 
 function Questions({ month }: { month: string }) {
   const [params, setParams] = useSearchParams();
-  const sort = params.get('sort') === 'likes' ? 'likes' : 'archived_at';
+  const sort = params.get('sort') === 'likes' ? 'likes' : 'created_at';
   const [page, setPage] = useState(1);
   const [allMonths, setAllMonths] = useState(false);
   const resource = useKnowledgeResource(`questions:${allMonths ? 'all' : month}:${sort}:${page}`, () => fetchKnowledgeQuestions(allMonths ? '' : month, sort, page));
@@ -25,11 +25,11 @@ function Questions({ month }: { month: string }) {
   return <>
     <div className="knowledge-toolbar"><h3>知识列表</h3><span className="knowledge-muted">{data ? `共${data.total}条知识` : '公开归档问题'}</span></div>
     <div className="knowledge-toolbar">
-      <select className="knowledge-select" aria-label="问题范围" value={allMonths ? 'all' : 'month'} onChange={(event) => { setAllMonths(event.target.value === 'all'); setPage(1); }}><option value="month">当月归档问题</option><option value="all">本期全部问题</option></select>
-      <select className="knowledge-select" aria-label="问题排序" value={sort} onChange={(event) => { setParams((previous) => { const next = new URLSearchParams(previous); next.set('sort', event.target.value); return next; }); setPage(1); }}><option value="archived_at">最新归档</option><option value="likes">最多有效点赞</option></select>
+      <select className="knowledge-select" aria-label="问题范围" value={allMonths ? 'all' : 'month'} onChange={(event) => { setAllMonths(event.target.value === 'all'); setPage(1); }}><option value="month">当月提问的归档问题</option><option value="all">本期全部问题</option></select>
+      <select className="knowledge-select" aria-label="问题排序" value={sort} onChange={(event) => { setParams((previous) => { const next = new URLSearchParams(previous); next.set('sort', event.target.value); return next; }); setPage(1); }}><option value="created_at">最新提问</option><option value="likes">最多有效点赞</option></select>
     </div>
     <KnowledgeState error={resource.error} loading={resource.loading && !data} retry={resource.reload} />
-    {data?.items.length === 0 && <KnowledgeEmpty>暂无有效归档问题，历史工单不计入本期活动。</KnowledgeEmpty>}
+    {data?.items.length === 0 && <KnowledgeEmpty>当前范围暂无已审核通过并归档的问题。</KnowledgeEmpty>}
     {data?.items.map((question) => <KnowledgeQuestionCard key={question.task_id} question={question} onChange={resource.reload} />)}
     {data && data.total > 20 && <div className="knowledge-pagination"><button className="knowledge-link" disabled={page === 1 || resource.loading} onClick={() => setPage(page - 1)}>上一页</button><span className="knowledge-muted">第{page}页 · 共{data.total}题</span><button className="knowledge-link" disabled={page * 20 >= data.total || resource.loading} onClick={() => setPage(page + 1)}>下一页</button></div>}
     <p className="knowledge-muted">优质问题按有效点赞数排序，可查看完整问题与归档报告。</p>
@@ -97,17 +97,17 @@ export default function KnowledgeCenter() {
   const month = params.get('month') || '';
   const resource = useKnowledgeResource(`overview:${month}`, () => fetchKnowledgeOverview(month || undefined));
   const overview = resource.data;
-  const selectedMonth = month || overview?.month || '2026-11';
+  const selectedMonth = month || overview?.month || knowledgeCampaignMonths[0];
   const pageTitle = tab === 'questions' ? view === 'review' ? '评审工作台' : view === 'history' ? '我的审核意见' : '知识列表' : tab ? tabs.find(([value]) => value === tab)![1] : '知识贡献榜';
   const showBoards = () => setParams((previous) => { const next = new URLSearchParams(previous); next.delete('tab'); next.delete('view'); next.delete('sort'); return next; });
   const showTab = (nextTab: string, nextView = 'public') => setParams((previous) => { const next = new URLSearchParams(previous); next.set('tab', nextTab); next.set('view', nextView); return next; });
   return <div className="dashboard-page knowledge-page">
     <Navbar title={pageTitle} leftArrow onLeftClick={() => tab ? showBoards() : navigate('/admin')} right={<UserAvatarMenu />} fixed />
     <div className="knowledge-content">
-      <div className="knowledge-toolbar"><h2>让每一次解决，都成为知识</h2><select className="knowledge-select" aria-label="榜单月份" value={selectedMonth} onChange={(event) => setParams((previous) => { const next = new URLSearchParams(previous); next.set('month', event.target.value); return next; })}>{(overview?.months || ['2026-11', '2026-12']).map((value) => <option key={value} value={value}>{value.replace('-', '年')}月</option>)}</select></div>
+      <div className="knowledge-toolbar"><h2>让每一次解决，都成为知识</h2><select className="knowledge-select" aria-label="榜单月份" value={selectedMonth} onChange={(event) => setParams((previous) => { const next = new URLSearchParams(previous); next.set('month', event.target.value); return next; })}>{(overview?.months || knowledgeCampaignMonths).map((value) => <option key={value} value={value}>{value.replace('-', '年')}月</option>)}</select></div>
       <KnowledgeState error={resource.error} loading={resource.loading && !overview} retry={resource.reload} />
       {overview && <>
-        <div className="knowledge-note">{overview.campaign_status === 'ended' ? '本期统计已结束，可查看归档知识与贡献榜单。' : '按月统计 · 以有效归档贡献排名'}<br />提单、接单合并排名，贡献数相同按有效获赞数排序。<br />{knowledgeLikeRule}</div>
+        <div className="knowledge-note">{overview.campaign_status === 'ended' ? '本期统计已结束，可查看归档知识与贡献榜单。' : '按月统计 · 以有效归档贡献排名'}<br />按提问时间归属月份，提单、接单合并排名，贡献数相同按有效获赞数排序。<br />{knowledgeLikeRule}</div>
         {!tab && <div className="knowledge-review-entry">{overview.can_review ? <><button type="button" className="knowledge-link" aria-label="进入评审工作台" onClick={() => showTab('questions', 'review')}>评审工作台 · 待审{overview.pending_review_count || 0} →</button><span className="knowledge-muted">查看分配给你的匿名报告及本人审核意见</span></> : <span className="knowledge-muted">评审视角仅向平台指定名单及已有审核任务的人员开放。</span>}</div>}
         {!tab ? <BoardPreviews overview={overview} month={selectedMonth} /> : <>
           <button type="button" className="knowledge-link" onClick={showBoards}>← 返回榜单概览</button>

@@ -8241,6 +8241,8 @@ html, body, #root {
 .user-select__status--ticketed,
 .user-select__status--owned,
 .user-select__status--info { background: var(--sky-soft); color: var(--sky); }
+/* 智能匹配推荐（ORS-713）：实底蓝、比票史/名下标签更醒目——排最前的推荐项 */
+.user-select__status--matched { background: var(--sky); color: #fff; font-weight: 600; }
 
 /* ===== 通用下拉刷新 / 触底加载（PullToRefresh） ===== */
 .ptr-scroll {

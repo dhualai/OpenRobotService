@@ -42,6 +42,7 @@ export interface KnowledgeQuestion {
   content: string;
   review_comment: string;
   value_point: string;
+  created_at: string;
   archived_at: string;
   valid_like_count: number;
   liked_by_me: boolean;
@@ -74,6 +75,7 @@ export interface KnowledgeDiscussionEntry {
 export interface ContributorQuestions {
   user: KnowledgeUser;
   month: string;
+  months: string[];
   question_count: number;
   answer_count: number;
   items: KnowledgeQuestion[];

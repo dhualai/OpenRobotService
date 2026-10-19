@@ -834,12 +834,23 @@ async def update_user(
     if user_data.supervisor_id is not None:
         update_data["supervisor_id"] = user_data.supervisor_id or None
 
+    # 检测是否修改了 USP 密码（导出的 user_list 包含 USP 密码，变更需 bump 项目导出版本）
+    usp_password_changed = False
+    if user_data.external_credentials is not None:
+        external_creds = user_data.external_credentials
+        if "usp" in external_creds and external_creds["usp"].get("password"):
+            usp_password_changed = True
+
     success = db_manager.update_user(user['id'], **update_data)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="更新用户失败"
         )
+
+    if usp_password_changed:
+        from app.modules.admin.services.project_service import project_service
+        project_service.bump_export_version_for_user(user['id'])
 
     updated_user = db_manager.get_user(username)
     return User(
@@ -1024,7 +1035,11 @@ async def update_user_uspinfo(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="更新用户失败"
         )
-    
+
+    # USP 账户重建（用户名 + 密码都刷新），需 bump 所属项目的授权包版本
+    from app.modules.admin.services.project_service import project_service
+    project_service.bump_export_version_for_user(user['id'])
+
     updated_user = db_manager.get_user(username)
     external_credentials = updated_user.get('external_credentials', {})
     if 'usp' in external_credentials and usp_password:

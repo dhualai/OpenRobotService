@@ -40,12 +40,12 @@ vi.mock('@/api/knowledge', async (importOriginal) => ({
 const person = { user_id: 'alice', name: '贡献甲', avatar_resource_id: null, rank: 1,
   question_count: 4, answer_count: 6, contribution_count: 10, valid_like_count: 8,
   estimated_reward_fen: 10000, tied: false };
-const overview: api.KnowledgeOverview = { month: '2026-11', months: ['2026-10', '2026-11', '2026-12'],
-  starts_at: '2026-09-30T16:00:00Z', ends_at: '2026-12-31T16:00:00Z', campaign_status: 'active',
+const overview: api.KnowledgeOverview = { month: '2026-11', months: ['2026-08', '2026-09', '2026-10', '2026-11', '2026-12'],
+  starts_at: '2026-07-31T16:00:00Z', ends_at: '2026-12-31T16:00:00Z', campaign_status: 'active',
   settlement_status: 'live', top_three: [person], can_review: false, rule_notice: '综合贡献统一计奖' };
 const question: api.KnowledgeQuestion = { task_id: 7, title: '充电桩故障处理', problem: '充电无法启动',
   content: '检查供电后恢复', review_comment: '验证完整', value_point: '可复用排查方法',
-  archived_at: '2026-11-12T01:00:00Z', valid_like_count: 2, liked_by_me: false, can_like: true,
+  created_at: '2026-11-01T01:00:00Z', archived_at: '2026-11-12T01:00:00Z', valid_like_count: 2, liked_by_me: false, can_like: true,
   questioner: person, answerer: { user_id: 'bob', name: '接单乙', avatar_resource_id: null } };
 const report: api.KnowledgeReview = { report_id: 9, task_id: 7, version: 2, revision: 3,
   submit_status: 'submitted', title: '匿名充电问题', problem: '无法充电', content: '## 解决方案\n检查供电', review_comment: '', value_point: '' };
@@ -60,7 +60,7 @@ beforeEach(() => {
   vi.mocked(api.fetchKnowledgeQuestion).mockResolvedValue(question);
   vi.mocked(api.fetchKnowledgeDiscussions).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(api.createKnowledgeDiscussion).mockResolvedValue({ id: 1, task_id: 7, author: person, content: '经验补充', created_at: '2026-11-13T01:00:00Z' });
-  vi.mocked(api.fetchContributorQuestions).mockResolvedValue({ user: person, month: '2026-11', question_count: 4, answer_count: 6, items: [question], total: 1 });
+  vi.mocked(api.fetchContributorQuestions).mockResolvedValue({ user: person, month: '2026-11', months: overview.months, question_count: 4, answer_count: 6, items: [question], total: 1 });
   vi.mocked(api.fetchPendingReviews).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(api.fetchMyReviewHistory).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(api.fetchKnowledgeReview).mockResolvedValue(report);
@@ -215,6 +215,8 @@ describe('知识贡献榜UI', () => {
   it('问题支持时间/获赞排序及点赞', async () => {
     render(<MemoryRouter initialEntries={['/?tab=questions']}><KnowledgeCenter /></MemoryRouter>);
     await screen.findByText('充电桩故障处理');
+    expect(api.fetchKnowledgeQuestions).toHaveBeenLastCalledWith('2026-11', 'created_at', 1);
+    expect(screen.getByLabelText('问题排序')).toHaveValue('created_at');
     fireEvent.change(screen.getByLabelText('问题排序'), { target: { value: 'likes' } });
     await waitFor(() => expect(api.fetchKnowledgeQuestions).toHaveBeenLastCalledWith('2026-11', 'likes', 1));
     await screen.findByText('充电桩故障处理');
@@ -422,7 +424,7 @@ describe('横向榜单预览', () => {
     expect(screen.queryByText(/11月1日|活动未开始|活动将于/)).not.toBeInTheDocument();
   });
 
-  it.each(['2026-10', '2026-12'])('切换到%s刷新三个预览，不残留上一月的用户和问题', async (month) => {
+  it.each(['2026-08', '2026-09', '2026-10', '2026-12'])('切换到%s刷新三个预览，不残留上一月的用户和问题', async (month) => {
     openBoards();
     await screen.findByText('充电桩故障处理');
     vi.mocked(api.fetchKnowledgeOverview).mockResolvedValueOnce({ ...overview, month, top_three: [{ ...person, name: '当月贡献者' }] });
@@ -477,7 +479,7 @@ describe('知识列表、人员工单和讨论区', () => {
   it('前十按三列头像网格展示，点击人员可查看并切换提单接单列表', async () => {
     const people = Array.from({ length: 11 }, (_, position) => ({ ...person, user_id: `person-${position + 1}`, name: `人员${position + 1}`, rank: position + 1 }));
     vi.mocked(api.fetchContributors).mockResolvedValue({ items: people });
-    vi.mocked(api.fetchContributorQuestions).mockResolvedValue({ user: people[0], month: '2026-11', question_count: 4, answer_count: 6, items: [question], total: 1 });
+    vi.mocked(api.fetchContributorQuestions).mockResolvedValue({ user: people[0], month: '2026-11', months: overview.months, question_count: 4, answer_count: 6, items: [question], total: 1 });
     openKnowledge('/admin/knowledge?tab=questioners&month=2026-11');
     const grid = await screen.findByRole('list', { name: '综合月榜前十名' });
     await waitFor(() => expect(within(grid).getAllByRole('button')).toHaveLength(10));
@@ -493,6 +495,34 @@ describe('知识列表、人员工单和讨论区', () => {
     expect(await screen.findByText('检查供电后恢复')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '返回' }));
     expect(await screen.findByRole('button', { name: 'TA的接单' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it.each(['2026-08', '2026-09'])('人员贡献可切换到%s，保留角色及返回月份', async (month) => {
+    openKnowledge('/admin/knowledge/contributors/alice?month=2026-11&role=questioner');
+    await screen.findByText(question.title);
+    vi.mocked(api.fetchContributorQuestions).mockResolvedValueOnce({ user: person, month, months: overview.months, question_count: 1, answer_count: 0, items: [question], total: 1 });
+    fireEvent.change(screen.getByLabelText('贡献月份'), { target: { value: month } });
+    await waitFor(() => expect(api.fetchContributorQuestions).toHaveBeenLastCalledWith('alice', month, 'questioner', 1));
+    expect(await screen.findByText(question.title)).toBeInTheDocument();
+    expect(screen.getByLabelText('贡献月份')).toHaveValue(month);
+    fireEvent.click(screen.getByRole('button', { name: '返回' }));
+    expect(await screen.findByLabelText('榜单月份')).toHaveValue(month);
+    await waitFor(() => expect(api.fetchContributors).toHaveBeenLastCalledWith(month));
+  });
+
+  it('跨月归档的问题列表及详情显示提问时间，统计口径有明确提示', async () => {
+    const historicalQuestion = { ...question, created_at: '2026-08-31T16:00:00Z', archived_at: '2026-10-19T01:00:00Z' };
+    vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue({ ...overview, month: '2026-09' });
+    vi.mocked(api.fetchKnowledgeQuestions).mockResolvedValue({ items: [historicalQuestion], total: 1 });
+    vi.mocked(api.fetchKnowledgeQuestion).mockResolvedValue(historicalQuestion);
+    openKnowledge('/admin/knowledge?tab=questions&month=2026-09');
+    const card = await screen.findByRole('region', { name: question.title });
+    expect(within(card).getByText(/提问于 2026年9月1日/)).toBeInTheDocument();
+    expect(screen.getByText(/按提问时间归属月份/)).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '最新提问' })).toHaveValue('created_at');
+    fireEvent.click(within(card).getByRole('button', { name: '查看问题、解答与审核意见 →' }));
+    expect(await screen.findByText(/提问于 2026年9月1日/)).toBeInTheDocument();
+    expect(screen.queryByText(/归档于/)).not.toBeInTheDocument();
   });
 
   it('详情展示提单接单人、归档报告和匿名意见，并支持点赞', async () => {

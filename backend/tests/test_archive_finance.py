@@ -48,7 +48,7 @@ async def test_content_approval_creates_three_distinct_roles_without_auto_pass(d
 
 
 @pytest.mark.asyncio
-async def test_finance_approval_is_whole_task_idempotent_and_uses_closure_month(db, monkeypatch):
+async def test_finance_approval_is_whole_task_idempotent_and_uses_question_month(db, monkeypatch):
     task, report, rewards = await prepare(db, monkeypatch)
     monkeypatch.setattr(knowledge_service, 'utcnow', lambda: datetime(2026, 11, 30, 16))
     processed = await archive_finance.audit_archive_rewards(db, [rewards[0].id], 'voter', True, '金额核对无误')
@@ -62,9 +62,9 @@ async def test_finance_approval_is_whole_task_idempotent_and_uses_closure_month(
     publication = await db.get(KnowledgePublication, task.id)
     assert publication.report_id == report.id
     assert publication.first_approved_at == task.archived_at
-    assert await knowledge_service.rankings(db, '2026-11') == []
-    assert {entry['user_id'] for entry in await knowledge_service.rankings(db, '2026-12')} == {'alice', 'bob'}
-    assert 'reviewer' not in str(await knowledge_service.question_items(db, actor('voter'), '2026-12'))
+    assert {entry['user_id'] for entry in await knowledge_service.rankings(db, '2026-11')} == {'alice', 'bob'}
+    assert await knowledge_service.rankings(db, '2026-12') == []
+    assert 'reviewer' not in str(await knowledge_service.question_items(db, actor('voter'), '2026-11'))
     assert len(db.session.scalars(select(TaskOperationLog)).all()) == 1
     assert await archive_finance.audit_archive_rewards(db, [reward.id for reward in rewards], 'voter', True) == []
     assert len(db.session.scalars(select(RewardRecord)).all()) == 3

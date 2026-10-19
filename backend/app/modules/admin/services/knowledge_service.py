@@ -18,9 +18,9 @@ from app.models.task import ArchiveReport, Task, TaskStatus
 
 
 BEIJING = timezone(timedelta(hours=8))
-CAMPAIGN_START = datetime(2026, 9, 30, 16)
+CAMPAIGN_START = datetime(2026, 7, 31, 16)
 CAMPAIGN_END = datetime(2026, 12, 31, 16)
-CAMPAIGN_MONTHS = ("2026-10", "2026-11", "2026-12")
+CAMPAIGN_MONTHS = ("2026-08", "2026-09", "2026-10", "2026-11", "2026-12")
 DAILY_QUESTION_LIKE_LIMIT = 5
 
 
@@ -136,9 +136,14 @@ async def eligible_publications(db, month=None):
             KnowledgePublication.first_approved_at < CAMPAIGN_END)
     if month:
         start, end = month_bounds(month)
-        query = query.where(KnowledgePublication.first_approved_at >= start,
-                            KnowledgePublication.first_approved_at < end)
+        query = query.where(Task.created_at >= start, Task.created_at < end)
     return (await db.execute(query)).scalars().all()
+
+
+async def question_times(db, publications):
+    return dict((await db.execute(select(Task.id, Task.created_at).where(
+        Task.id.in_([publication.task_id for publication in publications])
+    ))).all())
 
 
 async def like_state(db, cutoff=None):
@@ -159,6 +164,7 @@ async def rankings(db, month, frozen=True):
         if snapshot:
             return snapshot.rankings
     publications = await eligible_publications(db, month)
+    created_at_by_task = await question_times(db, publications)
     users = await users_by_identity(db)
     _, end = month_bounds(month)
     likes = await like_state(db, end if utcnow() >= end else None)
@@ -172,13 +178,13 @@ async def rankings(db, month, frozen=True):
                 continue
             entry = entries.setdefault(user_id, {**display_user(users[user_id]), "question_count": 0,
                 "answer_count": 0, "contribution_count": 0, "valid_like_count": 0,
-                "last_contribution_at": iso(publication.first_approved_at), "has_dual_role": False})
+                "last_contribution_at": iso(created_at_by_task[publication.task_id]), "has_dual_role": False})
             entry["question_count"] += int(user_id == publication.questioner_id)
             entry["answer_count"] += int(user_id == publication.answerer_id)
             entry["contribution_count"] += 1
             entry["has_dual_role"] |= publication.questioner_id == publication.answerer_id
             entry["valid_like_count"] += counts[publication.task_id]
-            entry["last_contribution_at"] = max(entry["last_contribution_at"], iso(publication.first_approved_at))
+            entry["last_contribution_at"] = max(entry["last_contribution_at"], iso(created_at_by_task[publication.task_id]))
     result = sorted(entries.values(), key=lambda entry: (-entry["contribution_count"],
         -entry["valid_like_count"], entry["last_contribution_at"], entry["user_id"]))
     for position, entry in enumerate(result, 1):
@@ -215,7 +221,7 @@ async def overview(db, actor, month=None):
             "rule_notice": "综合榜统一计奖；同工单双角色暂计1次，同数量按有效获赞排序；未定边界须确认后发奖"}
 
 
-async def question_items(db, actor, month=None, sort="archived_at", page=1, size=20, task_id=None,
+async def question_items(db, actor, month=None, sort="created_at", page=1, size=20, task_id=None,
                          contributor_id=None, role="all"):
     publications = await eligible_publications(db, month)
     if contributor_id:
@@ -233,8 +239,9 @@ async def question_items(db, actor, month=None, sort="archived_at", page=1, size
     counts = defaultdict(int)
     for liked_task, _ in likes:
         counts[liked_task] += 1
+    created_at_by_task = await question_times(db, publications)
     publications.sort(key=lambda item: (-counts[item.task_id] if sort == "likes" else 0,
-                                        -item.first_approved_at.timestamp(), -item.task_id))
+                                        -created_at_by_task[item.task_id].timestamp(), -item.task_id))
     items = []
     for publication in publications[(page - 1) * size:page * size]:
         report = await db.get(ArchiveReport, publication.report_id)
@@ -242,6 +249,7 @@ async def question_items(db, actor, month=None, sort="archived_at", page=1, size
             "problem": publication.problem if task_id else publication.problem[:160],
             "content": publication.content if task_id else publication.content[:160],
             "review_comment": publication.review_comment, "value_point": publication.value_point,
+            "created_at": iso(created_at_by_task[publication.task_id]),
             "archived_at": iso(publication.first_approved_at), "valid_like_count": counts[publication.task_id],
             "liked_by_me": (publication.task_id, user_id) in likes,
             "can_like": user_id not in (publication.questioner_id, publication.answerer_id) and
@@ -260,7 +268,7 @@ async def contributor_questions(db, actor, user_id, month=None, role="all", page
     if not user or not publications:
         raise HTTPException(404, "未找到本月公开知识贡献")
     result = await question_items(db, actor, month, page=page, size=size, contributor_id=user_id, role=role)
-    return {**result, "month": month, "user": display_user(user),
+    return {**result, "month": month, "months": list(CAMPAIGN_MONTHS), "user": display_user(user),
             "question_count": sum(item.questioner_id == user_id for item in publications),
             "answer_count": sum(item.answerer_id == user_id for item in publications)}
 

@@ -247,7 +247,7 @@ class ArchiveReportService:
 
         from fastapi import HTTPException
         from app.models.knowledge import ArchiveReviewDecision
-        from app.modules.admin.services.knowledge_service import utcnow
+        from app.modules.admin.services.knowledge_service import publish_report, utcnow
         from app.modules.wxpay.archive_finance import prepare_archive_rewards
         if report.revision != revision:
             raise HTTPException(409, "报告已更新，请刷新后审核")
