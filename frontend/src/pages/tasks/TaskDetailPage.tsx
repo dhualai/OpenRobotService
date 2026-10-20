@@ -2794,7 +2794,10 @@ export default function TaskDetailPage() {
         placement="bottom"
         showOverlay
       >
-        <div className="ticket-edit-form">
+        {/* ORS-1010：编辑器+相似工单块易超 88vh，ticket-edit-form 类本身不滚动
+            （滚动在其 __body 子层，本弹窗未用）——底部内容曾被硬裁（1010 用户
+            iOS 实测提示语只剩半句）。内联开启滚动。 */}
+        <div className="ticket-edit-form" style={{ overflowY: 'auto' }}>
           <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
@@ -2909,8 +2912,8 @@ export default function TaskDetailPage() {
                 );
               })}
               {archiveSimilar.length === 0 && !archiveSimilarLoading && (
-                <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', lineHeight: 1.7 }}>
-                  本单归档审核通过后，也会沉淀进经验库——以后遇到同类问题的同事，写归档报告时就能看到这张单。
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', lineHeight: 1.7, wordBreak: 'break-word' }}>
+                  本单归档审核通过后也会沉淀进经验库，供以后遇到同类问题的同事参考。
                 </div>
               )}
               {archiveSimilar.length > 0 && (
