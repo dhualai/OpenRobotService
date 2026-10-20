@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -66,7 +67,12 @@ async def test_finance_approval_is_whole_task_idempotent_and_uses_question_month
     assert await knowledge_service.rankings(db, '2026-12') == []
     assert 'reviewer' not in str(await knowledge_service.question_items(db, actor('voter'), '2026-11'))
     assert len(db.session.scalars(select(TaskOperationLog)).all()) == 1
+    log = db.session.scalars(select(TaskOperationLog)).one()
+    assert log.operator == 'voter'
+    assert log.to_status == TaskStatus.ARCHIVED.value
+    assert log.detail == {'finance_outcome': 'approved', 'audit_remark': '金额核对无误', 'report_id': report.id}
     assert await archive_finance.audit_archive_rewards(db, [reward.id for reward in rewards], 'voter', True) == []
+    assert len(db.session.scalars(select(TaskOperationLog)).all()) == 1
     assert len(db.session.scalars(select(RewardRecord)).all()) == 3
 
 
@@ -115,6 +121,8 @@ async def test_incomplete_group_cannot_release_any_rewards(db, monkeypatch):
     assert denied.value.status_code == 409
     assert all(reward.status == RewardStatus.PENDING_AUDIT for reward in rewards[:2])
     assert task.status == TaskStatus.ARCHIVING
+    assert await db.get(KnowledgePublication, task.id) is None
+    assert not db.session.scalars(select(TaskOperationLog)).all()
 
 
 @pytest.mark.asyncio
@@ -182,7 +190,7 @@ async def test_existing_non_archive_rewards_can_be_audited_with_archive_group(db
 async def test_existing_auto_pass_endpoint_cannot_bypass_manual_archive_finance(db, monkeypatch):
     task, report, rewards = await prepare(db, monkeypatch)
     monkeypatch.setattr(admin, 'ensure_permission', MagicMock())
-    db.add(RewardConfig(config_key='audit_policy', enabled=True, config={'auto_pass_max_fen': 10000}))
+    db.add(RewardConfig(config_key='audit_policy', enabled=True, config=json.dumps({'auto_pass_max_fen': 10000})))
     await db.commit()
     result = await admin.run_auto_pass(db=db, current_user=actor('voter'))
     assert result.ok_count == 0
