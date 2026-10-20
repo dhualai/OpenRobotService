@@ -2,7 +2,7 @@
 //
 // 全屏右侧滑出，内容两段：
 //   1) 公告：已发布公告全文（标题 + 正文，正文保留换行）
-//   2) 精品工单 TOP 榜：与后台「知识贡献榜」同源（GET /api/admin/knowledge/questions?sort=likes），
+//   2) 优质问题 TOP 榜：与后台「知识贡献榜」同源（GET /api/admin/knowledge/questions?sort=likes），
 //      按有效点赞数倒序，可按月切换；行内点赞走知识点赞接口（受 can_like 与每日 5 个限制）。
 //
 // 打开时才拉数据（visible 变化触发），关闭保留上次内容避免闪烁；点工单跳「系统任务」详情页。
@@ -159,10 +159,10 @@ export default function ActivityCenterDrawer({ visible, onClose }: Props) {
             ))}
           </section>
 
-          {/* ── 精品工单 TOP 榜（与后台知识贡献榜问题榜同源） ── */}
+          {/* ── 优质问题 TOP 榜（与后台知识贡献榜问题榜同源） ── */}
           <section className="activity-section">
             <div className="activity-section__head">
-              <h3 className="activity-section__title">精品工单 TOP</h3>
+              <h3 className="activity-section__title">优质问题 TOP</h3>
               {months.length > 0 && (
                 <select
                   className="activity-month-select"

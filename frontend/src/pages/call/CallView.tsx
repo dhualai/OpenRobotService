@@ -154,7 +154,7 @@ export default function CallView() {
       </div>
       {/* 会话抽屉 + 遮罩 */}
       <ConversationDrawer visible={drawerOpen} onClose={() => setDrawerOpen(false)} />
-      {/* 活动中心抽屉（公告全文 + 精品工单 TOP 榜）+ 遮罩 */}
+      {/* 活动中心抽屉（公告全文 + 优质问题 TOP 榜）+ 遮罩 */}
       <ActivityCenterDrawer visible={activityOpen} onClose={() => setActivityOpen(false)} />
       {/* 车体扫码进入：车辆信息确认（仅该码「已发布/已出厂」时出现，用户关掉后本次访问不再弹） */}
       <VehicleConfirmDialog
