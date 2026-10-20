@@ -88,6 +88,8 @@ STATUS_LABEL = {
     "in_progress": "处理中",
     "pending_requested": "暂停请求中",
     "pending": "已挂起",
+    "unsolvable_requested": "无法解决确认中",
+    "unsolvable": "无法解决",
     "resolved": "已解决",
     "canceled": "已取消",
     "closed": "已关闭",
@@ -2417,15 +2419,19 @@ async def update_task_status(
         if status_enum == TicketStatus.CANCELED and not is_admin and not user_matches(current_user, ticket.created_by):
             raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
 
-        # ── 请求暂停（→ pending_requested）权限收窄：仅**处理人**可发起，提单人/管理员不能替处理人请求暂停 ──
+        # ── 暂停（→ pending）直达：仅**管理员**可直接挂起处理中的工单 ──
+        if status_enum == TicketStatus.PENDING and ticket.status == TicketStatus.IN_PROGRESS:
+            if not is_admin:
+                raise HTTPException(status_code=403, detail="仅管理员可直接暂停工单")
+
+        # ── 请求暂停（→ pending_requested）两阶段路径：保留兼容历史数据，仅处理人可发起 ──
         if status_enum == TicketStatus.PENDING_REQUESTED:
             if ticket.status != TicketStatus.IN_PROGRESS:
                 raise HTTPException(status_code=400, detail="仅处理中的工单可发起暂停请求")
             if not _roles.is_assignee and not is_admin:
-                # 管理员可临时代处理人发起（运维兜底）
                 raise HTTPException(status_code=403, detail="仅处理人可请求暂停工单")
 
-        # ── 暂停请求后续操作权限收窄：必须由**提单人侧**（creator / principal / admin）来决定 ──
+        # ── 暂停请求后续操作权限收窄（pending_requested 两阶段，保留兼容） ──
         # pending_requested → pending  = 提单人确认暂停
         # pending_requested → in_progress = 提单人驳回（继续处理）
         if ticket.status == TicketStatus.PENDING_REQUESTED:
@@ -2434,20 +2440,45 @@ async def update_task_status(
             if status_enum not in (TicketStatus.PENDING, TicketStatus.IN_PROGRESS):
                 raise HTTPException(status_code=400, detail="暂停请求中仅可「确认暂停」或「驳回」")
 
+        # ── 请求无法解决（→ unsolvable_requested）权限收窄：仅**处理人**可发起 ──
+        if status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            if ticket.status != TicketStatus.IN_PROGRESS:
+                raise HTTPException(status_code=400, detail="仅处理中的工单可标记无法解决")
+            if not _roles.is_assignee and not is_admin:
+                raise HTTPException(status_code=403, detail="仅处理人可标记无法解决工单")
+
+        # ── 无法解决请求后续：必须由**提单人侧**处理 ──
+        # unsolvable_requested → unsolvable = 提单人确认（终态）
+        # unsolvable_requested → in_progress = 提单人驳回（继续处理）
+        if ticket.status == TicketStatus.UNSOLVABLE_REQUESTED:
+            if not (_roles.is_creator or _roles.is_principal or is_admin):
+                raise HTTPException(status_code=403, detail="仅提单人/被代理人/管理员可处理无法解决请求")
+            if status_enum not in (TicketStatus.UNSOLVABLE, TicketStatus.IN_PROGRESS):
+                raise HTTPException(status_code=400, detail="无法解决确认中仅可「确认无法解决」或「驳回」")
+
+        # ── 已无法解决 → 继续处理（回到 in_progress）：仅**处理人**可恢复 ──
+        if ticket.status == TicketStatus.UNSOLVABLE:
+            if status_enum == TicketStatus.IN_PROGRESS:
+                if not _roles.is_assignee and not is_admin:
+                    raise HTTPException(status_code=403, detail="仅处理人可恢复无法解决的工单")
+
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
         resolution_summary = None
         pause_reason = None
         reject_reason = None
+        unsolvable_reason = None
         try:
             if request:
                 body = await request.json()
                 resolution_summary = (body or {}).get("resolution_summary")
                 pause_reason = (body or {}).get("pause_reason")
                 reject_reason = (body or {}).get("reject_reason")
+                unsolvable_reason = (body or {}).get("unsolvable_reason")
         except Exception:
             resolution_summary = None
             pause_reason = None
             reject_reason = None
+            unsolvable_reason = None
 
         if status_enum == TicketStatus.RESOLVED:
             # 必填校验：去空白后非空（占位提示由前端 placeholder 控制，不入值）
@@ -2470,6 +2501,20 @@ async def update_task_status(
                 raise HTTPException(status_code=400, detail="驳回暂停必须填写理由")
             reject_reason = rr
 
+        if status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            # 标记无法解决必填理由
+            ur = (unsolvable_reason or "").strip()
+            if not ur:
+                raise HTTPException(status_code=400, detail="标记无法解决必须填写理由")
+            unsolvable_reason = ur
+
+        # 驳回无法解决（unsolvable_requested → in_progress）必填驳回理由
+        if ticket.status == TicketStatus.UNSOLVABLE_REQUESTED and status_enum == TicketStatus.IN_PROGRESS:
+            rr2 = (reject_reason or "").strip()
+            if not rr2:
+                raise HTTPException(status_code=400, detail="驳回无法解决必须填写理由")
+            reject_reason = rr2
+
         # ── 预加载工单关联策略（阻塞检查 + 重复同步共用一次读取） ──
         try:
             policies = await get_all_policies(db)
@@ -2490,14 +2535,22 @@ async def update_task_status(
 
         old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
 
-        # ── 回合累加：仅「驳回暂停」时 bump +1 ──
+        # ── 回合累加：仅「驳回暂停」或「驳回无法解决」时 bump +1 ──
         # 语义：驳回 = 双方没达成共识 → 算一次额外交涉
-        # 确认暂停（→ pending）= 达成共识，不加；请求暂停本身只是提案，等驳回再算
+        # 确认（→ pending / unsolvable）= 达成共识，不加；请求本身只是提案，等驳回再算
         # 注意：连续多次驳回都要 +1，不检查操作方是否切换（可能始终是同一方在重复驳回）
-        if old_status.upper() == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
+        if (old_status.upper() == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS) \
+                or (old_status.upper() == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS):
             ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
 
-        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username, resolution_summary=resolution_summary, pause_reason=pause_reason, reject_reason=reject_reason)
+        updated_ticket = await TicketService.update_ticket_status(
+            db, task_id, status_enum,
+            token=token, operator_id=username,
+            resolution_summary=resolution_summary,
+            pause_reason=pause_reason,
+            reject_reason=reject_reason,
+            unsolvable_reason=unsolvable_reason,
+        )
         # ── WS 实时广播：工单状态变更 ──
         try:
             await ws_broadcast_task_updated(task_id, updated_ticket)
@@ -2508,10 +2561,13 @@ async def update_task_status(
         user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
         _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
 
-        # 暂停请求三态转换的定制描述（语义比通用的"状态变更为"更明确）
+        # 暂停请求 / 无法解决 请求 定制描述（语义比通用的"状态变更为"更明确）
         old_status_upper = old_status.upper()
         pending_special_desc = None
-        if old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING_REQUESTED:
+        if old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING:
+            # 管理员直接暂停（两阶段请求暂停已下线，直达）
+            pending_special_desc = f"暂停工单，工单状态变更为「已挂起」"
+        elif old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING_REQUESTED:
             reason_suffix = f"\n理由：{pause_reason}" if pause_reason else ""
             pending_special_desc = f"请求暂停工单，状态变更为「暂停请求中」{reason_suffix}"
         elif old_status_upper == 'PENDING_REQUESTED' and status_enum == TicketStatus.PENDING:
@@ -2519,6 +2575,16 @@ async def update_task_status(
         elif old_status_upper == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
             reason_suffix = f"\n驳回理由：{reject_reason}" if reject_reason else ""
             pending_special_desc = f"驳回了暂停工单请求，工单状态变更为「处理中」{reason_suffix}"
+        elif old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            reason_suffix = f"\n理由：{unsolvable_reason}" if unsolvable_reason else ""
+            pending_special_desc = f"标记无法解决工单，状态变更为「无法解决确认中」{reason_suffix}"
+        elif old_status_upper == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.UNSOLVABLE:
+            pending_special_desc = f"确认无法解决工单，工单状态变更为「无法解决」"
+        elif old_status_upper == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
+            reason_suffix = f"\n驳回理由：{reject_reason}" if reject_reason else ""
+            pending_special_desc = f"驳回了无法解决请求，工单状态变更为「处理中」{reason_suffix}"
+        elif old_status_upper == 'UNSOLVABLE' and status_enum == TicketStatus.IN_PROGRESS:
+            pending_special_desc = f"恢复工单处理，状态变更为「处理中」"
 
         if pending_special_desc:
             op_log_desc = f"{_role}{user_name} {pending_special_desc}" if _role else f"{user_name} {pending_special_desc}"
@@ -2747,6 +2813,7 @@ class CompleteStepRequest(BaseModel):
     """当前阶段完成请求：处理人选择下一阶段节点并设置其结束时间。"""
     next_step_id: int = Field(..., description="下一阶段节点ID（必须为同 task_type 的节点）")
     curr_step_endtime: datetime = Field(..., description="下一阶段节点结束时间（ISO 字符串，naive UTC 存库）")
+    reason: Optional[str] = Field(None, description="选择特殊 step（等待外部条件/等待前置工单）时必填的条件理由")
 
 
 @router.post("/{task_id}/complete-step", response_model=TicketResponse, summary="当前阶段完成：推进到下一协商节点")
@@ -2795,7 +2862,8 @@ async def complete_task_step(
     if cur_step is None:
         raise HTTPException(status_code=400, detail="当前节点不存在，无法推进")
 
-    # 校验目标节点：必须为同 task_type，且 sequence > 当前节点（只能向前推进）
+    # 校验目标节点：必须为同 task_type，正常 step 要求 sequence > 当前；
+    # 特殊 step（等待外部条件=-2 / 等待前置工单=-1）总是允许选择，且与当前 sequence 无关
     next_row = await db.execute(
         select(TaskStep).where(TaskStep.id == int(body.next_step_id))
     )
@@ -2804,8 +2872,30 @@ async def complete_task_step(
         raise HTTPException(status_code=400, detail="所选下一阶段节点不存在")
     if next_step.task_type != ticket.task_type:
         raise HTTPException(status_code=400, detail="下一阶段节点与工单类型不匹配")
-    if next_step.sequence <= cur_step.sequence:
+
+    is_special_step = (next_step.sequence < 0)
+    if not is_special_step and next_step.sequence <= cur_step.sequence:
         raise HTTPException(status_code=400, detail="下一阶段必须晚于当前阶段")
+
+    # 特殊 step 的条件校验
+    complete_reason_text = None
+    if is_special_step:
+        complete_reason_text = (body.reason or "").strip()
+        if not complete_reason_text:
+            raise HTTPException(status_code=400, detail=f"选择「{next_step.step_name}」需要填写等待理由")
+        if next_step.sequence == -1:
+            # 等待前置工单：必须已有至少一条 predecessor 关系
+            rel_count_row = await db.execute(
+                select(func.count(TaskRelation.id)).where(
+                    TaskRelation.source_task_id == ticket_id,
+                    TaskRelation.relation_type == RelationType.PREDECESSOR,
+                )
+            )
+            if (rel_count_row.scalar_one() or 0) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="等待前置工单需要先添加前置工单，请在工单详情页「前置工单」区域点击 +添加"
+                )
 
     old_step_name = ticket.curr_step_name or cur_step.step_name
     endtime = convert_to_shanghai_time(body.curr_step_endtime)
@@ -2816,6 +2906,25 @@ async def complete_task_step(
     ticket.curr_step_agreed = False  # 进入新节点：等待对方确认同意才视为协商一致
     ticket.step_phase_round = int(getattr(ticket, 'step_phase_round', 0) or 0) + 1
     ticket.updated_at = func.now()
+
+    # 特殊 step 条件理由写入 metadata_info（非特殊 step 清理）
+    if is_special_step:
+        meta = dict(ticket.metadata_info or {})
+        from datetime import datetime
+        if next_step.sequence == -2:
+            meta["waiting_external_reason"] = complete_reason_text
+            meta.pop("waiting_predecessor_reason", None)
+        else:  # -1
+            meta["waiting_predecessor_reason"] = complete_reason_text
+            meta.pop("waiting_external_reason", None)
+        meta["waiting_step_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ticket.metadata_info = meta
+    else:
+        meta = dict(ticket.metadata_info or {})
+        meta.pop("waiting_external_reason", None)
+        meta.pop("waiting_predecessor_reason", None)
+        meta.pop("waiting_step_at", None)
+        ticket.metadata_info = meta
 
     # 阶段完成 = 当前操作人"提案"推进到下一节点：记录操作方（回合归属）
     round_meta = _apply_step_update_meta(ticket, current_user, username)
@@ -2920,11 +3029,38 @@ async def negotiate_step(
             raise HTTPException(status_code=400, detail="协商节点不存在")
         if target_step.task_type != ticket.task_type:
             raise HTTPException(status_code=400, detail="协商节点与工单类型不匹配")
-        if phase_round > 0 and target_step.sequence < cur_seq:
+        # 特殊 step（sequence < 0）与 sequence 下限无关
+        if target_step.sequence >= 0 and phase_round > 0 and target_step.sequence < cur_seq:
             raise HTTPException(status_code=400, detail="协商节点不能早于当前节点")
         ticket.curr_step_id = target_step.id
         ticket.curr_step_name = target_step.step_name
         step_changed = True
+
+    # 特殊 step 条件理由写入 metadata_info（非特殊 step 清理）
+    target_step_obj = None
+    if step_changed and body.curr_step_id is not None:
+        row2 = await db.execute(select(TaskStep).where(TaskStep.id == int(body.curr_step_id)))
+        target_step_obj = row2.unique().scalar_one_or_none()
+    if target_step_obj and target_step_obj.sequence < 0:
+        meta = dict(ticket.metadata_info or {})
+        from datetime import datetime
+        if target_step_obj.sequence == -2:
+            meta["waiting_external_reason"] = reason
+            meta.pop("waiting_predecessor_reason", None)
+        else:
+            meta["waiting_predecessor_reason"] = reason
+            meta.pop("waiting_external_reason", None)
+        meta["waiting_step_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ticket.metadata_info = meta
+    else:
+        meta = dict(ticket.metadata_info or {})
+        changed = False
+        for k in ("waiting_external_reason", "waiting_predecessor_reason", "waiting_step_at"):
+            if k in meta:
+                meta.pop(k, None)
+                changed = True
+        if changed:
+            ticket.metadata_info = meta
 
     # 前端 dayjs(...).toISOString() 传入 UTC aware datetime，剥时区转 naive UTC 存库
     # 协商节点时间只更新 curr_step_endtime，不动 deadline_at；

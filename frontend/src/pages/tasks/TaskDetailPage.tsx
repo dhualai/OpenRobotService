@@ -274,9 +274,9 @@ export default function TaskDetailPage() {
   // AI 判定当前无解决方案（仅占位提示，不填入输入框）
   const [resolutionNoSolution, setResolutionNoSolution] = useState(false);
 
-  // 请求暂停弹窗
-  const [showPausePopup, setShowPausePopup] = useState(false);
-  const [pauseReason, setPauseReason] = useState('');
+  // 标记无法解决弹窗
+  const [showUnsolvablePopup, setShowUnsolvablePopup] = useState(false);
+  const [unsolvableReason, setUnsolvableReason] = useState('');
   // 标记是否已"确认完成"成功（成功后关闭弹窗不应清除草稿；取消/遮罩关闭才清除）
   const resolveConfirmedRef = useRef(false);
   // 轮询停止标志：取消/关闭时置 true，让异步轮询循环及时退出（state 无法中断 while 循环）
@@ -545,7 +545,12 @@ export default function TaskDetailPage() {
       // 管理员可以代替任何一方操作（运维兜底），但走和提单人侧一样的确认/驳回按钮
     }
 
-    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
+    // unsolvable_requested：处理人标记无法解决，等待提单人确认——同暂停请求，仅提单人侧可操作
+    if (status === 'unsolvable_requested') {
+      if (!isReporter && !isPrincipal && !canOperate) return [];
+    }
+
+    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused', 'unsolvable'];
     if (assigneeOnlyStatuses.includes(status) && !isAssignee && !canOperate) return [];
 
     // 已解决：与后端口径统一（决策 6）—— 提单人(created_by，即代理人) / 已确认跟进的被代理人 / 管理员
@@ -558,12 +563,20 @@ export default function TaskDetailPage() {
       // new 状态由处理人首次响应（协商节点时间/确认同意）自动转为 in_progress，不再提供「开始处理」按钮
       new: [],
       // 有/无步骤模板的工单：处理人均可从顶部一键触发"处理完成"（走解决方式弹窗）
+      // "暂停工单"仅管理员可见（直达已挂起 pending，跳过两阶段请求暂停）
       in_progress: [
-        { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
+        ...(canOperate ? [{ label: '暂停工单', nextStatus: 'pending', theme: 'warning' as const, customStyle: BTN_SECONDARY }] : []),
         { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
+        { label: '无法解决', nextStatus: 'unsolvable_requested', theme: 'warning', customStyle: BTN_SECONDARY },
       ],
-      // 暂停请求中：确认/驳回按钮已移至「工单阶段性处理」卡内，顶部不再重复
+      // 暂停请求中：两阶段路径仅兼容历史数据，新流程不再产生；确认/驳回按钮已移至阶段性处理卡内
       pending_requested: [],
+      // 无法解决确认中：确认/驳回按钮已移至「工单阶段性处理」卡内，顶部不再重复
+      unsolvable_requested: [],
+      unsolvable: [
+        // 已被提单人确认无法解决的终态：处理人可点"继续处理"回到 in_progress
+        { label: '继续处理', nextStatus: 'in_progress', theme: 'primary', customStyle: BTN_PRIMARY },
+      ],
       pending: (isAssignee && isReporter)
         ? [
             // 工单退回发起人后：发起人可重新发起（继续处理）或关闭工单
@@ -610,7 +623,7 @@ export default function TaskDetailPage() {
     return actions[status] || [];
   };
 
-  const handleStatusChange = async (action: { nextStatus: string; pauseReason?: string; rejectReason?: string }) => {
+  const handleStatusChange = async (action: { nextStatus: string; pauseReason?: string; rejectReason?: string; unsolvableReason?: string }) => {
     if (!detail) return;
     // 清空前次阻塞提示
     setBlockedError(null);
@@ -619,6 +632,7 @@ export default function TaskDetailPage() {
       const bodyObj: Record<string, string> = { status: action.nextStatus };
       if (action.pauseReason) bodyObj.pause_reason = action.pauseReason;
       if (action.rejectReason) bodyObj.reject_reason = action.rejectReason;
+      if (action.unsolvableReason) bodyObj.unsolvable_reason = action.unsolvableReason;
       await request<Ticket>(`/${detail.id}/status`, {
         method: 'PATCH',
         body: JSON.stringify(bodyObj),
@@ -637,9 +651,9 @@ export default function TaskDetailPage() {
           return;
         }
       }
-      // 请求暂停理由必填（400）
-      if (err instanceof ApiError && err.statusCode === 400 && action.nextStatus === 'pending_requested') {
-        Toast({ message: err.message || '请填写暂停理由', theme: 'error' });
+      // 标记无法解决理由必填（400）
+      if (err instanceof ApiError && err.statusCode === 400 && action.nextStatus === 'unsolvable_requested') {
+        Toast({ message: err.message || '请填写无法解决理由', theme: 'error' });
         return;
       }
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -1670,10 +1684,10 @@ export default function TaskDetailPage() {
                       } else if (action.nextStatus === 'resolved') {
                         // 结束工单（→ resolved）→ 打开 "问题 + AI 解决方式" 确认弹窗
                         resolve.handleResolveClick();
-                      } else if (action.nextStatus === 'pending_requested') {
-                        // 请求暂停 → 先弹理由输入弹窗
-                        setPauseReason('');
-                        setShowPausePopup(true);
+                      } else if (action.nextStatus === 'unsolvable_requested') {
+                        // 标记无法解决 → 先弹理由输入弹窗
+                        setUnsolvableReason('');
+                        setShowUnsolvablePopup(true);
                       } else {
                         handleStatusChange(action);
                       }
@@ -1854,6 +1868,7 @@ export default function TaskDetailPage() {
             setShowReassignPopup(true);
           }}
           onPauseResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
+          onUnsolvableResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
         />
 
         {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
@@ -2299,36 +2314,36 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 请求暂停弹窗：输入理由（提单人将看到） */}
-      <Popup visible={showPausePopup} onClose={() => { setShowPausePopup(false); setPauseReason(''); }} placement="bottom" showOverlay destroyOnClose>
+      {/* 标记无法解决弹窗：输入理由（提单人将看到并决定） */}
+      <Popup visible={showUnsolvablePopup} onClose={() => { setShowUnsolvablePopup(false); setUnsolvableReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
-          <h4 className="ticket-edit__title">请求暂停工单</h4>
+          <h4 className="ticket-edit__title">标记无法解决工单</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            暂停理由将展示给提单人，对方据此决定是否同意暂停。
+            无法解决理由将展示给提单人，对方确认后工单进入「无法解决」终态；驳回则回到处理中继续处理。
           </p>
           <Form initialData={{}}>
-            <FormItem label="暂停理由" name="pauseReason" labelAlign="top" requiredMark>
+            <FormItem label="无法解决理由" name="unsolvableReason" labelAlign="top" requiredMark>
               <Textarea
-                value={pauseReason}
-                onChange={(v) => setPauseReason(String(v))}
-                placeholder="请说明为什么需要暂停工单（例如：需要外部协作 / 等待安全确认 / 资源调配中）"
+                value={unsolvableReason}
+                onChange={(v) => setUnsolvableReason(String(v))}
+                placeholder="请说明为什么无法解决工单（例如：问题本身超出能力范围 / 所需资源无法获取 / 客户需求不清晰）"
                 autosize={{ minRows: 3, maxRows: 6 }}
                 maxlength={500}
               />
             </FormItem>
           </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" onClick={() => { setShowPausePopup(false); setPauseReason(''); }}>取消</Button>
+            <Button theme="default" onClick={() => { setShowUnsolvablePopup(false); setUnsolvableReason(''); }}>取消</Button>
             <Button
               theme="primary"
-              disabled={!pauseReason.trim()}
+              disabled={!unsolvableReason.trim()}
               onClick={async () => {
-                await handleStatusChange({ nextStatus: 'pending_requested', pauseReason: pauseReason.trim() });
-                setShowPausePopup(false);
-                setPauseReason('');
+                await handleStatusChange({ nextStatus: 'unsolvable_requested', unsolvableReason: unsolvableReason.trim() });
+                setShowUnsolvablePopup(false);
+                setUnsolvableReason('');
               }}
             >
-              提交暂停请求
+              提交无法解决请求
             </Button>
           </div>
         </div>

@@ -4,6 +4,8 @@ export const STATUS_DISPLAY_MAP: Record<string, string> = {
   in_progress: '进行中',
   pending_requested: '暂停请求中',
   pending: '已挂起',
+  unsolvable_requested: '无法解决确认中',
+  unsolvable: '无法解决',
   resolved: '已解决',
   canceled: '已取消',
   closed: '已关闭',
@@ -16,6 +18,8 @@ export const STATUS_VALUE_MAP: Record<string, string> = {
   '进行中': 'in_progress',
   '暂停请求中': 'pending_requested',
   '已挂起': 'pending',
+  '无法解决确认中': 'unsolvable_requested',
+  '无法解决': 'unsolvable',
   '已解决': 'resolved',
   '已取消': 'canceled',
   '已关闭': 'closed',
@@ -98,9 +102,9 @@ export type TicketStatusLike = string | null | undefined;
 /** 处理中（仅该状态可上报） */
 const REPORTABLE_STATUSES = new Set(['in_progress']);
 /** 终态（操作按钮整体不显示） */
-const TERMINAL_STATUSES = new Set(['resolved', 'canceled', 'cancelled', 'closed', 'archived']);
-/** 撤回可用状态：待处理 / 待派单 / 已派单 / 暂停请求中 / 已挂起 / 处理中 */
-const CANCELABLE_STATUSES = new Set(['new', 'pending_dispatch', 'dispatched', 'pending_requested', 'pending', 'in_progress']);
+const TERMINAL_STATUSES = new Set(['resolved', 'canceled', 'cancelled', 'closed', 'archived', 'unsolvable']);
+/** 撤回可用状态：待处理 / 待派单 / 已派单 / 暂停请求中 / 已挂起 / 处理中 / 无法解决确认中 */
+const CANCELABLE_STATUSES = new Set(['new', 'pending_dispatch', 'dispatched', 'pending_requested', 'pending', 'in_progress', 'unsolvable_requested']);
 
 const normalizeKey = (status: TicketStatusLike): string => (status || '').trim().toLowerCase();
 
@@ -163,6 +167,8 @@ export const STATUS_COLOR_MAP: Record<string, string> = {
   pending_requested: '#c25a99',
   pending: '#e37318',
   paused: '#e37318',
+  unsolvable_requested: '#b06f2b',
+  unsolvable: '#d54941',
   resolved: '#00a870',
   closed: '#999999',
   canceled: '#d54941',

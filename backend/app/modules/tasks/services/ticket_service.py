@@ -1592,7 +1592,17 @@ class TicketService:
         return True
 
     @staticmethod
-    async def update_ticket_status(db: AsyncSession, ticket_id: int, status: TicketStatus, token: Optional[str] = None, operator_id: Optional[str] = None, resolution_summary: Optional[str] = None, pause_reason: Optional[str] = None, reject_reason: Optional[str] = None) -> Optional[Ticket]:
+    async def update_ticket_status(
+        db: AsyncSession,
+        ticket_id: int,
+        status: TicketStatus,
+        token: Optional[str] = None,
+        operator_id: Optional[str] = None,
+        resolution_summary: Optional[str] = None,
+        pause_reason: Optional[str] = None,
+        reject_reason: Optional[str] = None,
+        unsolvable_reason: Optional[str] = None,
+    ) -> Optional[Ticket]:
         ticket = await TicketService.get_ticket_by_id(db, ticket_id)
         if not ticket:
             return None
@@ -1618,8 +1628,8 @@ class TicketService:
         elif status == TicketStatus.ARCHIVED:
             ticket.archived_at = func.now()
 
-        # 工单进入最终态（已解决/已关闭/已归档）→ 后台清理该工单的日志附件缓存（AI 侧）
-        if status in (TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.ARCHIVED):
+        # 工单进入最终态（已解决/已关闭/已归档/无法解决）→ 后台清理该工单的日志附件缓存（AI 侧）
+        if status in (TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.ARCHIVED, TicketStatus.UNSOLVABLE):
             spawn_log_cache_cleanup(ticket_id)
 
         # 结束工单（resolved）时，若带解决方式，则写入 metadata_info.resolution_summary
@@ -1631,9 +1641,10 @@ class TicketService:
             meta["resolution_gen_state"] = "confirmed"
             ticket.metadata_info = meta
 
-        # ── pause_reason / reject_reason 互斥管理 ──
-        # pause_reason  仅 PENDING_REQUESTED 状态存在（请求暂停时写入，对方回应后清除）
-        # reject_reason 仅 IN_PROGRESS 状态存在（驳回暂停时写入，后续再请求暂停/确认暂停时清除）
+        # ── pause_reason / unsolvable_reason / reject_reason 互斥管理 ──
+        # pause_reason       仅 PENDING_REQUESTED 状态存在（请求暂停时写入）
+        # unsolvable_reason  仅 UNSOLVABLE_REQUESTED 状态存在（标记无法解决时写入）
+        # reject_reason      仅 IN_PROGRESS 状态存在（驳回暂停/无法解决时写入）
         meta = dict(ticket.metadata_info or {})
         from datetime import datetime
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1642,17 +1653,31 @@ class TicketService:
             meta["pause_reason_at"] = now_str
             meta.pop("reject_reason", None)
             meta.pop("reject_reason_at", None)
+            meta.pop("unsolvable_reason", None)
+            meta.pop("unsolvable_reason_at", None)
+        elif status == TicketStatus.UNSOLVABLE_REQUESTED and unsolvable_reason is not None:
+            meta["unsolvable_reason"] = unsolvable_reason
+            meta["unsolvable_reason_at"] = now_str
+            meta.pop("reject_reason", None)
+            meta.pop("reject_reason_at", None)
+            meta.pop("pause_reason", None)
+            meta.pop("pause_reason_at", None)
         elif status == TicketStatus.IN_PROGRESS and reject_reason is not None:
+            # 驳回暂停或驳回无法解决：写入 reject_reason，清除原请求理由
             meta["reject_reason"] = reject_reason
             meta["reject_reason_at"] = now_str
             meta.pop("pause_reason", None)
             meta.pop("pause_reason_at", None)
+            meta.pop("unsolvable_reason", None)
+            meta.pop("unsolvable_reason_at", None)
         else:
-            # 其他状态清除两者（确认暂停后无理由保留价值）
+            # 其他状态清除所有三对理由（确认后无保留价值）
             meta.pop("pause_reason", None)
             meta.pop("pause_reason_at", None)
             meta.pop("reject_reason", None)
             meta.pop("reject_reason_at", None)
+            meta.pop("unsolvable_reason", None)
+            meta.pop("unsolvable_reason_at", None)
         ticket.metadata_info = meta
         
         ticket.updated_at = func.now()

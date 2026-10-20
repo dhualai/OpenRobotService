@@ -87,7 +87,8 @@ export function useStepNegotiation(
   };
 
   // 当前阶段完成：处理人选择下一阶段节点 + 节点结束时间，提交后回合交给创建人
-  const handleStepComplete = async () => {
+  // reason：特殊 step（等待外部条件 / 等待前置工单）时传入等待理由
+  const handleStepComplete = async (reason?: string) => {
     if (!detail?.id) return;
     if (!completeNextStepId) {
       Toast({ message: '请选择下一阶段', theme: 'warning' });
@@ -100,12 +101,15 @@ export function useStepNegotiation(
     setSubmittingComplete(true);
     setCompleting(true);
     try {
+      const body: Record<string, unknown> = {
+        next_step_id: completeNextStepId,
+        curr_step_endtime: completeNextEndTime,
+      };
+      const trimmedReason = (reason || '').trim();
+      if (trimmedReason) body.reason = trimmedReason;
       await request(`/${detail.id}/complete-step`, {
         method: 'POST',
-        body: JSON.stringify({
-          next_step_id: completeNextStepId,
-          curr_step_endtime: completeNextEndTime,
-        }),
+        body: JSON.stringify(body),
       });
       await refreshDetail();
       Toast({ message: '已推进到下一阶段，等待创建人确认', theme: 'success' });

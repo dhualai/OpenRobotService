@@ -29,6 +29,8 @@ class TaskStatus(str, enum.Enum):
     IN_PROGRESS = "in_progress"
     PENDING_REQUESTED = "pending_requested"  # 处理人请求暂停 → 待提单人确认
     PENDING = "pending"
+    UNSOLVABLE_REQUESTED = "unsolvable_requested"  # 处理人标记无法解决 → 待提单人确认
+    UNSOLVABLE = "unsolvable"                      # 无法解决（已确认，终态；处理人可点继续处理回到 in_progress）
     RESOLVED = "resolved"
     CANCELED = "canceled"
     CLOSED = "closed"
