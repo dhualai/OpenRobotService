@@ -133,7 +133,7 @@ const DispatchDev = lazyImport(() => import('@/pages/admin/DispatchDev'));
 const TaskPolicyPage = lazyImport(() => import('@/pages/admin/TaskPolicyPage'));
 const QrcodeManage = lazyImport(() => import('@/pages/admin/QrcodeManage'));
 const WecomSheetManage = lazyImport(() => import('@/pages/admin/WecomSheetManage'));
-// 公告管理：活动中心（首页公告条 + 精品工单榜）的数据源，运营自助发布
+// 公告管理：活动中心（首页公告条 + 优质问题榜）的数据源，运营自助发布
 const AnnouncementManage = lazyImport(() => import('@/pages/admin/AnnouncementManage'));
 const AdminLayout = lazyImport(() => import('@/shared/components/AdminLayout'));
 

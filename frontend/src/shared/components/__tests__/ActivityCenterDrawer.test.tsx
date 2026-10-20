@@ -1,4 +1,4 @@
-// 活动中心抽屉：公告全文 + 精品工单 TOP 榜。
+// 活动中心抽屉：公告全文 + 优质问题 TOP 榜。
 // 榜单与后台「知识贡献榜」问题榜同源（/api/admin/knowledge/questions?sort=likes），行内点赞走知识点赞接口。
 // tdesign 用轻量替身（仓库既有约定），只替 Toast；数据层两个 api 模块整体 mock。
 import { describe, it, expect, vi, beforeEach } from 'vitest';
