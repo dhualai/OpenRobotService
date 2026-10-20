@@ -53,7 +53,6 @@ from app.models.task import (
     RelationType,
     SystemConfig,
     ArchiveReport,
-    TaskLike,
 )
 
 # 公告（活动中心：首页公告条 + 抽屉公告全文）
@@ -154,7 +153,7 @@ __all__ = [
     "ProjectBlockingConfig",
     # task
     "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping", "TaskStep",
-    "TaskRelation", "RelationType", "SystemConfig", "ArchiveReport", "TaskLike",
+    "TaskRelation", "RelationType", "SystemConfig", "ArchiveReport",
     # announcement
     "Announcement", "AnnouncementStatus",
     # task dispatch log
