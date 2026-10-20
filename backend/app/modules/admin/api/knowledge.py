@@ -63,7 +63,7 @@ async def get_overview(month: str | None = None, db=Depends(get_async_db), actor
 async def get_rankings(month: str | None = None, db=Depends(get_async_db), actor=Depends(get_current_active_user_from_token)):
     month = service.selected_month(month)
     await service.actor_id(db, actor)
-    return {"month": month, "items": await service.rankings(db, month)}
+    return {"month": month, "items": await service.public_rankings(db, month)}
 
 
 @router.get("/questions")

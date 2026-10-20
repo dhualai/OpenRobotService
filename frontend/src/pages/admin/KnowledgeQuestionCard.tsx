@@ -23,7 +23,9 @@ export default function KnowledgeQuestionCard({ question, onChange }: { question
   const navigate = useNavigate();
   const location = useLocation();
   const open = () => navigate(`/admin/knowledge/questions/${question.task_id}`, { state: { knowledgeBackTo: `${location.pathname}${location.search}` } });
-  return <section className="mac-card mac-card--pad knowledge-question" aria-label={question.title}>
+  return <section className="mac-card mac-card--pad knowledge-question" aria-label={question.title} onClick={(event) => {
+    if (!(event.target as HTMLElement).closest('button, a')) open();
+  }}>
     <div className="knowledge-question-head"><button type="button" className="knowledge-card-heading" onClick={open}><h3>{question.title}</h3></button><KnowledgeLikeButton question={question} onChange={onChange} /></div>
     <p className="knowledge-excerpt">{question.problem}</p>
     {question.value_point && <div className="knowledge-note">价值点：{question.value_point}</div>}

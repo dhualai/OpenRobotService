@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -109,6 +110,79 @@ async def test_combines_roles_once_and_excludes_history_and_other_month(db):
     assert (items[0]['question_count'], items[0]['answer_count'], items[0]['contribution_count']) == (1, 1, 2)
     assert len(items) == len({item['user_id'] for item in items}) == 3
     assert {item['estimated_reward_fen'] for item in items} == {10000}
+
+
+def seed_reward(db, reward_id, status, amount=200, user_id='alice', source_type='task_archive',
+                source_id='1', role='reporter'):
+    db.add(RewardRecord(id=reward_id, user_id=user_id, openid=user_id, amount=amount,
+        scene_name='知识贡献', reward_desc='测试奖励', source_type=source_type,
+        source_id=source_id, role=role, status=status, created_at=datetime(2026, 12, 5)))
+    db.session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_type', ['task_archive', 'knowledge_monthly'])
+@pytest.mark.parametrize('status,earned', [
+    (RewardStatus.PENDING_AUDIT, 0), (RewardStatus.REJECTED, 0),
+    (RewardStatus.PENDING, 200), (RewardStatus.WITHDRAWING, 200),
+    (RewardStatus.SUCCESS, 200), (RewardStatus.EXPIRED, 200),
+])
+async def test_public_rankings_show_earned_rewards_independent_of_withdrawal(db, source_type, status, earned):
+    seed(db)
+    source_id = '1' if source_type == 'task_archive' else hashlib.sha256(b'phase1:2026-11:alice').hexdigest()[:48]
+    seed_reward(db, 'reward', status, source_type=source_type, source_id=source_id)
+    entries = await service.public_rankings(db, '2026-11')
+    alice = next(entry for entry in entries if entry['user_id'] == 'alice')
+    bob = next(entry for entry in entries if entry['user_id'] == 'bob')
+    assert alice['earned_reward_fen'] == earned
+    assert bob['earned_reward_fen'] == 0
+    assert alice['estimated_reward_fen'] == 10000
+    overview = await service.overview(db, actor('voter'), '2026-11')
+    assert next(entry for entry in overview['top_three'] if entry['user_id'] == 'alice')['earned_reward_fen'] == earned
+    detail = await service.contributor_questions(db, actor('voter'), 'alice', '2026-11')
+    assert detail['earned_reward_fen'] == earned
+
+
+@pytest.mark.asyncio
+async def test_earned_rewards_follow_question_month_and_include_actual_monthly_award(db):
+    seed(db, 1, created=datetime(2026, 10, 31, 16))
+    seed(db, 2, 'bob', 'alice')
+    seed(db, 3, created=datetime(2026, 10, 31, 15, 59))
+    seed_reward(db, 'question', RewardStatus.PENDING, amount=200)
+    seed_reward(db, 'answer', RewardStatus.SUCCESS, amount=300, source_id='2', role='assignee')
+    seed_reward(db, 'other-month', RewardStatus.PENDING, amount=500, source_id='3')
+    seed_reward(db, 'review', RewardStatus.PENDING, amount=100, role='reviewer')
+    seed_reward(db, 'manual', RewardStatus.PENDING, amount=900, source_type='manual', role='manual')
+    seed_reward(db, 'other-user', RewardStatus.PENDING, amount=800, user_id='bob', role='assignee')
+    monthly_id = hashlib.sha256(b'phase1:2026-11:alice').hexdigest()[:48]
+    seed_reward(db, 'monthly', RewardStatus.PENDING, amount=5000,
+        source_type='knowledge_monthly', source_id=monthly_id, role='manual')
+    previous_id = hashlib.sha256(b'phase1:2026-10:alice').hexdigest()[:48]
+    seed_reward(db, 'previous-monthly', RewardStatus.SUCCESS, amount=10000,
+        source_type='knowledge_monthly', source_id=previous_id, role='manual')
+    entries = await service.public_rankings(db, '2026-11')
+    assert next(entry for entry in entries if entry['user_id'] == 'alice')['earned_reward_fen'] == 5500
+    detail = await service.contributor_questions(db, actor('voter'), 'alice', '2026-11', 'answerer')
+    assert detail['earned_reward_fen'] == 5500
+    assert detail['total'] == 1
+
+
+@pytest.mark.asyncio
+async def test_earned_reward_projection_does_not_mutate_frozen_rankings(db):
+    seed(db)
+    entries = await service.rankings(db, '2026-11')
+    snapshot = KnowledgeSettlement(month='2026-11', revision=1, status='granted',
+        rankings=entries, audit=[], frozen_at=datetime(2026, 12, 1))
+    db.add(snapshot)
+    await db.commit()
+    projected = await service.public_rankings(db, '2026-11')
+    assert all(entry['earned_reward_fen'] == 0 for entry in projected)
+    seed_reward(db, 'later-reward', RewardStatus.PENDING)
+    projected = await service.public_rankings(db, '2026-11')
+    assert next(entry for entry in projected if entry['user_id'] == 'alice')['earned_reward_fen'] == 200
+    assert snapshot.rankings == entries
+    assert all('earned_reward_fen' not in entry for entry in snapshot.rankings)
+    assert [entry['user_id'] for entry in projected] == [entry['user_id'] for entry in entries]
 
 
 @pytest.mark.asyncio
@@ -448,6 +522,7 @@ async def test_existing_websocket_connection_stops_receiving_after_review_assign
 
 def test_api_open_to_logged_users_but_management_and_review_private(db):
     seed(db)
+    seed_reward(db, 'earned', RewardStatus.PENDING, amount=350)
     app = FastAPI()
     app.include_router(router)
     app.include_router(review_router, prefix='/archive-report')
@@ -457,6 +532,9 @@ def test_api_open_to_logged_users_but_management_and_review_private(db):
     app.dependency_overrides[get_current_active_user_from_token] = lambda: actor('voter')
     with TestClient(app) as client:
         assert client.get('/knowledge/overview').status_code == 200
+        rankings = client.get('/knowledge/rankings?month=2026-11')
+        assert rankings.status_code == 200
+        assert next(entry for entry in rankings.json()['items'] if entry['user_id'] == 'alice')['earned_reward_fen'] == 350
         assert client.get('/knowledge/questions/1').status_code == 200
         assert client.get('/knowledge/risk?month=2026-11').status_code == 403
         assert client.get('/archive-report/archive-report/reviews/1').status_code == 404

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, ChevronRight, ClipboardList, Handshake, Trophy } from 'lucide-react';
 import type { Contributor, KnowledgeUser } from '@/api/knowledge';
-import { KnowledgeAvatar, KnowledgeState, knowledgeMoney } from './knowledgeShared';
+import { KnowledgeAvatar, KnowledgeState } from './knowledgeShared';
 
 type BoardKind = 'combined' | 'questions' | 'questioners' | 'answerers';
 
@@ -27,10 +27,11 @@ export function contributorPreviewEntries(contributors: Contributor[], focus: Bo
     id: person.user_id,
     rank: person.rank,
     label: person.name,
-    description: focus === 'questioners' ? `提单${person.question_count} · 综合${person.contribution_count}`
-      : focus === 'answerers' ? `接单${person.answer_count} · 综合${person.contribution_count}`
-        : `${person.contribution_count}个有效贡献`,
-    metric: person.estimated_reward_fen ? knowledgeMoney(person.estimated_reward_fen) : '—',
+    description: focus === 'questioners' ? `解答${person.answer_count} · 综合${person.contribution_count}`
+      : focus === 'answerers' ? `提问${person.question_count} · 综合${person.contribution_count}`
+        : `提问${person.question_count} · 解答${person.answer_count}`,
+    metric: focus === 'questioners' ? `${person.question_count}次提问`
+      : focus === 'answerers' ? `${person.answer_count}次解答` : `${person.contribution_count}次贡献`,
     user: person,
   }));
 }
