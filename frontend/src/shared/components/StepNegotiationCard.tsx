@@ -6,6 +6,7 @@ import { useMemo } from 'react';
 import type { ComponentProps } from 'react';
 import { useState } from 'react';
 import { createRequest } from '@/api/client';
+import API_CONFIG from '@/config/api';
 import { Toast } from 'tdesign-mobile-react';
 import type { useStepNegotiation, StepNegotiationTicket } from '@/shared/hooks/useStepNegotiation';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
@@ -30,6 +31,7 @@ export interface StepCardTicket extends StepNegotiationTicket {
   created_at?: string;
   comments?: Array<{ content?: string; created_at?: string }>;
   metadata_info?: Record<string, unknown>;
+  predecessor_ids?: number[];
 }
 
 interface StepRoles {
@@ -162,9 +164,10 @@ export default function StepNegotiationCard({
       return;
     }
     try {
-      await createRequest(`/tasks/${detail.id}/relations`)({
+      const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+      await request(`/${detail.id}/relations`, {
         method: 'POST',
-        data: { target_task_id: targetId, relation_type: 'predecessor' },
+        body: JSON.stringify({ target_task_id: targetId, relation_type: 'predecessor' }),
       });
       Toast({ message: '前置工单已添加', theme: 'success' });
       setShowAddPredecessorPopup(false);
