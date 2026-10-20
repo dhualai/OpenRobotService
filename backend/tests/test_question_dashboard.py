@@ -7,11 +7,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import MetaData
 from sqlalchemy.engine.create import create_engine
 
-from app.models.wecom_sheet import ExternalRecord
+from app.models.wecom_sheet import ExternalRecord, WecomSheetSource
 from app.modules.admin.api.auth import get_current_active_user_from_token
 from app.modules.admin.api.dashboard import dashboard_router, get_db
 from app.modules.admin.services.question_dashboard_service import (
-    REPORT_TIME_FIELD, SOURCE_KEY, get_questions, parse_report_time,
+    REPORT_TIME_FIELD, QuestionSourceConfigurationError, get_questions, parse_report_time,
 )
 
 
@@ -28,20 +28,98 @@ class TestQuestionDashboard(IsolatedAsyncioTestCase):
         self.engine = create_engine('sqlite:///:memory:')
         metadata = MetaData()
         self.table = ExternalRecord.__table__.to_metadata(metadata)
+        self.source_table = WecomSheetSource.__table__.to_metadata(metadata)
         metadata.create_all(self.engine)
         self.connection = self.engine.connect()
         self.db = _SqliteDb(self.connection)
+        self.insert_source('ep_robots_question')
 
     def tearDown(self):
         self.connection.close()
         self.engine.dispose()
 
-    def insert(self, record_id, values, source_key=SOURCE_KEY):
+    def insert(self, record_id, values, source_key='ep_robots_question'):
         self.connection.execute(self.table.insert().values(
             source_key=source_key, record_id=record_id, values=values,
             raw_hash='test', pulled_at=datetime(2026, 10, 13, 1),
             created_at=datetime(2026, 10, 13, 1),
         ))
+
+    def insert_source(self, source_key, display_name='中力工厂机器人问题收集', enabled=True):
+        self.connection.execute(self.source_table.insert().values(
+            key=source_key, display_name=display_name, enabled=enabled,
+            docid='test-document', sheet_id='test-sheet',
+            created_at=datetime(2026, 10, 13, 1),
+            updated_at=datetime(2026, 10, 13, 1),
+        ))
+
+    async def test_reads_named_source_instead_of_legacy_key(self):
+        self.insert('current', {REPORT_TIME_FIELD: '2026-10-13'}, 'ep_robots_question')
+        self.insert('legacy', {REPORT_TIME_FIELD: '2026-10-13'}, 'zl_question_robots')
+        self.insert_source('another_source', '中力工厂机器人问题收集备份')
+        self.insert('another', {REPORT_TIME_FIELD: '2026-10-13'}, 'another_source')
+        result = await get_questions(self.db, date(2026, 10, 13))
+        self.assertEqual(result['total'], 1)
+        self.assertEqual([item['record_id'] for item in result['items']], ['current'])
+
+    async def test_source_key_change_takes_effect_on_next_query(self):
+        self.insert('before-change', {REPORT_TIME_FIELD: '2026-10-13'}, 'ep_robots_question')
+        before = await get_questions(self.db, date(2026, 10, 13))
+        self.assertEqual([item['record_id'] for item in before['items']], ['before-change'])
+        self.connection.execute(self.source_table.update().where(
+            self.source_table.c.key == 'ep_robots_question',
+        ).values(key='future_robot_questions'))
+        self.insert('after-change', {REPORT_TIME_FIELD: '2026-10-13'}, 'future_robot_questions')
+        self.connection.execute(self.table.update().where(
+            self.table.c.source_key == 'ep_robots_question',
+        ).values(pulled_at=datetime(2026, 10, 14, 1)))
+        after = await get_questions(self.db, date(2026, 10, 13))
+        self.assertEqual(after['total'], 1)
+        self.assertEqual([item['record_id'] for item in after['items']], ['after-change'])
+        self.assertEqual(after['last_sync_at'], '2026-10-13T01:00:00+00:00')
+
+    async def test_recreated_named_source_uses_new_key_without_old_mirror(self):
+        self.insert('old-mirror', {REPORT_TIME_FIELD: '2026-10-13'})
+        self.connection.execute(self.source_table.delete())
+        self.insert_source('recreated_robot_questions')
+        self.insert('new-mirror', {REPORT_TIME_FIELD: '2026-10-13'}, 'recreated_robot_questions')
+        result = await get_questions(self.db, date(2026, 10, 13))
+        self.assertEqual(result['total'], 1)
+        self.assertEqual([item['record_id'] for item in result['items']], ['new-mirror'])
+
+    async def test_source_display_name_ignores_surrounding_spaces(self):
+        self.connection.execute(self.source_table.update().values(
+            display_name='  中力工厂机器人问题收集  ',
+        ))
+        self.insert('current', {REPORT_TIME_FIELD: '2026-10-13'})
+        result = await get_questions(self.db, date(2026, 10, 13))
+        self.assertEqual([item['record_id'] for item in result['items']], ['current'])
+
+    async def test_disabling_sync_keeps_existing_mirror_readable(self):
+        self.connection.execute(self.source_table.update().values(enabled=False))
+        self.insert('current', {REPORT_TIME_FIELD: '2026-10-13'})
+        result = await get_questions(self.db, date(2026, 10, 13))
+        self.assertEqual([item['record_id'] for item in result['items']], ['current'])
+
+    async def test_missing_configuration_does_not_fall_back_to_known_keys(self):
+        self.connection.execute(self.source_table.delete())
+        self.insert('current-key-mirror', {REPORT_TIME_FIELD: '2026-10-13'})
+        self.insert('legacy-key-mirror', {REPORT_TIME_FIELD: '2026-10-13'}, 'zl_question_robots')
+        with self.assertRaisesRegex(QuestionSourceConfigurationError, '未找到企微表格'):
+            await get_questions(self.db, date(2026, 10, 13))
+
+    async def test_known_key_with_different_name_is_not_a_match(self):
+        self.connection.execute(self.source_table.update().values(display_name='其他问题表格'))
+        self.insert('wrong-table', {REPORT_TIME_FIELD: '2026-10-13'})
+        with self.assertRaisesRegex(QuestionSourceConfigurationError, '未找到企微表格'):
+            await get_questions(self.db, date(2026, 10, 13))
+
+    async def test_duplicate_named_sources_are_rejected_instead_of_merged(self):
+        self.insert_source('duplicate_robot_questions')
+        self.insert('first-source', {REPORT_TIME_FIELD: '2026-10-13'})
+        self.insert('second-source', {REPORT_TIME_FIELD: '2026-10-13'}, 'duplicate_robot_questions')
+        with self.assertRaisesRegex(QuestionSourceConfigurationError, '存在多个'):
+            await get_questions(self.db, date(2026, 10, 13))
 
     async def test_real_column_names_and_ampm_without_zero_padding(self):
         self.insert('morning', {REPORT_TIME_FIELD: '2026/9/8 12:05 AM'})
@@ -190,3 +268,13 @@ class TestQuestionDashboardApi(IsolatedAsyncioTestCase):
         self.user = {'permissions': ['admin']}
         with patch('app.modules.admin.api.dashboard.get_questions', new_callable=AsyncMock, return_value={'total': 0}):
             self.assertEqual(self.client.get('/api/admin/dashboard/questions?report_date=2026-10-13').status_code, 200)
+
+    def test_source_configuration_errors_are_reported_as_conflicts(self):
+        message = '未找到企微表格“中力工厂机器人问题收集”'
+        with patch(
+            'app.modules.admin.api.dashboard.get_questions', new_callable=AsyncMock,
+            side_effect=QuestionSourceConfigurationError(message),
+        ):
+            response = self.client.get('/api/admin/dashboard/questions?report_date=2026-10-13')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json(), {'detail': message})

@@ -22,7 +22,7 @@ import re
 import time
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, Optional, List, Tuple
@@ -34,7 +34,10 @@ from app.modules.admin.services.task_dashboard_service import task_dashboard_ser
 from app.modules.admin.services.project_service import project_service, NO_TASK_EXECUTION_STATS
 from app.modules.admin.services.risk_service import risk_service
 from app.modules.admin.api.auth import require_permission
-from app.modules.admin.services.question_dashboard_service import get_questions
+from app.modules.admin.services.question_dashboard_service import (
+    QuestionSourceConfigurationError,
+    get_questions,
+)
 
 dashboard_router = APIRouter(prefix="/dashboard", tags=["admin-dashboard"])
 
@@ -49,7 +52,10 @@ async def get_dashboard_questions(
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = require_permission("backend:project:all"),
 ):
-    data = await get_questions(db, report_date, page, page_size)
+    try:
+        data = await get_questions(db, report_date, page, page_size)
+    except QuestionSourceConfigurationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"code": 0, "data": data}
 
 
