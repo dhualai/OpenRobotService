@@ -125,3 +125,22 @@ class TestProjectCandidatesRevert:
         from ai.agents.AiDiagnosisPlatform.pipeline import AiDiagnosisPlatform
         sig = inspect.signature(AiDiagnosisPlatform._get_project_candidates)
         assert list(sig.parameters) == ["self", "username"]
+
+
+class TestArchiveReportImageMaterial:
+    """ORS-1035：归档报告素材的图片描述拼装（solution_sink 纯函数）。"""
+
+    def test_descs_extraction(self):
+        from ai.core.solution_sink import _comment_image_descs
+        atts = [{"path": "b/t/a.png", "filename": "a.png", "desc": "报错弹窗"}]
+        assert _comment_image_descs(atts) == ["a.png：报错弹窗"]
+
+    def test_descs_skip_plain_and_empty(self):
+        from ai.core.solution_sink import _comment_image_descs
+        assert _comment_image_descs(["b/t/a.png",
+                                     {"path": "b/t/b.png", "filename": "b.png"}]) == []
+
+    def test_count_images_both_forms(self):
+        from ai.core.solution_sink import _count_comment_images
+        atts = ["b/t/a.PNG", {"path": "b/t/b.jpeg"}, "b/t/doc.pdf", {"path": ""}]
+        assert _count_comment_images(atts) == 2

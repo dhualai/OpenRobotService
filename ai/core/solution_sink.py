@@ -108,24 +108,32 @@ def load_comments_text(task_id: int) -> tuple[str, str]:
 
     AI 评论（U老师等）整条剔除：它是提问侧的自动分析，不是处理人给出的
     解法——0902 审核实锤多张卡因「把 U老师 的话当解法总结」被驳回。
+    ORS-1035：评论区图片的 VLM 描述（上传链路打标后随 attachments JSON 落库）
+    拼进行尾——现场截图里的报错/现象从此进归档报告素材；无描述的历史图
+    报张数占位（报告至少知道"此处有图，详见讨论区"，不硬造内容）。
     """
     from ai.core.database import SessionLocal
     from sqlalchemy import text
     db = SessionLocal()
     try:
         rows = db.execute(text(
-            "SELECT c.content, c.created_by, u.name "
+            "SELECT c.content, c.created_by, u.name, c.attachments "
             "FROM task_comments c LEFT JOIN users u ON u.username = c.created_by "
             "WHERE c.task_id = :tid ORDER BY c.created_at ASC"
         ), {"tid": task_id}).fetchall()
     finally:
         db.close()
     lines, total, last_human = [], 0, ""
-    for content, created_by, display_name in rows:
+    for content, created_by, display_name, attachments in rows:
         if created_by in _AI_AUTHORS:
             continue
         name = display_name or created_by
         line = f"{name}：{(content or '').strip()[:_COMMENT_EACH_LIMIT]}"
+        img_parts = _comment_image_descs(attachments)
+        if img_parts:
+            line += f"（附图：{'；'.join(img_parts)}）"
+        elif _count_comment_images(attachments):
+            line += f"（附 {_count_comment_images(attachments)} 张图片，现场信息见讨论区原图）"
         if total + len(line) > _COMMENTS_TOTAL_LIMIT:
             lines.append("（后续评论已截断）")
             break
@@ -133,6 +141,33 @@ def load_comments_text(task_id: int) -> tuple[str, str]:
         total += len(line)
         last_human = name
     return "\n".join(lines), last_human
+
+
+def _comment_image_descs(attachments) -> list:
+    """attachments JSON 里带 VLM 描述的图片 → [文件名：描述]（每评论 ≤3 张、
+    每条截 120 字，与 summarize_flow 同口径）。"""
+    out = []
+    for a in attachments or []:
+        if not isinstance(a, dict):
+            continue
+        d = str(a.get("desc") or "").strip()
+        if not d:
+            continue
+        name = str(a.get("filename") or a.get("path") or "图")
+        out.append(f"{name[:24]}：{d[:120]}")
+        if len(out) >= 3:
+            break
+    return out
+
+
+def _count_comment_images(attachments) -> int:
+    """attachments JSON 里的图片张数（按扩展名，兼容 str 与 {path,...} dict）。"""
+    n = 0
+    for a in attachments or []:
+        p = a if isinstance(a, str) else (str((a or {}).get("path") or "") if isinstance(a, dict) else "")
+        if p and p.lower().rsplit(".", 1)[-1] in {"jpg", "jpeg", "png", "bmp", "gif", "webp"}:
+            n += 1
+    return n
 
 
 def _resolver_from_oplog(task_id: int) -> str:
