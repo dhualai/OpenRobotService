@@ -101,7 +101,7 @@ export default function ProjectTicketsCard({ projectId }: { projectId: string })
   // 顶部三格汇总的口径（状态 key 与仪表盘「工单状态监测」一致；数字同源于后端
   // task_dashboard_service.get_ticket_summary(db, [project_id])）：
   // 正在处理 = 处理中 + 暂停/挂起（即仪表盘「待处理」口径，新建尚未开始处理不计入）；
-  // 超期工单 = 截止时间已过且仍未完成（直接用后端 overdue_count，与仪表盘「超时工单」同一口径）。
+  // 超期工单 = 当前阶段截止时间已过且仍为处理中（直接用后端 overdue_count，与仪表盘「超时工单」同一口径）。
   const inProgressCount = (overview?.by_status.in_progress ?? 0) + (overview?.by_status.paused ?? 0);
   const overdueCount = overview?.overdue_count ?? 0;
 

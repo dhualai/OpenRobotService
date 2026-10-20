@@ -6,10 +6,10 @@
 import logging
 import time
 from typing import Dict, Any, List, Optional, Set
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import Counter
 
-from sqlalchemy import select, func, and_, or_, case, text
+from sqlalchemy import select, func, or_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -35,13 +35,18 @@ FRONTEND_STATUS_MAP: Dict[str, TaskStatus] = {
 }
 
 # 仪表盘「工单状态监测」监控的状态（含 new：待处理工单计入工单总数与解决率分母，
-# 与前端 TICKET_STATUS_LIST 保持一致；超时/待处理口径不含 new，见 OPEN_STATUSES）
+# 与前端 TICKET_STATUS_LIST 保持一致；超时/待处理口径不含 new）
 MONITORED_STATUS_KEYS = ["new", "in_progress", "pending_requested", "paused", "resolved", "closed", "cancelled", "archiving", "archived"]
 MONITORED_STATUSES = [FRONTEND_STATUS_MAP[key] for key in MONITORED_STATUS_KEYS]
 PENDING_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
 
-# 超时工单统计的口径：未完成且已进入处理流程的状态（new 尚未开始处理，不计入）
-OPEN_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING_REQUESTED, TaskStatus.PENDING]
+
+def _overdue_filters() -> List[Any]:
+    return [
+        Task.status == TaskStatus.IN_PROGRESS,
+        Task.curr_step_endtime.isnot(None),
+        Task.curr_step_endtime < datetime.now(timezone.utc).replace(tzinfo=None),
+    ]
 
 
 class TaskDashboardService:
@@ -77,14 +82,7 @@ class TaskDashboardService:
 
         pending_count = sum(status_counts.get(status, 0) for status in PENDING_STATUSES)
 
-        now = datetime.now()
-        overdue_query = select(func.count(Task.id)).where(
-            and_(
-                Task.deadline_at.isnot(None),
-                Task.deadline_at < now,
-                Task.status.in_(OPEN_STATUSES),
-            )
-        )
+        overdue_query = select(func.count(Task.id)).where(*_overdue_filters())
         if project_ids is not None:
             overdue_query = overdue_query.where(Task.project_id.in_(project_ids))
         overdue_result = await db.execute(overdue_query)
@@ -147,17 +145,13 @@ class TaskDashboardService:
         # 组合 scope key（对应仪表盘统计卡下钻，与 get_ticket_summary 同口径）：
         #   all     总工单数 = 监控中的状态（含 new）
         #   pending 待处理   = 处理中 + 暂停/挂起
-        #   overdue 超时工单 = 截止时间已过且仍处于未完成状态（挂起置顶 + 超时最久在前，见下方 order_by）
+        #   overdue 超时工单 = 当前阶段截止时间已过且状态为处理中（超时最久在前）
         if status_key == "all":
             filters = [Task.status.in_(MONITORED_STATUSES)]
         elif status_key == "pending":
             filters = [Task.status.in_(PENDING_STATUSES)]
         elif status_key == "overdue":
-            filters = [
-                Task.deadline_at.isnot(None),
-                Task.deadline_at < datetime.now(),
-                Task.status.in_(OPEN_STATUSES),
-            ]
+            filters = _overdue_filters()
         else:
             status_enum = FRONTEND_STATUS_MAP.get(status_key)
             if status_enum is None:
@@ -173,12 +167,11 @@ class TaskDashboardService:
         list_query = select(Task).where(*filters)
         if project_ids is not None:
             list_query = list_query.where(Task.project_id.in_(project_ids))
-        # 超时工单排序：挂起工单（TaskStatus.PENDING，前端「暂停/挂起」）始终置顶，
-        # 组内与其余工单均按「超时最久」在前 —— deadline_at 越早超时越久，故升序。
-        # 本 scope 的过滤条件已保证 deadline_at 非空，无 NULL 排序歧义。
+        # 超时工单按当前阶段截止时间升序，即超时最久在前。
+        # 本 scope 的过滤条件已保证 curr_step_endtime 非空，无 NULL 排序歧义。
         # 其余 scope 维持创建时间倒序。
         order_by = (
-            (case((Task.status == TaskStatus.PENDING, 0), else_=1), Task.deadline_at.asc(), Task.id.desc())
+            (Task.curr_step_endtime.asc(), Task.id.desc())
             if status_key == "overdue"
             else (Task.created_at.desc(), Task.id.desc())
         )
@@ -197,8 +190,8 @@ class TaskDashboardService:
                 "priority": t.priority.value if t.priority else "",
                 "assignee_name": user_map.get(t.assigned_to, t.assigned_to) if t.assigned_to else None,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
-                # 截止时间：超时工单列表据此展示「已超时 X」（排序也在后端按此字段完成）
                 "deadline_at": t.deadline_at.isoformat() if t.deadline_at else None,
+                "curr_step_endtime": t.curr_step_endtime.isoformat() if t.curr_step_endtime else None,
             }
             for t in tasks
         ]
