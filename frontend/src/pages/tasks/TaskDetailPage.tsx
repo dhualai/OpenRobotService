@@ -104,6 +104,8 @@ interface ArchiveSimilarItem {
   verified?: 'confirmed' | 'rejected' | 'recurred' | 'unknown' | string;
   /** 沉淀卡正文（问题/根因/解决三段式）——条目展开显示，替代跳工单详情 */
   summary?: string;
+  /** ORS-1035：相似单评论区图片（≤3 张 object_path），展开区缩略图对照 */
+  image_paths?: string[];
   report?: {
     content: string;
     version: number;
@@ -120,6 +122,25 @@ const ARCHIVE_SIMILAR_STATUS_ZH: Record<string, string> = {
   archived: '已归档', closed: '已关闭', resolved: '已解决', new: '新建',
   in_progress: '处理中', pending: '待处理', canceled: '已取消',
 };
+
+// ORS-1035 相似工单缩略图：object_path → 带鉴权 token 的附件代理 URL（<img> 直连）
+const similarThumbUrl = (objectPath: string): string => {
+  const authToken = readStored('AUTH_TOKEN') || '';
+  return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(objectPath)}&token=${encodeURIComponent(authToken)}`;
+};
+
+const SimilarThumb = ({ objectPath }: { objectPath: string }) => (
+  <img
+    src={similarThumbUrl(objectPath)}
+    alt=""
+    loading="lazy"
+    onClick={(e) => {
+      e.stopPropagation(); // 不触发条目的展开/收起
+      window.open(similarThumbUrl(objectPath), '_blank');
+    }}
+    style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border, #e8eaee)', cursor: 'zoom-in', flexShrink: 0 }}
+  />
+);
 
 const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
   try {
@@ -2876,6 +2897,13 @@ export default function TaskDetailPage() {
                     )}
                     {expanded && s.summary && (
                       <pre style={{ marginTop: 8, padding: '8px 10px', background: 'var(--muted, #f6f8fa)', borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.7, color: 'var(--foreground)', maxHeight: 200, overflowY: 'auto' }}>{s.summary}</pre>
+                    )}
+                    {expanded && !!s.image_paths?.length && (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                        {s.image_paths.map((p) => (
+                          <SimilarThumb key={p} objectPath={p} />
+                        ))}
+                      </div>
                     )}
                   </div>
                 );

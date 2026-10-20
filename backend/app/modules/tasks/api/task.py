@@ -7,6 +7,10 @@ Wave 2.2 完成：工单(tickets)已升格为任务(tasks)，本模块使用统�
 """
 import contextvars
 import logging
+import asyncio
+import os
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form, Body
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -338,6 +342,126 @@ RESOLUTION_PLACEHOLDER_TEXT = "【请补充解决方法】"
 RESOLUTION_PLACEHOLDER_ERROR = "【U老师自动总结出错了，请补充解决方法】"
 
 comment_attachment_map = {}
+
+
+# ============================================================
+# ORS-1035：评论图片 VLM 打标（上传时描述，落库随附件 JSON）
+# ============================================================
+
+_COMMENT_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'}
+_COMMENT_IMAGE_DESC: Dict[str, str] = {}          # object_path → VLM 描述
+_COMMENT_IMAGE_PENDING: set = set()               # 正在打标的 object_path
+_COMMENT_IMAGE_DESC_CAP = 800                     # 内存护栏（上传远多于留存也够用）
+
+_COMMENT_IMAGE_MIME = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                       '.png': 'image/png', '.bmp': 'image/bmp',
+                       '.gif': 'image/gif', '.webp': 'image/webp'}
+
+
+def _is_image_filename(name: str) -> bool:
+    return os.path.splitext(str(name or "").lower())[1] in _COMMENT_IMAGE_EXTS
+
+
+def _attachment_object_path(a) -> str:
+    """attachments JSON 元素 → object_path（兼容 str 与 {path,...} dict 两种历史形态）"""
+    if isinstance(a, str):
+        return a
+    if isinstance(a, dict):
+        return str(a.get("path") or "")
+    return ""
+
+
+def _schedule_comment_image_describe(object_path: str, file_bytes: bytes) -> None:
+    """上传即调度 VLM 描述：调 AI 服务 /api/ai/media/describe，结果进内存表。
+    失败静默（评论本身不受影响；缺 desc 的图在下游只是"没描述"）。"""
+    import asyncio
+    if object_path in _COMMENT_IMAGE_DESC or object_path in _COMMENT_IMAGE_PENDING:
+        return
+
+    async def _run():
+        try:
+            import asyncio as _aio
+            import base64
+            import httpx
+            ext = os.path.splitext(object_path.lower())[1]
+            mime = _COMMENT_IMAGE_MIME.get(ext, "image/png")
+            uri = f"data:{mime};base64,{base64.b64encode(file_bytes).decode()}"
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(
+                    f"{settings.AI_SERVICE_URL.rstrip('/')}/api/ai/media/describe",
+                    json={"images": [uri]},
+                )
+                payload = resp.json() if resp.content else {}
+            if int(payload.get("code") or 0) == 0:
+                desc = str((payload.get("data") or {}).get("desc") or "").strip()
+                if desc:
+                    if len(_COMMENT_IMAGE_DESC) >= _COMMENT_IMAGE_DESC_CAP:
+                        for k in list(_COMMENT_IMAGE_DESC.keys())[:200]:
+                            _COMMENT_IMAGE_DESC.pop(k, None)
+                    _COMMENT_IMAGE_DESC[object_path] = desc[:400]
+                    logger.info(f"[comment-desc] 打标完成: {object_path.rsplit('/', 1)[-1]}, desc={desc[:50]!r}")
+            else:
+                logger.warning(f"[comment-desc] AI 返回失败(静默): {str(payload.get('message'))[:80]}")
+        except Exception as e:
+            logger.warning(f"[comment-desc] 打标异常(静默): {object_path.rsplit('/', 1)[-1]}, {e}")
+        finally:
+            _COMMENT_IMAGE_PENDING.discard(object_path)
+
+    _COMMENT_IMAGE_PENDING.add(object_path)
+    asyncio.create_task(_run())
+
+
+def _schedule_comment_desc_writeback(task_id: int, comment_id: int, img_paths: list) -> None:
+    """评论落库后等待描述就绪（VLM 通常比用户点发送快）并写回 attachments JSON。
+    独立 Session 写回；超时(60s)放弃——缺 desc 的图保持原样，下轮摘要当无描述处理。"""
+    import asyncio
+
+    async def _run():
+        import time as _time
+        from app.models.task import TaskComment
+        from app.core.database import SessionLocal
+        deadline = _time.time() + 60.0
+        got: Dict[str, str] = {}
+        while _time.time() < deadline:
+            for p in img_paths:
+                if p in _COMMENT_IMAGE_DESC:
+                    got[p] = _COMMENT_IMAGE_DESC[p]
+            if all(p in got for p in img_paths):
+                break
+            await asyncio.sleep(2.0)
+        if not got:
+            return
+        db = SessionLocal()
+        try:
+            c = db.query(TaskComment).filter(TaskComment.id == comment_id).first()
+            if not c or not c.attachments:
+                return
+            new_atts = []
+            changed = False
+            for a in c.attachments:
+                p = _attachment_object_path(a)
+                if p in got:
+                    if isinstance(a, str):
+                        new_atts.append({"path": a, "filename": os.path.basename(a), "desc": got[p]})
+                        changed = True
+                        continue
+                    if isinstance(a, dict) and not str(a.get("desc") or "").strip():
+                        a2 = dict(a)
+                        a2["desc"] = got[p]
+                        new_atts.append(a2)
+                        changed = True
+                        continue
+                new_atts.append(a)
+            if changed:
+                c.attachments = new_atts
+                db.commit()
+                logger.info(f"[comment-desc] 写回评论#{comment_id}: {len(got)} 张图有描述")
+        except Exception as e:
+            logger.warning(f"[comment-desc] 写回失败(静默): comment={comment_id}, {e}")
+        finally:
+            db.close()
+
+    asyncio.create_task(_run())
 
 
 async def _add_system_comment(db: AsyncSession, task_id: int, content: str, operator: str, token: str = ""):
@@ -1379,6 +1503,29 @@ async def _hydrate_similar_from_db(
     stmt = select(Task).where(Task.id.in_(ids), Task.id != exclude_id)
     rows = (await db.execute(stmt)).scalars().all()
     by_id = {t.id: t for t in rows}
+
+    # ORS-1035：相似单的评论区图片（每单 ≤3 张，object_path 由前端走带鉴权的
+    # 附件代理出图）——归档人弹层展开即可对照现场/报错截图，不用跳单
+    similar_images: Dict[int, list] = {tid: [] for tid in ids}
+    try:
+        from app.models.task import TaskComment
+        crows = (await db.execute(
+            select(TaskComment.task_id, TaskComment.attachments)
+            .where(TaskComment.task_id.in_(ids))
+            .order_by(TaskComment.created_at.desc())
+            .limit(300)
+        )).all()
+        for ctid, catts in crows:
+            bucket_list = similar_images.setdefault(int(ctid), [])
+            for a in catts or []:
+                p = _attachment_object_path(a)
+                if p and _is_image_filename(p) and p not in bucket_list:
+                    bucket_list.append(p)
+                    if len(bucket_list) >= 3:
+                        break
+    except Exception as e:
+        logger.warning(f"相似单图片收集失败(忽略): {e}")
+
     out = []
     for tid in ids:
         t = by_id.get(tid)
@@ -1391,6 +1538,7 @@ async def _hydrate_similar_from_db(
         # 卡正文（问题/根因/解决三段式，已 approved 的沉淀卡=全公司共享资产），
         # 归档人弹层内直接对照；脱敏口径与标题一致
         item["summary"] = str(src.get("summary") or "")[:600]
+        item["image_paths"] = (similar_images.get(tid) or [])[:3]
         if min_score is not None and item["score"] < min_score:
             continue
         out.append(item)
@@ -2057,6 +2205,15 @@ async def add_comment(
         comment = await TicketService.add_comment(db, task_id, comment_data, username, comment_attachment_map, token=current_user.get("token"))
         if not comment:
             raise HTTPException(status_code=404, detail="任务未找到")
+
+        # ORS-1035：本条评论里的图片，等 VLM 描述就绪后写回 attachments JSON
+        # （就绪的直接写；未就绪的挂后台等待 60s，不阻塞评论响应）
+        _comment_img_paths = [
+            _attachment_object_path(a) for a in (getattr(comment, 'attachments', None) or [])
+        ]
+        _comment_img_paths = [p for p in _comment_img_paths if p and _is_image_filename(p)]
+        if _comment_img_paths:
+            _schedule_comment_desc_writeback(task_id, comment.id, _comment_img_paths)
 
         from sqlalchemy import update
         from app.modules.tasks.models.ticket import Ticket
@@ -3878,6 +4035,12 @@ async def upload_comment_attachment(
         if temp_id not in comment_attachment_map:
             comment_attachment_map[temp_id] = []
         comment_attachment_map[temp_id].append(object_path)
+
+        # ORS-1035：图片后台 VLM 打标（字节在手，不重读 MinIO；失败静默）。
+        # 描述落 _COMMENT_IMAGE_DESC，评论落库时写回 attachments JSON，
+        # 供讨论摘要/归档初稿等文本消费方使用。
+        if _is_image_filename(file.filename or ""):
+            _schedule_comment_image_describe(object_path, file_bytes)
 
         # 返回 object_path，前端可直接透传给建单接口的 attachments 字段，
         # 无需依赖进程内存 comment_attachment_map 的 temp_id 解析（跨进程/重启更稳）。
