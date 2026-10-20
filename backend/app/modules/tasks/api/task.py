@@ -1388,6 +1388,9 @@ async def _hydrate_similar_from_db(
         item = _similar_item_from_task(t)
         item["score"] = round(float(src.get("score") or 0), 4)
         item["verified"] = src.get("verified") or "unknown"
+        # 卡正文（问题/根因/解决三段式，已 approved 的沉淀卡=全公司共享资产），
+        # 归档人弹层内直接对照；脱敏口径与标题一致
+        item["summary"] = str(src.get("summary") or "")[:600]
         if min_score is not None and item["score"] < min_score:
             continue
         out.append(item)
@@ -1479,6 +1482,8 @@ async def get_similar_tasks(
             similar_task = await db.get(Task, item["task_id"])
             item.pop("project_name", None)
             item["title"] = await anonymous_text(db, similar_task, item.get("title"))
+            if item.get("summary"):
+                item["summary"] = await anonymous_text(db, similar_task, item["summary"])
             if item.get("report"):
                 item["report"].pop("reviewer", None)
                 item["report"].pop("reviewer_name", None)

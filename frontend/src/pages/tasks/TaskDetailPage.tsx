@@ -7,7 +7,7 @@ import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
-import { setupWechatShare, isPcWechat, navigateInWechat } from '@/shared/utils/wechatJsSdk';
+import { setupWechatShare, isPcWechat } from '@/shared/utils/wechatJsSdk';
 import { completeArchiveReportTemplate } from '@/shared/utils/archiveReport';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken, ApiError } from '@/api/client';
@@ -102,6 +102,8 @@ interface ArchiveSimilarItem {
   archived?: boolean;
   score?: number;
   verified?: 'confirmed' | 'rejected' | 'recurred' | 'unknown' | string;
+  /** 沉淀卡正文（问题/根因/解决三段式）——条目展开显示，替代跳工单详情 */
+  summary?: string;
   report?: {
     content: string;
     version: number;
@@ -334,6 +336,8 @@ export default function TaskDetailPage() {
   // 展示百分比会误导），只有"有没有、是哪几张"。
   const [archiveSimilar, setArchiveSimilar] = useState<ArchiveSimilarItem[]>([]);
   const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
+  // ORS-1010：展开查看卡正文（问题/根因/解决）的条目
+  const [expandedSimilar, setExpandedSimilar] = useState<Set<number>>(new Set());
 
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
@@ -718,6 +722,7 @@ export default function TaskDetailPage() {
   // verified=rejected 再前端兜底过滤。
   const fetchArchiveSimilar = useCallback(async (taskId: number) => {
     setArchiveSimilarLoading(true);
+    setExpandedSimilar(new Set()); // 重新拉取即收起所有展开（弹窗重开也从收起态开始）
     try {
       const res = await request<{ task_id: number; similar: ArchiveSimilarItem[] }>(
         `/${taskId}/similar?limit=5&min_score=0.015`,
@@ -2822,31 +2827,43 @@ export default function TaskDetailPage() {
                   {archiveSimilarLoading ? '检索中…' : `发现 ${archiveSimilar.length} 张，供对照参考`}
                 </span>
               </div>
-              {archiveSimilar.map((s) => (
-                <div
-                  key={s.task_id}
-                  onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); navigateInWechat(navigate, `/tasks/${s.task_id}`); }}
-                  style={{ padding: '8px 0', borderBottom: '1px dashed var(--border, #e8eaee)', cursor: 'pointer' }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--brand, #266fe8)' }}>#{s.task_id}</span>
-                    <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
-                    {s.verified === 'confirmed' && (
-                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#e3f9e9', color: '#1f8a5a', flexShrink: 0 }}>✓ 已验证</span>
+              {archiveSimilar.map((s) => {
+                const expanded = expandedSimilar.has(s.task_id);
+                return (
+                  <div
+                    key={s.task_id}
+                    onClick={() => setExpandedSimilar((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(s.task_id)) next.delete(s.task_id);
+                      else next.add(s.task_id);
+                      return next;
+                    })}
+                    style={{ padding: '8px 0', borderBottom: '1px dashed var(--border, #e8eaee)', cursor: 'pointer' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--brand, #266fe8)' }}>#{s.task_id}</span>
+                      <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
+                      {s.verified === 'confirmed' && (
+                        <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#e3f9e9', color: '#1f8a5a', flexShrink: 0 }}>✓ 已验证</span>
+                      )}
+                      {s.verified === 'recurred' && (
+                        <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#fff4e0', color: '#b8860b', flexShrink: 0 }}>↻ 曾复发</span>
+                      )}
+                      <span style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', flexShrink: 0 }}>{expanded ? '收起 ▴' : '展开 ▾'}</span>
+                    </div>
+                    {(s.project_name || s.status) && (
+                      <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
+                        {[s.project_name, s.status === 'archived' ? '已归档' : s.status].filter(Boolean).join(' · ')}
+                      </div>
                     )}
-                    {s.verified === 'recurred' && (
-                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#fff4e0', color: '#b8860b', flexShrink: 0 }}>↻ 曾复发</span>
+                    {expanded && s.summary && (
+                      <pre style={{ marginTop: 6, padding: '8px 10px', background: 'var(--muted, #f6f8fa)', borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.7, color: 'var(--foreground)' }}>{s.summary}</pre>
                     )}
                   </div>
-                  {(s.project_name || s.status) && (
-                    <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
-                      {[s.project_name, s.status === 'archived' ? '已归档' : s.status].filter(Boolean).join(' · ')}
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
               <div style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginTop: 6 }}>
-                点单号可跳转查看该工单详情
+                点条目展开查看该沉淀卡的问题/根因/解决（来自归档审核通过的经验库）
               </div>
             </div>
           )}
