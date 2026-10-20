@@ -2813,6 +2813,7 @@ class CompleteStepRequest(BaseModel):
     """当前阶段完成请求：处理人选择下一阶段节点并设置其结束时间。"""
     next_step_id: int = Field(..., description="下一阶段节点ID（必须为同 task_type 的节点）")
     curr_step_endtime: datetime = Field(..., description="下一阶段节点结束时间（ISO 字符串，naive UTC 存库）")
+    reason: Optional[str] = Field(None, description="选择特殊 step（等待外部条件/等待前置工单）时必填的条件理由")
 
 
 @router.post("/{task_id}/complete-step", response_model=TicketResponse, summary="当前阶段完成：推进到下一协商节点")
@@ -2861,7 +2862,8 @@ async def complete_task_step(
     if cur_step is None:
         raise HTTPException(status_code=400, detail="当前节点不存在，无法推进")
 
-    # 校验目标节点：必须为同 task_type，且 sequence > 当前节点（只能向前推进）
+    # 校验目标节点：必须为同 task_type，正常 step 要求 sequence > 当前；
+    # 特殊 step（等待外部条件=-2 / 等待前置工单=-1）总是允许选择，且与当前 sequence 无关
     next_row = await db.execute(
         select(TaskStep).where(TaskStep.id == int(body.next_step_id))
     )
@@ -2870,8 +2872,30 @@ async def complete_task_step(
         raise HTTPException(status_code=400, detail="所选下一阶段节点不存在")
     if next_step.task_type != ticket.task_type:
         raise HTTPException(status_code=400, detail="下一阶段节点与工单类型不匹配")
-    if next_step.sequence <= cur_step.sequence:
+
+    is_special_step = (next_step.sequence < 0)
+    if not is_special_step and next_step.sequence <= cur_step.sequence:
         raise HTTPException(status_code=400, detail="下一阶段必须晚于当前阶段")
+
+    # 特殊 step 的条件校验
+    complete_reason_text = None
+    if is_special_step:
+        complete_reason_text = (body.reason or "").strip()
+        if not complete_reason_text:
+            raise HTTPException(status_code=400, detail=f"选择「{next_step.step_name}」需要填写等待理由")
+        if next_step.sequence == -1:
+            # 等待前置工单：必须已有至少一条 predecessor 关系
+            rel_count_row = await db.execute(
+                select(func.count(TaskRelation.id)).where(
+                    TaskRelation.source_task_id == ticket_id,
+                    TaskRelation.relation_type == RelationType.PREDECESSOR,
+                )
+            )
+            if (rel_count_row.scalar_one() or 0) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="等待前置工单需要先添加前置工单，请在工单详情页「前置工单」区域点击 +添加"
+                )
 
     old_step_name = ticket.curr_step_name or cur_step.step_name
     endtime = convert_to_shanghai_time(body.curr_step_endtime)
@@ -2882,6 +2906,25 @@ async def complete_task_step(
     ticket.curr_step_agreed = False  # 进入新节点：等待对方确认同意才视为协商一致
     ticket.step_phase_round = int(getattr(ticket, 'step_phase_round', 0) or 0) + 1
     ticket.updated_at = func.now()
+
+    # 特殊 step 条件理由写入 metadata_info（非特殊 step 清理）
+    if is_special_step:
+        meta = dict(ticket.metadata_info or {})
+        from datetime import datetime
+        if next_step.sequence == -2:
+            meta["waiting_external_reason"] = complete_reason_text
+            meta.pop("waiting_predecessor_reason", None)
+        else:  # -1
+            meta["waiting_predecessor_reason"] = complete_reason_text
+            meta.pop("waiting_external_reason", None)
+        meta["waiting_step_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ticket.metadata_info = meta
+    else:
+        meta = dict(ticket.metadata_info or {})
+        meta.pop("waiting_external_reason", None)
+        meta.pop("waiting_predecessor_reason", None)
+        meta.pop("waiting_step_at", None)
+        ticket.metadata_info = meta
 
     # 阶段完成 = 当前操作人"提案"推进到下一节点：记录操作方（回合归属）
     round_meta = _apply_step_update_meta(ticket, current_user, username)
@@ -2986,11 +3029,38 @@ async def negotiate_step(
             raise HTTPException(status_code=400, detail="协商节点不存在")
         if target_step.task_type != ticket.task_type:
             raise HTTPException(status_code=400, detail="协商节点与工单类型不匹配")
-        if phase_round > 0 and target_step.sequence < cur_seq:
+        # 特殊 step（sequence < 0）与 sequence 下限无关
+        if target_step.sequence >= 0 and phase_round > 0 and target_step.sequence < cur_seq:
             raise HTTPException(status_code=400, detail="协商节点不能早于当前节点")
         ticket.curr_step_id = target_step.id
         ticket.curr_step_name = target_step.step_name
         step_changed = True
+
+    # 特殊 step 条件理由写入 metadata_info（非特殊 step 清理）
+    target_step_obj = None
+    if step_changed and body.curr_step_id is not None:
+        row2 = await db.execute(select(TaskStep).where(TaskStep.id == int(body.curr_step_id)))
+        target_step_obj = row2.unique().scalar_one_or_none()
+    if target_step_obj and target_step_obj.sequence < 0:
+        meta = dict(ticket.metadata_info or {})
+        from datetime import datetime
+        if target_step_obj.sequence == -2:
+            meta["waiting_external_reason"] = reason
+            meta.pop("waiting_predecessor_reason", None)
+        else:
+            meta["waiting_predecessor_reason"] = reason
+            meta.pop("waiting_external_reason", None)
+        meta["waiting_step_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ticket.metadata_info = meta
+    else:
+        meta = dict(ticket.metadata_info or {})
+        changed = False
+        for k in ("waiting_external_reason", "waiting_predecessor_reason", "waiting_step_at"):
+            if k in meta:
+                meta.pop(k, None)
+                changed = True
+        if changed:
+            ticket.metadata_info = meta
 
     # 前端 dayjs(...).toISOString() 传入 UTC aware datetime，剥时区转 naive UTC 存库
     # 协商节点时间只更新 curr_step_endtime，不动 deadline_at；
