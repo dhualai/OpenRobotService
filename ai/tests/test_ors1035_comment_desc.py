@@ -144,3 +144,17 @@ class TestArchiveReportImageMaterial:
         from ai.core.solution_sink import _count_comment_images
         atts = ["b/t/a.PNG", {"path": "b/t/b.jpeg"}, "b/t/doc.pdf", {"path": ""}]
         assert _count_comment_images(atts) == 2
+
+    def test_similar_summary_strips_embedded_image_md(self):
+        """报告沉淀后卡正文带图片 markdown——相似弹层 summary 剥掉图片语法，
+        保留其余文字。"""
+        from ai.core.retrieval import RetrievalResult, rank_similar_tickets
+        r = RetrievalResult(
+            id="x", score=0.02, title="t",
+            content="问题：货叉翘起\n![a.jpeg](/api/tasks/attachments/download?path=b%2Fa.jpeg)\n根因：车端控制",
+            vector_score=0.8, task_id="462", review_status="approved",
+        )
+        out = rank_similar_tickets([r])
+        assert "attachments/download" not in out[0]["summary"]
+        assert "货叉翘起" in out[0]["summary"]
+        assert "根因：车端控制" in out[0]["summary"]

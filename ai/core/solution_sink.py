@@ -19,6 +19,7 @@ DB 访问走 ai.core.database（原生 SQL，自举模式——不依赖 backend
 与 history_indexer 同一纪律；连哪个库由 DATABASE_URL 决定）。
 """
 import json
+import os
 import time
 
 from ai.core.logging import get_logger
@@ -168,6 +169,44 @@ def _count_comment_images(attachments) -> int:
         if p and p.lower().rsplit(".", 1)[-1] in {"jpg", "jpeg", "png", "bmp", "gif", "webp"}:
             n += 1
     return n
+
+
+def load_comment_image_refs(task_id: int, limit: int = 6) -> list:
+    """人类评论里的图片 → 报告可嵌入的 markdown 引用行（ORS-1035）。
+
+    URL 用相对路径（无 token、无凭据）：前端 MarkdownRenderer 的 AuthImage
+    对相对路径自动带登录态取图；知识卡里存的只是无害引用文本。
+    返回 [{'filename', 'path', 'desc', 'markdown'}]，时间倒序取前 limit 张。
+    """
+    from urllib.parse import quote
+    from ai.core.database import SessionLocal
+    from sqlalchemy import text, bindparam
+    db = SessionLocal()
+    try:
+        rows = db.execute(text(
+            "SELECT c.attachments, c.created_by "
+            "FROM task_comments c WHERE c.task_id = :tid AND c.created_by NOT IN :ai "
+            "ORDER BY c.created_at DESC"
+        ).bindparams(bindparam("ai", expanding=True)),
+            {"tid": task_id, "ai": list(_AI_AUTHORS)}).fetchall()
+    finally:
+        db.close()
+    out = []
+    for (atts,) in rows:
+        for a in atts or []:
+            if not isinstance(a, dict):
+                continue
+            p = str(a.get("path") or "")
+            if not p or not _is_image_path(p) or any(x["path"] == p for x in out):
+                continue
+            filename = str(a.get("filename") or os.path.basename(p))
+            desc = str(a.get("desc") or "").strip()
+            url = f"/api/tasks/attachments/download?path={quote(p)}"
+            md = f"![{filename}]({url})"
+            out.append({"filename": filename, "path": p, "desc": desc, "markdown": md})
+            if len(out) >= limit:
+                return out
+    return out
 
 
 def _resolver_from_oplog(task_id: int) -> str:

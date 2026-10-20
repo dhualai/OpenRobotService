@@ -72,6 +72,10 @@ _REPORT_PROMPT = """请根据以下工单素材撰写归档报告，格式要求
 ## 遗留问题
 （未解决事项与后续动作；素材明确没有时写「无」）
 
+## 现场图片
+（素材提供了现场图片 markdown 时，**逐行原样嵌入**到本节下——路径与文件名
+一字不改、不得虚构或改写图片；每张后跟一行描述文字。素材没有图片时整节约省略）
+
 ----------
 
 工单素材：
@@ -83,6 +87,8 @@ _REPORT_PROMPT = """请根据以下工单素材撰写归档报告，格式要求
 - 项目：{project_name}
 - 现场处理记录（评论，按时间）：
 {comments}
+- 现场图片（markdown 引用可原样嵌入报告，前端渲染时带登录态加载）：
+{image_refs}
 """
 
 
@@ -164,11 +170,19 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
             return
 
         await q({"type": "status", "msg": "正在收集工单信息与处理记录…"})
+        # ORS-1035：评论区图片 → 报告可嵌入的 markdown 引用（相对路径无凭据，
+        # 前端 MarkdownRenderer/AuthImage 渲染时带登录态加载）
+        from ai.core.solution_sink import load_comment_image_refs
+        img_refs = load_comment_image_refs(task_id)
+        image_refs_text = "\n".join(
+            f"- {r['markdown']}" + (f"（描述：{r['desc']}）" if r["desc"] else "")
+            for r in img_refs) or "（评论区无图片）"
         prompt = _REPORT_PROMPT.format(
             title=ctx.get("title") or "", description=(ctx.get("description") or "")[:1500],
             resolution_summary=(ctx.get("resolution_summary") or "")[:800],
             task_type=ctx.get("task_type") or "", project_name=ctx.get("project_name") or "",
-            comments=ctx.get("comments") or "（无评论记录）")
+            comments=ctx.get("comments") or "（无评论记录）",
+            image_refs=image_refs_text)
 
         from ai.core.solution_distiller import _get_distill_llm
         llm = await _get_distill_llm()
