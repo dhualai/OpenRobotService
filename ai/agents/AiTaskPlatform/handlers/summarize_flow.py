@@ -30,6 +30,25 @@ def _task_is_platform(task, title: str, desc: str) -> bool:
         return False
 
 
+def _comment_image_descs(c) -> list:
+    """评论附件里的图片 VLM 描述（ORS-1035：上传链路打标后随 attachments JSON 落库）。
+
+    只认 dict 形态且带 desc 的（历史纯 path 字符串无描述，跳过）；每条截 120 字，
+    每条评论最多带 3 张，防止长描述挤占摘要 token。"""
+    out = []
+    for a in (getattr(c, "attachments", None) or []):
+        if not isinstance(a, dict):
+            continue
+        d = str(a.get("desc") or "").strip()
+        if not d:
+            continue
+        name = str(a.get("filename") or a.get("path") or "图")
+        out.append(f"{name[:24]}：{d[:120]}")
+        if len(out) >= 3:
+            break
+    return out
+
+
 class SummarizeFlow:
     _SUMMARY_MIN_NEW_COMMENTS = 2
     _SUMMARY_ACTIVE_STATUSES = ("new", "pending", "in_progress")
@@ -140,7 +159,13 @@ class SummarizeFlow:
         for c in summary_comments[-20:]:
             author = author_display_name(c.created_by)
             content = (c.content or "")[:200]
-            history_lines.append(f"[{author}] {content}")
+            line = f"[{author}] {content}"
+            # ORS-1035：评论区图片的 VLM 描述随附件 JSON 落库（上传链路打标），
+            # 摘要素材一并带上——截图里的报错/现场信息不再丢失
+            img_parts = _comment_image_descs(c)
+            if img_parts:
+                line += f"（附图：{'；'.join(img_parts)}）"
+            history_lines.append(line)
         history_text = "\n".join(history_lines) if history_lines else ""
 
         if last_summary_text:

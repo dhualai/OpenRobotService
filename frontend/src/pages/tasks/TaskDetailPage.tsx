@@ -104,6 +104,8 @@ interface ArchiveSimilarItem {
   verified?: 'confirmed' | 'rejected' | 'recurred' | 'unknown' | string;
   /** 沉淀卡正文（问题/根因/解决三段式）——条目展开显示，替代跳工单详情 */
   summary?: string;
+  /** ORS-1035：相似单评论区图片（≤3 张 object_path），展开区缩略图对照 */
+  image_paths?: string[];
   report?: {
     content: string;
     version: number;
@@ -114,6 +116,31 @@ interface ArchiveSimilarItem {
 }
 
 interface MinioPathInfo { bucket: string; objectKey: string; }
+
+// ORS-1010 相似工单的状态展示（后端回表带枚举原值，小写；缺省透传原样）
+const ARCHIVE_SIMILAR_STATUS_ZH: Record<string, string> = {
+  archived: '已归档', closed: '已关闭', resolved: '已解决', new: '新建',
+  in_progress: '处理中', pending: '待处理', canceled: '已取消',
+};
+
+// ORS-1035 相似工单缩略图：object_path → 带鉴权 token 的附件代理 URL（<img> 直连）
+const similarThumbUrl = (objectPath: string): string => {
+  const authToken = readStored('AUTH_TOKEN') || '';
+  return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(objectPath)}&token=${encodeURIComponent(authToken)}`;
+};
+
+const SimilarThumb = ({ objectPath }: { objectPath: string }) => (
+  <img
+    src={similarThumbUrl(objectPath)}
+    alt=""
+    loading="lazy"
+    onClick={(e) => {
+      e.stopPropagation(); // 不触发条目的展开/收起
+      window.open(similarThumbUrl(objectPath), '_blank');
+    }}
+    style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border, #e8eaee)', cursor: 'zoom-in', flexShrink: 0 }}
+  />
+);
 
 const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
   try {
@@ -338,6 +365,9 @@ export default function TaskDetailPage() {
   const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
   // ORS-1010：展开查看卡正文（问题/根因/解决）的条目
   const [expandedSimilar, setExpandedSimilar] = useState<Set<number>>(new Set());
+  // 检索成功完成（retrieval_status=ok）：0 条也显示"未发现"提示，让功能存在感在；
+  // 检索挂了保持静默（不假装"没有"）
+  const [archiveSimilarReady, setArchiveSimilarReady] = useState(false);
 
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
@@ -722,15 +752,18 @@ export default function TaskDetailPage() {
   // verified=rejected 再前端兜底过滤。
   const fetchArchiveSimilar = useCallback(async (taskId: number) => {
     setArchiveSimilarLoading(true);
+    setArchiveSimilarReady(false);
     setExpandedSimilar(new Set()); // 重新拉取即收起所有展开（弹窗重开也从收起态开始）
     try {
-      const res = await request<{ task_id: number; similar: ArchiveSimilarItem[] }>(
+      const res = await request<{ task_id: number; retrieval_status?: string; similar: ArchiveSimilarItem[] }>(
         `/${taskId}/similar?limit=5&min_score=0.015`,
       );
       const list = (res?.similar || []).filter((s) => s.verified !== 'rejected');
       setArchiveSimilar(list.slice(0, 5));
+      setArchiveSimilarReady(res?.retrieval_status !== 'unavailable');
     } catch {
       setArchiveSimilar([]); // 静默降级：相似提示拿不到不影响归档
+      setArchiveSimilarReady(false);
     } finally {
       setArchiveSimilarLoading(false);
     }
@@ -2817,14 +2850,19 @@ export default function TaskDetailPage() {
             </>
           )}
           {/* ORS-1010 相似工单提示：归档人对照已沉淀的相似工单（与 AI 初稿并行
-              拉取，失败静默不显示）。不展示相似度分值——score 是 RRF 融合分非
-              余弦，展示数字会误导。verified=rejected 已被推翻，不出示。 */}
-          {(archiveSimilar.length > 0 || archiveSimilarLoading) && (
+              拉取）。不展示相似度分值——score 是 RRF 融合分非余弦，展示数字会
+              误导。verified=rejected 已被推翻，不出示。0 条且检索正常时也提示
+              （功能存在感 + 讲清沉淀机制）；检索挂了保持静默。 */}
+          {(archiveSimilar.length > 0 || archiveSimilarLoading || archiveSimilarReady) && (
             <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>相似工单</span>
                 <span style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
-                  {archiveSimilarLoading ? '检索中…' : `发现 ${archiveSimilar.length} 张，供对照参考`}
+                  {archiveSimilarLoading
+                    ? '检索中…'
+                    : archiveSimilar.length > 0
+                      ? `发现 ${archiveSimilar.length} 张，供对照参考`
+                      : '经验库中暂无相似的已沉淀工单'}
                 </span>
               </div>
               {archiveSimilar.map((s) => {
@@ -2838,33 +2876,48 @@ export default function TaskDetailPage() {
                       else next.add(s.task_id);
                       return next;
                     })}
-                    style={{ padding: '8px 0', borderBottom: '1px dashed var(--border, #e8eaee)', cursor: 'pointer' }}
+                    style={{ padding: '10px 0', borderBottom: '1px dashed var(--border, #e8eaee)', cursor: 'pointer' }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--brand, #266fe8)' }}>#{s.task_id}</span>
-                      <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
+                    {/* 窄屏两行式：行1 = 单号+徽章+展开符（标题不参与挤一行）；行2 = 标题独占整行可换行 */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--brand, #266fe8)', flexShrink: 0 }}>#{s.task_id}</span>
                       {s.verified === 'confirmed' && (
                         <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#e3f9e9', color: '#1f8a5a', flexShrink: 0 }}>✓ 已验证</span>
                       )}
                       {s.verified === 'recurred' && (
                         <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#fff4e0', color: '#b8860b', flexShrink: 0 }}>↻ 曾复发</span>
                       )}
-                      <span style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', flexShrink: 0 }}>{expanded ? '收起 ▴' : '展开 ▾'}</span>
+                      <span style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginLeft: 'auto', flexShrink: 0 }}>{expanded ? '收起 ▴' : '展开 ▾'}</span>
                     </div>
+                    <div style={{ fontSize: 13, marginTop: 3, lineHeight: 1.5, wordBreak: 'break-word', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{s.title}</div>
                     {(s.project_name || s.status) && (
                       <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
-                        {[s.project_name, s.status === 'archived' ? '已归档' : s.status].filter(Boolean).join(' · ')}
+                        {[s.project_name, ARCHIVE_SIMILAR_STATUS_ZH[s.status || ''] || s.status].filter(Boolean).join(' · ')}
                       </div>
                     )}
                     {expanded && s.summary && (
-                      <pre style={{ marginTop: 6, padding: '8px 10px', background: 'var(--muted, #f6f8fa)', borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.7, color: 'var(--foreground)' }}>{s.summary}</pre>
+                      <pre style={{ marginTop: 8, padding: '8px 10px', background: 'var(--muted, #f6f8fa)', borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.7, color: 'var(--foreground)', maxHeight: 200, overflowY: 'auto' }}>{s.summary}</pre>
+                    )}
+                    {expanded && !!s.image_paths?.length && (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                        {s.image_paths.map((p) => (
+                          <SimilarThumb key={p} objectPath={p} />
+                        ))}
+                      </div>
                     )}
                   </div>
                 );
               })}
-              <div style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginTop: 6 }}>
-                点条目展开查看该沉淀卡的问题/根因/解决（来自归档审核通过的经验库）
-              </div>
+              {archiveSimilar.length === 0 && !archiveSimilarLoading && (
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', lineHeight: 1.7 }}>
+                  本单归档审核通过后，也会沉淀进经验库——以后遇到同类问题的同事，写归档报告时就能看到这张单。
+                </div>
+              )}
+              {archiveSimilar.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginTop: 6 }}>
+                  点条目展开查看问题 / 根因 / 解决
+                </div>
+              )}
             </div>
           )}
         </div>

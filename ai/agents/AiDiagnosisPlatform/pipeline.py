@@ -2622,32 +2622,27 @@ class AiDiagnosisPlatform:
         logger.info(f"[recent_ticket_projects] username={username}, projects={len(projects)}")
         return projects
 
-    async def _get_project_candidates(self, username: str, memory=None) -> List[Dict[str, str]]:
-        """项目选择题候选合成（ORS-713 升级）：会话智能匹配 > 最近提单的项目（票史）
-        > 名下关联项目补位去重，截断到上限。
+    async def _get_project_candidates(self, username: str) -> List[Dict[str, str]]:
+        """项目选择题候选合成：最近提单的项目优先（票史），名下关联项目补位去重，
+        截断到上限。用户拍板（2026-08-27）：首版按最近一次提单时间倒序即可；
+        「提单过的 > 名下的」优先级体现在排列顺序上。两路查询并行，任一失败
+        （含 DB 故障/超时）按空处理——候选为空则项目环整体跳过，零侵入降级。
 
-        智能匹配（ai/core/project_rank.rank_for_session）按会话信号排序：扫码
-        录入行自带项目/车型、车型定制模式、对话里提到的车型/客户/地点（LLM 提取，
-        无机械信号才调）。领导 1017 实锤：只看票史不够——车型不参与、中止/已验收
-        项目排在实施中之前。三路查询任一失败（含 DB 故障/超时/LLM 挂）按空处理
-        ——候选为空则项目环整体跳过，零侵入降级为纯票史口径。"""
+        ORS-1035 回退：曾短暂接入会话智能匹配（ORS-713），用户 1020 实测后
+        定调选题环按原票史口径（智能匹配只保留在提单弹窗 ProjectSelect，
+        那是领导拍板的场景）——对话里正说着要提单时，突然冒出"不相干的
+        推荐项目"打乱用户自己的提单节奏。"""
         async def _safe(coro):
             try:
                 return await coro
             except Exception as e:
                 logger.warning(f"[project_candidates] 单源查询失败: {e}")
                 return []
-        async def _matched_empty():
-            return []
-
-        matched_coro = (self._match_projects_for_session(memory)
-                        if memory is not None else _matched_empty())
-        matched, recent, owned = await asyncio.gather(
-            matched_coro,
+        recent, owned = await asyncio.gather(
             _safe(self._get_recent_ticket_projects(username)),
             _safe(self._get_user_projects(username)))
         out, seen = [], set()
-        for p in [*matched, *recent, *owned]:
+        for p in [*recent, *owned]:
             nm = str(p.get("name") or "").strip()
             if not nm or nm in seen:
                 continue
@@ -2656,17 +2651,6 @@ class AiDiagnosisPlatform:
             if len(out) >= _PROJECT_CANDIDATE_LIMIT:
                 break
         return out
-
-    async def _match_projects_for_session(self, memory) -> List[Dict[str, str]]:
-        """会话智能匹配（ORS-713）：失败/无信号返回空列表，候选退化票史口径。"""
-        try:
-            from ai.core.project_rank import rank_for_session
-            ranked = await rank_for_session(memory, memory.turns)
-            return [{"name": r.get("name") or "", "code": r.get("code") or ""}
-                    for r in ranked]
-        except Exception as e:
-            logger.warning(f"[project_candidates] 智能匹配失败(退化票史): {e}")
-            return []
 
     @staticmethod
     def _match_project_choice(choice: str, user_projects: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
@@ -4999,7 +4983,7 @@ class AiDiagnosisPlatform:
             else:
                 try:
                     _gate_cands = await self._get_project_candidates(
-                        created_by, memory=memory)
+                        created_by)
                 except Exception as e:
                     logger.warning(f"[prepare] 项目候选查询失败(降级字段拦截): {e}")
                     _gate_cands = []
@@ -6571,7 +6555,7 @@ class AiDiagnosisPlatform:
             else:
                 try:
                     _gate_cands = await self._get_project_candidates(
-                        request.created_by, memory=memory)
+                        request.created_by)
                 except Exception:
                     _gate_cands = []
             if _gate_cands:
