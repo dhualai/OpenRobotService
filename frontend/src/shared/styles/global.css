@@ -10721,6 +10721,16 @@ button.dispatch-dev__rate-row { cursor: pointer; }
   margin: 0 0 10px;
   font-size: 13px; font-weight: 600; color: var(--foreground);
 }
+/* 榜单小标题 + 月份选择器同一行 */
+.activity-section__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.activity-section__head .activity-section__title { margin: 0; }
+.activity-month-select {
+  flex-shrink: 0;
+  padding: 3px 8px; border-radius: var(--radius-sm, 8px);
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  background: var(--background); color: var(--foreground);
+  font-size: 12px;
+}
 .activity-empty {
   padding: 24px 0; text-align: center;
   font-size: 13px; color: var(--muted-foreground);
@@ -10792,22 +10802,6 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 }
 .featured-item__like:disabled { opacity: 0.6; cursor: default; }
 .featured-item__like.is-liked {
-  background: var(--primary-soft); color: var(--sky);
-  border-color: color-mix(in oklab, var(--primary) 35%, var(--card));
-}
-
-/* 工单详情页点赞（标题下方独立一行；归档工单无操作按钮行，故不复用 detail-card__action-btn） */
-.detail-like-row { display: flex; justify-content: flex-end; margin-top: 4px; }
-.detail-like-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 10px; border-radius: 999px;
-  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
-  background: var(--secondary); color: var(--muted-foreground);
-  font-size: 12.5px; cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
-}
-.detail-like-btn:disabled { opacity: 0.6; cursor: default; }
-.detail-like-btn.is-liked {
   background: var(--primary-soft); color: var(--sky);
   border-color: color-mix(in oklab, var(--primary) 35%, var(--card));
 }

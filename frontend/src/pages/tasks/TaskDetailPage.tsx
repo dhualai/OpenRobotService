@@ -2,7 +2,7 @@ import { Fragment, useState, useEffect, useRef, useMemo, useCallback } from 'rea
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList, ThumbsUp } from 'lucide-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -43,7 +43,6 @@ import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { appUrlTransform } from '@/shared/utils/markdown';
-import { useTaskLike } from '@/shared/hooks/useTaskLike';
 
 // 状态文字色（设计稿 statusText 蓝阶：待处理 blue-3 / 处理中·进行中 blue-2 / 已解决 blue-1 / 关闭·取消 muted）
 const STATUS_TEXT_COLOR_MAP: Record<string, string> = {
@@ -402,9 +401,6 @@ export default function TaskDetailPage() {
   // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
   const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
 
-  // 点赞（活动中心「精品工单 TOP 榜」的计数来源）：拉取/乐观更新/回滚都在 hook 里
-  const { state: likeState, pending: likePending, toggle: toggleLike } = useTaskLike(detailId);
-
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
     setDetailLoading(true);
@@ -456,14 +452,6 @@ export default function TaskDetailPage() {
       })
       .finally(() => setDetailLoading(false));
   }, [detailId]);
-
-  /** 点赞 / 取消：乐观更新与回滚在 useTaskLike 内完成，这里只负责失败提示 */
-  const handleToggleLike = async () => {
-    const liked = await toggleLike();
-    if (liked === null) {
-      Toast({ message: '点赞操作失败，请稍后重试', theme: 'error' });
-    }
-  };
 
   // 查看停留时长追踪：用户离开页面 / 切后台时回传累计可见秒数
   // 后端将累加到最近一条 VIEW 操作记录上（5 分钟去重窗口内同一条记录）
@@ -1805,22 +1793,6 @@ export default function TaskDetailPage() {
           <h2 className="detail-card__title">
             <TitleEllipsis text={detail.title} lines={3} titleClassName="detail-card__title-inner" as="span" fontSize={19} lineHeight={1.3} />
           </h2>
-          {/* 点赞：归档工单没有操作按钮行（终态隐藏），故点赞独立成行常驻在标题下 */}
-          {likeState && (
-            <div className="detail-like-row">
-              <button
-                type="button"
-                className={`detail-like-btn ${likeState.liked ? 'is-liked' : ''}`}
-                disabled={likePending}
-                onClick={handleToggleLike}
-                aria-pressed={likeState.liked}
-                aria-label={likeState.liked ? '取消点赞' : '点赞'}
-              >
-                <ThumbsUp size={15} strokeWidth={2} fill={likeState.liked ? 'currentColor' : 'none'} />
-                <span data-testid="detail-like-count">{likeState.like_count}</span>
-              </button>
-            </div>
-          )}
           <div className="detail-card__info-grid">
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><User size={14} strokeWidth={2} /></span>
