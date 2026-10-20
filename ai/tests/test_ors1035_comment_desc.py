@@ -125,3 +125,36 @@ class TestProjectCandidatesRevert:
         from ai.agents.AiDiagnosisPlatform.pipeline import AiDiagnosisPlatform
         sig = inspect.signature(AiDiagnosisPlatform._get_project_candidates)
         assert list(sig.parameters) == ["self", "username"]
+
+
+class TestArchiveReportImageMaterial:
+    """ORS-1035：归档报告素材的图片描述拼装（solution_sink 纯函数）。"""
+
+    def test_descs_extraction(self):
+        from ai.core.solution_sink import _comment_image_descs
+        atts = [{"path": "b/t/a.png", "filename": "a.png", "desc": "报错弹窗"}]
+        assert _comment_image_descs(atts) == ["a.png：报错弹窗"]
+
+    def test_descs_skip_plain_and_empty(self):
+        from ai.core.solution_sink import _comment_image_descs
+        assert _comment_image_descs(["b/t/a.png",
+                                     {"path": "b/t/b.png", "filename": "b.png"}]) == []
+
+    def test_count_images_both_forms(self):
+        from ai.core.solution_sink import _count_comment_images
+        atts = ["b/t/a.PNG", {"path": "b/t/b.jpeg"}, "b/t/doc.pdf", {"path": ""}]
+        assert _count_comment_images(atts) == 2
+
+    def test_similar_summary_strips_embedded_image_md(self):
+        """报告沉淀后卡正文带图片 markdown——相似弹层 summary 剥掉图片语法，
+        保留其余文字。"""
+        from ai.core.retrieval import RetrievalResult, rank_similar_tickets
+        r = RetrievalResult(
+            id="x", score=0.02, title="t",
+            content="问题：货叉翘起\n![a.jpeg](/api/tasks/attachments/download?path=b%2Fa.jpeg)\n根因：车端控制",
+            vector_score=0.8, task_id="462", review_status="approved",
+        )
+        out = rank_similar_tickets([r])
+        assert "attachments/download" not in out[0]["summary"]
+        assert "货叉翘起" in out[0]["summary"]
+        assert "根因：车端控制" in out[0]["summary"]

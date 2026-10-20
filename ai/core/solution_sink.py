@@ -19,6 +19,7 @@ DB 访问走 ai.core.database（原生 SQL，自举模式——不依赖 backend
 与 history_indexer 同一纪律；连哪个库由 DATABASE_URL 决定）。
 """
 import json
+import os
 import time
 
 from ai.core.logging import get_logger
@@ -108,24 +109,32 @@ def load_comments_text(task_id: int) -> tuple[str, str]:
 
     AI 评论（U老师等）整条剔除：它是提问侧的自动分析，不是处理人给出的
     解法——0902 审核实锤多张卡因「把 U老师 的话当解法总结」被驳回。
+    ORS-1035：评论区图片的 VLM 描述（上传链路打标后随 attachments JSON 落库）
+    拼进行尾——现场截图里的报错/现象从此进归档报告素材；无描述的历史图
+    报张数占位（报告至少知道"此处有图，详见讨论区"，不硬造内容）。
     """
     from ai.core.database import SessionLocal
     from sqlalchemy import text
     db = SessionLocal()
     try:
         rows = db.execute(text(
-            "SELECT c.content, c.created_by, u.name "
+            "SELECT c.content, c.created_by, u.name, c.attachments "
             "FROM task_comments c LEFT JOIN users u ON u.username = c.created_by "
             "WHERE c.task_id = :tid ORDER BY c.created_at ASC"
         ), {"tid": task_id}).fetchall()
     finally:
         db.close()
     lines, total, last_human = [], 0, ""
-    for content, created_by, display_name in rows:
+    for content, created_by, display_name, attachments in rows:
         if created_by in _AI_AUTHORS:
             continue
         name = display_name or created_by
         line = f"{name}：{(content or '').strip()[:_COMMENT_EACH_LIMIT]}"
+        img_parts = _comment_image_descs(attachments)
+        if img_parts:
+            line += f"（附图：{'；'.join(img_parts)}）"
+        elif _count_comment_images(attachments):
+            line += f"（附 {_count_comment_images(attachments)} 张图片，现场信息见讨论区原图）"
         if total + len(line) > _COMMENTS_TOTAL_LIMIT:
             lines.append("（后续评论已截断）")
             break
@@ -133,6 +142,71 @@ def load_comments_text(task_id: int) -> tuple[str, str]:
         total += len(line)
         last_human = name
     return "\n".join(lines), last_human
+
+
+def _comment_image_descs(attachments) -> list:
+    """attachments JSON 里带 VLM 描述的图片 → [文件名：描述]（每评论 ≤3 张、
+    每条截 120 字，与 summarize_flow 同口径）。"""
+    out = []
+    for a in attachments or []:
+        if not isinstance(a, dict):
+            continue
+        d = str(a.get("desc") or "").strip()
+        if not d:
+            continue
+        name = str(a.get("filename") or a.get("path") or "图")
+        out.append(f"{name[:24]}：{d[:120]}")
+        if len(out) >= 3:
+            break
+    return out
+
+
+def _count_comment_images(attachments) -> int:
+    """attachments JSON 里的图片张数（按扩展名，兼容 str 与 {path,...} dict）。"""
+    n = 0
+    for a in attachments or []:
+        p = a if isinstance(a, str) else (str((a or {}).get("path") or "") if isinstance(a, dict) else "")
+        if p and p.lower().rsplit(".", 1)[-1] in {"jpg", "jpeg", "png", "bmp", "gif", "webp"}:
+            n += 1
+    return n
+
+
+def load_comment_image_refs(task_id: int, limit: int = 6) -> list:
+    """人类评论里的图片 → 报告可嵌入的 markdown 引用行（ORS-1035）。
+
+    URL 用相对路径（无 token、无凭据）：前端 MarkdownRenderer 的 AuthImage
+    对相对路径自动带登录态取图；知识卡里存的只是无害引用文本。
+    返回 [{'filename', 'path', 'desc', 'markdown'}]，时间倒序取前 limit 张。
+    """
+    from urllib.parse import quote
+    from ai.core.database import SessionLocal
+    from sqlalchemy import text, bindparam
+    db = SessionLocal()
+    try:
+        rows = db.execute(text(
+            "SELECT c.attachments, c.created_by "
+            "FROM task_comments c WHERE c.task_id = :tid AND c.created_by NOT IN :ai "
+            "ORDER BY c.created_at DESC"
+        ).bindparams(bindparam("ai", expanding=True)),
+            {"tid": task_id, "ai": list(_AI_AUTHORS)}).fetchall()
+    finally:
+        db.close()
+    out = []
+    for (atts,) in rows:
+        for a in atts or []:
+            if not isinstance(a, dict):
+                continue
+            p = str(a.get("path") or "")
+            if not p or not _is_image_path(p) or any(x["path"] == p for x in out):
+                continue
+            filename = str(a.get("filename") or os.path.basename(p))
+            desc = str(a.get("desc") or "").strip()
+            url = f"/api/tasks/attachments/download?path={quote(p)}"
+            md = f"![{filename}]({url})"
+            out.append({"filename": filename, "path": p, "desc": desc, "markdown": md})
+            if len(out) >= limit:
+                return out
+    return out
 
 
 def _resolver_from_oplog(task_id: int) -> str:

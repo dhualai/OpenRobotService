@@ -116,14 +116,16 @@ def rank_similar_tickets(
             task_id_out: Any = int(tid)
         except (TypeError, ValueError):
             task_id_out = tid
+        # 报告沉淀后卡正文可能带内嵌图片 markdown（ORS-1035 报告嵌入），相似
+        # 弹层的 summary 是纯文本对照——剥掉图片语法，保留其余文字
+        summary = (getattr(r, "content", "") or "")[:600]
+        summary = re.sub(r"!\[[^\]]*\]\([^)]*attachments/download[^)]*\)", "", summary)
         out.append({
             "task_id": task_id_out,
             "title": (r.title or "")[:80] or f"工单#{tid}",
             "score": round(float(r.score or 0), 4),
             "verified": getattr(r, "verified", "") or "unknown",
-            # 卡正文（问题/根因/解决三段式）——归档人弹层内直接对照，
-            # 不跳工单详情页（工单有权限边界，卡是全公司共享资产）
-            "summary": (getattr(r, "content", "") or "")[:600],
+            "summary": summary,
         })
         if len(out) >= int(top_k or 8):
             break

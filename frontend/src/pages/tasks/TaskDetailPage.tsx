@@ -37,6 +37,7 @@ import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import MDEditor from '@uiw/react-md-editor';
 import '@uiw/react-md-editor/markdown-editor.css';
 import { archiveGenerateStream, fetchWithAuth, taskDiscussStream } from '@/api/ai';
+import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
@@ -2816,7 +2817,10 @@ export default function TaskDetailPage() {
             </>
           ) : (
             <>
-              <MDEditor height={360} value={archiveReportContent} preview="preview" />
+              {/* ORS-1035：报告用 MarkdownRenderer 展示——内嵌的相对路径图片
+                  （attachments/download）走 AuthImage 带登录态加载；MDEditor
+                  的 img 无鉴权渲染会 401 */}
+              <MarkdownRenderer content={archiveReportContent} />
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
                 <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>关闭</Button>
                 <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
