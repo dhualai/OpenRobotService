@@ -926,6 +926,30 @@ class ProjectService:
         finally:
             db.close()
 
+    def bump_export_version_for_user(self, user_id: str) -> None:
+        """用户 USP 密码变更时，对其所属的所有项目 +1 授权包版本号。
+
+        导出的 user_list 中包含每个成员的 USP 密码，密码变更会导致授权包实质内容变化，
+        因此需触发版本号递增让项目侧感知到需要重新拉取。
+        """
+        db = SessionLocal()
+        try:
+            # 查 user_project_roles 拿到该用户关联的所有 project_id（排除全局角色）
+            rows = db.execute(user_project_roles.select().where(
+                user_project_roles.c.user_id == user_id,
+                user_project_roles.c.project_id.isnot(None),
+            )).fetchall()
+            project_ids = list({row.project_id for row in rows})
+            if not project_ids:
+                return
+
+            # 批量查 project.code，对每个项目独立 bump（每个 bump 自带独立事务）
+            projects = db.query(Project.code).filter(Project.id.in_(project_ids)).all()
+            for (code,) in projects:
+                self.bump_export_version(code)
+        finally:
+            db.close()
+
     def _get_user_name_by_username(self, username: str) -> str:
         try:
             url = f"{AUTH_SERVICE_BASE_URL}/users/{username}/detail"

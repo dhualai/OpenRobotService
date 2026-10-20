@@ -142,7 +142,7 @@ export default function TicketStatusDetail() {
           ) : (
             items.map((t) => {
               const suspended = t.status === SUSPENDED_STATUS;
-              const overdue = formatOverdueDuration(t.deadline_at);
+              const overdue = t.status === 'in_progress' ? formatOverdueDuration(t.curr_step_endtime) : null;
               return (
                 <div
                   key={t.id}

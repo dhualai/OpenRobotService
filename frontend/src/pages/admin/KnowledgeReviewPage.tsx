@@ -30,7 +30,7 @@ export default function KnowledgeReviewPage() {
     setBusy(true);
     try {
       await submitKnowledgeReview(report, outcome, comment.trim(), valuePoint.trim());
-      Toast({ message: outcome === 'approve' ? '已通过并归档' : '已驳回，意见仅当事人和你本人可见', theme: 'success' });
+      Toast({ message: outcome === 'approve' ? '内容审核通过，已提交财务审核' : '已驳回，意见仅当事人和你本人可见', theme: 'success' });
       navigate('/admin/knowledge?view=review', { replace: true });
     } catch (error) {
       Toast({ message: error instanceof Error ? error.message : '审核提交失败', theme: 'error' });
@@ -45,7 +45,7 @@ export default function KnowledgeReviewPage() {
         <section className="mac-card mac-card--pad"><h3>接单人归档报告</h3><KnowledgeMarkdown text={report.content} /></section>
         {report.submit_status === 'submitted' ? <>
           <SimilarReports taskId={report.task_id} />
-          <section className="mac-card mac-card--pad"><h3>审核结论</h3><label className="knowledge-field" htmlFor="knowledge-review-comment">审核意见（通过 / 驳回均必填）</label><textarea id="knowledge-review-comment" className="knowledge-textarea" maxLength={5000} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="说明完整性、真实性、可复用性，或驳回原因及修改建议" /><label className="knowledge-field" htmlFor="knowledge-review-value">价值点（通过时必填）</label><textarea id="knowledge-review-value" className="knowledge-textarea" maxLength={5000} value={valuePoint} onChange={(event) => setValuePoint(event.target.value)} placeholder="说明对故障排查、项目实施或行业复用的具体价值" /><div className="knowledge-actions"><Button theme="default" disabled={busy || !comment.trim()} onClick={() => void submit('reject')}>驳回补充</Button><Button theme="primary" disabled={busy || !comment.trim() || !valuePoint.trim()} loading={busy} onClick={() => void submit('approve')}>通过并归档</Button></div></section>
+          <section className="mac-card mac-card--pad"><h3>审核结论</h3><label className="knowledge-field" htmlFor="knowledge-review-comment">审核意见（通过 / 驳回均必填）</label><textarea id="knowledge-review-comment" className="knowledge-textarea" maxLength={5000} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="说明完整性、真实性、可复用性，或驳回原因及修改建议" /><label className="knowledge-field" htmlFor="knowledge-review-value">价值点（通过时必填）</label><textarea id="knowledge-review-value" className="knowledge-textarea" maxLength={5000} value={valuePoint} onChange={(event) => setValuePoint(event.target.value)} placeholder="说明对故障排查、项目实施或行业复用的具体价值" /><div className="knowledge-actions"><Button theme="default" disabled={busy || !comment.trim()} onClick={() => void submit('reject')}>驳回补充</Button><Button theme="primary" disabled={busy || !comment.trim() || !valuePoint.trim()} loading={busy} onClick={() => void submit('approve')}>通过并提交财务</Button></div></section>
         </> : <section className="mac-card mac-card--pad"><h3>本人审核意见</h3><KnowledgeMarkdown text={report.review_comment} /><KnowledgeMarkdown text={report.value_point} /><p className="knowledge-muted">当前报告已不在待审状态，不能重复提交结论。</p></section>}
       </>}
     </div>

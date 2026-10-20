@@ -6,6 +6,8 @@ vi.mock('@/api/dashboard', () => ({
   fetchDashboardSummaryAll: vi.fn().mockResolvedValue({}),
   // AI 直答率区块（1016）：无数据时区块整体隐藏，权限用例不关心它
   fetchDarLatest: vi.fn().mockResolvedValue(null),
+  // 提单人公司/部门分布（#320）：返回空结构，权限用例不关心该区块
+  fetchTicketCreatorOrgAnalysis: vi.fn().mockResolvedValue({ dimension: 'company', companies: [], by_org: [] }),
 }));
 vi.mock('@/shared/components/macaronBits', () => ({ MacDonut: () => null, MacLegend: () => null, macTone: () => '#000' }));
 vi.mock('tdesign-mobile-react', () => ({ Navbar: () => null }));

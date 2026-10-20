@@ -10,6 +10,7 @@
    并发由 reward_record 行锁（SELECT ... FOR UPDATE）串行化。
 """
 
+import json
 import secrets
 import string
 import uuid
@@ -97,9 +98,7 @@ class RewardService:
             if existed:
                 return existed, True
 
-        openid = payload.openid
-        if not openid:
-            openid = await RewardService._resolve_openid(db, payload.user_id)
+        openid = payload.openid or payload.user_id  # user_id 本身就是微信 openid，无需额外查询
 
         days = payload.expire_days or int(settings.WXPAY_REWARD_EXPIRE_DAYS or 30)
         record = RewardRecord(
@@ -140,15 +139,6 @@ class RewardService:
         return record, False
 
     @staticmethod
-    async def _resolve_openid(db: AsyncSession, user_id: str) -> Optional[str]:
-        from app.models.identity import UserDB
-
-        row = (
-            await db.execute(select(UserDB.wechat_openid).where(UserDB.id == user_id))
-        ).scalar_one_or_none()
-        return row
-
-    @staticmethod
     async def resolve_config(
         db: AsyncSession, key: str
     ) -> Optional[dict]:
@@ -160,7 +150,12 @@ class RewardService:
         ).scalar_one_or_none()
         if row is None or not row.enabled:
             return None
-        return row.config or {}
+        # config 列是 Text，手动 loads（ORM 层已从 JSON 改为 Text，避开 asyncmy 的 escape_dict bug）
+        raw = row.config or "{}"
+        try:
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return {}
 
     @staticmethod
     async def grant_batch(
@@ -202,7 +197,7 @@ class RewardService:
             if existed:
                 continue
 
-            openid = payload.openid or await RewardService._resolve_openid(db, payload.user_id)
+            openid = payload.openid or payload.user_id  # user_id 本身就是微信 openid
 
             reason = None
             if audit_policy:
@@ -567,6 +562,12 @@ class WithdrawService:
         auto_commit: bool = True,
     ) -> WithdrawOut:
         """发起转账（必须先落占位单，保证回调到达时能定位到 reward）。"""
+        # 前置校验：reward.openid 为空 → 用户未绑微信，不能提现
+        if not (reward.openid or "").strip():
+            return WithdrawOut(
+                action="rejected",
+                message="请先绑定微信账户，再发起提现",
+            )
         now = _now()
 
         user_name = ""
@@ -922,12 +923,13 @@ class AuditDecisionEngine:
         force_daily = int(policy.get("force_audit_user_daily_fen", 0) or 0)
         if force_daily > 0:
             today_start = _now().date()
-            # SQLite / MySQL 兼容写法：DATE(created_at)
+            # func.DATE 在 MySQL / SQLite 下都正确渲染为 DATE(created_at)，
+            # func.func("DATE", ...) 会被渲染成 helpdesk_724.DATE(...) 导致 MySQL 报 "FUNCTION ... does not exist"
             daily_sum = (
                 await db.execute(
                     select(func.coalesce(func.sum(RewardRecord.amount), 0)).where(
                         RewardRecord.user_id == user_id,
-                        func.func("DATE", RewardRecord.created_at) == str(today_start),
+                        func.DATE(RewardRecord.created_at) == str(today_start),
                     )
                 )
             ).scalar() or 0
@@ -966,7 +968,7 @@ class AuditDecisionEngine:
                 await db.execute(
                     select(func.coalesce(func.sum(RewardRecord.amount), 0)).where(
                         RewardRecord.user_id == user_id,
-                        func.func("DATE", RewardRecord.created_at) == str(today_start),
+                        func.DATE(RewardRecord.created_at) == str(today_start),
                     )
                 )
             ).scalar() or 0

@@ -18,7 +18,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 注意：不能用 dar_weekly 的模块级 DATA——它硬编码 test，--env 在 main 里才生效，
 # 这里 import 时还未执行（1016 实测坑）。按 --env 自行拼目录。
-from dar_weekly import DATA_ROOT, _push_env  # noqa: E402
+from dar_weekly import DATA_ROOT, _push_env, _workbench_snapshot  # noqa: E402
 
 
 def main():
@@ -45,6 +45,10 @@ def main():
     for f in files:
         week = os.path.basename(f)[len("weekly_"):-len(".json")]
         rep = json.load(open(f, encoding="utf-8"))
+        # 只给最新一期补工作台快照：后台区块读的就是它，且快照是「今天」的值，
+        # 补到历史期数上会张冠李戴。老周报 json 里没有就现算一份。
+        if f == files[-1] and not rep.get("workbench"):
+            rep["workbench"] = _workbench_snapshot(args.env)
         body = json.dumps({"week_date": week, "env": args.env, "payload": rep}).encode()
         req = urllib.request.Request(f"{base}/api/admin/dashboard/dar-reports", body,
                                      {"Content-Type": "application/json",

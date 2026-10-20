@@ -41,6 +41,9 @@ def _summary(row: DarWeeklyReport) -> Dict[str, Any]:
         "wow": p.get("wow") or {},
         "this_week": p.get("this_week") or {},
         "manual_progress": p.get("manual_progress"),
+        # 工作台展示值快照（推送时由 dar_studio.metrics 原样取）——前端区块按这份渲染，
+        # 保证与工作台同数；无快照时前端退回上面的周报口径字段
+        "workbench": p.get("workbench"),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 

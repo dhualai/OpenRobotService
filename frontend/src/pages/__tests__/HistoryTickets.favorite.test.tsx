@@ -12,6 +12,7 @@ import { MemoryRouter } from 'react-router-dom';
 
 const mockQaListTickets = vi.fn();
 const mockToggleTaskFollow = vi.fn();
+const mockNavigateInWechat = vi.fn();
 
 vi.mock('@/api/ai', () => ({
   qaListTickets: (...args: unknown[]) => mockQaListTickets(...args),
@@ -19,6 +20,13 @@ vi.mock('@/api/ai', () => ({
 
 vi.mock('@/api/taskFollow', () => ({
   toggleTaskFollow: (...args: unknown[]) => mockToggleTaskFollow(...args),
+}));
+
+// 进详情的跳转方式打桩：PC 微信的分享卡片取「最近一次整页加载时的 URL」且不认 JS-SDK
+// 设的 link，用 SPA 进详情会让转发出去仍是上一张工单；故此处断言「必须走 navigateInWechat」
+// 这一契约（该函数在非 PC 端等价于 navigate，故打桩不影响其余用例语义）。
+vi.mock('@/shared/utils/wechatJsSdk', () => ({
+  navigateInWechat: (...args: unknown[]) => mockNavigateInWechat(...args),
 }));
 
 // tdesign 只留列内用到的符号的最小替身：真实 tdesign 会让本文件**收集阶段**卡住
@@ -182,5 +190,27 @@ describe('历史工单列表 · 收藏（关注）', () => {
     renderPage();
 
     expect(await screen.findByText('暂无关注的工单')).toBeInTheDocument();
+  });
+});
+
+// 回归用例：历史工单列表点卡片进入详情必须走 navigateInWechat。
+// 背景（用户实测）：PC 微信不认 JS-SDK 设的分享 link，只认「最近一次整页加载时的 URL」；
+// 原先用 navigate 做 SPA 跳转时地址栏虽已变成目标工单，微信仍按旧 URL 生成转发卡片，
+// 导致转发出去的是上一张工单。navigateInWechat 在 PC 微信下改走整页跳转来刷新该 URL，
+// 其他端等价于 navigate，行为与体验不变。
+describe('历史工单列表 · 进入详情的跳转方式（PC 微信转发链接修复）', () => {
+  beforeEach(() => {
+    mockNavigateInWechat.mockReset();
+  });
+
+  it('点击工单卡片走 navigateInWechat，目标是当前这条工单的详情路由', async () => {
+    const user = userEvent.setup();
+    mockQaListTickets.mockResolvedValue(listResponse([makeTicket({ id: 928 })]));
+
+    renderPage();
+
+    await user.click(await screen.findByText('机器人不动了'));
+
+    expect(mockNavigateInWechat).toHaveBeenCalledWith(expect.any(Function), '/call/ticket/db_928');
   });
 });

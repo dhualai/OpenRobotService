@@ -7,13 +7,13 @@
   - `frontend_router`（prefix=/announcements，在 app/__init__.py 以 /api/announcements 挂载）
 
 鉴权：
-  - 后台：require_permission("frontend:admin:announcement:manage")
+  - 后台：require_permission(PERM_ANNOUNCEMENT)，码定义在 permission_service
   - 前台：仅要求登录（App 全量在 AuthGuard 内，无匿名场景）
 
 Status 用字符串列（draft/published/offline），见 app/models/announcement.py。
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -27,13 +27,16 @@ from app.core.user_identity import actor_username
 from app.models.announcement import Announcement, AnnouncementStatus
 from app.modules.admin.api.auth import require_permission
 from app.services.identity_service import IdentityService
+from app.services.permission_service import PERM_ANNOUNCEMENT
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/announcements", tags=["admin-announcements"])
 frontend_router = APIRouter(prefix="/announcements", tags=["announcements"])
 
-PERM_CODE = "frontend:admin:announcement:manage"
+# 与 permission_service 的派生表共用同一个常量：全局角色「超级管理员」默认拿到它，
+# 其他角色可在权限管理里勾选。两处若各写一份字符串，迟早漂移。
+PERM_CODE = PERM_ANNOUNCEMENT
 
 VALID_STATUS = (
     AnnouncementStatus.DRAFT,
@@ -49,8 +52,27 @@ _ORDER_BY = (
 )
 
 
+def _utcnow() -> datetime:
+    """当前 UTC 时间（naive，供 DateTime 列直接落库）。
+
+    全项目时间字段统一存 UTC：`app/core/db.py` 把每个数据库会话的 time_zone 固定为
+    '+00:00'（所以 `created_at`/`updated_at` 的 `func.now()` 就是 UTC），前端
+    `parseUtcDate` 对无时区 ISO 串统一补 `Z` 当 UTC 解析、再转本地展示。
+
+    因此这里必须用 UTC，**不能**用 `datetime.now()`——后者是进程本地时间（生产容器为
+    +08:00），写进去前端再当 UTC 加 8 小时，发布时间会整体偏 8 小时。
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def ensure_announcement_permission() -> None:
-    """确保权限码已注册到 permissions 表（幂等，已存在自动跳过）。"""
+    """确保权限码已注册到 permissions 表（幂等，已存在自动跳过）。
+
+    只在「权限管理」列表的注册块（permissions.get_all_permissions）里调用：
+    该码要在权限管理页可勾选，就必须在**读到权限列表时**先落库。切勿在下面各接口
+    函数体内调用——require_permission 是 FastAPI 依赖，先于函数体执行，没权限的
+    账号会先被 403 挡住，永远走不到注册那行（生产上就是这样自锁的）。
+    """
     IdentityService.add_permission(
         permission_id="perm_frontend_admin_announcement_manage",
         code=PERM_CODE,
@@ -153,7 +175,6 @@ async def admin_list_announcements(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     conds = []
     if status:
         conds.append(Announcement.status == _validate_status(status))
@@ -180,14 +201,13 @@ async def create_announcement(
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     st = _validate_status(payload.status)
     ann = Announcement(
         title=payload.title.strip(),
         content=payload.content,
         is_pinned=payload.is_pinned,
         status=st,
-        published_at=datetime.now() if st == AnnouncementStatus.PUBLISHED else None,
+        published_at=_utcnow() if st == AnnouncementStatus.PUBLISHED else None,
         created_by=actor_username(current_user),
     )
     db.add(ann)
@@ -203,7 +223,6 @@ async def update_announcement(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     ann = await _get_or_404(db, aid)
 
     if payload.title is not None:
@@ -215,7 +234,7 @@ async def update_announcement(
     if payload.status is not None:
         st = _validate_status(payload.status)
         if st == AnnouncementStatus.PUBLISHED and ann.published_at is None:
-            ann.published_at = datetime.now()
+            ann.published_at = _utcnow()
         ann.status = st
 
     await db.commit()
@@ -229,11 +248,10 @@ async def publish_announcement(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     ann = await _get_or_404(db, aid)
     ann.status = AnnouncementStatus.PUBLISHED
     if ann.published_at is None:
-        ann.published_at = datetime.now()
+        ann.published_at = _utcnow()
     await db.commit()
     await db.refresh(ann)
     return {"ok": True, "item": _to_dict(ann)}
@@ -245,7 +263,6 @@ async def offline_announcement(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     ann = await _get_or_404(db, aid)
     ann.status = AnnouncementStatus.OFFLINE
     await db.commit()
@@ -259,7 +276,6 @@ async def delete_announcement(
     db: AsyncSession = Depends(get_db),
     _: Dict[str, Any] = require_permission(PERM_CODE),
 ):
-    ensure_announcement_permission()
     ann = await _get_or_404(db, aid)
     await db.delete(ann)
     await db.commit()

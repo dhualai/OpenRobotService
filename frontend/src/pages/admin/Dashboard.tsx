@@ -217,11 +217,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {canViewKnowledgeContribution && <>
-          <SectionTitle title="知识贡献榜" moreText="查看榜单" onMore={() => navigate('/admin/knowledge')} />
-          <KnowledgeContributionCard key={username} />
-        </>}
-
         {/* ============ 奖励汇总卡：待提现 / 累计已到账；点击整张卡进入 /rewards ============ */}
         <SectionTitle title="我的奖励" moreText="奖励记录" onMore={() => navigate('/rewards')} />
         <section
@@ -267,6 +262,11 @@ export default function Dashboard() {
             </span>
           </div>
         </section>
+
+        {canViewKnowledgeContribution && <>
+          <SectionTitle title="知识贡献榜" moreText="查看榜单" onMore={() => navigate('/admin/knowledge')} />
+          <KnowledgeContributionCard key={username} />
+        </>}
 
         {/* ============ 上：工单数据看板 ============ */}
         {/* 状态环图 + 图例（点图例下钻工单明细）+ 四指标卡；

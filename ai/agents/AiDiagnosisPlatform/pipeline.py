@@ -155,6 +155,13 @@ class AgentState:
     # 只清 candidates 保留 asked——候选是「人」的属性，换个话题不该重复烦用户。
     project_asked: bool = False
     project_candidates: List[Dict[str, str]] = field(default_factory=list)
+    # ORS-985：项目题出口状态。user_replied=出题后用户已发过非序号消息（重出
+    # 题防抖——用户明明回应了「不在里面」还重发同一道题=骚扰，且长题面挤占
+    # 对话窗口把原始问题顶出上下文）；via_dialog=用户已表示候选里没有他的
+    # 项目（LLM 判定 project_none），项目改走弹窗自选/管理员新建，本单闸门
+    # 不再出项目题。
+    project_ask_user_replied: bool = False
+    project_via_dialog: bool = False
     # 项目提及跨轮持久（0828 治本）：咨询轮 LLM 输出 project_mention（用户原话，
     # 如「摇人吧」）→ 服务端唯一子串匹配校验池命中后落此。修复「开头提过项目、
     # 交互多轮后提单，历史窗口(8轮)/记忆buffer(10条)截断导致 LLM 看不到」——
@@ -222,6 +229,8 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         project_asked=bool(s.get("project_asked", False)),
         project_candidates=[c for c in (s.get("project_candidates") or [])
                             if isinstance(c, dict)],
+        project_ask_user_replied=bool(s.get("project_ask_user_replied", False)),
+        project_via_dialog=bool(s.get("project_via_dialog", False)),
         mentioned_project=s.get("mentioned_project")
         if isinstance(s.get("mentioned_project"), dict) else None,
         ambiguous_project_candidates=[c for c in (s.get("ambiguous_project_candidates") or [])
@@ -261,6 +270,8 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "ticket_ref_context": state.ticket_ref_context,
         "project_asked": state.project_asked,
         "project_candidates": state.project_candidates,
+        "project_ask_user_replied": state.project_ask_user_replied,
+        "project_via_dialog": state.project_via_dialog,
         "mentioned_project": state.mentioned_project,
         "ambiguous_project_candidates": state.ambiguous_project_candidates,
         "user_profile": state.user_profile,
@@ -681,6 +692,8 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
     agent_state.ticket_ref_context = ""  # 工单引用上下文随单清空
     agent_state.project_asked = False        # 项目选择题标志随单重置（下一单重新问）
     agent_state.project_candidates = []      # 编号候选映射随单清空，不泄漏到下一单
+    agent_state.project_ask_user_replied = False  # ORS-985：防抖标记随单重置
+    agent_state.project_via_dialog = False   # ORS-985：弹窗自选标记随单重置（下一单重新问）
     agent_state.mentioned_project = None     # 项目提及随单清空（0828 治本：下一单重新捕捉）
     agent_state.ambiguous_project_candidates = []  # 歧义反问随单清空（0829：下一单重新捕捉）
     # 附件随单消费：本单已把累积附件带进 tasks.attachments（upsert_task 已入库），
@@ -1355,11 +1368,12 @@ project 不写进 required_fields（项目由用户在确认弹窗选择）。
 ---
 输出 JSON（用户要求转工单**且 ticket_ready=true** 时，action 必须是 submit 不是 answer）：
 ```json
-{{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","ticket_intent":false,"ticket_cancel":false,"reset_ticket":false,"referenced_ticket":"","state_update":{{"ticket_type":"problem|bug|feature|support|other","problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}},"ticket_ready":false}}}}
+{{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","ticket_intent":false,"ticket_cancel":false,"reset_ticket":false,"referenced_ticket":"","project_none":false,"state_update":{{"ticket_type":"problem|bug|feature|support|other","problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}},"ticket_ready":false}}}}
 ```
 两个布尔字段（每轮都要输出，服务端据此决策）：
 - `ticket_intent`：本轮用户**明确表达了提单诉求**（说"转工单/提单/派单/帮我建单"等），或「会话状态」块显示**本单提单进行中**（字段收集中/草稿待确认）且用户在为同一张单补信息 → true；只是咨询、提问、报障、闲聊 → false。🔴 上一张工单**已提交**＝该次提单流程已完结（以「会话状态」块为准）：之后用户描述的问题是全新咨询，不是"提单流程延续"，没有新的明确提单诉求就一律 false
 - `ticket_cancel`：本轮用户**明确表示不想提单**（"不用转工单""我没说转工单""算了"）→ true；其余 → false
+- `project_none`：系统此前出过项目选择题、本轮用户表示**候选列表里没有他要的项目**（"我的项目不在里面""列表里没有""都不是我的项目"）→ true；正常答序号/报项目名/没在讨论项目 → false
 - `reset_ticket`：对话里已有工单草稿，但用户本轮要提的是**另一个新问题**的单（话题已切换，旧草稿是别的问题的）→ true，服务端会清掉旧草稿和旧字段重新收集；给旧草稿补充信息、或没有旧草稿时一律 false
 - `referenced_ticket`：用户指代某个历史工单（写法如 `@#555`、`#555`、"工单555"、"上次提的那个单"）且对话上下文里还没有该工单的内容 → 输出工单号（如 "555"）；没有指代 → 空字符串。🔴 禁止把指代原话当字段值或答案内容
 🔴 **能力边界**：你没有任何系统操作能力——不能注册/创建/重置账号、不能改平台配置、不能发通知、不能操作车辆或工单状态。知识库描述的平台功能（如「输入姓名即完成注册」）是平台自身的机制，**不是你能执行的**：用户发出这类指令时，只解释平台会怎么处理、引导用户走正确入口，**绝不声称「已完成/已注册/已创建/已提交」**——你的话不产生任何系统动作，唯一能做的真实动作是生成工单草稿（且需用户确认）
@@ -1916,6 +1930,9 @@ class AiDiagnosisPlatform:
                 f"用户答「还是上次提单的项目」「跟上个单一样」这类**指代上一单**的"
                 f"说法 → project_choice 填 \"last\"（系统自动取上一单项目，不要猜名）；"
                 f"用户说都不是/不管项目 → project_choice 留空字符串继续收集其余字段；"
+                f"用户表示**列表里没有他的项目**（不在里面/没有我的项目/都不是）→ "
+                f"输出 JSON 顶层 project_none=true 并正常回话（告知稍后在工单弹窗里"
+                f"搜索选择或勾选「没有我的项目」，系统会放行不再追问项目）；"
                 f"🚫 绝不把任何编号本身当成 collected_info 里字段的值。\n"
             )
         # 用户身份块（0904）：收集/快路径两套精简 prompt 不走 _session_state_block，
@@ -2241,6 +2258,13 @@ class AiDiagnosisPlatform:
                 logger.info(f"[state] 拦截 resolved 下 LLM 设置 problem_summary: "
                             f"new={new_ps[:40]}")
                 # 不更新 problem_summary，保持空
+            elif not new_ps and (state.problem_summary or "").strip():
+                # 空值防降级（ORS-985 生产实锤）：主 LLM 被查单上下文带偏时
+                # 会输出空 summary，无脑覆盖会把刚回填的真实需求清掉，工单
+                # 退化成「用户仅发送数字2，无有效问题描述」。清空只能走显式
+                # 取消/提交重置路径，轮次内的空 state_update 不降级。
+                logger.info(f"[state] 拦截空 problem_summary 覆盖非空旧值: "
+                            f"old={state.problem_summary[:40]}")
             else:
                 state.problem_summary = new_ps
         if "ruled_out" in state_update:
@@ -2598,22 +2622,32 @@ class AiDiagnosisPlatform:
         logger.info(f"[recent_ticket_projects] username={username}, projects={len(projects)}")
         return projects
 
-    async def _get_project_candidates(self, username: str) -> List[Dict[str, str]]:
-        """项目选择题候选合成：最近提单的项目优先（票史），名下关联项目补位去重，
-        截断到上限。用户拍板（2026-08-27）：首版按最近一次提单时间倒序即可；
-        「提单过的 > 名下的」优先级体现在排列顺序上。两路查询并行，任一失败
-        （含 DB 故障/超时）按空处理——候选为空则项目环整体跳过，零侵入降级。"""
+    async def _get_project_candidates(self, username: str, memory=None) -> List[Dict[str, str]]:
+        """项目选择题候选合成（ORS-713 升级）：会话智能匹配 > 最近提单的项目（票史）
+        > 名下关联项目补位去重，截断到上限。
+
+        智能匹配（ai/core/project_rank.rank_for_session）按会话信号排序：扫码
+        录入行自带项目/车型、车型定制模式、对话里提到的车型/客户/地点（LLM 提取，
+        无机械信号才调）。领导 1017 实锤：只看票史不够——车型不参与、中止/已验收
+        项目排在实施中之前。三路查询任一失败（含 DB 故障/超时/LLM 挂）按空处理
+        ——候选为空则项目环整体跳过，零侵入降级为纯票史口径。"""
         async def _safe(coro):
             try:
                 return await coro
             except Exception as e:
                 logger.warning(f"[project_candidates] 单源查询失败: {e}")
                 return []
-        recent, owned = await asyncio.gather(
+        async def _matched_empty():
+            return []
+
+        matched_coro = (self._match_projects_for_session(memory)
+                        if memory is not None else _matched_empty())
+        matched, recent, owned = await asyncio.gather(
+            matched_coro,
             _safe(self._get_recent_ticket_projects(username)),
             _safe(self._get_user_projects(username)))
         out, seen = [], set()
-        for p in [*recent, *owned]:
+        for p in [*matched, *recent, *owned]:
             nm = str(p.get("name") or "").strip()
             if not nm or nm in seen:
                 continue
@@ -2622,6 +2656,17 @@ class AiDiagnosisPlatform:
             if len(out) >= _PROJECT_CANDIDATE_LIMIT:
                 break
         return out
+
+    async def _match_projects_for_session(self, memory) -> List[Dict[str, str]]:
+        """会话智能匹配（ORS-713）：失败/无信号返回空列表，候选退化票史口径。"""
+        try:
+            from ai.core.project_rank import rank_for_session
+            ranked = await rank_for_session(memory, memory.turns)
+            return [{"name": r.get("name") or "", "code": r.get("code") or ""}
+                    for r in ranked]
+        except Exception as e:
+            logger.warning(f"[project_candidates] 智能匹配失败(退化票史): {e}")
+            return []
 
     @staticmethod
     def _match_project_choice(choice: str, user_projects: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
@@ -3442,7 +3487,8 @@ class AiDiagnosisPlatform:
             return "diagnosis", [("search_kb", {"query": request.query})]
 
     async def _execute_plan_tools(self, session_id: str, state: AgentState,
-                                  plan: list, created_by: str = "") -> str:
+                                  plan: list, created_by: str = "",
+                                  query: str = "") -> str:
         """并行执行规划工具，拼成回答轮资料块（检索结果 + 工单内容）。
 
         lookup_ticket 命中后挂 state.ticket_ref_context（@# 预查挂过同号则复用），
@@ -3482,6 +3528,15 @@ class AiDiagnosisPlatform:
                             tickets, total, only_open)
                     no = str(raw_no).strip()
                     if not no.isdigit():
+                        return name, ""
+                    # ORS-985 原话溯源门：查单号必须出现在用户本轮原话里。
+                    # 规划会从上下文联想（985 实锤：用户答项目题序号「2」，规划
+                    # 从上一单回执气泡里抓了 AI 号 86636 当查询号），带偏主 LLM。
+                    # 用户真要查单必然报出号；上下文里有但原话没有的号=联想，拒查。
+                    if query and no not in query:
+                        logger.warning(
+                            f"[plan_exec] lookup_ticket 号 {no} 不在用户原话里，"
+                            f"判定为上下文联想，拒查: session={session_id}")
                         return name, ""
                     _cur = state.ticket_ref_context or ""
                     if _cur.startswith(f"#{no} ") or _cur.startswith(f"#{no}（"):
@@ -4929,8 +4984,11 @@ class AiDiagnosisPlatform:
                     f"created_by={created_by or '(空)'!r}, "
                     f"pf_src={(_pf_src or {}).get('name', '(无)') if _pf_src else '(无)'}, "
                     f"asked={agent_state.project_asked}, "
+                    f"via_dialog={agent_state.project_via_dialog}, "
+                    f"ask_replied={agent_state.project_ask_user_replied}, "
                     f"amb={len(agent_state.ambiguous_project_candidates or [])}")
         if (not _pf_src and not agent_state.project_asked
+                and not agent_state.project_via_dialog
                 and not _existing_draft):
             if agent_state.ambiguous_project_candidates:
                 # 歧义挂起时点按钮（0903 路径统一，对话闸门同款）：编号题
@@ -4940,7 +4998,8 @@ class AiDiagnosisPlatform:
                 agent_state.ambiguous_project_candidates = []
             else:
                 try:
-                    _gate_cands = await self._get_project_candidates(created_by)
+                    _gate_cands = await self._get_project_candidates(
+                        created_by, memory=memory)
                 except Exception as e:
                     logger.warning(f"[prepare] 项目候选查询失败(降级字段拦截): {e}")
                     _gate_cands = []
@@ -4955,6 +5014,7 @@ class AiDiagnosisPlatform:
                     agent_state.ticket_collecting = _ask_missing
                 agent_state.project_asked = True
                 agent_state.project_candidates = _gate_cands
+                agent_state.project_ask_user_replied = False  # 新题重置防抖（ORS-985）
                 ask_text = _build_project_choice_ask(_gate_cands)
                 memory.turns.append({"role": "assistant", "content": ask_text})
                 _save_agent_state(memory, agent_state)
@@ -4982,7 +5042,12 @@ class AiDiagnosisPlatform:
                 }
         elif (not _pf_src and not _existing_draft
               and agent_state.project_asked
-              and agent_state.project_candidates):
+              and agent_state.project_candidates
+              # ORS-985 防抖：用户出题后已发过非序号消息（解释/"不在里面"/
+              # 坚持转工单）→ 不再重发同一道题。重出=骚扰，且长题面气泡挤占
+              # 对话窗口把原始问题顶出上下文（1019 实锤：阈值问题被挤掉后
+              # AI 反问"具体问题是什么"）。项目留空走弹窗必选兜底。
+              and not agent_state.project_ask_user_replied):
             # 项目题挂着未答时点按钮（asked=True∧候选挂着∧无预填无草稿）：
             # 用户点转工单=明确要提单，第一道门是项目——重出编号题（带按钮）
             # 比「字段拦截却漏说项目」清晰（0903 实测：出题未答点按钮出
@@ -5825,10 +5890,23 @@ class AiDiagnosisPlatform:
             # 原路径（乐观检索并发意图分类），行为逐字不变。
             _plan_task = None
             if os.getenv("AI_PLAN_EXECUTE", "") == "1":
-                _plan_task = asyncio.create_task(
-                    self._plan_tools(request, state, memory))
-                _retrieval_task = None
-                _intent_task = None
+                if (state.project_candidates
+                        and _parse_seq_reply(request.query) is not None):
+                    # ORS-985：项目题序号答案窗口——纯序号语义唯一（按钮列表
+                    # 位置），跳过规划直接预置 intent=ticket/无工具（985 实锤：
+                    # 规划把「2」联想成查上一单的 AI 号 86636，查单上下文带偏
+                    # 主 LLM 输出空 problem_summary 把真实需求清掉）。序号定序
+                    # 与预填走既有管道（答编号轮服务端定序），省一次规划调用。
+                    async def _seq_plan():
+                        return ("ticket", [])
+                    _plan_task = asyncio.create_task(_seq_plan())
+                    _retrieval_task = None
+                    _intent_task = None
+                else:
+                    _plan_task = asyncio.create_task(
+                        self._plan_tools(request, state, memory))
+                    _retrieval_task = None
+                    _intent_task = None
             else:
                 _intent_llm = await get_intent_client()
                 _retrieval_task = asyncio.create_task(
@@ -5846,7 +5924,8 @@ class AiDiagnosisPlatform:
                 if _plan_task is not None:
                     _pi, _ptools = await _plan_task
                     return await self._execute_plan_tools(
-                        request.session_id, state, _ptools, request.created_by)
+                        request.session_id, state, _ptools, request.created_by,
+                        query=request.query)
                 try:
                     return await asyncio.wait_for(_retrieval_task, timeout=20.0)
                 except asyncio.TimeoutError:
@@ -5917,7 +5996,7 @@ class AiDiagnosisPlatform:
                     if _lookup_calls:
                         await self._execute_plan_tools(
                             request.session_id, state, _lookup_calls,
-                            request.created_by)
+                            request.created_by, query=request.query)
                         logger.info(f"[stream] 意图判提单，查单预取已挂 state: "
                                     f"session={request.session_id}")
                     else:
@@ -6439,6 +6518,28 @@ class AiDiagnosisPlatform:
         # flash 输出 submit 却漏填 ticket_intent → 闸门被绕过先问字段，违反
         # 「提单先引导项目后补字段」规定。submit=LLM 已认定提单，更该先撞项目题
         # （出题轮同轮预置 decide 挂收集，答完编号必进字段收集，闭环已有）。
+        # ORS-985：项目题出口①——LLM 判定用户表示候选里没有他的项目
+        # （project_none）。解除项目题状态、本单改走弹窗自选，闸门/预填不再
+        # 拦项目。此判定只在候选挂着时有效（没出过题不存在"不在里面"）。
+        if (state.project_candidates
+                and parsed.get("project_none")
+                and not parsed.get("ticket_cancel", False)):
+            state.project_asked = False
+            state.project_candidates = []
+            state.ambiguous_project_candidates = []
+            state.project_via_dialog = True
+            state.project_ask_user_replied = False
+            _save_agent_state(memory, state)
+            logger.info("[stream] project_none：候选不含用户项目，项目改走弹窗，"
+                        "闸门放行")
+
+        # ORS-985：项目题出口②（防抖）——出题后用户发过非序号消息（解释、
+        # 追问、"不在里面"等）就不再机械重问；序号消息走答题链路不在此列。
+        if (state.project_asked and state.project_candidates
+                and _parse_seq_reply(request.query) is None):
+            if not state.project_ask_user_replied:
+                state.project_ask_user_replied = True
+
         # 排除 ticket_cancel：取消提单轮的 action 也是 submit，不能被截胡出题。
         _gate_proj_choices = []
         logger.info(
@@ -6454,6 +6555,7 @@ class AiDiagnosisPlatform:
                 or parsed.get("action") == "submit")
                 and not parsed.get("ticket_cancel", False)
                 and not state.project_asked
+                and not state.project_via_dialog
                 and not state.pending_prefill_project and not state.ticket_collecting
                 # 草稿已存在＝项目已进草稿（预填/弹窗已定），再出选题只会
                 # 打断草稿后的补充与追问（0903 实锤：问「没有弹窗」被出题顶掉）
@@ -6469,13 +6571,14 @@ class AiDiagnosisPlatform:
             else:
                 try:
                     _gate_cands = await self._get_project_candidates(
-                        request.created_by)
+                        request.created_by, memory=memory)
                 except Exception:
                     _gate_cands = []
             if _gate_cands:
                 _gate_orig_action = parsed["action"]
                 state.project_asked = True
                 state.project_candidates = _gate_cands
+                state.project_ask_user_replied = False  # 新题重置防抖（ORS-985）
                 parsed["action"] = "ask"
                 parsed["message"] = _build_project_choice_ask(_gate_cands)
                 _gate_proj_choices = [
@@ -6555,6 +6658,8 @@ class AiDiagnosisPlatform:
             state.field_ask_rounds = {}
             state.ticket_ref_context = ""
             state.project_asked = False       # 项目选择题随本单取消重置
+            state.project_ask_user_replied = False  # ORS-985：防抖标记随取消重置
+            state.project_via_dialog = False   # ORS-985：弹窗标记随取消重置
             state.project_candidates = []
             state.mentioned_project = None    # 项目提及随取消清空（重提走闸门）
             state.ambiguous_project_candidates = []  # 歧义反问随取消清空（0829）

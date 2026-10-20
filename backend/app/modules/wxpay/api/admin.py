@@ -14,6 +14,7 @@
    因此这里撤销后立刻回查一次并把最新状态返回（见 `cancel_bill`）。
 """
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -51,6 +52,10 @@ from app.modules.wxpay.schemas import (
     WithdrawOut,
 )
 from app.modules.wxpay.service import AuditDecisionEngine, RewardService, WithdrawService
+from app.modules.wxpay.archive_finance import (
+    ARCHIVE_FINANCE_SOURCE, archive_finance_detail, audit_archive_rewards,
+)
+from app.modules.admin.services.knowledge_service import actor_id
 from app.services.identity_service import IdentityService
 from app.services.logging import get_logger
 
@@ -560,6 +565,15 @@ async def reward_stats(
     )
 
 
+@router.get("/archive-finance/{task_id}", summary="工单财务审核详情")
+async def get_archive_finance_detail(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user=require_permission(PERM_AUDIT),
+):
+    return await archive_finance_detail(db, task_id)
+
+
 @router.post("/rewards/batch-audit", response_model=BatchAuditOut, summary="批量审核通过")
 async def batch_audit(
     payload: BatchAuditIn,
@@ -574,6 +588,8 @@ async def batch_audit(
     """
     ensure_permission()
     ids = list(dict.fromkeys(payload.ids))  # 去重
+    operator_id = await actor_id(db, current_user)
+    archive_rewards = await audit_archive_rewards(db, ids, operator_id, True, payload.audit_remark)
 
     rewards = (
         (
@@ -581,28 +597,30 @@ async def batch_audit(
                 select(RewardRecord).where(
                     RewardRecord.id.in_(ids),
                     RewardRecord.status == RewardStatus.PENDING_AUDIT,
+                    RewardRecord.source_type != ARCHIVE_FINANCE_SOURCE,
                 )
             )
         )
         .scalars()
         .all()
     )
-    valid_ids = {r.id for r in rewards}
+    valid_ids = {r.id for r in [*rewards, *archive_rewards]}
     skipped = [i for i in ids if i not in valid_ids]
 
     now = func.now()
     for r in rewards:
         r.status = RewardStatus.PENDING
-        r.audit_by = current_user
+        r.audit_by = operator_id
         r.audit_at = now
 
     await db.commit()
 
     return BatchAuditOut(
-        ok_count=len(rewards),
+        ok_count=len(rewards) + len(archive_rewards),
         skipped_ids=skipped,
         message=(
-            f"审核通过 {len(rewards)} 条，跳过 {len(skipped)} 条非待审核。"
+            f"审核通过 {len(rewards) + len(archive_rewards)} 条，跳过 {len(skipped)} 条非待审核。"
+            f"工单闭环奖励按三方整单审核，通过后归档入榜。"
             f"转账将由系统定时任务异步发起。"
         ),
     )
@@ -617,6 +635,10 @@ async def batch_reject(
     """将一批 pending_audit 奖励驳回（终态，不发钱）。"""
     ensure_permission()
     ids = list(dict.fromkeys(payload.ids))
+    if not payload.audit_remark.strip():
+        raise HTTPException(422, "财务驳回必须填写审核意见")
+    operator_id = await actor_id(db, current_user)
+    archive_rewards = await audit_archive_rewards(db, ids, operator_id, False, payload.audit_remark)
 
     rewards = (
         (
@@ -624,28 +646,29 @@ async def batch_reject(
                 select(RewardRecord).where(
                     RewardRecord.id.in_(ids),
                     RewardRecord.status == RewardStatus.PENDING_AUDIT,
+                    RewardRecord.source_type != ARCHIVE_FINANCE_SOURCE,
                 )
             )
         )
         .scalars()
         .all()
     )
-    valid_ids = {r.id for r in rewards}
+    valid_ids = {r.id for r in [*rewards, *archive_rewards]}
     skipped = [i for i in ids if i not in valid_ids]
 
     now = func.now()
     for r in rewards:
         r.status = RewardStatus.REJECTED
-        r.audit_by = current_user
+        r.audit_by = operator_id
         r.audit_at = now
         r.audit_remark = payload.audit_remark or "财务驳回"
 
     await db.commit()
 
     return BatchAuditOut(
-        ok_count=len(rewards),
+        ok_count=len(rewards) + len(archive_rewards),
         skipped_ids=skipped,
-        message=f"驳回 {len(rewards)} 条",
+        message=f"驳回 {len(rewards) + len(archive_rewards)} 条，工单闭环奖励按三方整单驳回，不发奖、不入榜",
     )
 
 
@@ -668,7 +691,8 @@ async def run_auto_pass(
         (
             await db.execute(
                 select(RewardRecord).where(
-                    RewardRecord.status == RewardStatus.PENDING_AUDIT
+                    RewardRecord.status == RewardStatus.PENDING_AUDIT,
+                    RewardRecord.source_type != ARCHIVE_FINANCE_SOURCE,
                 )
             )
         )
@@ -717,7 +741,7 @@ async def list_reward_config(
         RewardConfigOut(
             config_key=r.config_key,
             enabled=r.enabled,
-            config=r.config or {},
+            config=json.loads(r.config) if r.config else {},
             updated_by=r.updated_by,
             updated_at=r.updated_at,
         )
@@ -748,7 +772,7 @@ async def update_reward_config(
     if payload.enabled is not None:
         row.enabled = payload.enabled
     if payload.config is not None:
-        row.config = payload.config
+        row.config = json.dumps(payload.config, ensure_ascii=False)
     row.updated_by = current_user
     await db.commit()
     await db.refresh(row)
@@ -756,7 +780,7 @@ async def update_reward_config(
     return RewardConfigOut(
         config_key=row.config_key,
         enabled=row.enabled,
-        config=row.config or {},
+        config=json.loads(row.config) if row.config else {},
         updated_by=row.updated_by,
         updated_at=row.updated_at,
     )

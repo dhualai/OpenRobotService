@@ -22,6 +22,7 @@ import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import ParticipantStack, { type ParticipantItem } from '@/shared/components/ParticipantStack';
 import PersonArrow from '@/shared/components/PersonArrow';
 import { formatDateTime } from '@/shared/utils/url';
+import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
 import type { UserItem } from '@/api/users';
 
 const PAGE_SIZE = 20;
@@ -74,7 +75,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   // 点参与人头像 → 进详情页并定位到讨论区（DiscussionPanel.locateComment 同口径）
   const openParticipantDiscussion = useCallback((taskId: number | string, authorUsername: string) => {
     const qs = new URLSearchParams({ focus: 'discussion', author: authorUsername });
-    navigate(`/call/ticket/db_${taskId}?${qs.toString()}`);
+    // PC 微信不认 JS-SDK 分享 link、只认「最近一次整页加载时的 URL」，SPA 进详情会让转发卡片
+    // 停留在旧工单，故统一走 navigateInWechat（PC 微信整页跳转，其他端等价 navigate）
+    navigateInWechat(navigate, `/call/ticket/db_${taskId}?${qs.toString()}`);
   }, [navigate]);
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
   const refreshTasks = useWorkbenchStore((s) => s.refreshTasks);
@@ -435,7 +438,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
             <div
               key={t.id}
               className="history-row"
-              onClick={() => navigate(`/call/ticket/db_${t.id}`)}
+              onClick={() => navigateInWechat(navigate, `/call/ticket/db_${t.id}`)}
             >
               {/* 顶行（设计稿：类型 Tag + 标题 flex-1 截断 + 编号胶囊 + 日期） */}
               <div className="history-row__top">

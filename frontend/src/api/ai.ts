@@ -402,6 +402,20 @@ export const qaGetTicketSteps = (type: string) =>
     '/qa/ticket/steps', { type },
   );
 
+/** 智能项目匹配推荐项（ORS-713：会话信号→相关项目，弹窗排序用） */
+export interface ProjectMatchItem {
+  code: string;
+  name: string;
+  /** 匹配理由内参（机械/LLM），前端只做兜底展示，不透出给用户 */
+  reason?: string;
+}
+
+/** 会话→推荐项目列表（失败/无信号返回空数组=退化现状排序，不报错） */
+export const qaProjectMatch = (sessionId: string) =>
+  aiGet<{ code: number; data?: { matched?: ProjectMatchItem[] }; message?: string }>(
+    '/qa/project-match', { session_id: sessionId },
+  ).then((r) => (r?.code === 0 ? r.data?.matched ?? [] : []));
+
 /** 获取工单 */
 export const qaGetTicket = (sessionId: string) =>
   aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });

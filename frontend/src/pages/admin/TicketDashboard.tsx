@@ -193,7 +193,11 @@ export default function TicketDashboard() {
   const loadOrg = useCallback(async () => {
     // 口径与全页一致：canViewAll 时不传 projectIds；orgCompanyId 空=按公司，非空=按该公司部门
     const filterIds = canViewAll ? undefined : projectIds;
-    fetchTicketCreatorOrgAnalysis(filterIds, orgCompanyId || undefined).then(setOrgAnalysis);
+    fetchTicketCreatorOrgAnalysis(filterIds, orgCompanyId || undefined)
+      .then(setOrgAnalysis)
+      .catch(() => {
+        // 接口失败保持当前展示，不打断页面
+      });
   }, [projectIds, canViewAll, orgCompanyId]);
 
   useEffect(() => { loadOrg(); }, [loadOrg]);
@@ -360,6 +364,45 @@ export default function TicketDashboard() {
               </span>
             </div>
             {(() => {
+              const wb = dar.workbench;
+              if (wb?.hero?.length) {
+                // 有工作台快照：整块按工作台首页那张卡渲染，数字与工作台完全一致
+                const main = wb.hero.find((c) => c.label.includes('L2')) || wb.hero[0];
+                const rest = [...wb.hero.filter((c) => c !== main), ...(wb.small || [])];
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '10px 0 2px' }}>
+                      <span style={{ fontSize: 34, fontWeight: 700, color: 'var(--primary)', lineHeight: 1 }}>
+                        {main.value}
+                      </span>
+                      <span style={{ fontSize: 13, color: 'var(--muted-foreground, #98a2b3)' }}>
+                        {main.label} · 端到端直答率
+                      </span>
+                    </div>
+                    {main.sub && (
+                      <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
+                        {main.sub}
+                      </div>
+                    )}
+                    <div
+                      className="mac-stat-row"
+                      style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}
+                    >
+                      {rest.map((c) => (
+                        <div key={c.label} title={c.sub || ''}>
+                          <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>{c.label}</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>{c.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
+                      {wb.manual_progress && <>人工标注进度：{wb.manual_progress}</>}
+                      {wb.manual_progress && wb.export_at && <> · </>}
+                      {wb.export_at && <>数据版本：{wb.export_at}</>}
+                    </div>
+                  </>
+                );
+              }
               const wowL2 = dar.wow?.['L2_人工'];
               const up = wowL2 ? wowL2.delta >= 0 : true;
               return (

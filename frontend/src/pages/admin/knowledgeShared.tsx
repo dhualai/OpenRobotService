@@ -7,6 +7,7 @@ import type { KnowledgeUser } from '@/api/knowledge';
 import '@/shared/styles/knowledge.css';
 
 export const knowledgeLikeRule = '每人每天最多点赞5个不同问题；北京时间每日0点重置，取消点赞不返还当日名额。';
+export const knowledgeCampaignMonths = ['2026-08', '2026-09', '2026-10', '2026-11', '2026-12'];
 
 export function useKnowledgeResource<Value>(key: string, loader: () => Promise<Value>) {
   const username = useAuthStore((state) => state.username);

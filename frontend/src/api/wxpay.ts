@@ -144,6 +144,21 @@ export const PERM_REWARD_AUDIT = 'frontend:admin:reward-audit:write';
 /** 规则配置编辑权限 */
 export const PERM_REWARD_CONFIG = 'frontend:admin:reward-config:write';
 
+export interface ArchiveFinanceDetail {
+  task_id: number;
+  report_id: number;
+  title: string;
+  problem: string;
+  content: string;
+  review_comment: string;
+  value_point: string;
+  total_amount: number;
+}
+
+export function fetchArchiveFinanceDetail(taskId: number): Promise<ArchiveFinanceDetail> {
+  return request<ArchiveFinanceDetail>(`/admin/archive-finance/${taskId}`, { skipCache: true });
+}
+
 export interface AdminBillItem {
   id: string;
   reward_id: string;

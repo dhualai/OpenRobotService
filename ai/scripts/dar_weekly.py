@@ -906,6 +906,13 @@ def step_report():
               + (f"{tw['n_convs']} 会话 {tw['n_segs']} 段，"
                  f"L1 {tw['L1_rate']}" if tw.get("n_segs") else tw.get("note", "")))
 
+    wb = _workbench_snapshot(os.environ.get("DAR_ENV", "test"))
+    if wb:
+        rep["workbench"] = wb
+        print("工作台快照（服务号后台原样透出这三张卡）：")
+        for c in (wb.get("hero") or []):
+            print(f"  {c.get('label')}: {c.get('value')}")
+
     path = os.path.join(OUT, f"weekly_{_dt.now():%Y%m%d}.json")
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rep, fh, ensure_ascii=False, indent=1)
@@ -915,6 +922,26 @@ def step_report():
     print(f"周报: {path}")
     print(f"Markdown: {md_path}")
     _push_report(rep)
+
+
+def _workbench_snapshot(env: str):
+    """工作台（dar_studio）当轮展示值的原样快照，随周报推给服务号后台。
+
+    调的就是工作台首页那张卡的同一个函数（dar_studio.metrics），后台区块照着
+    渲染——两边同源同数，不在后台侧另算一套口径。此前各自算的结果对不上
+    （1016 实锤：直答率 29.2% vs 23.3%、KB 缺口率 31.3% vs 46.9%），
+    差别来自分母选段不同（周报按人工已标真实组，工作台按漏斗已判定层）。
+    """
+    try:
+        import dar_studio
+        m = dar_studio.metrics(env=env)
+    except Exception as e:
+        print(f"（工作台快照失败，跳过：{e}）")
+        return None
+    if not m or not m.get("found"):
+        return None
+    return {k: m.get(k) for k in ("hero", "small", "dar_rates", "same_base",
+                                  "manual_progress", "export_at", "date", "source_env")}
 
 
 def _push_env():

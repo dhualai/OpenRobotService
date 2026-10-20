@@ -233,7 +233,10 @@ class RewardConfig(Base):
         String(64), primary_key=True, comment="配置键，如 task_archive / audit_policy"
     )
     enabled = Column(Boolean, nullable=False, default=True, comment="是否启用")
-    config = Column(JSON, nullable=False, default=dict, comment="规则 JSON，结构由 config_key 决定")
+    # ⚠️ 用 Text 而非 JSON：asyncmy 在 MySQL 上对 JSON dict 内嵌 list 的 escape_dict 有 bug，
+    # 报 TypeError: Argument 'val' has incorrect type (expected tuple, got list)。
+    # 读写时手动 json.dumps/loads。MySQL JSON 列对字符串输入自动兼容，无需 DDL 迁移。
+    config = Column(Text, nullable=False, default="{}", comment="规则 JSON 字符串，结构由 config_key 决定")
     updated_by = Column(String(64), nullable=True, comment="最近修改人 users.id")
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间（UTC）"

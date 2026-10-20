@@ -12,8 +12,8 @@ describe('fetchKnowledgeQuestions', () => {
   });
 
   it('完整列表仍默认每页20条', async () => {
-    await fetchKnowledgeQuestions('2026-11', 'archived_at', 2);
-    expect(mockRequest).toHaveBeenCalledWith('/questions?sort=archived_at&page=2&size=20&month=2026-11', { skipCache: true });
+    await fetchKnowledgeQuestions('2026-11', 'created_at', 2);
+    expect(mockRequest).toHaveBeenCalledWith('/questions?sort=created_at&page=2&size=20&month=2026-11', { skipCache: true });
   });
 
   it('前三预览只请求3条，并保留点赞排序和月份', async () => {
