@@ -316,6 +316,10 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
     && !t.curr_step_agreed
     && (t.status === 'new' || t.status === 'in_progress')
     && myTurn;
+  const stepPendingOpponentResponse = !!t.curr_step_id
+    && !t.curr_step_agreed
+    && (t.status === 'new' || t.status === 'in_progress')
+    && !myTurn;
 
   return (
     <div data-testid={`task-card-${t.id}`} className="task-card2" onClick={() => onOpen(t.id)}>
@@ -410,18 +414,37 @@ const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserI
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
                 padding: '2px 8px', borderRadius: 999, fontSize: 12, fontWeight: 600,
-                color: 'var(--apricot)', background: 'var(--apricot-soft)',
+                color: 'var(--blue-2)', background: 'var(--blue-soft)',
                 border: '1px solid var(--border)',
               }}
             >
               <span
                 style={{
-                  width: 6, height: 6, borderRadius: '50%', background: 'var(--apricot)',
+                  width: 6, height: 6, borderRadius: '50%', background: 'var(--blue-2)',
                   animation: 'task-card2-pulse 1.2s ease-in-out infinite',
                 }}
               />
               时间节点 · 待确认
               {/* 待你确认{t.curr_step_name ? ` · ${t.curr_step_name}` : ''} */}
+            </span>
+          )}
+          {stepPendingOpponentResponse && (
+            <span
+              title="阶段性协商轮到对方操作，等待对方确认"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '2px 8px', borderRadius: 999, fontSize: 12, fontWeight: 600,
+                color: 'var(--mint)', background: 'var(--secondary)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <span
+                style={{
+                  width: 6, height: 6, borderRadius: '50%', background: 'var(--mint)',
+                  animation: 'task-card2-pulse 1.2s ease-in-out infinite',
+                }}
+              />
+              时间节点 · 对方待确认
             </span>
           )}
         </div>

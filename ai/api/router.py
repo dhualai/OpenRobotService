@@ -719,6 +719,26 @@ async def get_ticket_steps(
         return {"code": 1, "message": str(e)}
 
 
+@qa_router.get("/project-match", summary="会话→推荐项目列表（ORS-713 弹窗/选题环智能排序）")
+async def project_match(
+    session_id: str = Query(..., description="会话 ID"),
+) -> dict:
+    """按会话上下文（扫码录入行/车型模式/对话内容）返回最相关的项目列表。
+
+    只做推荐排序：失败一律返回空列表（code 0），前端退化现状排序，不报错
+    不阻塞选项目。
+    """
+    try:
+        mgr = await get_memory_manager()
+        memory = await mgr.get_memory(session_id)
+        from ai.core.project_rank import rank_for_session
+        matched = await rank_for_session(memory, memory.turns)
+        return {"code": 0, "data": {"matched": matched}}
+    except Exception as e:
+        logger.warning(f"project_match 异常(退化现状排序): session_id={session_id[:24]}, error={e}")
+        return {"code": 0, "data": {"matched": []}}
+
+
 @qa_router.get("/ticket/draft", summary="获取待确认草稿（前端轮询兜底）")
 async def get_draft(
     session_id: str = Query(..., description="会话 ID"),

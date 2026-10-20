@@ -70,7 +70,7 @@ function appendProjectIdsQuery(existingQuery: string, projectIds?: string[]): st
 export interface TicketSummary {
   total: number;
   pending_count: number;       // 待处理（处理中 + 暂停/挂起之和，不含 new；后端给出，前端不做累加）
-  overdue_count: number;       // 超时工单数（依据 deadline_at < now 计算，见 backend/app/models/task.py deadline_at）
+  overdue_count: number;       // 超时工单数（仅处理中且当前阶段截止时间 curr_step_endtime 已过）
   resolved_rate: number;       // 解决率 0-1，例如 0.82 表示 82%
   by_status: Partial<Record<TicketStatusKey, number>>;
 }
@@ -83,7 +83,7 @@ const EMPTY_TICKET_SUMMARY: TicketSummary = {
 /**
  * GET /api/admin/dashboard/tickets/summary?project_ids=id1,id2
  * 响应：{ code: 0, data: TicketSummary }
- * 数据来源：系统任务模块 tasks 表按 TaskStatus 分组统计 + deadline_at 超时计算，
+ * 数据来源：系统任务模块 tasks 表按 TaskStatus 分组统计 + curr_step_endtime 超时计算，
  * 见 backend/app/modules/admin/services/task_dashboard_service.py。
  * 与「工单状态监测」页面（/admin/ticket-monitor，对接 AI 服务 tickets 表）是不同数据源，
  * 本仪表盘统计的是系统任务模块的 Task，不是 AI 模块的 Ticket，需注意区分。
@@ -229,8 +229,9 @@ export async function fetchTicketAvgCloseTime(projectIds?: string[]): Promise<Ti
 export interface TicketListItem {
   id: string; title: string; status: string; priority: string;
   assignee_name?: string; created_at: string;
-  /** 截止时间（后端 naive UTC ISO）。超时工单列表据此展示「已超时 X」；挂起判定见 status */
   deadline_at?: string | null;
+  /** 当前阶段截止时间（后端 naive UTC ISO）。超时工单列表据此展示「已超时 X」 */
+  curr_step_endtime?: string | null;
 }
 
 /**
@@ -239,8 +240,8 @@ export interface TicketListItem {
  * status 支持单一状态 key（new/in_progress/paused/resolved/closed/cancelled）及仪表盘统计卡下钻的组合 scope：
  *   all     全部工单（监控中的状态，含 new，与 summary.total 同口径）
  *   pending 待处理（处理中 + 暂停/挂起，与 summary.pending_count 同口径）
- *   overdue 超时工单（deadline_at < now 且未完成，与 summary.overdue_count 同口径）
- *     —— 排序由后端完成：挂起工单始终置顶，其余按超时最久在前（deadline_at 升序），前端不再重排
+ *   overdue 超时工单（curr_step_endtime < 当前 UTC 时间且状态为 in_progress，与 summary.overdue_count 同口径）
+ *     —— 排序由后端完成：按超时最久在前（curr_step_endtime 升序），前端不再重排
  * projectIds 传入后仅返回这些项目内的工单；分页默认20条，total始终为该范围的完整工单数。
  */
 export async function fetchTicketsByStatus(
@@ -455,5 +456,63 @@ export async function fetchDashboardSummaryAll(projectIds?: string[]): Promise<D
     return EMPTY_SUMMARY_ALL;
   } catch {
     return EMPTY_SUMMARY_ALL;
+  }
+}
+
+// ==================== AI 直答率周报（ORS-#981） ====================
+// 数据链：本地 dar_weekly SOP 生成周报 → report 步自动 POST 到后端
+// （dar_weekly 读 DAR_PUSH_BASE/USER/PASS）→ 本接口给「工单数据看板」页
+// AI 直答率区块展示。摘要不含 fails 明细（含用户对话，不上服务号）。
+
+export interface DarReportSummary {
+  week_date: string;
+  env: string;
+  /** 三口径文本（L1/L2/L3），dar_weekly 原样 */
+  dar_rates: Record<string, string>;
+  /** 环比（同分母）：{ "L2_人工": { prev, curr, delta }, ... } */
+  wow: Record<string, { prev: number; curr: number; delta: number }>;
+  kb_gap: string | null;
+  manual_progress: string | null;
+  this_week: { from?: string; to?: string; n_convs?: number; n_segs?: number; n_ticketed?: number; L1_rate?: string };
+  /**
+   * 工作台展示值快照（推送时 dar_studio.metrics 原样取）——区块按这份渲染，
+   * 与工作台首页那张卡同数。老周报没有这个字段，退回上面的周报口径字段。
+   */
+  workbench?: {
+    hero?: DarWorkbenchCard[];
+    small?: DarWorkbenchCard[];
+    manual_progress?: string | null;
+    export_at?: string | null;
+    date?: string | null;
+  } | null;
+  updated_at: string | null;
+}
+
+/** 工作台指标卡（label/value/sub 三元组，与 dar_studio hero/small 同构） */
+export interface DarWorkbenchCard {
+  label: string;
+  value: string;
+  sub?: string;
+}
+
+export async function fetchDarLatest(env = 'prod'): Promise<DarReportSummary | null> {
+  try {
+    const res = await adminRequest<{ code: number; data: DarReportSummary | null }>(
+      `/dashboard/dar-reports/latest?env=${env}`,
+    );
+    return res.code === 0 ? res.data ?? null : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchDarList(env = 'prod', limit = 12): Promise<DarReportSummary[]> {
+  try {
+    const res = await adminRequest<{ code: number; data: DarReportSummary[] }>(
+      `/dashboard/dar-reports/list?env=${env}&limit=${limit}`,
+    );
+    return res.code === 0 ? res.data ?? [] : [];
+  } catch {
+    return [];
   }
 }

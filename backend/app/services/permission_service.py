@@ -22,12 +22,23 @@ PERM_PROJECT_INFO_TEMPLATE = "frontend:admin:project-info-template:show"
 # 也能用（它与详情模板同属「改一次全体项目生效」的全局写，但只动台账值、不动结构，
 # 所以不给开发者）。
 PERM_PROJECT_LEDGER_IMPORT = "frontend:admin:project-ledger-import:show"
+PERM_KNOWLEDGE_CONTRIBUTION = "frontend:admin:knowledge:show"
+
+# 后台「公告管理」（活动中心公告的发布 / 下线 / 置顶）的可见/可调判据。
+# 公告是运营动作，默认只开给全局角色「超级管理员」（admin 账号照旧直通）；
+# 其他角色要在权限管理里显式勾选——该码由 announcement.ensure_announcement_permission
+# 在 permissions 的注册块里写入，不会在接口函数体内写（见该函数 docstring）。
+PERM_ANNOUNCEMENT = "frontend:admin:announcement:manage"
 
 # 「拥有哪个全局角色 → 额外获得哪些权限码」。开发者 / 超级管理员可编辑详情模板；
-# 一键导入全部项目只开给超级管理员（admin 账号照旧直通）。
+# 一键导入全部项目、公告管理只开给超级管理员（admin 账号照旧直通）。
 _GLOBAL_ROLE_DERIVED_PERMISSIONS: Dict[str, tuple] = {
     "开发者": (PERM_PROJECT_INFO_TEMPLATE,),
-    "超级管理员": (PERM_PROJECT_INFO_TEMPLATE, PERM_PROJECT_LEDGER_IMPORT),
+    "超级管理员": (
+        PERM_PROJECT_INFO_TEMPLATE,
+        PERM_PROJECT_LEDGER_IMPORT,
+        PERM_ANNOUNCEMENT,
+    ),
 }
 _user_roles_cache: Dict[str, Dict[str, Any]] = {}
 _user_roles_cache_ts: Dict[str, float] = {}
@@ -287,27 +298,20 @@ class PermissionService:
             user_roles = PermissionService.get_user_roles_all_projects(db_user.id)
 
             all_permissions = set(["admin"]) if db_user.username == 'admin' else set(["user"])
+            all_role_ids = {role_id for role_ids in user_roles.values() for role_id in role_ids}
+            role_names_by_id = dict(db.query(Role.id, Role.name).filter(Role.id.in_(all_role_ids)).all()) if all_role_ids else {}
+            global_role_names = {role_names_by_id.get(role_id) for role_id in user_roles.get('global', [])}
+            can_view_knowledge_contribution = False
 
             # 全局角色（project_id 为空，get_user_roles_all_projects 归到 'global' 键）
             # 按角色名派生权限码，见文件头 _GLOBAL_ROLE_DERIVED_PERMISSIONS。
-            # 放在这里而不是各接口里：权限码随登录态一起下发，后端 require_permission
-            # 与前端 hasPermission 天然同源。只有挂着全局角色的用户才会多这一次查询。
-            global_role_ids = user_roles.get('global') or []
-            if global_role_ids:
-                global_role_names = {
-                    name for (name,) in db.query(Role.name).filter(Role.id.in_(global_role_ids)).all()
-                }
-                for role_name in global_role_names:
-                    all_permissions.update(_GLOBAL_ROLE_DERIVED_PERMISSIONS.get(role_name, ()))
+            for role_name in global_role_names:
+                all_permissions.update(_GLOBAL_ROLE_DERIVED_PERMISSIONS.get(role_name, ()))
 
             project_permissions_dict = {}
             
             role_permissions_map = {}
             permission_details_map = {}
-            
-            all_role_ids = set()
-            for role_ids in user_roles.values():
-                all_role_ids.update(role_ids)
             
             if all_role_ids:
                 stmt = select(role_permissions).where(role_permissions.c.role_id.in_(all_role_ids))
@@ -329,6 +333,10 @@ class PermissionService:
                     permissions_results = db.query(Permission).filter(Permission.id.in_(all_permission_ids)).all()
                     
                     for perm in permissions_results:
+                        if perm.code == PERM_KNOWLEDGE_CONTRIBUTION:
+                            if perm.enabled != "true":
+                                continue
+                            can_view_knowledge_contribution = True
                         permission_details_map[perm.id] = {
                             'id': perm.id,
                             'code': perm.code,
@@ -384,6 +392,7 @@ class PermissionService:
                 'password_hash': db_user.password_hash,
                 'permissions': list(all_permissions),
                 'roles': user_roles,
+                'can_view_knowledge_contribution': can_view_knowledge_contribution,
                 'projectPermissions': project_permissions_dict,
                 'name': getattr(db_user, 'name', None),
                 'status': getattr(db_user, 'status', 'inactive'),

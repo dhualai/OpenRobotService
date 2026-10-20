@@ -205,6 +205,8 @@ export interface RedispatchResult {
 
 export interface TicketRedispatch {
   dispatch_round?: number;
+  /** 最近一次「人工转派」的原因；与 result.reasoning 一起在「派单原因」那块展示 */
+  reassign_reason?: string | null;
   candidates?: RedispatchCandidate[] | null;
   result?: RedispatchResult | null;
 }

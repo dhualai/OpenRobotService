@@ -384,6 +384,12 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
     const subCls = `op-segment__sub${
       log.operation_type === 'reassign' ? ' op-segment__sub--reassign' : ''
     }${isAgreeLog(log) ? ' op-segment__sub--agreed' : ''}`;
+    // 转派日志的 description 历史遗留了「（派错了）」后缀，而本条右侧已经按 detail.kind
+    // 渲染了类型徽章 —— 同一件事说两遍。显示时剥掉后缀，新旧数据统一。
+    // （后端 2026-10-16 起不再拼这个后缀，但老行已落库，改不掉。）
+    const descText = log.operation_type === 'reassign'
+      ? String(log.description || '').replace(/[（(](派错了|阶段转派|其它)[）)]\s*$/, '')
+      : (log.description || `${OP_TYPE_LABEL[log.operation_type]}操作`);
     return (
       <div className={subCls} key={key}>
         <div className="op-segment__sub-dot" style={{ borderColor: isAgreeLog(log) ? 'var(--sky)' : style.color }}>
@@ -391,7 +397,7 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
         </div>
         <div className="op-segment__sub-content">
           <div className="op-segment__action">
-            {log.description || `${OP_TYPE_LABEL[log.operation_type]}操作`}
+            {descText}
             {log.operation_type === 'reassign' && REASSIGN_KIND_LABEL[String(log.detail?.kind || '')] ? (
               <span className={`op-segment__kind op-segment__kind--${log.detail?.kind}`}>
                 {REASSIGN_KIND_LABEL[String(log.detail?.kind)]}

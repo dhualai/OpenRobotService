@@ -40,12 +40,16 @@ export const buildRelevanceFilters = (
             { field: 'createdBy', op: 'eq', value: username },
           ],
         },
-        // 代他人提单（决策 6+10）：我是被代理人的单——
-        //  · pending/acknowledged 均需看到（pending 需我确认跟进，acknowledged 我参与协办）
+        // 代他人提单（ORS-1022）：被代理人不再因「关系存在 + 在办」常驻，与提单人同口径——
+        // 只在他的真实回合出现：
+        //  · pending：需我确认跟进（等价于「轮到我」），保留；
+        //  · acknowledged：在办轮次交给下方「回合协商（被代理人）」分支判定，
+        //    不再无条件挂在待办里（否则没轮到他也会占位，点开无可操作按钮）。
         // value 仅为占位，后端统一用 token 解析的当前用户，杜绝越权看他人代提关系。
         {
           and: [
             { field: 'principalBy', op: 'eq', value: true },
+            { field: 'proxyRelationStatus', op: 'eq', value: 'pending' },
             { or: workingStatusFilters },
           ],
         },

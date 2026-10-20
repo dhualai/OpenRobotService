@@ -155,6 +155,10 @@ class _FakeClient:
 
 def _wire(monkeypatch, calls):
     monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+    async def plain_text(db, task, text, hide_participants=True):
+        return text or ""
+    monkeypatch.setattr("app.modules.admin.services.knowledge_service.anonymous_text", plain_text)
+    monkeypatch.setattr("app.modules.tasks.services.knowledge_review.review_detail", AsyncMock(return_value={}))
 
     async def fake_hydrate(db, items, exclude_id, limit, min_score=None):
         return [{"task_id": 101, "title": "旧相似", "status": "closed",
@@ -175,6 +179,7 @@ async def test_endpoint_review_scope_attaches_reports(monkeypatch):
 
     db = AsyncMock()
     db.get = AsyncMock(return_value=SimpleNamespace(title="充电失败", description="描述"))
+    db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: SimpleNamespace(id=1, submit_status="submitted")))
 
     out = await task_api.get_similar_tasks(
         task_id=1, limit=10, min_score=0.0, scope="review", db=db)
@@ -197,6 +202,7 @@ async def test_endpoint_returns_empty_when_vector_unavailable(monkeypatch):
     monkeypatch.setattr("httpx.AsyncClient", _BoomClient)
     db = AsyncMock()
     db.get = AsyncMock(return_value=SimpleNamespace(title="充电失败", description="描述"))
+    db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: SimpleNamespace(id=1, submit_status="submitted")))
 
     out = await task_api.get_similar_tasks(
         task_id=1, limit=10, min_score=0.0, scope="review", db=db)

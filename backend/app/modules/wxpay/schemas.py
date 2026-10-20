@@ -101,7 +101,7 @@ class GrantRewardOut(BaseModel):
 
 
 class AdminRewardOut(BaseModel):
-    """管理端奖励记录（比用户端多出 user_id / openid / source_*，便于排障）。"""
+    """管理端奖励记录。"""
 
     id: str
     user_id: str
@@ -112,8 +112,11 @@ class AdminRewardOut(BaseModel):
     remark: str = ""
     source_type: str = ""
     source_id: Optional[str] = None
+    role: Optional[str] = None
     status: str = ""
-    # 当前有效转账单（与 RewardOut 同义，管理端列表直接展示免二次请求）
+    audit_by: Optional[str] = None
+    audit_at: Optional[datetime] = None
+    audit_remark: Optional[str] = None
     bill_state: Optional[str] = None
     out_bill_no: Optional[str] = None
     expire_at: Optional[datetime] = None
@@ -240,3 +243,48 @@ class NotifyAckOut(BaseModel):
     code: str = "OK"
     message: str = ""
     duplicated: bool = False
+
+
+# ============ 管理端：审核 / 规则配置（红包激励机制）============
+
+
+class BatchAuditIn(BaseModel):
+    """批量审核请求（通过或驳回共用）。"""
+    ids: list[str] = Field(..., min_length=1, description="奖励记录 ID 列表")
+    audit_remark: str = Field("", max_length=255, description="审核备注（驳回必填）")
+
+
+class BatchAuditOut(BaseModel):
+    """批量审核结果。"""
+    ok_count: int = Field(0, description="成功处理条数")
+    skipped_ids: list[str] = Field(default_factory=list, description="跳过的 ID（非 pending_audit 状态）")
+    message: str = ""
+
+
+class RewardConfigOut(BaseModel):
+    """规则配置出参。"""
+    config_key: str
+    enabled: bool
+    config: dict
+    updated_by: Optional[str] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RewardConfigUpdateIn(BaseModel):
+    """规则配置更新入参。enabled 和 config 至少传一个。"""
+    enabled: Optional[bool] = None
+    config: Optional[dict] = None
+
+
+class RewardAdminStatsOut(BaseModel):
+    """管理端奖励状态分布（页面顶部概览）。"""
+    pending_audit_count: int = 0
+    pending_audit_amount: int = Field(0, description="待审核总额，单位：分")
+    rejected_count: int = 0
+    pending_count: int = 0
+    withdrawing_count: int = 0
+    success_count: int = 0
+    expired_count: int = 0

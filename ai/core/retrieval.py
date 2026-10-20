@@ -8,6 +8,7 @@
 所有 Qdrant 同步调用均通过 run_in_executor 在独立线程中执行，绝不阻塞事件循环。
 """
 import asyncio
+import os
 import re
 import time
 from typing import List, Optional, Dict, Any, Tuple
@@ -82,6 +83,21 @@ def render_resolution_content(
     )
 
 
+def similar_cosine_floor() -> float:
+    """相似工单的语义相似度下限（余弦，Qdrant dense 原始分）。
+
+    RRF 融合分衡量的是「库内相对排名」，不是相似度——沉淀卡很少时无关卡
+    也会排第一被推给归档人（ORS-1010 实锤：测试库仅 1 张 approved 卡，
+    任何归档单都只会推荐它）。余弦分与库大小无关，能真正回答"像不像"。
+    用生产同款 bge-base-zh-v1.5 标定：无关 0.39~0.49 / 沾边 0.67 / 同题
+    0.86，缺省 0.55 落在断档中央，SIMILAR_TICKET_MIN_COSINE 可调。
+    """
+    try:
+        return float(os.getenv("SIMILAR_TICKET_MIN_COSINE", "0.55") or 0.55)
+    except ValueError:
+        return 0.55
+
+
 def rank_similar_tickets(
     results: List[RetrievalResult],
     exclude_task_id: str = "",
@@ -105,6 +121,9 @@ def rank_similar_tickets(
             "title": (r.title or "")[:80] or f"工单#{tid}",
             "score": round(float(r.score or 0), 4),
             "verified": getattr(r, "verified", "") or "unknown",
+            # 卡正文（问题/根因/解决三段式）——归档人弹层内直接对照，
+            # 不跳工单详情页（工单有权限边界，卡是全公司共享资产）
+            "summary": (getattr(r, "content", "") or "")[:600],
         })
         if len(out) >= int(top_k or 8):
             break
@@ -1416,11 +1435,22 @@ class RetrievalService:
         exclude_task_id: str = "",
         top_k: int = 8,
     ) -> List[Dict[str, Any]]:
-        """@# 相似工单：Qdrant ticket_resolutions 向量检索，按 task_id 去重。"""
+        """@# 相似工单：Qdrant ticket_resolutions 向量检索，按 task_id 去重。
+
+        余弦下限（similar_cosine_floor）：RRF 排名≠相似度，沉淀卡少时无关卡
+        也会排第一（ORS-1010 实锤）。只保留 dense 语义分过线的卡——卡没有
+        dense 命中（纯稀疏关键词带进来）本身就是要过滤的弱相关信号。
+        """
         q = (query or "").strip()
         if not q:
             return []
         hits = await self.retrieve_task_resolutions(q, top_k=max(int(top_k or 8) * 3, 12))
+        floor = similar_cosine_floor()
+        if floor > 0:
+            before = len(hits)
+            hits = [r for r in hits if float(getattr(r, "vector_score", 0) or 0) >= floor]
+            if len(hits) != before:
+                logger.info(f"[similar] 余弦下限 {floor} 过滤: {before} → {len(hits)}")
         return rank_similar_tickets(hits, exclude_task_id=exclude_task_id, top_k=top_k)
 
     async def ensure_task_resolutions_collection(self) -> str:
@@ -1432,6 +1462,12 @@ class RetrievalService:
         from ai.config import get_active_collection_for, write_active_collection_for
         import time as _time
 
+        # 下面每个分支都要用 self._qdrant / self._embed_client，先初始化。
+        # （此前 override 分支在 _ensure_clients() 之前就取了 self._qdrant，而新构造的
+        # service 上它还是 None → 该分支必然 AttributeError 被吞掉，测试隔离集合因此
+        # 从来没被创建出来过。）
+        await self._ensure_clients()
+
         override = _ticket_card_collection()
         if override:
             # 测试隔离集合：独立存在，绝不写 company 指针（写指针会把整套
@@ -1440,7 +1476,6 @@ class RetrievalService:
                 client = await self._qdrant._ensure_client()
                 if await self._qdrant._to_thread(client.collection_exists, override):
                     return override
-                await self._ensure_clients()
                 vec_dim = await self._embed_client.get_dimension()
                 from qdrant_client.models import (Distance, VectorParams,
                                                   SparseVectorParams, SparseIndexParams)
@@ -1470,7 +1505,6 @@ class RetrievalService:
             except Exception:
                 pass
 
-        await self._ensure_clients()
         try:
             vec_dim = await self._embed_client.get_dimension()
             name = f"company_{_time.strftime('%Y%m%d_%H%M%S')}"
@@ -1526,8 +1560,12 @@ class RetrievalService:
         from ai.config import get_active_collection_for
         import uuid
 
-        col = _ticket_card_collection() or get_active_collection_for("company")
-        if not col:
+        # override（TICKET_CARD_COLLECTION）只是「该用哪个集合」的声明，Qdrant 里未必
+        # 有——测试隔离集合正是等这里第一次写卡才建出来的。所以 override 非空也必须走
+        # ensure（其 override 分支：存在即返回，不存在则以正确 schema 创建）。
+        override = _ticket_card_collection()
+        col = override or get_active_collection_for("company")
+        if not col or override:
             col = await self.ensure_task_resolutions_collection()
         if not col:
             return False

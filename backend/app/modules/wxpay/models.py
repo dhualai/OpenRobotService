@@ -9,6 +9,7 @@
 """
 
 from app.models.wxpay import (  # noqa: F401
+    RewardConfig,
     RewardRecord,
     RewardStatus,
     TransferBill,
@@ -18,6 +19,7 @@ from app.models.wxpay import (  # noqa: F401
 )
 
 __all__ = [
+    "RewardConfig",
     "RewardRecord",
     "RewardStatus",
     "TransferBill",

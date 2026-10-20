@@ -1,6 +1,9 @@
-// 「待我处理」（relevance='mine'）代他人提单分支的口径回归：
-// 被代理人只在「已确认跟进（acknowledged）」时才看得到 resolved 单，
-// 避免 pending / declined 的被代理人「看得见工单、点不到按钮」。
+// 「待我处理」（relevance='mine'）代他人提单分支的口径回归（ORS-1022）：
+// 被代理人与提单人同口径——不再因「关系存在 + 在办」常驻，只在其真实回合出现：
+//  · pending：待我确认跟进；
+//  · acknowledged：在办看回合协商、已解决看确认关闭；
+//  · declined：一律不进待办。
+// 目的：消除「没轮到我却挂在待我处理、点开无可操作按钮」。
 import { describe, it, expect } from 'vitest';
 
 import { buildRelevanceFilters } from '../ticketFilters';
@@ -59,17 +62,46 @@ describe('buildRelevanceFilters', () => {
     ).toHaveLength(0);
   });
 
-  it('mine：被代理人处理中的单不限关系状态（pending 需我确认、acknowledged 我协办）', () => {
+  it('mine：被代理人在办单只有 pending 关系常驻（待我确认跟进，ORS-1022）', () => {
     const branches = branchesOf(buildRelevanceFilters('mine', 'u1', []));
 
-    const principalWorking = branches.filter(
+    const principalPendingWorking = branches.filter(
       (b) =>
         hasCond([b], 'principalBy') &&
-        WORKING_STATUSES.every((s) => hasCond([b], 'status', s)) &&
-        !hasCond([b], 'proxyRelationStatus'),
+        hasCond([b], 'proxyRelationStatus', 'pending') &&
+        WORKING_STATUSES.every((s) => hasCond([b], 'status', s)),
     );
 
-    expect(principalWorking).toHaveLength(1);
+    // 恰好一条：仅「未确认待我确认跟进」属于他的待办
+    expect(principalPendingWorking).toHaveLength(1);
+  });
+
+  it('mine：acknowledged 在办单不再靠关系常驻，只保留真轮次分支（ORS-1022）', () => {
+    const branches = branchesOf(buildRelevanceFilters('mine', 'u1', []));
+
+    const principalAckWorking = branches.filter(
+      (b) =>
+        hasCond([b], 'principalBy') &&
+        hasCond([b], 'proxyRelationStatus', 'acknowledged') &&
+        WORKING_STATUSES.every((s) => hasCond([b], 'status', s)),
+    );
+
+    // 唯一一条 acknowledged 在办分支必须是「轮到被代理人答复」的回合协商
+    expect(principalAckWorking).toHaveLength(1);
+    expect(hasCond([principalAckWorking[0]], 'stepUpdatedBy', 'assigned')).toBe(true);
+    expect(hasCond([principalAckWorking[0]], 'currStepAgreed', false)).toBe(true);
+  });
+
+  it('mine：任何 principalBy 分支都限定关系状态——declined 不进「待我处理」（ORS-1022）', () => {
+    const branches = branchesOf(buildRelevanceFilters('mine', 'u1', []));
+
+    const principalBranches = branches.filter((b) => hasCond([b], 'principalBy'));
+
+    expect(principalBranches.length).toBeGreaterThan(0);
+    // 不存在「我是被代理人」但不看关系状态的宽松分支
+    expect(
+      principalBranches.filter((b) => !hasCond([b], 'proxyRelationStatus')),
+    ).toHaveLength(0);
   });
 
   it('mine：回合协商分支保留——接单人刚改过 step 且未协商一致', () => {

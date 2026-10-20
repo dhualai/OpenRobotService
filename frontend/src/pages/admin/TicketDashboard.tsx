@@ -11,9 +11,9 @@ import { Navbar } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { TICKET_STATUS_LIST } from '@/shared/constants/dashboard';
 import {
-  fetchDashboardSummaryAll, fetchTicketCreatorOrgAnalysis,
+  fetchDashboardSummaryAll, fetchDarLatest, fetchTicketCreatorOrgAnalysis,
   type TicketSummary, type TicketSourceAnalysis, type TicketResponseTime, type TicketAvgCloseTime,
-  type TicketCreatorOrgAnalysis,
+  type DarReportSummary, type TicketCreatorOrgAnalysis,
 } from '@/api/dashboard';
 import { TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { MacDonut, MacLegend, macTone } from '@/shared/components/macaronBits';
@@ -193,10 +193,21 @@ export default function TicketDashboard() {
   const loadOrg = useCallback(async () => {
     // 口径与全页一致：canViewAll 时不传 projectIds；orgCompanyId 空=按公司，非空=按该公司部门
     const filterIds = canViewAll ? undefined : projectIds;
-    fetchTicketCreatorOrgAnalysis(filterIds, orgCompanyId || undefined).then(setOrgAnalysis);
+    fetchTicketCreatorOrgAnalysis(filterIds, orgCompanyId || undefined)
+      .then(setOrgAnalysis)
+      .catch(() => {
+        // 接口失败保持当前展示，不打断页面
+      });
   }, [projectIds, canViewAll, orgCompanyId]);
 
   useEffect(() => { loadOrg(); }, [loadOrg]);
+
+  // AI 直答率周报（dar_weekly 自动推送到后端，最新一期；无数据时区块整体隐藏）
+  const [dar, setDar] = useState<DarReportSummary | null>(null);
+  useEffect(() => {
+    if (!canAccessAdminEntries) return;
+    fetchDarLatest('prod').then(setDar);
+  }, [canAccessAdminEntries]);
 
   return (
     <div>
@@ -343,6 +354,104 @@ export default function TicketDashboard() {
               </div>
             </section>
           </>
+        )}
+        {canAccessAdminEntries && dar && (
+          <section className="mac-card mac-card--pad" style={{ marginTop: 12 }}>
+            <div className="mac-source-block__title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>AI 直答率</span>
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
+                {dar.week_date.slice(0, 4)}-{dar.week_date.slice(4, 6)}-{dar.week_date.slice(6, 8)} 周报
+              </span>
+            </div>
+            {(() => {
+              const wb = dar.workbench;
+              if (wb?.hero?.length) {
+                // 有工作台快照：整块按工作台首页那张卡渲染，数字与工作台完全一致
+                const main = wb.hero.find((c) => c.label.includes('L2')) || wb.hero[0];
+                const rest = [...wb.hero.filter((c) => c !== main), ...(wb.small || [])];
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '10px 0 2px' }}>
+                      <span style={{ fontSize: 34, fontWeight: 700, color: 'var(--primary)', lineHeight: 1 }}>
+                        {main.value}
+                      </span>
+                      <span style={{ fontSize: 13, color: 'var(--muted-foreground, #98a2b3)' }}>
+                        {main.label} · 端到端直答率
+                      </span>
+                    </div>
+                    {main.sub && (
+                      <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
+                        {main.sub}
+                      </div>
+                    )}
+                    <div
+                      className="mac-stat-row"
+                      style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}
+                    >
+                      {rest.map((c) => (
+                        <div key={c.label} title={c.sub || ''}>
+                          <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>{c.label}</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>{c.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
+                      {wb.manual_progress && <>人工标注进度：{wb.manual_progress}</>}
+                      {wb.manual_progress && wb.export_at && <> · </>}
+                      {wb.export_at && <>数据版本：{wb.export_at}</>}
+                    </div>
+                  </>
+                );
+              }
+              const wowL2 = dar.wow?.['L2_人工'];
+              const up = wowL2 ? wowL2.delta >= 0 : true;
+              return (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '10px 0 2px' }}>
+                    {/* 主口径：端到端直答率（L2 人工，同分母环比取整） */}
+                    <span style={{ fontSize: 34, fontWeight: 700, color: 'var(--primary)', lineHeight: 1 }}>
+                      {wowL2 ? `${wowL2.curr.toFixed(1)}%` : (dar.dar_rates?.['L2_人工'] || '—').split('｜')[0].replace('端到端 ', '')}
+                    </span>
+                    <span style={{ fontSize: 13, color: 'var(--muted-foreground, #98a2b3)' }}>端到端直答率（人工口径）</span>
+                    {wowL2 && (
+                      <span style={{ fontSize: 13, fontWeight: 600, color: up ? '#1f8a5a' : '#d9534f' }}>
+                        {up ? '↑' : '↓'} {Math.abs(wowL2.delta).toFixed(1)}pp
+                      </span>
+                    )}
+                  </div>
+                  <div className="mac-stat-row" style={{ marginTop: 10 }}>
+                    {wowL2 && (
+                      <div>
+                        <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>上周</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{wowL2.prev.toFixed(1)}%</div>
+                      </div>
+                    )}
+                    {dar.wow?.['L3_AI同段'] && (
+                      <div>
+                        <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>L3 AI 参考</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{dar.wow['L3_AI同段'].curr.toFixed(1)}%</div>
+                      </div>
+                    )}
+                    <div>
+                      <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>KB 缺口率</div>
+                      <div style={{ fontSize: 16, fontWeight: 600 }}>{(dar.kb_gap || '—').split('（')[0]}</div>
+                    </div>
+                    {dar.this_week?.n_segs != null && (
+                      <div>
+                        <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>本周新增</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{dar.this_week.n_convs ?? '—'} 会话 / {dar.this_week.n_segs} 段</div>
+                      </div>
+                    )}
+                  </div>
+                  {dar.manual_progress && (
+                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
+                      人工标注进度：{dar.manual_progress}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </section>
         )}
         {canViewAll && <QuestionModuleCard key={username} />}
       </div>

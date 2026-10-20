@@ -5,6 +5,9 @@ import { AlarmClock } from 'lucide-react';
 import { useMemo } from 'react';
 import type { ComponentProps } from 'react';
 import { useState } from 'react';
+import { createRequest } from '@/api/client';
+import API_CONFIG from '@/config/api';
+import { Toast } from 'tdesign-mobile-react';
 import type { useStepNegotiation, StepNegotiationTicket } from '@/shared/hooks/useStepNegotiation';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { formatRawDateTime } from '@/shared/utils/url';
@@ -28,6 +31,7 @@ export interface StepCardTicket extends StepNegotiationTicket {
   created_at?: string;
   comments?: Array<{ content?: string; created_at?: string }>;
   metadata_info?: Record<string, unknown>;
+  predecessor_ids?: number[];
 }
 
 interface StepRoles {
@@ -53,6 +57,8 @@ interface StepNegotiationCardProps {
   onReassign: () => void;
   /** 暂停请求回应：确认暂停（→pending，无理由）或驳回（→in_progress，必须带理由） */
   onPauseResponse?: (nextStatus: 'pending' | 'in_progress', rejectReason?: string) => void;
+  /** 无法解决请求回应：确认（→unsolvable，无理由）或驳回（→in_progress，必须带理由） */
+  onUnsolvableResponse?: (nextStatus: 'unsolvable' | 'in_progress', rejectReason?: string) => void;
 }
 
 /**
@@ -69,6 +75,7 @@ export default function StepNegotiationCard({
   onEscalate,
   onReassign,
   onPauseResponse,
+  onUnsolvableResponse,
 }: StepNegotiationCardProps) {
   const {
     stepTemplate, responding, completing,
@@ -83,6 +90,7 @@ export default function StepNegotiationCard({
     setStepTimeValue, setSetStepTimeValue, submittingSetStepTime,
     handleRespond, handleStepComplete, handleSetStepTime, handleNegotiateStep,
     openNegotiate, openCompleteStep,
+    refreshDetail,
   } = negotiation;
 
   // 稳定 DatePicker 受控 value 引用（内联 parse 每次渲染生成新 dayjs 实例会触发 rc-picker 受控同步，重置面板暂存值）
@@ -109,17 +117,65 @@ export default function StepNegotiationCard({
   const isTerminal = ['resolved', 'closed', 'canceled', 'cancelled'].includes(status);
   // 暂停请求中：处理人已请求暂停、等待提单人确认——节点信息保留、回合协商冻结
   const isPauseRequested = status === 'pending_requested';
-  const total = stepTemplate.length;
-  const currIdx = stepTemplate.findIndex((s) => s.id === detail?.curr_step_id);
-  const stepName = detail?.curr_step_name || (currIdx >= 0 ? stepTemplate[currIdx].step_name : '');
+  // 无法解决确认中：处理人标记无法解决、等待提单人确认——同暂停，协商冻结
+  const isUnsolvableRequested = status === 'unsolvable_requested';
+  // 特殊 step（等待外部条件 sequence=-2 / 等待前置工单 sequence=-1）：与正常推进序无关
+  const normalSteps = stepTemplate.filter((s) => s.sequence >= 0);
+  const specialSteps = stepTemplate.filter((s) => s.sequence < 0);
+  const total = normalSteps.length;
+  const currIdx = normalSteps.findIndex((s) => s.id === detail?.curr_step_id);
+  const stepName = detail?.curr_step_name || (currIdx >= 0 ? normalSteps[currIdx].step_name : '');
+  // 当前 step 是否特殊 step（用于卡片正文展示条件理由）
+  const currentStepRow = stepTemplate.find((s) => s.id === detail?.curr_step_id);
+  const currIsSpecial = !!currentStepRow && currentStepRow.sequence < 0;
   // 暂停请求理由（metadata_info.pause_reason，仅 pending_requested 状态存在）
   const pauseReason = (detail?.metadata_info as Record<string, unknown> | undefined)?.pause_reason as string | undefined;
+  // 无法解决理由（metadata_info.unsolvable_reason，仅 unsolvable_requested 状态存在）
+  const unsolvableReason = (detail?.metadata_info as Record<string, unknown> | undefined)?.unsolvable_reason as string | undefined;
   // 上一次驳回理由（metadata_info.reject_reason，仅 IN_PROGRESS 状态存在，处理人侧可见）
   const rejectReason = (detail?.metadata_info as Record<string, unknown> | undefined)?.reject_reason as string | undefined;
+  // 特殊 step 条件理由
+  const waitingExternalReason = (detail?.metadata_info as Record<string, unknown> | undefined)?.waiting_external_reason as string | undefined;
+  const waitingPredecessorReason = (detail?.metadata_info as Record<string, unknown> | undefined)?.waiting_predecessor_reason as string | undefined;
 
   // 驳回暂停理由弹窗（本地 state，仅组件内部使用）
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReasonDraft, setRejectReasonDraft] = useState('');
+  // 完成弹窗：特殊 step 条件理由草稿
+  const [completeReasonDraft, setCompleteReasonDraft] = useState('');
+  // 等待前置工单 +添加 弹窗
+  const [showAddPredecessorPopup, setShowAddPredecessorPopup] = useState(false);
+  const [predecessorIdInput, setPredecessorIdInput] = useState('');
+
+  const openAddPredecessorPopup = () => {
+    setPredecessorIdInput('');
+    setShowAddPredecessorPopup(true);
+  };
+
+  const handleAddPredecessor = async () => {
+    const raw = predecessorIdInput.trim().replace(/^#/, '');
+    const targetId = Number(raw);
+    if (!detail?.id || !targetId || Number.isNaN(targetId)) {
+      Toast({ message: '请输入有效的工单 ID（如 #123）', theme: 'warning' });
+      return;
+    }
+    if (targetId === Number(detail.id)) {
+      Toast({ message: '不能把自己设为前置工单', theme: 'warning' });
+      return;
+    }
+    try {
+      const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+      await request(`/${detail.id}/relations`, {
+        method: 'POST',
+        body: JSON.stringify({ target_task_id: targetId, relation_type: 'predecessor' }),
+      });
+      Toast({ message: '前置工单已添加', theme: 'success' });
+      setShowAddPredecessorPopup(false);
+      await refreshDetail();
+    } catch (err: any) {
+      Toast({ message: err?.message || '添加失败', theme: 'error' });
+    }
+  };
   // 尚未开始阶段性处理（当前节点未初始化）→ 整卡隐藏
   if (!stepName) return null;
 
@@ -145,11 +201,15 @@ export default function StepNegotiationCard({
     return '';
   })();
   const stepAgreed = !!detail?.curr_step_agreed;
-  // 暂停请求期间冻结所有协商/响应操作，等待提单人侧确认或驳回
-  const canRespond = !isPauseRequested && !!detail?.curr_step_id && (status === 'new' || (status === 'in_progress' && !stepAgreed));
-  const canNegotiate = !isPauseRequested && !!detail?.curr_step_id;
-  const currSeq = currIdx >= 0 ? stepTemplate[currIdx].sequence : null;
-  const hasNext = currSeq === null ? true : stepTemplate.some((s) => s.sequence > currSeq);
+  // 暂停请求中 / 无法解决确认中 均冻结协商/响应操作
+  const canRespond = !isPauseRequested && !isUnsolvableRequested && !!detail?.curr_step_id && (status === 'new' || (status === 'in_progress' && !stepAgreed));
+  const canNegotiate = !isPauseRequested && !isUnsolvableRequested && !!detail?.curr_step_id;
+  const currSeq = currIdx >= 0 ? normalSteps[currIdx].sequence : null;
+  // hasNext：当前在正常 step 且有后续正常 step → true
+  // 当前在特殊 step 或 currIdx=-1（当前是特殊 step） → 也认为有"继续推进"的选项（特殊 step 之后可以回到正常 step）
+  const hasNext = currSeq === null
+    ? (specialSteps.length > 0 || normalSteps.length > 0)
+    : normalSteps.some((s) => s.sequence > currSeq);
   // 回合展示
   const round = detail?.step_negotiation_round ?? 0;
   const maxRound = detail?.step_neg_max_rounds ?? 3;
@@ -176,7 +236,7 @@ export default function StepNegotiationCard({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <h4 className="detail-card__h" style={{ marginBottom: 0 }}>工单阶段性处理</h4>
-            {myTurn && !reachedMax && !stepAgreed && !isTerminal && !isPauseRequested && (
+            {myTurn && !reachedMax && !stepAgreed && !isTerminal && !isPauseRequested && !isUnsolvableRequested && (
               <span style={{ fontSize: 12, color: 'var(--blue-2)', fontWeight: 500 }}>
                 ● 轮到你确认/答复
               </span>
@@ -184,6 +244,11 @@ export default function StepNegotiationCard({
             {isPauseRequested && (
               <span style={{ fontSize: 12, color: 'var(--apricot)', fontWeight: 500 }}>
                 ● 处理人已请求暂停工单，等待提单人确认
+              </span>
+            )}
+            {isUnsolvableRequested && (
+              <span style={{ fontSize: 12, color: 'var(--danger)', fontWeight: 500 }}>
+                ● 处理人标记无法解决，等待提单人确认
               </span>
             )}
             {reachedMax && !stepAgreed && (
@@ -275,39 +340,9 @@ export default function StepNegotiationCard({
         {!isTerminal && !isPauseRequested ? (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {canOperate ? (
-              reachedMax ? (
-                stepAgreed ? (
-                  isAssignee ? (
-                    hasNext ? (
-                      <TestMarkedButton testId="task-complete-step" block size="small" theme="primary" loading={completing} disabled={completeDisabled} onClick={openCompleteStep}>
-                        当前阶段完成
-                      </TestMarkedButton>
-                    ) : (
-                      <TestMarkedButton testId="task-resolve" block size="small" theme="primary" onClick={onResolve}>
-                        最末阶段结束，处理完成
-                      </TestMarkedButton>
-                    )
-                  ) : null
-                ) : myTurn ? (
-                  <>
-                    <TestMarkedButton
-                      testId="task-accept"
-                      block
-                      size="small"
-                      theme="primary"
-                      loading={responding}
-                      disabled={!canRespond}
-                      onClick={handleRespond}
-                    >
-                      确认同意
-                    </TestMarkedButton>
-                    <Button block size="small" theme="danger" onClick={() => onEscalate(round, maxRound)}>
-                      有异议，升级上报
-                    </Button>
-                  </>
-                ) : null
-              ) : stepAgreed ? (
-                isAssignee ? (
+              <>
+                {/* 处理人：无论 stepAgreed 与否、回合在谁，都可直接完成当前阶段（创建人未确认节点时间也不阻止推进） */}
+                {isAssignee && (
                   hasNext ? (
                     <TestMarkedButton
                       testId="task-complete-step"
@@ -331,9 +366,21 @@ export default function StepNegotiationCard({
                       最末阶段结束，处理完成
                     </TestMarkedButton>
                   )
-                ) : null
-              ) : (
-                myTurn ? (
+                )}
+                {/* 处理人侧 · 对方待确认：允许修改之前设置的节点时间 */}
+                {isAssignee && !reachedMax && !stepAgreed && !myTurn && (
+                  <Button
+                    block
+                    size="small"
+                    theme="default"
+                    disabled={negotiateDisabled}
+                    onClick={openNegotiate}
+                  >
+                    重新协商节点时间
+                  </Button>
+                )}
+                {/* 协商/响应按钮：仅回合到我方、且未达成一致时显示 */}
+                {!reachedMax && !stepAgreed && myTurn && (
                   <>
                     {isAssignee && (
                       <Button
@@ -376,8 +423,26 @@ export default function StepNegotiationCard({
                       确认同意
                     </TestMarkedButton>
                   </>
-                ) : null
-              )
+                )}
+                {reachedMax && !stepAgreed && myTurn && (
+                  <>
+                    <TestMarkedButton
+                      testId="task-accept"
+                      block
+                      size="small"
+                      theme="primary"
+                      loading={responding}
+                      disabled={!canRespond}
+                      onClick={handleRespond}
+                    >
+                      确认同意
+                    </TestMarkedButton>
+                    <Button block size="small" theme="danger" onClick={() => onEscalate(round, maxRound)}>
+                      有异议，升级上报
+                    </Button>
+                  </>
+                )}
+              </>
             ) : (
               <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
                 仅工单创建人和处理人可执行操作
@@ -413,6 +478,60 @@ export default function StepNegotiationCard({
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 12 }}>
                 <Button size="small" theme="default" onClick={() => { setRejectReasonDraft(''); setShowRejectPopup(true); }}>驳回暂停</Button>
                 <Button size="small" theme="primary" onClick={() => onPauseResponse('pending')}>确认暂停</Button>
+              </div>
+            )}
+          </div>
+        ) : isUnsolvableRequested ? (
+          // 无法解决确认中：协商冻结，提单人侧显示确认/驳回按钮
+          <div style={{
+            padding: '10px 14px', background: 'var(--rose-soft)',
+            borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--danger)',
+            fontSize: 13, color: 'var(--foreground)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: unsolvableReason ? 8 : 0 }}>
+              <span style={{ fontSize: 18 }}>✕</span>
+              <span>
+                {isAssignee
+                  ? '无法解决请求已发送，等待提单人确认后工单进入"无法解决"终态。'
+                  : '处理人标记无法解决此工单，请查看理由后决定是否确认。'}
+              </span>
+            </div>
+            {unsolvableReason && (
+              <div style={{
+                padding: '8px 12px', background: 'var(--background)',
+                borderRadius: 'var(--radius-sm)', fontSize: 13, lineHeight: 1.6,
+                color: 'var(--foreground)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>
+                <span style={{ color: 'var(--muted-foreground)', fontSize: 12 }}>无法解决理由：</span>
+                {unsolvableReason}
+              </div>
+            )}
+            {isCreatorSide && onUnsolvableResponse && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 12 }}>
+                <Button size="small" theme="default" onClick={() => { setRejectReasonDraft(''); setShowRejectPopup(true); }}>驳回</Button>
+                <Button size="small" theme="primary" onClick={() => onUnsolvableResponse('unsolvable')}>确认无法解决</Button>
+              </div>
+            )}
+          </div>
+        ) : currIsSpecial ? (
+          // 当前处于特殊 step：展示条件理由
+          <div style={{
+            padding: '10px 14px', background: 'var(--muted)',
+            borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--blue-2)',
+            fontSize: 13, color: 'var(--foreground)', marginBottom: 10,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 16 }}>{currentStepRow?.sequence === -2 ? '⏳' : '🔗'}</span>
+              <span style={{ fontWeight: 600 }}>{currentStepRow?.step_name || '等待条件'}</span>
+            </div>
+            {waitingExternalReason && (
+              <div style={{ padding: '6px 10px', background: 'var(--background)', borderRadius: 'var(--radius-sm)', fontSize: 13, lineHeight: 1.6, color: 'var(--foreground)', whiteSpace: 'pre-wrap' }}>
+                <span style={{ color: 'var(--muted-foreground)', fontSize: 12 }}>等待理由：</span>{waitingExternalReason}
+              </div>
+            )}
+            {waitingPredecessorReason && (
+              <div style={{ padding: '6px 10px', background: 'var(--background)', borderRadius: 'var(--radius-sm)', fontSize: 13, lineHeight: 1.6, color: 'var(--foreground)', whiteSpace: 'pre-wrap' }}>
+                <span style={{ color: 'var(--muted-foreground)', fontSize: 12 }}>等待理由：</span>{waitingPredecessorReason}
               </div>
             )}
           </div>
@@ -457,17 +576,23 @@ export default function StepNegotiationCard({
             >
               {(() => {
                 const isPhaseRound0 = !(detail?.step_phase_round) || detail.step_phase_round === 0;
-                const curSeqForNegotiate = stepTemplate.find((s) => s.id === detail?.curr_step_id)?.sequence ?? -1;
-                const negotiableSteps = (stepTemplate.length > 0 ? stepTemplate : [])
+                const curSeqForNegotiate = normalSteps.find((s) => s.id === detail?.curr_step_id)?.sequence ?? -1;
+                // 正常 step：当前及之后（或 round0 全可选）
+                const normalSelectable = (normalSteps.length > 0 ? normalSteps : [])
                   .filter((s) => isPhaseRound0 || s.sequence >= curSeqForNegotiate)
                   .sort((a, b) => a.sequence - b.sequence);
+                // 特殊 step（等待外部条件 / 等待前置工单）始终可选，追加在后面
+                const selectable = [...normalSelectable, ...specialSteps];
                 const fallback = detail?.curr_step_id
                   ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }]
                   : [];
-                return (negotiableSteps.length > 0 ? negotiableSteps : fallback);
-              })().map((s) => (
-                <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
-              ))}
+                return (selectable.length > 0 ? selectable : fallback);
+              })().map((s) => {
+                const isSpecial = s.sequence < 0;
+                return (
+                  <option key={s.id} value={s.id}>{isSpecial ? `★ ${s.step_name}` : `第${s.sequence + 1}步 · ${s.step_name}`}</option>
+                );
+              })}
             </select>
           </div>
           {(() => {
@@ -512,16 +637,26 @@ export default function StepNegotiationCard({
 
       {/* 当前阶段完成弹窗：选择下一阶段 + 节点结束时间 */}
       {(() => {
-        const currIdxLocal = stepTemplate.findIndex((s) => s.id === detail?.curr_step_id);
-        const currSeqLocal = currIdxLocal >= 0 ? stepTemplate[currIdxLocal].sequence : null;
-        const nextStepOptions = (stepTemplate.length > 0 ? stepTemplate : [])
+        const currIdxLocal = normalSteps.findIndex((s) => s.id === detail?.curr_step_id);
+        const currSeqLocal = currIdxLocal >= 0 ? normalSteps[currIdxLocal].sequence : null;
+        // 正常 step：严格大于当前；特殊 step（等待条件）始终可选
+        const normalNextOptions = (normalSteps.length > 0 ? normalSteps : [])
           .filter((s) => currSeqLocal === null || s.sequence > currSeqLocal)
           .sort((a, b) => a.sequence - b.sequence);
+        const nextStepOptions = [...normalNextOptions, ...specialSteps];
         const range = getDeadlineRange(detail?.priority, detail?.created_at);
+        const selectedStep = stepTemplate.find((s) => s.id === completeNextStepId);
+        const isCompleteSpecial = !!selectedStep && selectedStep.sequence < 0;
+        const completeReasonLabel = selectedStep?.sequence === -2 ? '等待外部条件的理由' : '等待前置工单的理由';
         return (
           <Popup
             visible={showCompleteStepPopup}
-            onClose={() => { if (!submittingComplete) setShowCompleteStepPopup(false); }}
+            onClose={() => {
+              if (!submittingComplete) {
+                setShowCompleteStepPopup(false);
+                setCompleteReasonDraft('');
+              }
+            }}
             placement="bottom"
             showOverlay
             destroyOnClose
@@ -548,9 +683,12 @@ export default function StepNegotiationCard({
                   {nextStepOptions.length === 0 && (
                     <option value="" disabled>无可选下一阶段</option>
                   )}
-                  {nextStepOptions.map((s) => (
-                    <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
-                  ))}
+                  {nextStepOptions.map((s) => {
+                    const isSpecial = s.sequence < 0;
+                    return (
+                      <option key={s.id} value={s.id}>{isSpecial ? `★ ${s.step_name}` : `第${s.sequence + 1}步 · ${s.step_name}`}</option>
+                    );
+                  })}
                 </select>
               </div>
               <DatePicker
@@ -571,9 +709,58 @@ export default function StepNegotiationCard({
                 allowClear
                 styles={{ popup: { root: { zIndex: 13000 } } }}
               />
+              {/* 特殊 step 的条件输入区域 */}
+              {isCompleteSpecial && (
+                <>
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ display: 'block', fontSize: 13, color: 'var(--muted-foreground)', marginBottom: 4 }}>
+                      {completeReasonLabel}<span style={{ color: 'var(--danger)' }}>*</span>
+                    </label>
+                    <Textarea
+                      data-testid="task-step-complete-reason"
+                      value={completeReasonDraft}
+                      onChange={(v) => setCompleteReasonDraft(String(v))}
+                      placeholder={selectedStep?.sequence === -2
+                        ? '请说明需要等待的外部条件是什么（例如：等待客户确认方案 / 等待第三方接口上线 / 等待安全审计通过）'
+                        : '请说明为什么需要等待前置工单（例如：当前工单依赖工单 #123 的修复结果）'}
+                      autosize={{ minRows: 3, maxRows: 6 }}
+                      maxlength={500}
+                    />
+                  </div>
+                  {/* 等待前置工单：显示已有前置工单 + 添加按钮 */}
+                  {selectedStep?.sequence === -1 && (
+                    <div style={{ marginBottom: 12, padding: 10, background: 'var(--muted)', borderRadius: 'var(--radius-sm)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>前置工单</span>
+                        <Button size="small" theme="primary" onClick={openAddPredecessorPopup}>+ 添加</Button>
+                      </div>
+                      {(detail?.predecessor_ids ?? []).length === 0 ? (
+                        <div style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>尚无前置工单，点击上方 + 添加</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {(detail?.predecessor_ids ?? []).map((pid) => (
+                            <span key={pid} style={{
+                              padding: '2px 8px', background: 'var(--card)', borderRadius: 4,
+                              fontSize: 12, color: 'var(--foreground)', border: '1px solid var(--border)',
+                            }}>#{pid}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
               <div className="ticket-edit__btns">
                 <Button theme="default" disabled={submittingComplete} onClick={() => setShowCompleteStepPopup(false)}>取消</Button>
-                <TestMarkedButton testId="task-step-submit" theme="primary" loading={submittingComplete} onClick={handleStepComplete} disabled={!completeNextStepId || !completeNextEndTime}>确认</TestMarkedButton>
+                <TestMarkedButton
+                  testId="task-step-submit"
+                  theme="primary"
+                  loading={submittingComplete}
+                  onClick={() => handleStepComplete(completeReasonDraft)}
+                  disabled={!completeNextStepId || !completeNextEndTime || (isCompleteSpecial && !completeReasonDraft.trim())}
+                >
+                  确认
+                </TestMarkedButton>
               </div>
             </div>
           </Popup>
@@ -622,7 +809,7 @@ export default function StepNegotiationCard({
         );
       })()}
 
-      {/* 驳回暂停理由弹窗（仅提单人侧可触发） */}
+      {/* 驳回请求理由弹窗（暂停 / 无法解决 共用，文案与回调随当前状态切换） */}
       <Popup
         visible={showRejectPopup}
         onClose={() => { setShowRejectPopup(false); setRejectReasonDraft(''); }}
@@ -631,7 +818,7 @@ export default function StepNegotiationCard({
         destroyOnClose
       >
         <div className="ticket-edit">
-          <h4 className="ticket-edit__title">驳回暂停请求</h4>
+          <h4 className="ticket-edit__title">{isUnsolvableRequested ? '驳回无法解决请求' : '驳回暂停请求'}</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
             请说明驳回理由，处理人将看到。
           </p>
@@ -640,7 +827,7 @@ export default function StepNegotiationCard({
               <Textarea
                 value={rejectReasonDraft}
                 onChange={(v) => setRejectReasonDraft(String(v))}
-                placeholder="请说明为什么不同意暂停"
+                placeholder={isUnsolvableRequested ? '请说明为什么不同意标记无法解决' : '请说明为什么不同意暂停'}
                 autosize={{ minRows: 3, maxRows: 6 }}
                 maxlength={500}
               />
@@ -652,13 +839,54 @@ export default function StepNegotiationCard({
               theme="primary"
               disabled={!rejectReasonDraft.trim()}
               onClick={() => {
-                onPauseResponse?.('in_progress', rejectReasonDraft.trim());
+                if (isUnsolvableRequested) {
+                  onUnsolvableResponse?.('in_progress', rejectReasonDraft.trim());
+                } else {
+                  onPauseResponse?.('in_progress', rejectReasonDraft.trim());
+                }
                 setShowRejectPopup(false);
                 setRejectReasonDraft('');
               }}
             >
               确认驳回
             </Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 等待前置工单 → +添加 弹窗：输入已有工单 ID 建立 predecessor 关系 */}
+      <Popup
+        visible={showAddPredecessorPopup}
+        onClose={() => { setShowAddPredecessorPopup(false); setPredecessorIdInput(''); }}
+        placement="bottom"
+        showOverlay
+        destroyOnClose
+      >
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">添加前置工单</h4>
+          <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            前置工单完成前，当前工单会被阻塞。已有的前置工单会自动显示在下方。
+          </p>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 13, color: 'var(--muted-foreground)', marginBottom: 4 }}>
+              前置工单 ID<span style={{ color: 'var(--danger)' }}>*</span>
+            </label>
+            <input
+              type="text"
+              value={predecessorIdInput}
+              onChange={(e) => setPredecessorIdInput(e.target.value)}
+              placeholder="输入工单 ID，如 123 或 #123"
+              style={{
+                width: '100%', padding: '8px 10px', fontSize: 14,
+                border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                background: 'var(--card)', color: 'var(--foreground)',
+              }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAddPredecessor(); }}
+            />
+          </div>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowAddPredecessorPopup(false); setPredecessorIdInput(''); }}>取消</Button>
+            <Button theme="primary" disabled={!predecessorIdInput.trim()} onClick={handleAddPredecessor}>确认添加</Button>
           </div>
         </div>
       </Popup>

@@ -6,6 +6,8 @@ import { Menu, CalendarDays } from 'lucide-react';
 
 import ChatPanel from '@/shared/components/ChatPanel';
 import ConversationDrawer from '@/shared/components/ConversationDrawer';
+import AnnouncementBar from '@/shared/components/AnnouncementBar';
+import ActivityCenterDrawer from '@/shared/components/ActivityCenterDrawer';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import VehicleConfirmDialog from '@/shared/components/VehicleConfirmDialog';
@@ -53,6 +55,8 @@ export default function CallView() {
   const [vehicleInfo, setVehicleInfo] = useState<VehicleContext | null>(null);
   const [vehicleDialogVisible, setVehicleDialogVisible] = useState(false);
   const [vehicleConfirming, setVehicleConfirming] = useState(false);
+  // 活动中心抽屉（公告条点开）
+  const [activityOpen, setActivityOpen] = useState(false);
   // 同一个场景值只查一次、只弹一次（用户关掉后本次访问不再重弹）
   const handledSceneRef = useRef<string | null>(null);
 
@@ -141,6 +145,8 @@ export default function CallView() {
               </div>
             }
           />
+          {/* 顶部公告条（无生效公告时组件自渲染为 null）；点击打开活动中心抽屉 */}
+          <AnnouncementBar onOpen={() => setActivityOpen(true)} />
           <div className="call-full-chat">
             <ChatPanel scene="call" />
           </div>
@@ -148,6 +154,8 @@ export default function CallView() {
       </div>
       {/* 会话抽屉 + 遮罩 */}
       <ConversationDrawer visible={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      {/* 活动中心抽屉（公告全文 + 精品工单 TOP 榜）+ 遮罩 */}
+      <ActivityCenterDrawer visible={activityOpen} onClose={() => setActivityOpen(false)} />
       {/* 车体扫码进入：车辆信息确认（仅该码「已发布/已出厂」时出现，用户关掉后本次访问不再弹） */}
       <VehicleConfirmDialog
         visible={vehicleDialogVisible}
