@@ -272,5 +272,6 @@ export function useStepNegotiation(
     handleReopenStep,
     openNegotiate,
     openCompleteStep,
+    refreshDetail,
   };
 }
