@@ -43,6 +43,7 @@ async def prepare_archive_rewards(db, task, report, reviewer_id) -> bool:
             status=RewardStatus.PENDING_AUDIT, auto_commit=False)
         if duplicated:
             raise HTTPException(409, "该工单已有闭环奖励，请先处理原财务审核记录")
+        reward.expire_at = None
         # 审核决策引擎分流：小额/低风险自动过审，强制审核条件触发则进 pending_audit
         if policy:
             auto_pass = await AuditDecisionEngine.evaluate(db, user.id, amount, policy)
@@ -101,6 +102,8 @@ async def audit_archive_rewards(db, ids, operator_id, approved, remark=""):
         ).with_for_update().execution_options(populate_existing=True))).scalars().all()
         if not any(reward.status == RewardStatus.PENDING_AUDIT for reward in rewards):
             continue
+        if len(rewards) != len(ARCHIVE_REWARD_ROLES) or {reward.role for reward in rewards} != ARCHIVE_REWARD_ROLES:
+            raise HTTPException(409, "三方奖励记录不完整，请核对后再审核")
         # 有 pending 的（自动过审）可以和 pending_audit 混合——只处理 pending_audit 那些
         audit_rewards = [r for r in rewards if r.status == RewardStatus.PENDING_AUDIT]
         if not audit_rewards:
@@ -126,6 +129,11 @@ async def audit_archive_rewards(db, ids, operator_id, approved, remark=""):
             if publication and not publication.active:
                 publication.first_approved_at = now
             await knowledge_service.publish_report(db, task, report, now)
+        description = "财务审核通过，工单完成归档闭环" if approved else "财务审核驳回，工单暂不进入知识榜"
+        db.add(TaskOperationLog(task_id=task.id, operation_type=OperationType.STATUS_CHANGE,
+            operator=operator_id, operator_name="财务审核", description=description,
+            to_status=task.status.value, detail={"finance_outcome": "approved" if approved else "rejected",
+                "audit_remark": remark.strip(), "report_id": report.id}))
         processed.extend(audit_rewards)
     await db.flush()
     return processed
