@@ -419,8 +419,8 @@ export default function DataImport() {
       />
 
       <div className="mac-card" style={{ marginTop: 12 }}>
-        {/* 分段切换（文件导入 / JSON导入 / 二维码导入） */}
-        <div className="mac-seg">
+        {/* 分段切换（文件导入 / JSON导入 / 二维码导入）：三个 Tab 同一排等宽（全局 .mac-seg 默认两列，此处覆盖为三列） */}
+        <div className="mac-seg" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
           <button
             type="button"
             className={`mac-seg__btn ${tab === 'file' ? 'is-active' : ''}`}
@@ -430,17 +430,17 @@ export default function DataImport() {
           </button>
           <button
             type="button"
-            className={`mac-seg__btn ${tab === 'json' ? 'is-active' : ''}`}
-            onClick={() => setTab('json')}
-          >
-            JSON导入
-          </button>
-          <button
-            type="button"
             className={`mac-seg__btn ${tab === 'qr' ? 'is-active' : ''}`}
             onClick={() => setTab('qr')}
           >
             二维码导入
+          </button>
+          <button
+            type="button"
+            className={`mac-seg__btn ${tab === 'json' ? 'is-active' : ''}`}
+            onClick={() => setTab('json')}
+          >
+            JSON导入
           </button>
         </div>
 
