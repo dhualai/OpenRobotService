@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useRef, useMemo } from 'react';
+import { Fragment, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
@@ -7,7 +7,7 @@ import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
-import { setupWechatShare, isPcWechat } from '@/shared/utils/wechatJsSdk';
+import { setupWechatShare, isPcWechat, navigateInWechat } from '@/shared/utils/wechatJsSdk';
 import { completeArchiveReportTemplate } from '@/shared/utils/archiveReport';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken, ApiError } from '@/api/client';
@@ -91,6 +91,25 @@ const isImageFile = (filename?: string): boolean => {
   const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
   return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext);
 };
+
+// ORS-1010 归档相似工单提示：归档编辑器打开时后台拉取，供归档人对照已沉淀的
+// 相似工单。score 是 RRF 融合分非余弦（后端文档明确警告），前端不展示分值。
+interface ArchiveSimilarItem {
+  task_id: number;
+  title: string;
+  status?: string;
+  project_name?: string;
+  archived?: boolean;
+  score?: number;
+  verified?: 'confirmed' | 'rejected' | 'recurred' | 'unknown' | string;
+  report?: {
+    content: string;
+    version: number;
+    reviewer?: string;
+    reviewer_name?: string;
+    reviewed_at?: string;
+  } | null;
+}
 
 interface MinioPathInfo { bucket: string; objectKey: string; }
 
@@ -310,6 +329,11 @@ export default function TaskDetailPage() {
   const [archiveGenerating, setArchiveGenerating] = useState(false);
   const [archiveGenStatus, setArchiveGenStatus] = useState('');
   const [showArchiveRejectPopup, setShowArchiveRejectPopup] = useState(false);
+  // ORS-1010 归档相似工单提示：归档编辑器打开时后台拉取（与 AI 初稿生成并行），
+  // 展示已沉淀的相似工单供归档人对照；不展示相似度分值（RRF 融合分非余弦，
+  // 展示百分比会误导），只有"有没有、是哪几张"。
+  const [archiveSimilar, setArchiveSimilar] = useState<ArchiveSimilarItem[]>([]);
+  const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
 
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
@@ -686,6 +710,27 @@ export default function TaskDetailPage() {
     }
   };
 
+  // ── ORS-1010：归档相似工单拉取（后台并行，不阻塞 AI 初稿生成）──
+  // min_score=0.015（RRF k=60 语义：至少一路检索排进前 6；rejected ×0.7 加权后
+  // 天然过不了线，被推翻的结论自动出局——生产实测有效匹配落在 0.0156~0.033）。
+  // 用默认 remind scope：review scope 要求该单正在审核中且有审核权限（会 403），
+  // 归档人写报告阶段用不到 report 内容，remind 字段（score/verified/status）已够。
+  // verified=rejected 再前端兜底过滤。
+  const fetchArchiveSimilar = useCallback(async (taskId: number) => {
+    setArchiveSimilarLoading(true);
+    try {
+      const res = await request<{ task_id: number; similar: ArchiveSimilarItem[] }>(
+        `/${taskId}/similar?limit=5&min_score=0.015`,
+      );
+      const list = (res?.similar || []).filter((s) => s.verified !== 'rejected');
+      setArchiveSimilar(list.slice(0, 5));
+    } catch {
+      setArchiveSimilar([]); // 静默降级：相似提示拿不到不影响归档
+    } finally {
+      setArchiveSimilarLoading(false);
+    }
+  }, []);
+
   // ── 开始归档（closed → archiving）──
   const handleStartArchive = async () => {
     if (!detail || archiveLoading) return;
@@ -696,6 +741,9 @@ export default function TaskDetailPage() {
       setArchiveReportRevision(ticket.current_archive_report?.revision || 1);
       setArchiveEditorMode('edit');
       setArchiveEditorVisible(true);
+      // ORS-1010：相似工单与 AI 初稿并行拉取（失败静默，编辑器不等它）
+      setArchiveSimilar([]);
+      void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
       if (existing) {
@@ -842,6 +890,9 @@ export default function TaskDetailPage() {
       setArchiveEditorMode('edit');
     }
     setArchiveEditorVisible(true);
+    // ORS-1010：编辑/再编辑打开时后台带出相似工单（失败静默）
+    setArchiveSimilar([]);
+    void fetchArchiveSimilar(Number(detail.id));
   };
 
   const handleEscalate = async (t: Ticket) => {
@@ -2699,9 +2750,14 @@ export default function TaskDetailPage() {
       </Popup>
 
       {/* ── 归档报告编辑器 Popup ── */}
-      <Popup visible={archiveEditorVisible} onClose={() => setArchiveEditorVisible(false)} placement="bottom" showOverlay>
+      <Popup
+        visible={archiveEditorVisible}
+        onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}
+        placement="bottom"
+        showOverlay
+      >
         <div className="ticket-edit-form">
-          <span className="ticket-edit-form__close" onClick={() => setArchiveEditorVisible(false)}>×</span>
+          <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
           </h4>
@@ -2749,11 +2805,50 @@ export default function TaskDetailPage() {
             <>
               <MDEditor height={360} value={archiveReportContent} preview="preview" />
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
-                <Button size="small" theme="default" onClick={() => setArchiveEditorVisible(false)}>关闭</Button>
+                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>关闭</Button>
                 <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
-                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
               </div>
             </>
+          )}
+          {/* ORS-1010 相似工单提示：归档人对照已沉淀的相似工单（与 AI 初稿并行
+              拉取，失败静默不显示）。不展示相似度分值——score 是 RRF 融合分非
+              余弦，展示数字会误导。verified=rejected 已被推翻，不出示。 */}
+          {(archiveSimilar.length > 0 || archiveSimilarLoading) && (
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>相似工单</span>
+                <span style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
+                  {archiveSimilarLoading ? '检索中…' : `发现 ${archiveSimilar.length} 张，供对照参考`}
+                </span>
+              </div>
+              {archiveSimilar.map((s) => (
+                <div
+                  key={s.task_id}
+                  onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); navigateInWechat(navigate, `/tasks/${s.task_id}`); }}
+                  style={{ padding: '8px 0', borderBottom: '1px dashed var(--border, #e8eaee)', cursor: 'pointer' }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--brand, #266fe8)' }}>#{s.task_id}</span>
+                    <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
+                    {s.verified === 'confirmed' && (
+                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#e3f9e9', color: '#1f8a5a', flexShrink: 0 }}>✓ 已验证</span>
+                    )}
+                    {s.verified === 'recurred' && (
+                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#fff4e0', color: '#b8860b', flexShrink: 0 }}>↻ 曾复发</span>
+                    )}
+                  </div>
+                  {(s.project_name || s.status) && (
+                    <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
+                      {[s.project_name, s.status === 'archived' ? '已归档' : s.status].filter(Boolean).join(' · ')}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginTop: 6 }}>
+                点单号可跳转查看该工单详情
+              </div>
+            </div>
           )}
         </div>
       </Popup>
