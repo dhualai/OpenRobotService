@@ -8610,6 +8610,25 @@ html, body, #root {
   background: var(--primary-soft);
 }
 
+/* ORS-1023 新项目基本信息（输入列表外项目名时出现，字段全选填）：
+   分组标题粗体贴左边距，字段内容相对缩进，风格对齐后台-项目信息管理的一级标签。 */
+.ticket-confirm__newproject {
+  margin-top: 12px; padding: 12px;
+  border: 1px dashed var(--border); border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.ticket-confirm__newproject-title {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px;
+  font-size: 13px; font-weight: 600; color: var(--foreground);
+}
+.ticket-confirm__newproject-name { font-weight: 600; color: var(--primary); }
+.ticket-confirm__newproject-tag { font-size: 11px; font-weight: 400; color: var(--muted-foreground); }
+
+/* 项目选择器「使用『关键词』作为新项目」条目（ORS-1023）：虚线框 + 主色名，与普通条目区分 */
+.user-select__item--create { border: 1px dashed var(--primary); border-radius: var(--radius-sm); margin: 4px 8px; }
+.user-select__item--create .user-select__item-name { color: var(--primary); }
+.user-select__item--create .user-select__item-meta { display: flex; }
+
 /* 转工单确认弹窗：远程方式截图上传区（与 TasksView 新建弹窗 .tasks-create-modal__remote* 对齐） */
 .ticket-confirm__remote {
   display: flex;
