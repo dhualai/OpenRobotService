@@ -114,6 +114,8 @@
 - **中止即零影响**：门禁在**上传代码之前**执行，失败时线上仍跑旧版；DDL 执行不可回滚（回滚只还原代码，不含库结构）。
 - **幂等**：靠 `information_schema` 判重，重复执行不会重复补列。
 - 结果写进部署摘要的「数据库结构」一行，并随通知卡片展示（自动补了几列 / 是否因结构中止）。
+- 含后端的 `--build-artifacts` 自动将 `backend/scripts/schema_sync.py` 放入产物的 `deploy/schema_sync.py`，不再仅依赖 workflow 额外复制；源文件缺失时构建立即失败。`--from-artifacts` 解包时将该脚本恢复到暂存目录的 `backend/scripts/`，优先使用与本次后端产物配套的版本，仍兼容旧版部署脚本同目录布局。
+- 校验脚本文件检查在远端备份前完成，缺失时列出查找路径并中止，不自动关闭结构门禁。旧产物缺少脚本时，需将修复合入实际部署的代码分支后重新触发完整构建/部署；仅重跑失败的 deploy job 会继续复用旧产物。
 
 ## 三、回滚（Rollback）
 
@@ -153,6 +155,7 @@ $HOME/deploy_backups/test/20260923-152741-381030/
 | SSH 连接失败 | 检查 `TEST_SSH_PRIVATE_KEY` 与 `DEPLOY_SSH_*`；preflight 步骤会打印远端 `supervisorctl status` |
 | 健康检查失败并自动回滚 | Summary 标注「自动回滚=是」，需人工确认服务；必要时再 Rollback 到更早备份 |
 | 部署前报「库结构落后于代码，已中止部署」 | 说明模型里有库中缺的列/索引。test 默认 `sync` 会自动补可空/有默认值的列；`需人工>0` 的项（NOT NULL 无默认值、改类型、删列等）需人工迁移（`backend/alembic/versions/` 或 `backend/scripts/apply_schema_patch.py`）。确认可忽略时用 `--schema-mode off`（或把 `DEPLOY_SCHEMA_MODE` 设为 `off`） |
+| 部署前报「缺少结构校验脚本」 | 这是产物依赖缺失，不是数据库结构差异。确认产物中有 `deploy/schema_sync.py`，使用包含修复的目标分支重新构建产物后部署；不要通过关闭数据库校验绕过，也不要只重跑旧产物的 deploy job |
 | 没收到通知 | 未配置 `NOTIFY_WEBHOOKS` / `NOTIFY_WEBHOOK` 会跳过；Webhook 域名仅允许企业微信 / 飞书（防 SSRF）；某群策略与本次结果不匹配时也会跳过（如 `failure` 群在部署成功时不发）；目标配了 `envs` 且不在本次环境时同样跳过（如只配 `prod` 的群在 test 部署时不发）。日志会逐条打印每个目标的发送 / 跳过原因 |
 | 备份占用磁盘 | 调小 `DEPLOY_BACKUP_KEEP`，或到服务器清理 `~/deploy_backups/<env>/` |
 
@@ -161,6 +164,8 @@ $HOME/deploy_backups/test/20260923-152741-381030/
 发布说明解析 / 群路由 envs / 版面选择 / 数据库结构栏 / 三种版面渲染的回归测试：
 
 （后端 `schema_sync.py` 的纯逻辑单测在 `backend/tests/test_schema_sync.py`，随 gate 的 `pytest` 一起跑。）
+
+结构校验脚本的打包、解包恢复、旧布局兼容及备份前缺文件拦截可单独验证：`python -m pytest deploy/tests/test_schema_artifacts.py -q`。全部使用本地临时文件并模拟远端调用，不连接数据库或服务器。
 
 ```bash
 python -m pytest deploy/tests -q

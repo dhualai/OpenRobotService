@@ -510,6 +510,9 @@ def build_artifacts(repo_root, components, environment, npm_script, out_dir,
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    schema_script = repo_root / "backend" / "scripts" / "schema_sync.py" if "backend" in components else None
+    if schema_script is not None and not schema_script.is_file():
+        raise RuntimeError(f"缺少结构校验脚本: {schema_script}。请更新部署源码后重新构建产物")
 
     if "frontend" in components and not skip_build:
         frontend_dir = repo_root / "frontend"
@@ -539,6 +542,11 @@ def build_artifacts(repo_root, components, environment, npm_script, out_dir,
 
     if dry_run:
         return out_dir
+
+    if schema_script is not None:
+        script_dest = out_dir / "deploy" / "schema_sync.py"
+        script_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(schema_script, script_dest)
 
     meta = {
         "environment": environment,
@@ -599,6 +607,11 @@ def stage_artifacts(artifact_dir, environment):
         if rc != 0:
             raise RuntimeError(f"产物解压失败: {tar_path}")
         write_ok(f"已展开 {tar_name} -> {dest}")
+    schema_script = artifact_dir / "deploy" / "schema_sync.py"
+    if (stage / "backend" / "app").is_dir() and schema_script.is_file():
+        script_dest = stage / "backend" / "scripts" / "schema_sync.py"
+        script_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(schema_script, script_dest)
     return stage
 
 
@@ -637,6 +650,18 @@ def get_env_config(environment):
 
 # ---------- 数据库结构一致性（部署前置门禁） ----------
 SCHEMA_MODES = ("off", "check", "sync")
+
+
+def _schema_sync_script(repo_root: Path) -> Path:
+    candidates = (
+        repo_root / "backend" / "scripts" / "schema_sync.py",
+        Path(__file__).resolve().parent / "schema_sync.py",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    checked = "、".join(str(candidate) for candidate in candidates)
+    raise RuntimeError(f"缺少结构校验脚本，已检查: {checked}。请更新部署源码后重新构建产物，勿跳过数据库校验")
 
 
 def _schema_expected_dir(cfg: SshConfig, repo_root: Path) -> str:
@@ -692,13 +717,7 @@ def deploy_schema_sync(cfg: SshConfig, repo_root: Path, env: dict, mode: str) ->
     if mode not in SCHEMA_MODES:
         raise RuntimeError(f"无效的 schema 模式: {mode}")
 
-    script_local = Path(__file__).resolve().parent / "schema_sync.py"
-    if not script_local.is_file():
-        # 自托管 runner 从 artifact 部署时脚本在 deploy/ 同目录（workflow 已 cp 进来）；
-        # 源码树直跑（本地 / GUI）时回退到后端源码里的脚本。
-        script_local = repo_root / "backend" / "scripts" / "schema_sync.py"
-    if not script_local.is_file():
-        raise RuntimeError("缺少结构校验脚本（deploy/ 与 backend/scripts/ 均未找到）")
+    script_local = _schema_sync_script(repo_root)
 
     expected_dir = _schema_expected_dir(cfg, repo_root)
 
@@ -1359,6 +1378,9 @@ def main_cli(args):
                 return 1
             write_step("全部完成")
             return 0
+
+        if "backend" in components and args.schema_mode != "off":
+            _schema_sync_script(repo_root)
 
         dest_desc = "本机" if cfg.local else f"{cfg.user}@{cfg.host}:{cfg.port}"
         if args.environment == "prod" and not args.dry_run and not args.yes:
