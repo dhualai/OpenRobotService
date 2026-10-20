@@ -1240,6 +1240,43 @@ async def upload_files(
     }
 
 
+class MediaDescribeRequest(BaseModel):
+    """图片描述请求（ORS-1035：评论区图片打标，后端上传链路调用）"""
+    images: List[str] = Field(..., description="图片 data URI（data:image/png;base64,...），≤3 张")
+    context: str = Field("", description="补充上下文（如评论文字），可选")
+
+
+@qa_router.post("/media/describe", summary="图片 VLM 描述（评论打标）")
+async def media_describe(body: MediaDescribeRequest) -> dict:
+    """对图片输出客观描述（报错文本/界面状态/现场要点），供讨论摘要、归档
+    初稿等文本消费方使用。图片本体不落库，只回文字。
+
+    与 chat 上传链路的区别：那边带对话上下文+【回应】段（用户可见回执），
+    这里纯客观描述（内部打标），无对话背景。失败返回 code=1，调用方静默。
+    """
+    uris = [u for u in (body.images or []) if isinstance(u, str) and u.strip()][:3]
+    if not uris:
+        return {"code": 1, "message": "images 不能为空"}
+    prompt = (
+        "客观描述这张（组）客服工单评论里的图片：截图类原样摘录其中的报错"
+        "文本、弹窗、界面状态；现场照片类描述设备/环境/可见现象。不要猜测"
+        "原因、不要给建议、不要寒暄，120 字以内。"
+    )
+    if body.context.strip():
+        prompt += f"\n评论者附带的文字（供理解，不要复述）：{body.context.strip()[:200]}"
+    try:
+        llm = await get_llm_client()
+        desc = await llm.complete_vision(
+            prompt=prompt, images=uris, max_tokens=400, temperature=0.2)
+        desc = (desc or "").strip()
+        if not desc:
+            return {"code": 1, "message": "VLM 返回为空"}
+        return {"code": 0, "data": {"desc": desc[:400]}}
+    except Exception as e:
+        logger.warning(f"[media.describe] 图片描述失败: {e}")
+        return {"code": 1, "message": str(e)[:120]}
+
+
 
 
 @qa_router.get("/health", summary="健康检查")
