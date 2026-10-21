@@ -585,7 +585,7 @@ export default function WxpayRewardManage() {
     }
     Dialog.confirm?.({
       title: '确认批量通过',
-      content: `已选 ${ids.length} 笔奖励。工单闭环奖励将连同同工单的三方奖励整单通过，入账并完成归档入榜；实际转账由系统异步处理。确定继续？`,
+      content: `已选 ${ids.length} 笔奖励，将逐条审核通过；实际转账由系统异步处理。确定继续？`,
       onConfirm: async () => {
         setAuditActing(true);
         try {

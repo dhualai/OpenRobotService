@@ -13,7 +13,6 @@ from app.modules.wxpay.service import AuditDecisionEngine, RewardService
 
 
 ARCHIVE_FINANCE_SOURCE = "task_archive"
-ARCHIVE_REWARD_ROLES = {"reporter", "assignee", "reviewer"}
 
 
 async def prepare_archive_rewards(db, task, report, reviewer_id) -> bool:
@@ -86,54 +85,141 @@ async def archive_finance_detail(db, task_id):
 
 
 async def audit_archive_rewards(db, ids, operator_id, approved, remark=""):
+    """对一批 archive finance 奖励按 id 逐条审核通过 / 驳回。
+
+    与原"三方整单"语义的区别：现在严格按传入 ids 处理，不再按 task_id 反查同工单其它奖励。
+    工单归档 + 知识库发布延迟到同一 task_id 下所有 archive reward 均已处于终态
+    （pending / rejected / success）时再推进，避免分批审核一方就触发。
+    """
     if not approved and not remark.strip():
         raise HTTPException(422, "财务驳回必须填写审核意见")
-    selected = (await db.execute(select(RewardRecord).where(
-        RewardRecord.id.in_(ids), RewardRecord.source_type == ARCHIVE_FINANCE_SOURCE
-    ))).scalars().all()
-    task_ids = sorted({int(reward.source_id) for reward in selected})
-    processed = []
-    for task_id in task_ids:
-        task = (await db.execute(select(Task).where(Task.id == task_id)
-            .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
-        rewards = (await db.execute(select(RewardRecord).where(
-            RewardRecord.source_type == ARCHIVE_FINANCE_SOURCE,
-            RewardRecord.source_id == str(task_id)
-        ).with_for_update().execution_options(populate_existing=True))).scalars().all()
-        if not any(reward.status == RewardStatus.PENDING_AUDIT for reward in rewards):
+
+    selected = (
+        (
+            await db.execute(
+                select(RewardRecord).where(
+                    RewardRecord.id.in_(ids),
+                    RewardRecord.source_type == ARCHIVE_FINANCE_SOURCE,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    now = knowledge_service.utcnow()
+    processed: list[RewardRecord] = []
+    # 同一 task 可能被多个 id 命中 → 用 dict 去重，最后统一判断是否全部终态
+    touched_tasks: dict[int, tuple[Task, ArchiveReport]] = {}
+
+    for reward in selected:
+        if reward.status != RewardStatus.PENDING_AUDIT:
+            # 非待审核状态跳过，不报错（幂等）
             continue
-        if len(rewards) != len(ARCHIVE_REWARD_ROLES) or {reward.role for reward in rewards} != ARCHIVE_REWARD_ROLES:
-            raise HTTPException(409, "三方奖励记录不完整，请核对后再审核")
-        # 有 pending 的（自动过审）可以和 pending_audit 混合——只处理 pending_audit 那些
-        audit_rewards = [r for r in rewards if r.status == RewardStatus.PENDING_AUDIT]
-        if not audit_rewards:
-            continue
-        report = (await db.execute(select(ArchiveReport).where(
-            ArchiveReport.task_id == task_id
-        ).order_by(ArchiveReport.version.desc(), ArchiveReport.id.desc()).limit(1)
-            .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
-        if not task or task.status != TaskStatus.ARCHIVING or not report or report.submit_status != "approved":
-            raise HTTPException(409, "工单或归档报告状态已变更，请刷新后处理")
-        now = knowledge_service.utcnow()
-        for reward in audit_rewards:
-            reward.status = RewardStatus.PENDING if approved else RewardStatus.REJECTED
-            reward.audit_by, reward.audit_at = operator_id, now
-            reward.audit_remark = remark.strip() or ("工单财务审核通过" if approved else "财务驳回")
-            if approved:
-                reward.expire_at = now + timedelta(days=int(settings.WXPAY_REWARD_EXPIRE_DAYS or 30))
-        # 工单归档 + 知识库发布：只要存在至少一条 pending_audit 且 approved，就推进
-        # （自动过审的 pending 奖励不需要财务干预，工单状态仍由财务审核最终决定）
+        reward.status = RewardStatus.PENDING if approved else RewardStatus.REJECTED
+        reward.audit_by = operator_id
+        reward.audit_at = now
+        reward.audit_remark = remark.strip() or ("工单财务审核通过" if approved else "财务驳回")
         if approved:
-            task.status, task.archived_at, task.archived_by = TaskStatus.ARCHIVED, now, report.reviewer
+            reward.expire_at = now + timedelta(days=int(settings.WXPAY_REWARD_EXPIRE_DAYS or 30))
+        processed.append(reward)
+
+        task_id = int(reward.source_id)
+        if task_id not in touched_tasks:
+            task = (
+                (
+                    await db.execute(
+                        select(Task)
+                        .where(Task.id == task_id)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                )
+                .scalar_one_or_none()
+            )
+            report = (
+                (
+                    await db.execute(
+                        select(ArchiveReport)
+                        .where(ArchiveReport.task_id == task_id)
+                        .order_by(ArchiveReport.version.desc(), ArchiveReport.id.desc())
+                        .limit(1)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                )
+                .scalar_one_or_none()
+            )
+            # report 必须是 approved（归档内容已审核），task 允许 ARCHIVING（待财务审核）或 ARCHIVED（已部分财务处理过）
+            if not task or task.status not in (TaskStatus.ARCHIVING, TaskStatus.ARCHIVED) or not report or report.submit_status != "approved":
+                raise HTTPException(409, "工单或归档报告状态已变更，请刷新后处理")
+            touched_tasks[task_id] = (task, report)
+
+    # 判断每个被触及的 task 是否所有 archive reward 都已终态（无 pending_audit）
+    # 如果是 + 本次有 approved，则推进 task → archived + 发布知识库 + 写操作日志
+    for task_id, (task, report) in touched_tasks.items():
+        siblings = (
+            (
+                await db.execute(
+                    select(RewardRecord).where(
+                        RewardRecord.source_type == ARCHIVE_FINANCE_SOURCE,
+                        RewardRecord.source_id == str(task_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        any_pending_audit_left = any(r.status == RewardStatus.PENDING_AUDIT for r in siblings)
+        sibling_approved = any(r.status == RewardStatus.PENDING for r in siblings)
+
+        if task.status == TaskStatus.ARCHIVING and not any_pending_audit_left and sibling_approved:
+            task.status = TaskStatus.ARCHIVED
+            task.archived_at = now
+            task.archived_by = report.reviewer
             publication = await db.get(KnowledgePublication, task.id)
             if publication and not publication.active:
                 publication.first_approved_at = now
             await knowledge_service.publish_report(db, task, report, now)
-        description = "财务审核通过，工单完成归档闭环" if approved else "财务审核驳回，工单暂不进入知识榜"
-        db.add(TaskOperationLog(task_id=task.id, operation_type=OperationType.STATUS_CHANGE,
-            operator=operator_id, operator_name="财务审核", description=description,
-            to_status=task.status.value, detail={"finance_outcome": "approved" if approved else "rejected",
-                "audit_remark": remark.strip(), "report_id": report.id}))
-        processed.extend(audit_rewards)
+            description = "财务审核完成，工单归档闭环"
+            db.add(
+                TaskOperationLog(
+                    task_id=task.id,
+                    operation_type=OperationType.STATUS_CHANGE,
+                    operator=operator_id,
+                    operator_name="财务审核",
+                    description=description,
+                    to_status=task.status.value,
+                    detail={
+                        "finance_outcome": "approved",
+                        "audit_remark": remark.strip(),
+                        "report_id": report.id,
+                    },
+                )
+            )
+        else:
+            # 还有 pending_audit 未处理，或本次没有 approved → 只写一条分批处理日志，不推进状态
+            outcome = "approved" if approved else "rejected"
+            description = (
+                f"财务审核分批处理"
+                f"（{outcome}{'，剩余待审核' if any_pending_audit_left else ''}）"
+            )
+            db.add(
+                TaskOperationLog(
+                    task_id=task.id,
+                    operation_type=OperationType.STATUS_CHANGE,
+                    operator=operator_id,
+                    operator_name="财务审核",
+                    description=description,
+                    to_status=task.status.value,
+                    detail={
+                        "finance_outcome": outcome,
+                        "audit_remark": remark.strip(),
+                        "report_id": report.id,
+                        "partial": any_pending_audit_left,
+                    },
+                )
+            )
+
     await db.flush()
     return processed

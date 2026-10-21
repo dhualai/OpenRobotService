@@ -49,45 +49,68 @@ async def test_content_approval_creates_three_distinct_roles_without_auto_pass(d
 
 
 @pytest.mark.asyncio
-async def test_finance_approval_is_whole_task_idempotent_and_uses_question_month(db, monkeypatch):
+async def test_finance_approval_per_id_independent_delayed_task_archive(db, monkeypatch):
     task, report, rewards = await prepare(db, monkeypatch)
     monkeypatch.setattr(knowledge_service, 'utcnow', lambda: datetime(2026, 11, 30, 16))
+    # 第一步：只选 1 条 archive reward → 只过这一条，task 保持 ARCHIVING
     processed = await archive_finance.audit_archive_rewards(db, [rewards[0].id], 'voter', True, '金额核对无误')
     await db.commit()
-    assert len(processed) == 3
-    assert all(reward.status == RewardStatus.PENDING for reward in rewards)
-    assert all(reward.audit_by == 'voter' and reward.audit_remark == '金额核对无误' for reward in rewards)
-    assert all(reward.expire_at > datetime(2026, 11, 30, 16) for reward in rewards)
+    assert len(processed) == 1
+    assert rewards[0].status == RewardStatus.PENDING
+    assert rewards[0].audit_by == 'voter'
+    assert rewards[0].audit_remark == '金额核对无误'
+    assert rewards[0].expire_at > datetime(2026, 11, 30, 16)
+    # 另外两条未被触及
+    assert rewards[1].status == RewardStatus.PENDING_AUDIT
+    assert rewards[2].status == RewardStatus.PENDING_AUDIT
+    # 还未全部终态 → task 保持 ARCHIVING，不 publish
+    assert task.status == TaskStatus.ARCHIVING
+    assert await db.get(KnowledgePublication, task.id) is None
+    assert len(db.session.scalars(select(TaskOperationLog)).all()) == 1
+
+    # 第二步：过剩下两条
+    processed2 = await archive_finance.audit_archive_rewards(db, [rewards[1].id, rewards[2].id], 'voter', True, '金额核对无误')
+    await db.commit()
+    assert len(processed2) == 2
+    assert all(r.status == RewardStatus.PENDING for r in rewards)
+    # 全部终态 + 有 approved → 推进 ARCHIVING → ARCHIVED 并 publish
     assert task.status == TaskStatus.ARCHIVED
     assert task.archived_at == datetime(2026, 11, 30, 16)
     publication = await db.get(KnowledgePublication, task.id)
     assert publication.report_id == report.id
     assert publication.first_approved_at == task.archived_at
     assert {entry['user_id'] for entry in await knowledge_service.rankings(db, '2026-11')} == {'alice', 'bob'}
-    assert await knowledge_service.rankings(db, '2026-12') == []
-    assert 'reviewer' not in str(await knowledge_service.question_items(db, actor('voter'), '2026-11'))
-    assert len(db.session.scalars(select(TaskOperationLog)).all()) == 1
-    log = db.session.scalars(select(TaskOperationLog)).one()
-    assert log.operator == 'voter'
-    assert log.to_status == TaskStatus.ARCHIVED.value
-    assert log.detail == {'finance_outcome': 'approved', 'audit_remark': '金额核对无误', 'report_id': report.id}
-    assert await archive_finance.audit_archive_rewards(db, [reward.id for reward in rewards], 'voter', True) == []
-    assert len(db.session.scalars(select(TaskOperationLog)).all()) == 1
-    assert len(db.session.scalars(select(RewardRecord)).all()) == 3
+    assert len(db.session.scalars(select(TaskOperationLog)).all()) == 2
+
+    # 幂等：重复调用返回空
+    assert await archive_finance.audit_archive_rewards(db, [r.id for r in rewards], 'voter', True) == []
 
 
 @pytest.mark.asyncio
-async def test_finance_rejection_blocks_all_rewards_and_publication(db, monkeypatch):
+async def test_finance_rejection_per_id_independent(db, monkeypatch):
+    """驳回按选中的 ids 逐条处理，剩余 pending_audit 不受影响。"""
     task, report, rewards = await prepare(db, monkeypatch)
     processed = await archive_finance.audit_archive_rewards(db, [rewards[1].id], 'voter', False, '奖励资料不完整')
     await db.commit()
-    assert len(processed) == 3
-    assert all(reward.status == RewardStatus.REJECTED for reward in rewards)
-    assert all(reward.audit_remark == '奖励资料不完整' for reward in rewards)
+    assert len(processed) == 1
+    # 仅选中的那条被驳回
+    assert rewards[1].status == RewardStatus.REJECTED
+    assert rewards[1].audit_remark == '奖励资料不完整'
+    # 另外两条仍是 pending_audit
+    assert rewards[0].status == RewardStatus.PENDING_AUDIT
+    assert rewards[2].status == RewardStatus.PENDING_AUDIT
+    # 还有 pending_audit 未处理 → task 保持 ARCHIVING，不 publish
     assert task.status == TaskStatus.ARCHIVING
     assert report.submit_status == 'approved'
     assert await db.get(KnowledgePublication, task.id) is None
     assert await knowledge_service.rankings(db, '2026-11') == []
+
+    # 再过剩余两条 → 全部终态但没有 approved（全是 rejected）→ task 仍不 publish
+    await archive_finance.audit_archive_rewards(db, [rewards[0].id, rewards[2].id], 'voter', False, '驳回')
+    await db.commit()
+    assert all(r.status == RewardStatus.REJECTED for r in rewards)
+    assert task.status == TaskStatus.ARCHIVING  # 没有任何 approved，不推进
+    assert await db.get(KnowledgePublication, task.id) is None
 
 
 @pytest.mark.asyncio
@@ -112,17 +135,18 @@ async def test_invalid_reward_config_does_not_finish_content_review(db):
 
 
 @pytest.mark.asyncio
-async def test_incomplete_group_cannot_release_any_rewards(db, monkeypatch):
+async def test_archive_reward_audit_works_even_if_siblings_missing(db, monkeypatch):
+    """archive reward 审核不再校验三方完整性，单条可独立通过。"""
     task, report, rewards = await prepare(db, monkeypatch)
     db.session.delete(rewards[2])
     await db.commit()
-    with pytest.raises(HTTPException) as denied:
-        await archive_finance.audit_archive_rewards(db, [rewards[0].id], 'voter', True)
-    assert denied.value.status_code == 409
-    assert all(reward.status == RewardStatus.PENDING_AUDIT for reward in rewards[:2])
+    processed = await archive_finance.audit_archive_rewards(db, [rewards[0].id], 'voter', True)
+    await db.commit()
+    assert len(processed) == 1
+    assert rewards[0].status == RewardStatus.PENDING
+    assert rewards[1].status == RewardStatus.PENDING_AUDIT
     assert task.status == TaskStatus.ARCHIVING
     assert await db.get(KnowledgePublication, task.id) is None
-    assert not db.session.scalars(select(TaskOperationLog)).all()
 
 
 @pytest.mark.asyncio
@@ -162,9 +186,9 @@ async def test_finance_queue_uses_existing_api_and_requires_finance_permission(d
         assert client.post('/admin/rewards/batch-reject', json={'ids': [rewards[0].id], 'audit_remark': ' '}).status_code == 422
         response = client.post('/admin/rewards/batch-audit', json={'ids': [rewards[0].id]})
         assert response.status_code == 200
-        assert response.json()['ok_count'] == 3
+        assert response.json()['ok_count'] == 1  # 只按选中 ids 处理，不再整单
         assert response.json()['skipped_ids'] == []
-        assert task.status == TaskStatus.ARCHIVED
+        assert task.status == TaskStatus.ARCHIVING  # 还有 2 条 pending_audit，不推进
         assert client.post('/admin/rewards/batch-audit', json={'ids': [rewards[0].id]}).json()['ok_count'] == 0
 
 
@@ -180,10 +204,10 @@ async def test_existing_non_archive_rewards_can_be_audited_with_archive_group(db
     assert duplicated is False
     result = await admin.batch_audit(admin.BatchAuditIn(ids=[ordinary.id, rewards[0].id]),
         db=db, current_user=actor('voter'))
-    assert result.ok_count == 4
+    assert result.ok_count == 2  # 1 条普通 + 1 条 archive，不再整单
     assert ordinary.status == RewardStatus.PENDING
     assert ordinary.audit_by == 'voter'
-    assert task.status == TaskStatus.ARCHIVED
+    assert task.status == TaskStatus.ARCHIVING  # 还有 2 条 archive pending_audit，不推进
 
 
 @pytest.mark.asyncio

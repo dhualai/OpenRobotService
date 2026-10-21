@@ -620,7 +620,7 @@ async def batch_audit(
         skipped_ids=skipped,
         message=(
             f"审核通过 {len(rewards) + len(archive_rewards)} 条，跳过 {len(skipped)} 条非待审核。"
-            f"工单闭环奖励按三方整单审核，通过后归档入榜。"
+            f"工单闭环奖励按单条独立审核。"
             f"转账将由系统定时任务异步发起。"
         ),
     )
@@ -668,7 +668,7 @@ async def batch_reject(
     return BatchAuditOut(
         ok_count=len(rewards) + len(archive_rewards),
         skipped_ids=skipped,
-        message=f"驳回 {len(rewards) + len(archive_rewards)} 条，工单闭环奖励按三方整单驳回，不发奖、不入榜",
+        message=f"驳回 {len(rewards) + len(archive_rewards)} 条，跳过 {len(skipped)} 条非待审核。",
     )
 
 
