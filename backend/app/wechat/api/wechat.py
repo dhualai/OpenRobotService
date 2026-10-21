@@ -13,6 +13,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Request, Query, HTTPException, Body, Depends, UploadFile, File, Form
 from fastapi.responses import RedirectResponse, PlainTextResponse, Response, JSONResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from app.core.config import settings
 from app.wechat.services.ai_service import ai_service
 from app.wechat.utils.crypto import verify_wechat_signature, generate_wechat_username, generate_wechat_user_password
@@ -20,6 +21,10 @@ from app.wechat.utils.wechat_message import parse_wechat_xml, build_reply_text, 
 from app.wechat.services.auth_service import auth_service
 from app.wechat.services.data_service import data_service
 from app.wechat.services.wechat_service import wechat_service
+from app.wechat.services.wechat_activity_service import (
+    record_wechat_activity,
+    SOURCE_MESSAGE, SOURCE_MENU, SOURCE_EVENT, SOURCE_H5,
+)
 from app.wechat.services.project_ticket_service import project_ticket_service
 from app.wechat.services.user_info_snapshot import run_user_info_snapshot
 from app.wechat.services.user_statistics_snapshot import run_user_statistics_job, run_user_statistics_job_for_range
@@ -30,6 +35,7 @@ from app.services.user_service import user_service
 from app.core.database import db_manager, UserDB
 from app.models.user_info import UserInfo
 from app.models.user_statistics import UserStatistics
+from app.models.wechat_activity import WechatUserActivity
 from app.wechat.services.permission_service import PermissionService
 from app.wechat.api.match_report import parse_daily_report
 from app.modules.admin.services.daily_report_service import daily_report_service
@@ -254,6 +260,8 @@ async def handle_text_message(message: dict):
         operator=generate_wechat_username(from_user_name),
         summary='发送文本数据',
     )
+    # 日活埋点：公众号发消息即当日活跃（fire-and-forget，失败静默降级，不阻断回复）
+    asyncio.create_task(record_wechat_activity(from_user_name, SOURCE_MESSAGE))
     welcome_message = """提问请按如下菜单引导操作
 
 ✅菜单栏功能：
@@ -289,6 +297,8 @@ async def handle_event_message(message: dict):
             operator=generate_wechat_username(from_user_name),
             summary=f'点击菜单（{parts[-1] if (parts := [p for p in event_key.split("/") if p]) else ""}）',
         )
+        # 日活埋点：点击 View 菜单即当日活跃
+        asyncio.create_task(record_wechat_activity(from_user_name, SOURCE_MENU))
         logger.info(f"用户 {from_user_name} 点击了View类型菜单，EventKey: {event_key}")
         return Response(content='', media_type="text/xml")
     return Response(content='', media_type="text/xml")
@@ -306,6 +316,8 @@ async def wechat_login(openid: str = Body(..., description="微信用户openid")
                 token, refresh_token = auth_service.get_wechat_user_token(openid)
 
         if token:
+            # 日活埋点：H5 登录成功即当日活跃（fire-and-forget，失败静默降级）
+            asyncio.create_task(record_wechat_activity(openid, SOURCE_H5))
             return {"token": token, "refresh_token": refresh_token}
         else:
             raise HTTPException(status_code=401, detail="登录失败，无法获取token")
@@ -643,6 +655,93 @@ async def get_user_summary_from_db(
     except Exception as e:
         logger.error(f"读取用户增减数据失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"读取用户增减数据过程中发生错误: {str(e)}")
+
+
+@router.post("/user-dau-db")
+async def get_wechat_user_dau_from_db(
+    request: Request,
+    begin_date: Optional[str] = Query(None, description="开始日期 yyyy-MM-dd"),
+    end_date: Optional[str] = Query(None, description="结束日期 yyyy-MM-dd"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """读取 wechat_user_activity 表统计的微信用户日活（DAU）。
+
+    表由微信消息回调（发消息/点菜单/关注扫码）与 H5 登录实时埋点写入，
+    唯一键 ref_date + openid 保证每日每用户一行。返回
+    {"success": true, "list": [...], "total": N}，每项含
+    ref_date/dau/sources：dau 为当日去重活跃用户数；sources 为当日
+    各「最后活跃来源」的用户数（同一用户一天只按最后一次活跃来源归组，
+    非各来源独立计数）。与用户增减数据不同，日活实时落库，end_date
+    可为今天。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+
+    begin_date = begin_date or (body or {}).get('begin_date')
+    end_date = end_date or (body or {}).get('end_date')
+
+    if not begin_date or not end_date:
+        raise HTTPException(status_code=400, detail="需提供 begin_date 和 end_date (yyyy-MM-dd)")
+
+    try:
+        begin = datetime.strptime(begin_date, '%Y-%m-%d').date()
+        end = datetime.strptime(end_date, '%Y-%m-%d').date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日期格式错误，需为 yyyy-MM-dd")
+
+    if begin > end:
+        raise HTTPException(status_code=400, detail="begin_date 不能晚于 end_date")
+
+    def _query_rows() -> tuple:
+        db = db_manager.get_db()
+        try:
+            date_filter = (
+                (WechatUserActivity.ref_date >= begin)
+                & (WechatUserActivity.ref_date <= end)
+            )
+            date_rows = db.query(
+                WechatUserActivity.ref_date,
+                func.count(func.distinct(WechatUserActivity.openid)).label('dau'),
+            ).filter(date_filter).group_by(WechatUserActivity.ref_date).all()
+            source_rows = db.query(
+                WechatUserActivity.ref_date,
+                WechatUserActivity.source,
+                func.count().label('cnt'),
+            ).filter(date_filter).group_by(
+                WechatUserActivity.ref_date, WechatUserActivity.source,
+            ).all()
+            return date_rows, source_rows
+        finally:
+            db.close()
+
+    try:
+        date_rows, source_rows = await asyncio.to_thread(_query_rows)
+
+        sources_by_date: Dict[str, Dict[str, int]] = {}
+        for d, src, cnt in source_rows:
+            sources_by_date.setdefault(d.strftime('%Y-%m-%d'), {})[src] = int(cnt)
+
+        list_data = [
+            {
+                "ref_date": d.strftime('%Y-%m-%d'),
+                "dau": int(dau),
+                "sources": sources_by_date.get(d.strftime('%Y-%m-%d'), {}),
+            }
+            for d, dau in date_rows
+        ]
+        return {
+            "success": True,
+            "list": list_data,
+            "total": len(list_data),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"读取微信用户日活数据失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取微信用户日活数据过程中发生错误: {str(e)}")
 
 
 @router.post("/batch-user-info-db")
@@ -987,6 +1086,8 @@ async def handle_subscribe_event(message: dict):
         operator=generate_wechat_username(from_user_name),
         summary=f'用户关注 (扫码={is_scan_follow})',
     )
+    # 日活埋点：关注即当日活跃（关注当天计入日活）
+    asyncio.create_task(record_wechat_activity(from_user_name, SOURCE_EVENT))
     auth_service.register_wechat_user(from_user_name)
     welcome_message = """👋 欢迎关注我们！
 
@@ -1159,6 +1260,8 @@ async def handle_scan_event(message: dict):
         operator=generate_wechat_username(from_user_name),
         summary=f'扫码 (EventKey={event_key})',
     )
+    # 日活埋点：已关注用户扫码即当日活跃
+    asyncio.create_task(record_wechat_activity(from_user_name, SOURCE_EVENT))
 
     if event_key:
         _send_scan_redirect_card(from_user_name, event_key)
@@ -1203,6 +1306,8 @@ async def handle_menu_click_event(message: dict):
         operator=generate_wechat_username(from_user_name),
         summary=f'点击菜单（{parts[-1] if (parts := [p for p in event_key.split("/") if p]) else ""}）',
     )
+    # 日活埋点：点击菜单即当日活跃
+    asyncio.create_task(record_wechat_activity(from_user_name, SOURCE_MENU))
 
     if event_key == 'PROJECT_OVERVIEW_LIST':
         try:
