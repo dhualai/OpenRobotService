@@ -20,6 +20,7 @@ DB 访问走 ai.core.database（原生 SQL，自举模式——不依赖 backend
 """
 import json
 import os
+import re
 import time
 
 from ai.core.logging import get_logger
@@ -323,6 +324,54 @@ def _fmt_reviewed_at(value) -> str:
     return str(value) if value else time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+_REPORT_STD_SECTIONS = ("问题概述", "解决方案")
+
+
+def _card_from_standard_report(archive_content: str) -> Optional[dict]:
+    """标准 MD 八节归档报告 → 机械映射知识卡（ORS-1035 用户设想：不调 LLM）。
+
+    AI 生成的报告本身就是标准结构（问题概述/原因分析/解决方案…），直接按节
+    映射三段式入库；缺「问题概述」或「解决方案」任一锚点 = 非标准 → 返回
+    None 走既有 LLM 提炼。图片 markdown 行剥掉（相似弹层 summary 是纯文本）。"""
+    if not archive_content or "## " not in archive_content:
+        return None
+    sections: dict = {}
+    cur = None
+    for line in archive_content.splitlines():
+        m = re.match(r"^#{1,3}\s*(.+?)\s*#{0,3}\s*$", line)
+        if m:
+            cur = m.group(1).strip()
+            sections.setdefault(cur, [])
+            continue
+        if cur:
+            sections[cur].append(line)
+
+    def _sec(key: str) -> str:
+        for k, v in sections.items():
+            if key in k:
+                txt = "\n".join(v)
+                txt = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", txt)  # 剥图片语法
+                return re.sub(r"\n{3,}", "\n\n", txt).strip()
+        return ""
+
+    problem = _sec("问题概述")
+    solution = _sec("解决方案")
+    if not problem or not solution:
+        return None
+    cause = _sec("原因分析")
+    verify = _sec("验证结果")
+    solution_steps = solution + (f"\n验证情况：{verify}" if verify else "")
+    fc = re.search(r"故障码[:：]?\s*([A-Za-z0-9_\-]+)", problem)
+    rt = re.search(r"车型[:：]?\s*([A-Za-z0-9_\-\.]+)", problem + " " + _sec("适用范围"))
+    return {
+        "problem_summary": problem[:200],
+        "root_cause": (cause or "（报告未单独写原因分析）")[:300],
+        "solution_steps": solution_steps[:600],
+        "fault_code": fc.group(1) if fc else "",
+        "robot_type": rt.group(1) if rt else "",
+    }
+
+
 async def process_ticket(row: dict, retriever, dry_run: bool = False,
                          archive_content: str | None = None) -> str:
     """处理单张工单：组装 → 提炼 → 入库 → 标记。
@@ -334,13 +383,19 @@ async def process_ticket(row: dict, retriever, dry_run: bool = False,
     meta = _as_meta(row.get("metadata_info"))
     comments_text, last_human = load_comments_text(tid)
     ticket_type = getattr(row.get("task_type"), "value", row.get("task_type")) or ""
-    card = await distill_solution(
-        title=row.get("title") or "",
-        description=row.get("description") or "",
-        resolution_summary=(archive_content or meta.get("resolution_summary") or ""),
-        comments_text=comments_text,
-        task_type=ticket_type,
-    )
+    # ORS-1035 用户设想：标准 MD 八节报告（AI 生成/补齐章节后）机械映射入库，
+    # 不再调 LLM；非标准（手写缺节）才走既有 LLM 提炼
+    card = _card_from_standard_report(archive_content or "")
+    if card is not None:
+        logger.info(f"[sink] #{tid} 标准 MD 报告机械入库（跳过 LLM）")
+    else:
+        card = await distill_solution(
+            title=row.get("title") or "",
+            description=row.get("description") or "",
+            resolution_summary=(archive_content or meta.get("resolution_summary") or ""),
+            comments_text=comments_text,
+            task_type=ticket_type,
+        )
     if card is None:
         if not dry_run:
             mark_indexed(tid, "empty")

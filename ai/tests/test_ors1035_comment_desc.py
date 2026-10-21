@@ -91,6 +91,62 @@ class TestMediaDescribeEndpoint:
         assert "超时" in out["message"]
 
 
+class TestStandardReportMechanicalCard:
+    """ORS-1035 用户设想：标准 MD 八节报告机械映射知识卡（不调 LLM）。"""
+
+    REPORT = """# 核实货叉防掉落机制（车端确认）
+
+## 问题概述
+用户需确认货叉防掉落机制的实际实现情况。故障码：E1002
+现场截图：![IMG_6384.jpeg](/api/tasks/attachments/download?path=helpdesk-comment%2Fa.jpg)
+
+## 问题场景
+举升式仓储机器人，货叉载货升降环节。
+
+## 复现条件
+举升行程超过 500mm 时观察防坠落保护。
+
+## 原因分析
+防掉落翘起由车端逻辑控制（待按车型确认）。
+
+## 解决方案
+1. 按车型 XP1152 确认货叉控制归属
+2. 由工程师出具结论
+
+## 验证结果
+现场处理人确认车端实现，附现场图片。
+
+## 适用范围
+车型 XP1152 及同构举升车型。
+
+## 遗留问题
+无
+"""
+
+    def test_standard_md_maps_mechanically(self):
+        from ai.core.solution_sink import _card_from_standard_report
+        card = _card_from_standard_report(self.REPORT)
+        assert card is not None
+        assert "货叉防掉落机制" in card["problem_summary"]
+        assert "车端逻辑控制" in card["root_cause"]
+        assert "XP1152" in card["solution_steps"]
+        assert "E1002" == card["fault_code"]
+        assert "XP1152" in card["robot_type"]
+        # 图片语法剥掉
+        assert "attachments/download" not in card["problem_summary"]
+
+    def test_missing_anchor_goes_llm_path(self):
+        """缺「解决方案」锚点 = 非标准 → None（调用方走 LLM）。"""
+        from ai.core.solution_sink import _card_from_standard_report
+        bad = "# 标题\n\n## 问题概述\n只有概述没有解决节\n"
+        assert _card_from_standard_report(bad) is None
+
+    def test_plain_text_returns_none(self):
+        from ai.core.solution_sink import _card_from_standard_report
+        assert _card_from_standard_report("随便写的几行话\n没有小节结构") is None
+        assert _card_from_standard_report("") is None
+
+
 class TestProjectCandidatesRevert:
     """ORS-1035：选题环回退票史口径——智能匹配源已摘除。"""
 

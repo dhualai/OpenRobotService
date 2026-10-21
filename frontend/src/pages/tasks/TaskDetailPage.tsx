@@ -802,20 +802,33 @@ export default function TaskDetailPage() {
       void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
-      if (existing) {
-        // 已有内容（幂等复用/处理人写过）：不触发 AI，直接编辑
-        setArchiveReportContent(existing);
-        Toast({ message: '已开始归档，请编写归档报告', theme: 'success' });
-        return;
-      }
+      // ORS-1010：AI 生成改为显式按钮（不自动跑）——编辑器空态给引导条，
+      // 处理人自己写或点 AI 均可；已有内容（幂等复用）直接进编辑
+      setArchiveReportContent(existing);
+      Toast({ message: existing ? '已开始归档，请继续编写归档报告' : '已开始归档，可直接手写，或点「AI 生成初稿」', theme: 'success' });
+    } catch (err) {
+      // archive-start 失败兜底
+      Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
 
-      // AI 初稿流式生成：编辑器只读态直播，完成后解锁修改
-      setArchiveGenerating(true);
-      setArchiveGenStatus('AI 正在为您总结归档报告…');
-      let acc = '';
+  // ── ORS-1010：AI 生成初稿（显式按钮触发）──
+  const handleAiGenerateReport = async () => {
+    if (!detail || archiveGenerating || archiveLoading) return;
+    if ((archiveReportContent || '').trim()) {
+      // 已有内容不覆盖（与原有"处理人手写不覆盖"保护同口径），提示走补齐章节
+      Toast({ message: '报告已有内容，AI 不覆盖；缺章节可点「补齐章节」', theme: 'warning' });
+      return;
+    }
+    setArchiveGenerating(true);
+    setArchiveGenStatus('AI 正在为您总结归档报告…');
+    setArchiveReportPreview(false);
+    let acc = '';
+    try {
       await archiveGenerateStream(
-        // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；
-        // detail.id 是路由字符串，与 ticket.ts 既有写法一致显式转换
+        // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；detail.id 是路由字符串
         { task_id: Number(detail.id) },
         {
           onStatus: (m) => setArchiveGenStatus(m),
@@ -846,10 +859,7 @@ export default function TaskDetailPage() {
     } catch (err) {
       setArchiveGenerating(false);
       setArchiveGenStatus('');
-      // 归档已开成、AI 生成链路失败：解锁手写（archive-start 本身失败也在此兜底）
-      Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}（可直接手写报告）`, theme: 'warning' });
-    } finally {
-      setArchiveLoading(false);
+      Toast({ message: `${err instanceof Error ? err.message : 'AI 生成失败'}（可直接手写报告）`, theme: 'warning' });
     }
   };
 
@@ -2832,6 +2842,14 @@ export default function TaskDetailPage() {
                   onChange={handleReportImageUpload}
                 />
               </div>
+              {!archiveGenerating && !archiveReportContent.trim() && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, background: 'var(--muted, #f6f8fa)', borderRadius: 8 }}>
+                  <span style={{ flex: 1, fontSize: 12, color: 'var(--muted-foreground)' }}>
+                    💡 不想手写？让 AI 基于本单讨论先出一份标准结构初稿
+                  </span>
+                  <Button size="small" theme="primary" onClick={handleAiGenerateReport}>✨ AI 生成初稿</Button>
+                </div>
+              )}
               {archiveGenerating ? (
                 /* AI 生成中：只读直播（渲染版——报告内嵌图片随流式内容出现），
                     防止处理人同时手写（服务端 content='' 条件写回兜底） */
