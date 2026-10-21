@@ -1,0 +1,32 @@
+.challenge-preview { flex: 1; min-width: 0; padding: 0; margin: 0; list-style: none; display: grid; gap: 14px; }
+.challenge-summary { display: flex; align-items: center; gap: 10px; min-width: 0; color: inherit; text-decoration: none; }
+.challenge-summary__text { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.challenge-summary__text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 550; }
+.challenge-summary__text small { color: var(--muted-foreground); font-size: 10px; line-height: 1.7; }
+.challenge-summary .knowledge-ranking-prize { flex-shrink: 0; font-size: 15px; }
+.challenge-summary .knowledge-ranking-prize small { display: block; margin-top: 5px; color: var(--muted-foreground); font-weight: 400; font-size: 10px; }
+.challenge-list-card { margin-bottom: 14px; }
+.challenge-list-card .knowledge-question-footer { margin-top: 15px; }
+.challenge-view-switch > button { white-space: nowrap; }
+.challenge-view-switch > button[aria-pressed="true"] { color: var(--blue-1); background: var(--card); box-shadow: var(--shadow-soft); font-weight: 650; }
+.challenge-manage-entry[aria-current="page"] { font-weight: 650; }
+.challenge-form { display: grid; gap: 14px; margin-bottom: 16px; }
+.knowledge-toolbar > .challenge-form, .knowledge-toolbar > .knowledge-note { flex-basis: 100%; }
+.challenge-form label { display: grid; gap: 8px; font-size: 13px; min-width: 0; }
+.challenge-form input, .challenge-form textarea, .challenge-form select { box-sizing: border-box; width: 100%; }
+.challenge-form__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.challenge-form summary { color: var(--muted-foreground); font-size: 12px; cursor: pointer; }
+.challenge-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.knowledge-button { border: 0; border-radius: 10px; padding: 10px 16px; background: var(--blue-2); color: var(--primary-foreground); font: inherit; font-size: 13px; cursor: pointer; }
+.knowledge-button:disabled { opacity: .5; cursor: default; }
+.challenge-question-action { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; border: 1px solid transparent; border-radius: 10px; padding: 9px 15px; font: inherit; font-size: 13px; line-height: 20px; }
+.knowledge-like.challenge-question-action { color: var(--blue-1); border-color: var(--blue-4); }
+.challenge-actions .knowledge-select { flex: 1; min-width: 100px; }
+.challenge-content { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9; font-size: 14px; }
+.challenge-answer { margin-top: 14px; padding-top: 16px; border-top: 1px solid var(--border); }
+.challenge-answer-editor { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.challenge-answer--best { padding: 16px; background: var(--sky-soft); border: 1px solid var(--blue-4); border-radius: 12px; }
+.challenge-prize { color: var(--blue-1); font-size: 24px; font-weight: 650; }
+.challenge-notice { font-size: 12px; color: var(--muted-foreground); line-height: 1.8; }
+.challenge-preview .challenge-summary { gap: 6px; }
+@media (max-width: 480px) { .challenge-form__grid { grid-template-columns: 1fr; } .challenge-preview .knowledge-ranking-prize { font-size: 12px; } }

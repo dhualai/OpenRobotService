@@ -1260,6 +1260,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 弹窗打开时按 AI 草稿的 on_behalf_of_name 预填（AI 只给姓名，精确到 users.id 由人确认），
   // 提交时以 id 透传 overrides.on_behalf_of。见 ai/core/task_adapter.py 的降级策略。
   const [onBehalfUser, setOnBehalfUser] = useState<OnBehalfCandidate | null>(null);
+  // ORS-1023 新项目（列表外自定义项目名）：用户在项目下拉搜索无精确匹配时选「作为新项目」，
+  // 自动勾选兜底双工单并连带展示选填的项目基本信息表单（编号/客户/区域）；
+  // 取消勾选或改选正常项目即清空，回到普通选项目路径。
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectInfo, setNewProjectInfo] = useState<{ code: string; customer: string; region: string }>({
+    code: '',
+    customer: '',
+    region: '',
+  });
   // 处理阶段：弹窗打开时按工单类型拉取的步骤列表（task_steps 模板，后续可配置）
   const [ticketSteps, setTicketSteps] = useState<TicketStep[]>([]);
   const [stepsLoading, setStepsLoading] = useState(false);
@@ -2955,6 +2964,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
   // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
   const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
+  const adminReq = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, '后台管理'), []);
   const pollTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const pollingRef = useRef<Set<string>>(new Set()); // 正在轮询的 msgId（含 await 期间，防恢复 useEffect 重复启动）
   const cancelledRef = useRef(false); // 组件卸载标记（防卸载后 setMessages 产生 React warning）
@@ -3141,6 +3151,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setRemoteShots([]); // 关闭弹窗即清空已上传的远程截图
     setSpecDoc(null); // 关闭弹窗即清空问题文档草稿
     setOnBehalfUser(null); // 关闭弹窗即清空被代理人，避免下一单被误代提
+    setNewProjectName(''); // ORS-1023：关闭即清空新项目自定义态，下一单从普通选项目开始
+    setNewProjectInfo({ code: '', customer: '', region: '' });
     setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
     if (sid) {
       qaClearDraft(String(sid)).catch(() => { /* 清草稿失败不阻塞，本地已重置 */ });
@@ -3249,10 +3261,57 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         // 工单2（申请单）描述与工单1（AI 派单）保持一致：复用用户在确认窗看到/编辑的 AI 总结描述，
         // 项目负责人既能看到申请目的，又能看到用户实际问题（车型/故障/场景等），避免空泛固定模板。
         const issueDesc = (draftField('description') || draft.description || '（无问题描述）').trim();
+        // ORS-1023 新项目基本信息（选填）：仅输入了列表外新项目时构造，只随申请工单（工单2）
+        // 透传——落 metadata_info.new_project_info + 描述富化文本段，项目负责人在工单详情可见。
+        const npInfo = newProjectName
+          ? {
+              name: newProjectName,
+              code: newProjectInfo.code.trim(),
+              customer: newProjectInfo.customer.trim(),
+              region: newProjectInfo.region.trim(),
+            }
+          : null;
+        const npDesc = npInfo
+          ? [
+              '\n\n【新项目基本信息】',
+              `项目名称：${npInfo.name}`,
+              npInfo.code ? `项目编号：${npInfo.code}` : '',
+              npInfo.customer ? `客户信息：${npInfo.customer}` : '',
+              npInfo.region ? `项目区域/地点：${npInfo.region}` : '',
+            ]
+              .filter(Boolean)
+              .join('\n')
+          : '';
         try {
+          // ORS-11xx：选了新项目时，先在后端 project 表建 status='pending' 记录（不建工单，skip_ticket=true），
+          // 拿到 target_id 后再创建工单2，metadata_info 带上 approval_type='new_project' 使 TaskDetailPage
+          // 能渲染"新项目录入审核"卡片并走 admin approve/reject 闭环。
+          let pendingProjectId = '';
+          if (npInfo) {
+            try {
+              const projResp = await adminReq<{ project: { id: string; code: string; name: string } }>(
+                '/users/options/project?skip_ticket=true',
+                {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    name: npInfo.name,
+                    code: npInfo.code,
+                    customer: npInfo.customer,
+                    region: npInfo.region,
+                    description: issueDesc,
+                  }),
+                },
+              );
+              pendingProjectId = projResp?.project?.id || '';
+            } catch (projErr) {
+              // pending 项目创建失败不阻塞工单创建——工单仍带 new_project_info 供人工建档，
+              // 只是不会走 admin approve/reject 闭环
+              console.warn('[ChatPanel] 创建 pending 项目记录失败，工单仍会创建但无审核闭环', projErr);
+            }
+          }
           const created = await createTicket({
             title: '【项目申请】请求新建项目/添加用户',
-            description: `用户提单时项目「${expectedProj}」不在系统项目集中，请处理：1）新建项目；2）将用户加入对应项目。\n\n【用户问题描述】\n${issueDesc}`,
+            description: `用户提单时项目「${expectedProj}」不在系统项目集中，请处理：1）新建项目；2）将用户加入对应项目。${npDesc}\n\n【用户问题描述】\n${issueDesc}`,
             ticket_type: 'support',
             priority: 'medium',
             project_name: '摇人吧服务号提单',
@@ -3261,7 +3320,28 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             deadline_at: overrides.curr_step_endtime || undefined,
             // 工单2 同步透传远程方式（写入 metadata_info）+ 远程截图（与工单1 共用 object_path）。
             // metadata_info 是 json 列，createTicket 透传；attachments 同 TasksView 新建路径。
-            ...(finalRemoteType ? { metadata_info: { remote_type: finalRemoteType } } : {}),
+            // ORS-1023：新项目基本信息一并落 metadata_info.new_project_info（结构化，便于后续建档读取）。
+            // ORS-11xx：若后端已建 pending 项目记录，则一并写入 approval_type / target_id，
+            // 使 TaskDetailPage 显示"新项目录入审核"卡片并走 admin approve/reject 闭环。
+            ...(finalRemoteType || npInfo
+              ? {
+                  metadata_info: {
+                    ...(finalRemoteType ? { remote_type: finalRemoteType } : {}),
+                    ...(npInfo ? { new_project_info: npInfo } : {}),
+                    ...(npInfo && pendingProjectId
+                      ? {
+                          approval_type: 'new_project',
+                          target_table: 'project',
+                          target_id: pendingProjectId,
+                          target_name: npInfo.name,
+                          target_code: npInfo.code,
+                          customer: npInfo.customer,
+                          region: npInfo.region,
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
             ...(finalAttachments.length > 0 ? { attachments: finalAttachments } : {}),
           });
           ov2 = {
@@ -3282,6 +3362,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setTicketSteps([]); // 提交完成清空阶段列表
       setProjectMatch([]); // ORS-713：提交完成清空智能匹配
       setRemoteShots([]); // 提交完成清空本地远程截图暂存
+      setNewProjectName(''); // ORS-1023：提交完成清空新项目自定义态
+      setNewProjectInfo({ code: '', customer: '', region: '' });
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
       setSpecDoc(null); // 提交成功后清空问题文档草稿
       resumeFollowBottom(); // 用户主动提交：工单概览气泡追加后立即贴底展示
@@ -4005,7 +4087,20 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   value={draftField('project_id') || null}
                   nameHint={draftField('project') || null}
                   matched={projectMatch.length ? projectMatch : null}
+                  allowCustom
+                  onCustomPick={(name) => {
+                    // ORS-1023：选了列表外的新项目 → 落自定义名、清 project_id、自动勾选兜底双工单
+                    setNewProjectName(name);
+                    setDraftField('project', name);
+                    setDraftField('project_id', '');
+                    setTicketConfirm((s) => ({ ...s, dualTicket: true }));
+                  }}
                   onChange={(p) => {
+                    // 改选正常项目 = 放弃新项目方式：清掉自定义名与已填信息
+                    if (newProjectName) {
+                      setNewProjectName('');
+                      setNewProjectInfo({ code: '', customer: '', region: '' });
+                    }
                     setDraftField('project', p.name);
                     setDraftField('project_id', p.project_code);
                   }}
@@ -4036,12 +4131,22 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     本单将以 {onBehalfUser.name || onBehalfUser.username} 的名义建立，对方会收到提醒并可确认跟进；撤回权仍归你。
                   </span>
                 )}
-                {/* 兜底双工单：项目不在项目集时勾选，生成申请单派给项目负责人 */}
+                {/* 兜底双工单：项目不在项目集时勾选，生成申请单派给项目负责人。
+                    ORS-1023：选了列表外新项目时自动勾选；手动取消勾选 = 放弃新项目方式，
+                    连带清掉自定义名与已填信息，回到正常选项目。 */}
                 <label className="ticket-confirm__checkbox">
                   <input
                     type="checkbox"
                     checked={ticketConfirm.dualTicket}
-                    onChange={(e) => setTicketConfirm((s) => ({ ...s, dualTicket: e.target.checked, projectOwner: e.target.checked ? s.projectOwner : null }))}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setTicketConfirm((s) => ({ ...s, dualTicket: checked, projectOwner: checked ? s.projectOwner : null }));
+                      if (!checked && newProjectName) {
+                        setNewProjectName('');
+                        setNewProjectInfo({ code: '', customer: '', region: '' });
+                        setDraftField('project', '');
+                      }
+                    }}
                   />
                   <span>我的项目不在所属项目集中，向项目负责人发送申请工单</span>
                 </label>
@@ -4057,6 +4162,45 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                       placeholder="请选择项目负责人"
                       title="选择项目负责人"
                     />
+                    {/* ORS-1023 新项目基本信息：输入列表外项目名才出现（普通勾选兜底不出现），
+                        字段与后台-项目信息管理的一级标签对齐取高频三项，全部选填，
+                        提交时随申请工单（工单2）发给项目负责人。 */}
+                    {newProjectName && (
+                      <div className="ticket-confirm__newproject" data-testid="new-project-info">
+                        <div className="ticket-confirm__newproject-title">
+                          新项目基本信息
+                          <span className="ticket-confirm__newproject-name">「{newProjectName}」</span>
+                          <span className="ticket-confirm__newproject-tag">全部选填</span>
+                        </div>
+                        <label className="ticket-confirm__label">项目编号</label>
+                        <input
+                          data-testid="new-project-code"
+                          className="ticket-confirm__input"
+                          value={newProjectInfo.code}
+                          onChange={(e) => setNewProjectInfo((s) => ({ ...s, code: e.target.value }))}
+                          placeholder="选填，如 ERP 项目编号"
+                          disabled={ticketConfirm.submitting}
+                        />
+                        <label className="ticket-confirm__label">客户信息</label>
+                        <input
+                          data-testid="new-project-customer"
+                          className="ticket-confirm__input"
+                          value={newProjectInfo.customer}
+                          onChange={(e) => setNewProjectInfo((s) => ({ ...s, customer: e.target.value }))}
+                          placeholder="选填，客户名称 / 联系人"
+                          disabled={ticketConfirm.submitting}
+                        />
+                        <label className="ticket-confirm__label">项目区域 / 地点</label>
+                        <input
+                          data-testid="new-project-region"
+                          className="ticket-confirm__input"
+                          value={newProjectInfo.region}
+                          onChange={(e) => setNewProjectInfo((s) => ({ ...s, region: e.target.value }))}
+                          placeholder="选填，项目所在城市 / 场地"
+                          disabled={ticketConfirm.submitting}
+                        />
+                      </div>
+                    )}
                   </>
                 )}
               </div>

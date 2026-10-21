@@ -8,6 +8,7 @@
 所有 Qdrant 同步调用均通过 run_in_executor 在独立线程中执行，绝不阻塞事件循环。
 """
 import asyncio
+import os
 import re
 import time
 from typing import List, Optional, Dict, Any, Tuple
@@ -82,6 +83,21 @@ def render_resolution_content(
     )
 
 
+def similar_cosine_floor() -> float:
+    """相似工单的语义相似度下限（余弦，Qdrant dense 原始分）。
+
+    RRF 融合分衡量的是「库内相对排名」，不是相似度——沉淀卡很少时无关卡
+    也会排第一被推给归档人（ORS-1010 实锤：测试库仅 1 张 approved 卡，
+    任何归档单都只会推荐它）。余弦分与库大小无关，能真正回答"像不像"。
+    用生产同款 bge-base-zh-v1.5 标定：无关 0.39~0.49 / 沾边 0.67 / 同题
+    0.86，缺省 0.55 落在断档中央，SIMILAR_TICKET_MIN_COSINE 可调。
+    """
+    try:
+        return float(os.getenv("SIMILAR_TICKET_MIN_COSINE", "0.55") or 0.55)
+    except ValueError:
+        return 0.55
+
+
 def rank_similar_tickets(
     results: List[RetrievalResult],
     exclude_task_id: str = "",
@@ -100,11 +116,16 @@ def rank_similar_tickets(
             task_id_out: Any = int(tid)
         except (TypeError, ValueError):
             task_id_out = tid
+        # 报告沉淀后卡正文可能带内嵌图片 markdown（ORS-1035 报告嵌入），相似
+        # 弹层的 summary 是纯文本对照——剥掉图片语法，保留其余文字
+        summary = (getattr(r, "content", "") or "")[:600]
+        summary = re.sub(r"!\[[^\]]*\]\([^)]*attachments/download[^)]*\)", "", summary)
         out.append({
             "task_id": task_id_out,
             "title": (r.title or "")[:80] or f"工单#{tid}",
             "score": round(float(r.score or 0), 4),
             "verified": getattr(r, "verified", "") or "unknown",
+            "summary": summary,
         })
         if len(out) >= int(top_k or 8):
             break
@@ -1416,11 +1437,22 @@ class RetrievalService:
         exclude_task_id: str = "",
         top_k: int = 8,
     ) -> List[Dict[str, Any]]:
-        """@# 相似工单：Qdrant ticket_resolutions 向量检索，按 task_id 去重。"""
+        """@# 相似工单：Qdrant ticket_resolutions 向量检索，按 task_id 去重。
+
+        余弦下限（similar_cosine_floor）：RRF 排名≠相似度，沉淀卡少时无关卡
+        也会排第一（ORS-1010 实锤）。只保留 dense 语义分过线的卡——卡没有
+        dense 命中（纯稀疏关键词带进来）本身就是要过滤的弱相关信号。
+        """
         q = (query or "").strip()
         if not q:
             return []
         hits = await self.retrieve_task_resolutions(q, top_k=max(int(top_k or 8) * 3, 12))
+        floor = similar_cosine_floor()
+        if floor > 0:
+            before = len(hits)
+            hits = [r for r in hits if float(getattr(r, "vector_score", 0) or 0) >= floor]
+            if len(hits) != before:
+                logger.info(f"[similar] 余弦下限 {floor} 过滤: {before} → {len(hits)}")
         return rank_similar_tickets(hits, exclude_task_id=exclude_task_id, top_k=top_k)
 
     async def ensure_task_resolutions_collection(self) -> str:

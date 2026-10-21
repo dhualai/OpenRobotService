@@ -19,6 +19,8 @@ DB 访问走 ai.core.database（原生 SQL，自举模式——不依赖 backend
 与 history_indexer 同一纪律；连哪个库由 DATABASE_URL 决定）。
 """
 import json
+import os
+import re
 import time
 
 from ai.core.logging import get_logger
@@ -108,24 +110,38 @@ def load_comments_text(task_id: int) -> tuple[str, str]:
 
     AI 评论（U老师等）整条剔除：它是提问侧的自动分析，不是处理人给出的
     解法——0902 审核实锤多张卡因「把 U老师 的话当解法总结」被驳回。
+    ORS-1035：评论区图片的 VLM 描述（上传链路打标后随 attachments JSON 落库）
+    拼进行尾——现场截图里的报错/现象从此进归档报告素材；无描述的历史图
+    报张数占位（报告至少知道"此处有图，详见讨论区"，不硬造内容）。
     """
     from ai.core.database import SessionLocal
     from sqlalchemy import text
     db = SessionLocal()
     try:
         rows = db.execute(text(
-            "SELECT c.content, c.created_by, u.name "
+            "SELECT c.content, c.created_by, u.name, c.attachments "
             "FROM task_comments c LEFT JOIN users u ON u.username = c.created_by "
             "WHERE c.task_id = :tid ORDER BY c.created_at ASC"
         ), {"tid": task_id}).fetchall()
     finally:
         db.close()
     lines, total, last_human = [], 0, ""
-    for content, created_by, display_name in rows:
+    for content, created_by, display_name, attachments in rows:
+        if isinstance(attachments, str):
+            # 裸 text() SQL 不带类型装饰器，JSON 列回来是字符串
+            try:
+                attachments = json.loads(attachments) if attachments else []
+            except Exception:
+                attachments = []
         if created_by in _AI_AUTHORS:
             continue
         name = display_name or created_by
         line = f"{name}：{(content or '').strip()[:_COMMENT_EACH_LIMIT]}"
+        img_parts = _comment_image_descs(attachments)
+        if img_parts:
+            line += f"（附图：{'；'.join(img_parts)}）"
+        elif _count_comment_images(attachments):
+            line += f"（附 {_count_comment_images(attachments)} 张图片，现场信息见讨论区原图）"
         if total + len(line) > _COMMENTS_TOTAL_LIMIT:
             lines.append("（后续评论已截断）")
             break
@@ -133,6 +149,87 @@ def load_comments_text(task_id: int) -> tuple[str, str]:
         total += len(line)
         last_human = name
     return "\n".join(lines), last_human
+
+
+def _is_image_path(p: str) -> bool:
+    return str(p or "").lower().rsplit(".", 1)[-1] in {"jpg", "jpeg", "png", "bmp", "gif", "webp"}
+
+
+def _comment_image_descs(attachments) -> list:
+    """attachments JSON 里带 VLM 描述的图片 → [文件名：描述]（每评论 ≤3 张、
+    每条截 120 字，与 summarize_flow 同口径）。"""
+    out = []
+    for a in attachments or []:
+        if not isinstance(a, dict):
+            continue
+        d = str(a.get("desc") or "").strip()
+        if not d:
+            continue
+        name = str(a.get("filename") or a.get("path") or "图")
+        out.append(f"{name[:24]}：{d[:120]}")
+        if len(out) >= 3:
+            break
+    return out
+
+
+def _count_comment_images(attachments) -> int:
+    """attachments JSON 里的图片张数（按扩展名，兼容 str 与 {path,...} dict）。"""
+    n = 0
+    for a in attachments or []:
+        p = a if isinstance(a, str) else (str((a or {}).get("path") or "") if isinstance(a, dict) else "")
+        if p and p.lower().rsplit(".", 1)[-1] in {"jpg", "jpeg", "png", "bmp", "gif", "webp"}:
+            n += 1
+    return n
+
+
+def load_comment_image_refs(task_id: int, limit: int = 6) -> list:
+    """人类评论里的图片 → 报告可嵌入的 markdown 引用行（ORS-1035）。
+
+    URL 用相对路径（无 token、无凭据）：前端 MarkdownRenderer 的 AuthImage
+    对相对路径自动带登录态取图；知识卡里存的只是无害引用文本。
+    返回 [{'filename', 'path', 'desc', 'markdown'}]，时间倒序取前 limit 张。
+    """
+    from urllib.parse import quote
+    from ai.core.database import SessionLocal
+    from sqlalchemy import text, bindparam
+    db = SessionLocal()
+    try:
+        rows = db.execute(text(
+            "SELECT c.attachments, c.created_by "
+            "FROM task_comments c WHERE c.task_id = :tid AND c.created_by NOT IN :ai "
+            "ORDER BY c.created_at DESC"
+        ).bindparams(bindparam("ai", expanding=True)),
+            {"tid": task_id, "ai": list(_AI_AUTHORS)}).fetchall()
+    finally:
+        db.close()
+    out = []
+    for atts, _created_by in rows:
+        if isinstance(atts, str):
+            # 裸 text() SQL 不带类型装饰器，JSON 列回来是字符串
+            try:
+                atts = json.loads(atts) if atts else []
+            except Exception:
+                atts = []
+        for a in atts or []:
+            # 两种历史形态：{path, filename, desc?} dict 与纯 path 字符串（无 desc）
+            if isinstance(a, dict):
+                p = str(a.get("path") or "")
+                filename = str(a.get("filename") or os.path.basename(p))
+                desc = str(a.get("desc") or "").strip()
+            elif isinstance(a, str):
+                p = a
+                filename = os.path.basename(p)
+                desc = ""
+            else:
+                continue
+            if not p or not _is_image_path(p) or any(x["path"] == p for x in out):
+                continue
+            url = f"/api/tasks/attachments/download?path={quote(p)}"
+            md = f"![{filename}]({url})"
+            out.append({"filename": filename, "path": p, "desc": desc, "markdown": md})
+            if len(out) >= limit:
+                return out
+    return out
 
 
 def _resolver_from_oplog(task_id: int) -> str:
@@ -227,6 +324,69 @@ def _fmt_reviewed_at(value) -> str:
     return str(value) if value else time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+_REPORT_HEADER_CLASSES = [
+    # (类别, 标题关键词任意命中即归此类) —— 顺序即映射优先级
+    ("problem", ("问题概述", "问题描述", "现象")),
+    ("scene", ("问题场景", "场景", "环境")),
+    ("reproduce", ("复现",)),
+    ("cause", ("原因",)),
+    ("solution", ("解决方案", "解决方法", "处理方式")),
+    ("verify", ("验证",)),
+    ("scope", ("适用",)),
+    ("leftover", ("遗留",)),
+]
+_STD_MIN_CLASSES = 5  # 8 类认出 ≥5 即视作标准 MD（容忍删 1-3 节或改措辞）
+
+
+def _card_from_standard_report(archive_content: str) -> Optional[dict]:
+    """标准 MD 八节归档报告 → 机械映射知识卡（ORS-1035 用户设想：不调 LLM）。
+
+    标题按关键词模糊归类（「问题概述/问题描述/现象」都算问题类……），8 类
+    认出 ≥5 即走机械映射——审核改稿删一节/改措辞不至于跌回 LLM。缺「解决」
+    类（无解法可提）返回 None 走既有 LLM；「问题」类缺失同样 None（卡没有
+    问题面没有意义）。图片 markdown 行剥掉。"""
+    if not archive_content or "## " not in archive_content:
+        return None
+    class_texts: dict = {}
+    cur_classes = []
+    for line in archive_content.splitlines():
+        m = re.match(r"^#{1,3}\s*(.+?)\s*$", line)
+        if m:
+            header = m.group(1).strip()
+            cur_classes = [name for name, keys in _REPORT_HEADER_CLASSES
+                           if any(k in header for k in keys)]
+            for name in cur_classes:
+                class_texts.setdefault(name, [])
+            continue
+        for name in cur_classes:
+            class_texts[name].append(line)
+
+    def _sec(name: str) -> str:
+        txt = "\n".join(class_texts.get(name, []))
+        txt = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", txt)  # 剥图片语法
+        return re.sub(r"\n{3,}", "\n\n", txt).strip()
+
+    present = sum(1 for name, _k in _REPORT_HEADER_CLASSES if class_texts.get(name))
+    if present < _STD_MIN_CLASSES:
+        return None
+    problem = _sec("problem")
+    solution = _sec("solution")
+    if not problem or not solution:
+        return None
+    cause = _sec("cause")
+    verify = _sec("verify")
+    solution_steps = solution + (f"\n验证情况：{verify}" if verify else "")
+    fc = re.search(r"故障码[:：]?\s*([A-Za-z0-9_\-]+)", problem)
+    rt = re.search(r"车型[:：]?\s*([A-Za-z0-9_\-\.]+)", problem + " " + _sec("scope"))
+    return {
+        "problem_summary": problem[:200],
+        "root_cause": (cause or "（报告未单独写原因分析）")[:300],
+        "solution_steps": solution_steps[:600],
+        "fault_code": fc.group(1) if fc else "",
+        "robot_type": rt.group(1) if rt else "",
+    }
+
+
 async def process_ticket(row: dict, retriever, dry_run: bool = False,
                          archive_content: str | None = None) -> str:
     """处理单张工单：组装 → 提炼 → 入库 → 标记。
@@ -238,13 +398,19 @@ async def process_ticket(row: dict, retriever, dry_run: bool = False,
     meta = _as_meta(row.get("metadata_info"))
     comments_text, last_human = load_comments_text(tid)
     ticket_type = getattr(row.get("task_type"), "value", row.get("task_type")) or ""
-    card = await distill_solution(
-        title=row.get("title") or "",
-        description=row.get("description") or "",
-        resolution_summary=(archive_content or meta.get("resolution_summary") or ""),
-        comments_text=comments_text,
-        task_type=ticket_type,
-    )
+    # ORS-1035 用户设想：标准 MD 八节报告（AI 生成/补齐章节后）机械映射入库，
+    # 不再调 LLM；非标准（手写缺节）才走既有 LLM 提炼
+    card = _card_from_standard_report(archive_content or "")
+    if card is not None:
+        logger.info(f"[sink] #{tid} 标准 MD 报告机械入库（跳过 LLM）")
+    else:
+        card = await distill_solution(
+            title=row.get("title") or "",
+            description=row.get("description") or "",
+            resolution_summary=(archive_content or meta.get("resolution_summary") or ""),
+            comments_text=comments_text,
+            task_type=ticket_type,
+        )
     if card is None:
         if not dry_run:
             mark_indexed(tid, "empty")

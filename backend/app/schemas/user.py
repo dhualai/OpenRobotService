@@ -90,6 +90,7 @@ class User(UserBase):
 
 class UserDetail(User):
     can_view_knowledge_contribution: bool = False
+    can_manage_knowledge_challenges: bool = False
 
     class Config:
         from_attributes = True

@@ -123,6 +123,10 @@ async def startup_event():
     # 每个整点拉取昨日用户增减数据，并覆盖为该日期最新渠道明细
     start_user_statistics_scheduler()
 
+    from app.modules.admin.services.knowledge_challenge_tasks import start_scheduler, stop_scheduler
+    start_scheduler()
+    _shutdown_hooks.append(stop_scheduler)
+
     # 微信支付兜底任务：查单刷新 / 奖励过期 / 一致性巡检
     # （未启用 WXPAY_ENABLED 时内部自行跳过，不影响启动）
     try:

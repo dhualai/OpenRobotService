@@ -72,6 +72,11 @@ _REPORT_PROMPT = """请根据以下工单素材撰写归档报告，格式要求
 ## 遗留问题
 （未解决事项与后续动作；素材明确没有时写「无」）
 
+（素材提供了"现场图片"markdown 时：按图片内容与描述判断它最能佐证哪一节，
+把 markdown **原样嵌入**该节正文之后的独立一行——如报错截图配「问题概述」、
+现场照片配「复现条件」、部件照片配「原因分析」；无法判断时放「问题概述」
+末尾。路径与文件名一字不改、不得虚构图片；每张全篇恰好出现一次）
+
 ----------
 
 工单素材：
@@ -83,6 +88,8 @@ _REPORT_PROMPT = """请根据以下工单素材撰写归档报告，格式要求
 - 项目：{project_name}
 - 现场处理记录（评论，按时间）：
 {comments}
+- 现场图片（markdown 引用可原样嵌入报告，前端渲染时带登录态加载）：
+{image_refs}
 """
 
 
@@ -164,11 +171,19 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
             return
 
         await q({"type": "status", "msg": "正在收集工单信息与处理记录…"})
+        # ORS-1035：评论区图片 → 报告可嵌入的 markdown 引用（相对路径无凭据，
+        # 前端 MarkdownRenderer/AuthImage 渲染时带登录态加载）
+        from ai.core.solution_sink import load_comment_image_refs
+        img_refs = load_comment_image_refs(task_id)
+        image_refs_text = "\n".join(
+            f"- {r['markdown']}" + (f"（描述：{r['desc']}）" if r["desc"] else "")
+            for r in img_refs) or "（评论区无图片）"
         prompt = _REPORT_PROMPT.format(
             title=ctx.get("title") or "", description=(ctx.get("description") or "")[:1500],
             resolution_summary=(ctx.get("resolution_summary") or "")[:800],
             task_type=ctx.get("task_type") or "", project_name=ctx.get("project_name") or "",
-            comments=ctx.get("comments") or "（无评论记录）")
+            comments=ctx.get("comments") or "（无评论记录）",
+            image_refs=image_refs_text)
 
         from ai.core.solution_distiller import _get_distill_llm
         llm = await _get_distill_llm()
@@ -197,6 +212,14 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
         if not report:
             await q({"type": "error", "msg": "生成结果为空，可直接手写报告"})
             return
+        # ORS-1035 兜底：素材有现场图片但 LLM 没嵌任何一张（内联指引偶尔失守）
+        # → 自动补「## 现场图片」小节，保证图片不因模型失守而整体丢失
+        if img_refs and "attachments/download" not in report:
+            fallback = "\n\n## 现场图片\n\n" + "\n".join(
+                f"- {r['markdown']}" + (f"（{r['desc']}）" if r["desc"] else "")
+                for r in img_refs)
+            report = report.rstrip() + fallback
+            await q({"type": "delta", "text": fallback})
 
         await q({"type": "status", "msg": "正在保存初稿…"})
         # 写回前再查一次：生成期间处理人可能已开始手写

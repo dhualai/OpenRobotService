@@ -22,6 +22,10 @@ interface Props {
   projects?: ProjectItem[] | null;
   /** ORS-713 智能匹配推荐（按会话信号排序）：命中项排最前并带「与当前问题最相关」标注 */
   matched?: ProjectMatchItem[] | null;
+  /** ORS-1023 允许选择列表外的新项目：搜索词在候选中无精确匹配时，列表顶部出现「使用『关键词』作为新项目」条目 */
+  allowCustom?: boolean;
+  /** 选中新项目条目时回调（拿到用户输入的项目名）；调用方负责落草稿字段并勾选兜底双工单 */
+  onCustomPick?: (name: string) => void;
 }
 
 // 库里遗留的英文状态（列默认值）映射为中文；中文生命周期状态原样透传
@@ -52,6 +56,8 @@ export default function ProjectSelect({
   nameHint = null,
   projects: externalProjects = null,
   matched = null,
+  allowCustom = false,
+  onCustomPick,
 }: Props) {
   const [visible, setVisible] = useState(false);
   const [projects, setProjects] = useState<ProjectItem[]>(projectCache || []);
@@ -191,6 +197,20 @@ export default function ProjectSelect({
     setKeyword('');
   };
 
+  // ORS-1023 新项目条目：允许自定义时，搜索词非空且候选里没有名称精确匹配（忽略
+  // 大小写/首尾空格）就显示——包含匹配（如搜「杭州」出现「杭州湾」）也照样提供，
+  // 因为用户想建的可能是精确叫「杭州」的新项目。点选后交给调用方走兜底双工单。
+  const customName = keyword.trim();
+  const hasExactMatch = customName
+    ? candidateProjects.some((p) => (p.name || '').trim().toLowerCase() === customName.toLowerCase())
+    : true;
+  const showCustomItem = allowCustom && !!customName && !hasExactMatch;
+  const handleCustomPick = () => {
+    onCustomPick?.(customName);
+    setVisible(false);
+    setKeyword('');
+  };
+
   return (
     <div className="user-select">
       <button type="button" className="user-select__trigger" onClick={() => setVisible(true)}>
@@ -224,10 +244,23 @@ export default function ProjectSelect({
                 <div className="user-select__empty">加载中…</div>
               ) : error ? (
                 <div className="user-select__empty">{error}</div>
-              ) : filtered.length === 0 ? (
+              ) : filtered.length === 0 && !showCustomItem ? (
                 <div className="user-select__empty">未找到匹配项目</div>
               ) : (
-                filtered.map((p) => {
+                <>
+                  {showCustomItem && (
+                    <div
+                      data-testid="project-select-create"
+                      className="user-select__item user-select__item--create"
+                      onClick={handleCustomPick}
+                    >
+                      <div className="user-select__item-name">使用「{customName}」作为新项目</div>
+                      <div className="user-select__item-meta">
+                        <span className="user-select__status user-select__status--info">不在系统项目集中，将向项目负责人申请建档</span>
+                      </div>
+                    </div>
+                  )}
+                  {filtered.map((p) => {
                   const rel = relLabel(p.project_code);
                   return (
                     <div
@@ -247,7 +280,8 @@ export default function ProjectSelect({
                       </div>
                     </div>
                   );
-                })
+                })}
+                </>
               )}
             </div>
           </div>

@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 import traceback
+import time
 from sqlalchemy import text
 from datetime import datetime
 
@@ -18,6 +19,7 @@ from app.services.hmac_utils import generate_password, chinese_to_pinyin
 from app.models.task import Task, TaskType, TaskPriority
 from app.models.identity import user_project_roles
 from app.models.organization import Company, Department
+from app.models.delivery import Project
 from app.models.user_info import UserInfo
 from app.modules.tasks.schemas.ticket import TicketCreate
 from app.modules.tasks.services.ticket_service import TicketService
@@ -563,27 +565,139 @@ async def submit_new_department(
     return {"department": {"id": dept_id, "name": name, "status": "pending"}, "ticket_id": ticket.id if ticket else None}
 
 
-@router.put("/options/{target_type}/{target_id}/approve", summary="管理员审核通过公司/部门（可调整名称后通过）")
+@router.post("/options/project", summary="提交新项目（创建 pending 记录 + 可选审核工单）")
+async def submit_new_project(
+    data: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    db: AsyncSession = Depends(get_async_db),
+    skip_ticket: bool = Query(False, description="为 True 时只建 pending 项目记录，不创建审核工单（ChatPanel 场景）"),
+):
+    name = (data.get('name') or '').strip()
+    code = (data.get('code') or '').strip()
+    customer = (data.get('customer') or '').strip()
+    region = (data.get('region') or '').strip()
+    description = (data.get('description') or '').strip()  # 用户原始问题/补充说明
+
+    if not name:
+        raise HTTPException(status_code=400, detail="项目名称不能为空")
+
+    # 检查是否已存在（任意状态）
+    sync_db = db_manager.get_db()
+    try:
+        existing = sync_db.query(Project).filter(Project.name == name).first()
+        if existing:
+            if existing.status == 'approved':
+                raise HTTPException(status_code=400, detail="该项目已存在")
+            elif existing.status == 'pending':
+                raise HTTPException(status_code=400, detail="该项目已提交审核，请等待管理员处理")
+            else:
+                raise HTTPException(status_code=400, detail="该项目曾被驳回，请联系管理员")
+
+        if code:
+            existing_code = sync_db.query(Project).filter(Project.code == code).first()
+            if existing_code:
+                raise HTTPException(status_code=400, detail=f"项目代码「{code}」已存在")
+    finally:
+        sync_db.close()
+
+    # 创建 pending 记录（id 与 code 一致；code 未指定时用 uuid 生成，后续管理员审核时可调整）
+    if not code:
+        code = str(uuid.uuid4())[:16]
+    user_id = current_user.get('id', '')
+    user_username = current_user.get('username', '')
+    user_name = current_user.get('name') or user_username
+
+    project_id = code
+
+    sync_db = db_manager.get_db()
+    try:
+        new_project = Project(
+            id=project_id,
+            code=code,
+            name=name,
+            status='pending',
+            project_contact=customer or None,
+            project_region=region or None,
+            description=description or None,
+            created_by=user_username,
+        )
+        sync_db.add(new_project)
+        sync_db.commit()
+    except Exception as e:
+        sync_db.rollback()
+        raise HTTPException(status_code=500, detail=f"创建项目记录失败: {str(e)}")
+    finally:
+        sync_db.close()
+
+    # 创建审核工单（skip_ticket=True 时跳过，由 ChatPanel 等前端自行调 createTicket 并带上完整 metadata_info）
+    resp = {"project": {"id": project_id, "code": code, "name": name, "status": "pending"}}
+    if not skip_ticket:
+        ticket_title = f"新项目录入审核：{name}"
+        ticket_desc = f"用户 {user_name} 申请新增项目「{name}」"
+        if code:
+            ticket_desc += f"（项目代码：{code}）"
+        extra_parts = []
+        if customer:
+            extra_parts.append(f"客户信息：{customer}")
+        if region:
+            extra_parts.append(f"项目区域：{region}")
+        if description:
+            extra_parts.append(f"补充说明：{description}")
+        if extra_parts:
+            ticket_desc += "\n" + "\n".join(extra_parts)
+        ticket_desc += "\n\n请审核后通过，通过后该项目将对所有用户可见。"
+
+        ticket_data = TicketCreate(
+            title=ticket_title,
+            description=ticket_desc,
+            ticket_type=TaskType.OTHER,
+            priority=TaskPriority.LOW,
+            assigned_to=ADMIN_ASSIGNEE_ID,
+            metadata_info={
+                "approval_type": "new_project",
+                "target_table": "project",
+                "target_id": project_id,
+                "target_name": name,
+                "target_code": code,
+                "customer": customer or None,
+                "region": region or None,
+                "submitted_by": user_username,
+            },
+        )
+        try:
+            ticket = await TicketService.create_ticket(db, ticket_data, user_id, {})
+            if ticket:
+                resp["ticket_id"] = ticket.id
+        except Exception:
+            # 工单创建失败不回滚项目记录，管理员可在管理页面手动处理
+            pass
+    return resp
+
+
+@router.put("/options/{target_type}/{target_id}/approve", summary="管理员审核通过公司/部门/项目（可调整名称后通过）")
 async def approve_option(
     target_type: str,
     target_id: str,
     data: Dict[str, Any] = Body(default={}),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
-    """审核通过。管理员可在 body 中传入 new_name 调整名称后再通过。"""
-    if target_type not in ('company', 'department'):
-        raise HTTPException(status_code=400, detail="类型必须是 company 或 department")
+    """审核通过。管理员可在 body 中传入 new_name / new_code 调整后再通过。"""
+    if target_type not in ('company', 'department', 'project'):
+        raise HTTPException(status_code=400, detail="类型必须是 company / department / project")
     if current_user.get('username') != ADMIN_ASSIGNEE_ID:
         raise HTTPException(status_code=403, detail="无权限操作")
 
     new_name = (data.get('new_name') or '').strip() if data else ''
+    new_code = (data.get('new_code') or '').strip() if data else ''
 
     sync_db = db_manager.get_db()
     try:
         if target_type == 'company':
             obj = sync_db.query(Company).filter(Company.id == target_id).first()
-        else:
+        elif target_type == 'department':
             obj = sync_db.query(Department).filter(Department.id == target_id).first()
+        else:
+            obj = sync_db.query(Project).filter(Project.id == target_id).first()
         if not obj:
             raise HTTPException(status_code=404, detail="记录不存在")
         if obj.status == 'approved':
@@ -591,24 +705,38 @@ async def approve_option(
 
         # 管理员可调整名称
         if new_name and new_name != obj.name:
-            # 检查新名称是否已存在
             if target_type == 'company':
                 existing = sync_db.query(Company).filter(Company.name == new_name).first()
-            else:
+            elif target_type == 'department':
                 existing = sync_db.query(Department).filter(
                     Department.name == new_name,
                     Department.company_id == obj.company_id,
                 ).first()
+            else:
+                existing = sync_db.query(Project).filter(Project.name == new_name).first()
             if existing:
                 raise HTTPException(status_code=400, detail=f"名称「{new_name}」已存在")
             obj.name = new_name
 
+        # 项目额外支持调整 code
+        if target_type == 'project' and new_code and new_code != obj.code:
+            existing = sync_db.query(Project).filter(Project.code == new_code).first()
+            if existing:
+                raise HTTPException(status_code=400, detail=f"项目代码「{new_code}」已存在")
+            obj.code = new_code
+
         obj.status = 'approved'
         obj.approved_by = current_user.get('username', '')
-        obj.approved_at = datetime.now()
+        if target_type == 'project':
+            obj.approved_at = time.time()
+        else:
+            obj.approved_at = datetime.now()
         sync_db.commit()
 
-        return {"status": "approved", "id": target_id, "name": obj.name}
+        resp = {"status": "approved", "id": target_id, "name": obj.name}
+        if target_type == 'project':
+            resp["code"] = obj.code
+        return resp
     except HTTPException:
         raise
     except Exception as e:
@@ -618,15 +746,15 @@ async def approve_option(
         sync_db.close()
 
 
-@router.put("/options/{target_type}/{target_id}/reject", summary="管理员驳回公司/部门")
+@router.put("/options/{target_type}/{target_id}/reject", summary="管理员驳回公司/部门/项目")
 async def reject_option(
     target_type: str,
     target_id: str,
     data: Dict[str, Any] = Body(...),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
-    if target_type not in ('company', 'department'):
-        raise HTTPException(status_code=400, detail="类型必须是 company 或 department")
+    if target_type not in ('company', 'department', 'project'):
+        raise HTTPException(status_code=400, detail="类型必须是 company / department / project")
     if current_user.get('username') != ADMIN_ASSIGNEE_ID:
         raise HTTPException(status_code=403, detail="无权限操作")
 
@@ -636,8 +764,10 @@ async def reject_option(
     try:
         if target_type == 'company':
             obj = sync_db.query(Company).filter(Company.id == target_id).first()
-        else:
+        elif target_type == 'department':
             obj = sync_db.query(Department).filter(Department.id == target_id).first()
+        else:
+            obj = sync_db.query(Project).filter(Project.id == target_id).first()
         if not obj:
             raise HTTPException(status_code=404, detail="记录不存在")
         if obj.status == 'rejected':
@@ -645,7 +775,10 @@ async def reject_option(
 
         obj.status = 'rejected'
         obj.approved_by = current_user.get('username', '')
-        obj.approved_at = datetime.now()
+        if target_type == 'project':
+            obj.approved_at = time.time()
+        else:
+            obj.approved_at = datetime.now()
         obj.reject_reason = reason or None
         sync_db.commit()
 
@@ -757,6 +890,7 @@ async def get_user_detail(
         permissions=user['permissions'],
         roles=user['roles'],
         can_view_knowledge_contribution=user.get('can_view_knowledge_contribution', False),
+        can_manage_knowledge_challenges=user.get('can_manage_knowledge_challenges', False),
         projectPermissions=user.get('projectPermissions', {}),
         name=user.get('name'),
         status=user.get('status', 'inactive'),

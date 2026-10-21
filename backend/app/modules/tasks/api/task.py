@@ -7,6 +7,10 @@ Wave 2.2 完成：工单(tickets)已升格为任务(tasks)，本模块使用统�
 """
 import contextvars
 import logging
+import asyncio
+import os
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form, Body
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +52,7 @@ from app.core.ticket_roles import (
 from app.modules.tasks.services.operation_log_service import OperationLogService, get_role_prefix
 from app.models.task import (
     OperationType, TaskStep, TaskFollower, TaskParticipant, Task, TaskRelation,
-    TaskLike, TaskStatus, LIKE_RISK_NORMAL,
+    TaskStatus,
 )
 from app.modules.tasks.services.task_policy_service import get_all_policies
 from app.modules.tasks.api.ws import (
@@ -88,6 +92,8 @@ STATUS_LABEL = {
     "in_progress": "处理中",
     "pending_requested": "暂停请求中",
     "pending": "已挂起",
+    "unsolvable_requested": "无法解决确认中",
+    "unsolvable": "无法解决",
     "resolved": "已解决",
     "canceled": "已取消",
     "closed": "已关闭",
@@ -338,6 +344,126 @@ RESOLUTION_PLACEHOLDER_ERROR = "【U老师自动总结出错了，请补充解�
 comment_attachment_map = {}
 
 
+# ============================================================
+# ORS-1035：评论图片 VLM 打标（上传时描述，落库随附件 JSON）
+# ============================================================
+
+_COMMENT_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp'}
+_COMMENT_IMAGE_DESC: Dict[str, str] = {}          # object_path → VLM 描述
+_COMMENT_IMAGE_PENDING: set = set()               # 正在打标的 object_path
+_COMMENT_IMAGE_DESC_CAP = 800                     # 内存护栏（上传远多于留存也够用）
+
+_COMMENT_IMAGE_MIME = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                       '.png': 'image/png', '.bmp': 'image/bmp',
+                       '.gif': 'image/gif', '.webp': 'image/webp'}
+
+
+def _is_image_filename(name: str) -> bool:
+    return os.path.splitext(str(name or "").lower())[1] in _COMMENT_IMAGE_EXTS
+
+
+def _attachment_object_path(a) -> str:
+    """attachments JSON 元素 → object_path（兼容 str 与 {path,...} dict 两种历史形态）"""
+    if isinstance(a, str):
+        return a
+    if isinstance(a, dict):
+        return str(a.get("path") or "")
+    return ""
+
+
+def _schedule_comment_image_describe(object_path: str, file_bytes: bytes) -> None:
+    """上传即调度 VLM 描述：调 AI 服务 /api/ai/media/describe，结果进内存表。
+    失败静默（评论本身不受影响；缺 desc 的图在下游只是"没描述"）。"""
+    import asyncio
+    if object_path in _COMMENT_IMAGE_DESC or object_path in _COMMENT_IMAGE_PENDING:
+        return
+
+    async def _run():
+        try:
+            import asyncio as _aio
+            import base64
+            import httpx
+            ext = os.path.splitext(object_path.lower())[1]
+            mime = _COMMENT_IMAGE_MIME.get(ext, "image/png")
+            uri = f"data:{mime};base64,{base64.b64encode(file_bytes).decode()}"
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(
+                    f"{settings.AI_SERVICE_URL.rstrip('/')}/api/ai/media/describe",
+                    json={"images": [uri]},
+                )
+                payload = resp.json() if resp.content else {}
+            if int(payload.get("code") or 0) == 0:
+                desc = str((payload.get("data") or {}).get("desc") or "").strip()
+                if desc:
+                    if len(_COMMENT_IMAGE_DESC) >= _COMMENT_IMAGE_DESC_CAP:
+                        for k in list(_COMMENT_IMAGE_DESC.keys())[:200]:
+                            _COMMENT_IMAGE_DESC.pop(k, None)
+                    _COMMENT_IMAGE_DESC[object_path] = desc[:400]
+                    logger.info(f"[comment-desc] 打标完成: {object_path.rsplit('/', 1)[-1]}, desc={desc[:50]!r}")
+            else:
+                logger.warning(f"[comment-desc] AI 返回失败(静默): {str(payload.get('message'))[:80]}")
+        except Exception as e:
+            logger.warning(f"[comment-desc] 打标异常(静默): {object_path.rsplit('/', 1)[-1]}, {e}")
+        finally:
+            _COMMENT_IMAGE_PENDING.discard(object_path)
+
+    _COMMENT_IMAGE_PENDING.add(object_path)
+    asyncio.create_task(_run())
+
+
+def _schedule_comment_desc_writeback(task_id: int, comment_id: int, img_paths: list) -> None:
+    """评论落库后等待描述就绪（VLM 通常比用户点发送快）并写回 attachments JSON。
+    独立 Session 写回；超时(60s)放弃——缺 desc 的图保持原样，下轮摘要当无描述处理。"""
+    import asyncio
+
+    async def _run():
+        import time as _time
+        from app.models.task import TaskComment
+        from app.core.database import SessionLocal
+        deadline = _time.time() + 60.0
+        got: Dict[str, str] = {}
+        while _time.time() < deadline:
+            for p in img_paths:
+                if p in _COMMENT_IMAGE_DESC:
+                    got[p] = _COMMENT_IMAGE_DESC[p]
+            if all(p in got for p in img_paths):
+                break
+            await asyncio.sleep(2.0)
+        if not got:
+            return
+        db = SessionLocal()
+        try:
+            c = db.query(TaskComment).filter(TaskComment.id == comment_id).first()
+            if not c or not c.attachments:
+                return
+            new_atts = []
+            changed = False
+            for a in c.attachments:
+                p = _attachment_object_path(a)
+                if p in got:
+                    if isinstance(a, str):
+                        new_atts.append({"path": a, "filename": os.path.basename(a), "desc": got[p]})
+                        changed = True
+                        continue
+                    if isinstance(a, dict) and not str(a.get("desc") or "").strip():
+                        a2 = dict(a)
+                        a2["desc"] = got[p]
+                        new_atts.append(a2)
+                        changed = True
+                        continue
+                new_atts.append(a)
+            if changed:
+                c.attachments = new_atts
+                db.commit()
+                logger.info(f"[comment-desc] 写回评论#{comment_id}: {len(got)} 张图有描述")
+        except Exception as e:
+            logger.warning(f"[comment-desc] 写回失败(静默): comment={comment_id}, {e}")
+        finally:
+            db.close()
+
+    asyncio.create_task(_run())
+
+
 async def _add_system_comment(db: AsyncSession, task_id: int, content: str, operator: str, token: str = ""):
     """向讨论区添加一条系统操作评论，并 WS 广播。失败不阻塞主流程。"""
     try:
@@ -401,6 +527,53 @@ def _actor_side(ticket, current_user, username: str) -> Optional[str]:
     if username and username == getattr(ticket, 'created_by', None):
         return _ACTOR_SIDE_CREATOR
     return None
+
+
+async def _build_step_notify_users(
+    db,
+    ticket,
+    operator_side: Optional[str],
+    op_username: str,
+) -> List[str]:
+    """构造步骤协商通知的收件人列表（对方侧）。
+
+    规则：
+    - 操作人是接单人侧(assigned) → 通知提单人(created_by) + 被代理人(principal)
+    - 操作人是提单人侧(creator) → 通知接单人(assigned_to)
+    - 其他（管理员/运维）→ 两侧都通知
+
+    自动排除操作者本人（用 identity_keys 比对）。
+    """
+    created_by = getattr(ticket, 'created_by', None)
+    assigned_to = getattr(ticket, 'assigned_to', None)
+
+    if operator_side == _ACTOR_SIDE_ASSIGNED:
+        targets = [created_by]
+    elif operator_side == _ACTOR_SIDE_CREATOR:
+        targets = [assigned_to]
+    else:
+        targets = [created_by, assigned_to]
+
+    # 代提关系：追加已确认跟进的被代理人
+    principal_key = None
+    try:
+        relation = await ProxyRelationService.get_task_relation(db, getattr(ticket, 'id', None))
+        if relation and getattr(relation, 'principal_username', None):
+            principal_key = getattr(relation, 'principal_username', None) or getattr(relation, 'principal_id', None)
+    except Exception:
+        pass
+    if principal_key and principal_key not in targets:
+        targets.append(principal_key)
+
+    # 去 None / 空串 / 去重
+    targets = list({t for t in targets if t})
+
+    # 排除操作者本人（同一请求侧可能 created_by==assigned_to，也要去掉）
+    if op_username:
+        op_keys = set(identity_keys(op_username))
+        targets = [t for t in targets if t not in op_keys]
+
+    return targets
 
 
 # 请求级角色缓存：键为 (操作人标识, task_id)，值 TicketRoles。
@@ -772,178 +945,6 @@ async def unfollow_task(
     await db.commit()
 
     return {"ok": True, "task_id": task_id, "followed": False}
-
-
-async def _count_task_likes(db: AsyncSession, task_id: int) -> int:
-    """工单有效点赞总数：is_active=1 且未被风控判无效（需求 §8.3.1）。"""
-    return int((await db.execute(
-        select(func.count(TaskLike.id)).where(
-            TaskLike.task_id == task_id,
-            TaskLike.is_active.is_(True),
-            TaskLike.risk_status == LIKE_RISK_NORMAL,
-        )
-    )).scalar_one() or 0)
-
-
-@router.post("/{task_id}/like", response_model=dict)
-async def like_task(
-    task_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
-):
-    """点赞工单（活动中心「精品工单榜」的计数来源）。
-
-    幂等：重复点赞（含取消后重新点赞）通过 ON DUPLICATE KEY 把同一行
-    恢复为有效状态，不新增行、不重复累计；created_at 保留首次点赞时间。
-    风控状态不在这里改写：已被核验为无效的点赞不会因再次点击而洗白。
-    点赞人由服务端从 token 解析，无法替他人点赞。
-    """
-    exists = await db.execute(select(Task.id).where(Task.id == task_id))
-    if exists.scalar_one_or_none() is None:
-        raise HTTPException(status_code=404, detail="任务未找到")
-
-    username = actor_username(current_user)
-    stmt = mysql_insert(TaskLike).values(task_id=task_id, username=username)
-    stmt = stmt.on_duplicate_key_update(is_active=True, updated_at=func.now())
-    await db.execute(stmt)
-    await db.commit()
-
-    return {
-        "ok": True,
-        "task_id": task_id,
-        "liked": True,
-        "like_count": await _count_task_likes(db, task_id),
-    }
-
-
-@router.delete("/{task_id}/like", response_model=dict)
-async def unlike_task(
-    task_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
-):
-    """取消点赞（软删除）：is_active 置 0 并保留记录，供期末核验追溯。
-
-    幂等：未点赞/已取消时影响 0 行，不报错；取消后重新点赞复用同一行
-    （唯一键 task_id + username），不会重复累计。
-    """
-    username = actor_username(current_user)
-    await db.execute(
-        update(TaskLike)
-        .where(
-            TaskLike.task_id == task_id,
-            TaskLike.username == username,
-        )
-        .values(is_active=False, updated_at=func.now())
-    )
-    await db.commit()
-
-    return {
-        "ok": True,
-        "task_id": task_id,
-        "liked": False,
-        "like_count": await _count_task_likes(db, task_id),
-    }
-
-
-@router.get("/{task_id}/like", response_model=dict)
-async def get_task_like(
-    task_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
-):
-    """工单点赞状态（详情页点赞按钮用）：有效点赞数 + 我是否处于点赞状态。
-
-    口径：like_count 只计有效点赞（is_active=1 且 risk_status=normal）；
-    liked 只看我自己的 is_active（若我的点赞被风控判无效，仍显示已点赞，
-    便于我自行取消，不出现「按钮点不动」的死状态）。
-    """
-    username = actor_username(current_user)
-    mine = (await db.execute(
-        select(TaskLike.id).where(
-            TaskLike.task_id == task_id,
-            TaskLike.username == username,
-            TaskLike.is_active.is_(True),
-        )
-    )).scalar_one_or_none()
-    return {
-        "ok": True,
-        "task_id": task_id,
-        "liked": mine is not None,
-        "like_count": await _count_task_likes(db, task_id),
-    }
-
-
-@router.get("/featured", response_model=dict)
-async def featured_tasks(
-    limit: int = Query(10, ge=1, le=50, description="返回条数"),
-    db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
-):
-    """精品工单榜（活动中心）：只统计已归档工单，按有效点赞数倒序。
-
-    计数口径 = 有效点赞（is_active=1 且 risk_status='normal'），
-    已取消点赞与风控判无效的点赞不计入；只有失效点赞的工单不再上榜。
-    本榜只服务前台工单榜（数据源 task_likes）；后台「优质问题榜」走
-    knowledge_question_likes，两者各自计数、不共用点赞记录（2026-10-16 决策）。
-
-    注意：本路由必须定义在 `GET /{task_id}`（贪婪路径参数）之前，
-    否则 "featured" 会被当成 task_id 匹配掉（文件内静态路径统一前置）。
-    """
-    like_cnt = func.count(TaskLike.id).label("like_count")
-    stmt = (
-        select(Task, like_cnt)
-        .join(TaskLike, TaskLike.task_id == Task.id)
-        .where(
-            Task.status == TaskStatus.ARCHIVED,
-            TaskLike.is_active.is_(True),
-            TaskLike.risk_status == LIKE_RISK_NORMAL,
-        )
-        .group_by(Task.id)
-        .order_by(like_cnt.desc(), Task.archived_at.desc(), Task.id.desc())
-        .limit(limit)
-    )
-    rows = (await db.execute(stmt)).all()
-
-    liked_ids = set()
-    if rows:
-        me = actor_username(current_user)
-        res = await db.execute(
-            select(TaskLike.task_id).where(
-                TaskLike.task_id.in_([t.id for t, _ in rows]),
-                TaskLike.username == me,
-                TaskLike.is_active.is_(True),
-            )
-        )
-        liked_ids = {r[0] for r in res.all()}
-
-    items = [
-        {
-            "id": t.id,
-            "title": t.title,
-            "status": t.status.value if hasattr(t.status, "value") else t.status,
-            "like_count": int(cnt or 0),
-            "is_liked": t.id in liked_ids,
-            "project_name": t.project_name,
-            "created_by": t.created_by,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "archived_at": t.archived_at.isoformat() if t.archived_at else None,
-        }
-        for t, cnt in rows
-    ]
-
-    total = (await db.execute(
-        select(func.count(func.distinct(TaskLike.task_id)))
-        .select_from(TaskLike)
-        .join(Task, Task.id == TaskLike.task_id)
-        .where(
-            Task.status == TaskStatus.ARCHIVED,
-            TaskLike.is_active.is_(True),
-            TaskLike.risk_status == LIKE_RISK_NORMAL,
-        )
-    )).scalar_one()
-
-    return {"total": int(total or 0), "items": items}
 
 
 @router.get("/stats/overview", response_model=dict)
@@ -1377,6 +1378,29 @@ async def _hydrate_similar_from_db(
     stmt = select(Task).where(Task.id.in_(ids), Task.id != exclude_id)
     rows = (await db.execute(stmt)).scalars().all()
     by_id = {t.id: t for t in rows}
+
+    # ORS-1035：相似单的评论区图片（每单 ≤3 张，object_path 由前端走带鉴权的
+    # 附件代理出图）——归档人弹层展开即可对照现场/报错截图，不用跳单
+    similar_images: Dict[int, list] = {tid: [] for tid in ids}
+    try:
+        from app.models.task import TaskComment
+        crows = (await db.execute(
+            select(TaskComment.task_id, TaskComment.attachments)
+            .where(TaskComment.task_id.in_(ids))
+            .order_by(TaskComment.created_at.desc())
+            .limit(300)
+        )).all()
+        for ctid, catts in crows:
+            bucket_list = similar_images.setdefault(int(ctid), [])
+            for a in catts or []:
+                p = _attachment_object_path(a)
+                if p and _is_image_filename(p) and p not in bucket_list:
+                    bucket_list.append(p)
+                    if len(bucket_list) >= 3:
+                        break
+    except Exception as e:
+        logger.warning(f"相似单图片收集失败(忽略): {e}")
+
     out = []
     for tid in ids:
         t = by_id.get(tid)
@@ -1386,6 +1410,10 @@ async def _hydrate_similar_from_db(
         item = _similar_item_from_task(t)
         item["score"] = round(float(src.get("score") or 0), 4)
         item["verified"] = src.get("verified") or "unknown"
+        # 卡正文（问题/根因/解决三段式，已 approved 的沉淀卡=全公司共享资产），
+        # 归档人弹层内直接对照；脱敏口径与标题一致
+        item["summary"] = str(src.get("summary") or "")[:600]
+        item["image_paths"] = (similar_images.get(tid) or [])[:3]
         if min_score is not None and item["score"] < min_score:
             continue
         out.append(item)
@@ -1477,6 +1505,8 @@ async def get_similar_tasks(
             similar_task = await db.get(Task, item["task_id"])
             item.pop("project_name", None)
             item["title"] = await anonymous_text(db, similar_task, item.get("title"))
+            if item.get("summary"):
+                item["summary"] = await anonymous_text(db, similar_task, item["summary"])
             if item.get("report"):
                 item["report"].pop("reviewer", None)
                 item["report"].pop("reviewer_name", None)
@@ -2051,6 +2081,15 @@ async def add_comment(
         if not comment:
             raise HTTPException(status_code=404, detail="任务未找到")
 
+        # ORS-1035：本条评论里的图片，等 VLM 描述就绪后写回 attachments JSON
+        # （就绪的直接写；未就绪的挂后台等待 60s，不阻塞评论响应）
+        _comment_img_paths = [
+            _attachment_object_path(a) for a in (getattr(comment, 'attachments', None) or [])
+        ]
+        _comment_img_paths = [p for p in _comment_img_paths if p and _is_image_filename(p)]
+        if _comment_img_paths:
+            _schedule_comment_desc_writeback(task_id, comment.id, _comment_img_paths)
+
         from sqlalchemy import update
         from app.modules.tasks.models.ticket import Ticket
         from sqlalchemy.sql import func
@@ -2417,15 +2456,19 @@ async def update_task_status(
         if status_enum == TicketStatus.CANCELED and not is_admin and not user_matches(current_user, ticket.created_by):
             raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
 
-        # ── 请求暂停（→ pending_requested）权限收窄：仅**处理人**可发起，提单人/管理员不能替处理人请求暂停 ──
+        # ── 暂停（→ pending）直达：仅**管理员**可直接挂起处理中的工单 ──
+        if status_enum == TicketStatus.PENDING and ticket.status == TicketStatus.IN_PROGRESS:
+            if not is_admin:
+                raise HTTPException(status_code=403, detail="仅管理员可直接暂停工单")
+
+        # ── 请求暂停（→ pending_requested）两阶段路径：保留兼容历史数据，仅处理人可发起 ──
         if status_enum == TicketStatus.PENDING_REQUESTED:
             if ticket.status != TicketStatus.IN_PROGRESS:
                 raise HTTPException(status_code=400, detail="仅处理中的工单可发起暂停请求")
             if not _roles.is_assignee and not is_admin:
-                # 管理员可临时代处理人发起（运维兜底）
                 raise HTTPException(status_code=403, detail="仅处理人可请求暂停工单")
 
-        # ── 暂停请求后续操作权限收窄：必须由**提单人侧**（creator / principal / admin）来决定 ──
+        # ── 暂停请求后续操作权限收窄（pending_requested 两阶段，保留兼容） ──
         # pending_requested → pending  = 提单人确认暂停
         # pending_requested → in_progress = 提单人驳回（继续处理）
         if ticket.status == TicketStatus.PENDING_REQUESTED:
@@ -2434,20 +2477,45 @@ async def update_task_status(
             if status_enum not in (TicketStatus.PENDING, TicketStatus.IN_PROGRESS):
                 raise HTTPException(status_code=400, detail="暂停请求中仅可「确认暂停」或「驳回」")
 
+        # ── 请求无法解决（→ unsolvable_requested）权限收窄：仅**处理人**可发起 ──
+        if status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            if ticket.status != TicketStatus.IN_PROGRESS:
+                raise HTTPException(status_code=400, detail="仅处理中的工单可标记无法解决")
+            if not _roles.is_assignee and not is_admin:
+                raise HTTPException(status_code=403, detail="仅处理人可标记无法解决工单")
+
+        # ── 无法解决请求后续：必须由**提单人侧**处理 ──
+        # unsolvable_requested → unsolvable = 提单人确认（终态）
+        # unsolvable_requested → in_progress = 提单人驳回（继续处理）
+        if ticket.status == TicketStatus.UNSOLVABLE_REQUESTED:
+            if not (_roles.is_creator or _roles.is_principal or is_admin):
+                raise HTTPException(status_code=403, detail="仅提单人/被代理人/管理员可处理无法解决请求")
+            if status_enum not in (TicketStatus.UNSOLVABLE, TicketStatus.IN_PROGRESS):
+                raise HTTPException(status_code=400, detail="无法解决确认中仅可「确认无法解决」或「驳回」")
+
+        # ── 已无法解决 → 继续处理（回到 in_progress）：仅**处理人**可恢复 ──
+        if ticket.status == TicketStatus.UNSOLVABLE:
+            if status_enum == TicketStatus.IN_PROGRESS:
+                if not _roles.is_assignee and not is_admin:
+                    raise HTTPException(status_code=403, detail="仅处理人可恢复无法解决的工单")
+
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
         resolution_summary = None
         pause_reason = None
         reject_reason = None
+        unsolvable_reason = None
         try:
             if request:
                 body = await request.json()
                 resolution_summary = (body or {}).get("resolution_summary")
                 pause_reason = (body or {}).get("pause_reason")
                 reject_reason = (body or {}).get("reject_reason")
+                unsolvable_reason = (body or {}).get("unsolvable_reason")
         except Exception:
             resolution_summary = None
             pause_reason = None
             reject_reason = None
+            unsolvable_reason = None
 
         if status_enum == TicketStatus.RESOLVED:
             # 必填校验：去空白后非空（占位提示由前端 placeholder 控制，不入值）
@@ -2470,6 +2538,20 @@ async def update_task_status(
                 raise HTTPException(status_code=400, detail="驳回暂停必须填写理由")
             reject_reason = rr
 
+        if status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            # 标记无法解决必填理由
+            ur = (unsolvable_reason or "").strip()
+            if not ur:
+                raise HTTPException(status_code=400, detail="标记无法解决必须填写理由")
+            unsolvable_reason = ur
+
+        # 驳回无法解决（unsolvable_requested → in_progress）必填驳回理由
+        if ticket.status == TicketStatus.UNSOLVABLE_REQUESTED and status_enum == TicketStatus.IN_PROGRESS:
+            rr2 = (reject_reason or "").strip()
+            if not rr2:
+                raise HTTPException(status_code=400, detail="驳回无法解决必须填写理由")
+            reject_reason = rr2
+
         # ── 预加载工单关联策略（阻塞检查 + 重复同步共用一次读取） ──
         try:
             policies = await get_all_policies(db)
@@ -2490,14 +2572,22 @@ async def update_task_status(
 
         old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
 
-        # ── 回合累加：仅「驳回暂停」时 bump +1 ──
+        # ── 回合累加：仅「驳回暂停」或「驳回无法解决」时 bump +1 ──
         # 语义：驳回 = 双方没达成共识 → 算一次额外交涉
-        # 确认暂停（→ pending）= 达成共识，不加；请求暂停本身只是提案，等驳回再算
+        # 确认（→ pending / unsolvable）= 达成共识，不加；请求本身只是提案，等驳回再算
         # 注意：连续多次驳回都要 +1，不检查操作方是否切换（可能始终是同一方在重复驳回）
-        if old_status.upper() == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
+        if (old_status.upper() == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS) \
+                or (old_status.upper() == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS):
             ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
 
-        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username, resolution_summary=resolution_summary, pause_reason=pause_reason, reject_reason=reject_reason)
+        updated_ticket = await TicketService.update_ticket_status(
+            db, task_id, status_enum,
+            token=token, operator_id=username,
+            resolution_summary=resolution_summary,
+            pause_reason=pause_reason,
+            reject_reason=reject_reason,
+            unsolvable_reason=unsolvable_reason,
+        )
         # ── WS 实时广播：工单状态变更 ──
         try:
             await ws_broadcast_task_updated(task_id, updated_ticket)
@@ -2508,10 +2598,13 @@ async def update_task_status(
         user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
         _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
 
-        # 暂停请求三态转换的定制描述（语义比通用的"状态变更为"更明确）
+        # 暂停请求 / 无法解决 请求 定制描述（语义比通用的"状态变更为"更明确）
         old_status_upper = old_status.upper()
         pending_special_desc = None
-        if old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING_REQUESTED:
+        if old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING:
+            # 管理员直接暂停（两阶段请求暂停已下线，直达）
+            pending_special_desc = f"暂停工单，工单状态变更为「已挂起」"
+        elif old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.PENDING_REQUESTED:
             reason_suffix = f"\n理由：{pause_reason}" if pause_reason else ""
             pending_special_desc = f"请求暂停工单，状态变更为「暂停请求中」{reason_suffix}"
         elif old_status_upper == 'PENDING_REQUESTED' and status_enum == TicketStatus.PENDING:
@@ -2519,6 +2612,16 @@ async def update_task_status(
         elif old_status_upper == 'PENDING_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
             reason_suffix = f"\n驳回理由：{reject_reason}" if reject_reason else ""
             pending_special_desc = f"驳回了暂停工单请求，工单状态变更为「处理中」{reason_suffix}"
+        elif old_status_upper == 'IN_PROGRESS' and status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
+            reason_suffix = f"\n理由：{unsolvable_reason}" if unsolvable_reason else ""
+            pending_special_desc = f"标记无法解决工单，状态变更为「无法解决确认中」{reason_suffix}"
+        elif old_status_upper == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.UNSOLVABLE:
+            pending_special_desc = f"确认无法解决工单，工单状态变更为「无法解决」"
+        elif old_status_upper == 'UNSOLVABLE_REQUESTED' and status_enum == TicketStatus.IN_PROGRESS:
+            reason_suffix = f"\n驳回理由：{reject_reason}" if reject_reason else ""
+            pending_special_desc = f"驳回了无法解决请求，工单状态变更为「处理中」{reason_suffix}"
+        elif old_status_upper == 'UNSOLVABLE' and status_enum == TicketStatus.IN_PROGRESS:
+            pending_special_desc = f"恢复工单处理，状态变更为「处理中」"
 
         if pending_special_desc:
             op_log_desc = f"{_role}{user_name} {pending_special_desc}" if _role else f"{user_name} {pending_special_desc}"
@@ -2740,6 +2843,28 @@ async def respond_task(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：确认同意后通知对方侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            if is_first_response:
+                # 首次响应(new→in_progress)：通知 creator 侧"工单开始处理"
+                action_label = "处理人确认节点，工单开始处理"
+            else:
+                action_label = f"节点「{step_name}」已确认"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="节点已确认",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -2747,6 +2872,7 @@ class CompleteStepRequest(BaseModel):
     """当前阶段完成请求：处理人选择下一阶段节点并设置其结束时间。"""
     next_step_id: int = Field(..., description="下一阶段节点ID（必须为同 task_type 的节点）")
     curr_step_endtime: datetime = Field(..., description="下一阶段节点结束时间（ISO 字符串，naive UTC 存库）")
+    reason: Optional[str] = Field(None, description="选择特殊 step（等待外部条件/等待前置工单）时必填的条件理由")
 
 
 @router.post("/{task_id}/complete-step", response_model=TicketResponse, summary="当前阶段完成：推进到下一协商节点")
@@ -2795,7 +2921,8 @@ async def complete_task_step(
     if cur_step is None:
         raise HTTPException(status_code=400, detail="当前节点不存在，无法推进")
 
-    # 校验目标节点：必须为同 task_type，且 sequence > 当前节点（只能向前推进）
+    # 校验目标节点：必须为同 task_type，正常 step 要求 sequence > 当前；
+    # 特殊 step（等待外部条件=-2 / 等待前置工单=-1）总是允许选择，且与当前 sequence 无关
     next_row = await db.execute(
         select(TaskStep).where(TaskStep.id == int(body.next_step_id))
     )
@@ -2804,8 +2931,30 @@ async def complete_task_step(
         raise HTTPException(status_code=400, detail="所选下一阶段节点不存在")
     if next_step.task_type != ticket.task_type:
         raise HTTPException(status_code=400, detail="下一阶段节点与工单类型不匹配")
-    if next_step.sequence <= cur_step.sequence:
+
+    is_special_step = (next_step.sequence < 0)
+    if not is_special_step and next_step.sequence <= cur_step.sequence:
         raise HTTPException(status_code=400, detail="下一阶段必须晚于当前阶段")
+
+    # 特殊 step 的条件校验
+    complete_reason_text = None
+    if is_special_step:
+        complete_reason_text = (body.reason or "").strip()
+        if not complete_reason_text:
+            raise HTTPException(status_code=400, detail=f"选择「{next_step.step_name}」需要填写等待理由")
+        if next_step.sequence == -1:
+            # 等待前置工单：必须已有至少一条 predecessor 关系
+            rel_count_row = await db.execute(
+                select(func.count(TaskRelation.id)).where(
+                    TaskRelation.source_task_id == ticket_id,
+                    TaskRelation.relation_type == RelationType.PREDECESSOR,
+                )
+            )
+            if (rel_count_row.scalar_one() or 0) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="等待前置工单需要先添加前置工单，请在工单详情页「前置工单」区域点击 +添加"
+                )
 
     old_step_name = ticket.curr_step_name or cur_step.step_name
     endtime = convert_to_shanghai_time(body.curr_step_endtime)
@@ -2816,6 +2965,25 @@ async def complete_task_step(
     ticket.curr_step_agreed = False  # 进入新节点：等待对方确认同意才视为协商一致
     ticket.step_phase_round = int(getattr(ticket, 'step_phase_round', 0) or 0) + 1
     ticket.updated_at = func.now()
+
+    # 特殊 step 条件理由写入 metadata_info（非特殊 step 清理）
+    if is_special_step:
+        meta = dict(ticket.metadata_info or {})
+        from datetime import datetime
+        if next_step.sequence == -2:
+            meta["waiting_external_reason"] = complete_reason_text
+            meta.pop("waiting_predecessor_reason", None)
+        else:  # -1
+            meta["waiting_predecessor_reason"] = complete_reason_text
+            meta.pop("waiting_external_reason", None)
+        meta["waiting_step_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ticket.metadata_info = meta
+    else:
+        meta = dict(ticket.metadata_info or {})
+        meta.pop("waiting_external_reason", None)
+        meta.pop("waiting_predecessor_reason", None)
+        meta.pop("waiting_step_at", None)
+        ticket.metadata_info = meta
 
     # 阶段完成 = 当前操作人"提案"推进到下一节点：记录操作方（回合归属）
     round_meta = _apply_step_update_meta(ticket, current_user, username)
@@ -2857,6 +3025,24 @@ async def complete_task_step(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：处理人推进到下一阶段，通知提单人侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            action_label = f"进入「{next_step.step_name}」，请确认新阶段"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="待确认新阶段",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -2920,11 +3106,38 @@ async def negotiate_step(
             raise HTTPException(status_code=400, detail="协商节点不存在")
         if target_step.task_type != ticket.task_type:
             raise HTTPException(status_code=400, detail="协商节点与工单类型不匹配")
-        if phase_round > 0 and target_step.sequence < cur_seq:
+        # 特殊 step（sequence < 0）与 sequence 下限无关
+        if target_step.sequence >= 0 and phase_round > 0 and target_step.sequence < cur_seq:
             raise HTTPException(status_code=400, detail="协商节点不能早于当前节点")
         ticket.curr_step_id = target_step.id
         ticket.curr_step_name = target_step.step_name
         step_changed = True
+
+    # 特殊 step 条件理由写入 metadata_info（非特殊 step 清理）
+    target_step_obj = None
+    if step_changed and body.curr_step_id is not None:
+        row2 = await db.execute(select(TaskStep).where(TaskStep.id == int(body.curr_step_id)))
+        target_step_obj = row2.unique().scalar_one_or_none()
+    if target_step_obj and target_step_obj.sequence < 0:
+        meta = dict(ticket.metadata_info or {})
+        from datetime import datetime
+        if target_step_obj.sequence == -2:
+            meta["waiting_external_reason"] = reason
+            meta.pop("waiting_predecessor_reason", None)
+        else:
+            meta["waiting_predecessor_reason"] = reason
+            meta.pop("waiting_external_reason", None)
+        meta["waiting_step_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ticket.metadata_info = meta
+    else:
+        meta = dict(ticket.metadata_info or {})
+        changed = False
+        for k in ("waiting_external_reason", "waiting_predecessor_reason", "waiting_step_at"):
+            if k in meta:
+                meta.pop(k, None)
+                changed = True
+        if changed:
+            ticket.metadata_info = meta
 
     # 前端 dayjs(...).toISOString() 传入 UTC aware datetime，剥时区转 naive UTC 存库
     # 协商节点时间只更新 curr_step_endtime，不动 deadline_at；
@@ -2995,6 +3208,31 @@ async def negotiate_step(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：通知对方侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            # 协商动作文案："等待{角色}确认节点时间"
+            action_label = "待确认节点时间"
+            if op_side == _ACTOR_SIDE_ASSIGNED:
+                action_label = f"请提单人确认节点「{ticket.curr_step_name}」"
+            elif op_side == _ACTOR_SIDE_CREATOR:
+                action_label = f"请处理人确认节点「{ticket.curr_step_name}」"
+            else:
+                action_label = f"节点「{ticket.curr_step_name}」时间待确认"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="节点待确认",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -3070,6 +3308,24 @@ async def set_step_time(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：一锤定音后通知提单人侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            action_label = f"已定节点「{ticket.curr_step_name}」时间"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="节点已定案",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -3181,6 +3437,24 @@ async def reopen_step(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：提单人打回，通知处理人侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            action_label = f"工单被打回，重开「{target_step.step_name}」"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="工单被打回",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -3737,6 +4011,12 @@ async def upload_comment_attachment(
         if temp_id not in comment_attachment_map:
             comment_attachment_map[temp_id] = []
         comment_attachment_map[temp_id].append(object_path)
+
+        # ORS-1035：图片后台 VLM 打标（字节在手，不重读 MinIO；失败静默）。
+        # 描述落 _COMMENT_IMAGE_DESC，评论落库时写回 attachments JSON，
+        # 供讨论摘要/归档初稿等文本消费方使用。
+        if _is_image_filename(file.filename or ""):
+            _schedule_comment_image_describe(object_path, file_bytes)
 
         # 返回 object_path，前端可直接透传给建单接口的 attachments 字段，
         # 无需依赖进程内存 comment_attachment_map 的 temp_id 解析（跨进程/重启更稳）。

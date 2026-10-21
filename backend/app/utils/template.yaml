@@ -91,3 +91,10 @@ template:
       thing5: ""
       character_string10: ""
       time4: ""
+# 工单处理通知, [工单标题, 工单状态, 处理措施]
+  11:
+    id: ul-d6lmOZGINmUGrHq9YZ3x4fKiLq0Gp2CyBe7OXPic
+    data:
+      thing33: ""
+      phrase15: ""
+      thing13: ""

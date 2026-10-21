@@ -29,6 +29,8 @@ class TaskStatus(str, enum.Enum):
     IN_PROGRESS = "in_progress"
     PENDING_REQUESTED = "pending_requested"  # 处理人请求暂停 → 待提单人确认
     PENDING = "pending"
+    UNSOLVABLE_REQUESTED = "unsolvable_requested"  # 处理人标记无法解决 → 待提单人确认
+    UNSOLVABLE = "unsolvable"                      # 无法解决（已确认，终态；处理人可点继续处理回到 in_progress）
     RESOLVED = "resolved"
     CANCELED = "canceled"
     CLOSED = "closed"
@@ -270,53 +272,6 @@ class TaskFollower(Base):
 
     def __repr__(self):
         return f"<TaskFollower(task_id={self.task_id}, username='{self.username}')>"
-
-
-# 点赞风控状态（红包激励一期需求 §8.3.1 / §12.8）：
-# 有效点赞数只统计 risk_status == normal 的记录；pending/invalid 由后台核验后置位。
-LIKE_RISK_NORMAL = "normal"
-LIKE_RISK_PENDING = "pending"
-LIKE_RISK_INVALID = "invalid"
-
-
-class TaskLike(Base):
-    """工单点赞表：用户对工单点赞（活动中心「精品工单榜」按此计数倒序）。
-
-    与 TaskFollower 同构：task_id + username 唯一键保证幂等，
-    重复点赞只刷新 updated_at，不产生脏数据。
-
-    取消点赞为**软删除**（is_active 置 0）而非删行：保留取消痕迹，
-    供期末「有效点赞」核验与异常点赞追溯（需求 §8.3.1「保存最终有效点赞
-    与排名快照，剔除异常点赞」）。表名保持 task_likes 不变（改名需人工迁移，
-    收益低于风险），语义以本注释与落地规范为准。
-
-    榜单口径：只统计 status=archived 的工单（精品=沉淀下来的问答），
-    且只计 is_active=1 且 risk_status='normal' 的有效点赞。
-    本表只服务**前台**工单点赞与「精品工单榜」；后台「优质问题榜」由
-    knowledge_question_likes（models/knowledge.py）独立承载，两者各自计数、
-    不共用点赞记录（2026-10-16 决策：后台榜以其表为准）。
-    """
-    __tablename__ = "task_likes"
-
-    id = Column(BigInteger, primary_key=True, index=True, comment="点赞记录ID")
-    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"),
-                     nullable=False, index=True, comment="任务ID")
-    username = Column(String(50), nullable=False, index=True, comment="点赞人username")
-    is_active = Column(Boolean, nullable=False, server_default=text("1"),
-                       comment="是否为有效点赞：1 点赞中，0 已取消（保留痕迹）")
-    risk_status = Column(String(16), nullable=False, server_default="normal",
-                         comment="风控状态：normal 正常 / pending 待核验 / invalid 无效")
-    created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="首次点赞时间")
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(),
-                        nullable=True, comment="最近变更时间（点赞/取消/风控）")
-
-    __table_args__ = (
-        UniqueConstraint("task_id", "username", name="uq_task_likes"),
-    )
-
-    def __repr__(self):
-        return (f"<TaskLike(task_id={self.task_id}, username='{self.username}', "
-                f"is_active={self.is_active}, risk_status='{self.risk_status}')>")
 
 
 class TaskParticipant(Base):

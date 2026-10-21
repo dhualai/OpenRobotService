@@ -13,6 +13,9 @@ import KnowledgeReviewPage from '../admin/KnowledgeReviewPage';
 import KnowledgeQuestionDetail from '../admin/KnowledgeQuestionDetail';
 import KnowledgeContributorPage from '../admin/KnowledgeContributorPage';
 import Dashboard from '../admin/Dashboard';
+import { fetchChallengePreview } from '@/api/knowledgeChallenges';
+
+vi.mock('@/api/knowledgeChallenges', () => ({ fetchChallengePreview: vi.fn() }));
 
 vi.mock('@/shared/components/UserAvatarMenu', () => ({ default: () => null }));
 vi.mock('@/shared/components/SubscriptionReminder', () => ({ default: () => null }));
@@ -39,7 +42,7 @@ vi.mock('@/api/knowledge', async (importOriginal) => ({
 
 const person = { user_id: 'alice', name: '贡献甲', avatar_resource_id: null, rank: 1,
   question_count: 4, answer_count: 6, contribution_count: 10, valid_like_count: 8,
-  estimated_reward_fen: 10000, tied: false };
+  estimated_reward_fen: 10000, earned_reward_fen: 1250, tied: false };
 const overview: api.KnowledgeOverview = { month: '2026-11', months: ['2026-08', '2026-09', '2026-10', '2026-11', '2026-12'],
   starts_at: '2026-07-31T16:00:00Z', ends_at: '2026-12-31T16:00:00Z', campaign_status: 'active',
   settlement_status: 'live', top_three: [person], can_review: false, rule_notice: '综合贡献统一计奖' };
@@ -52,6 +55,7 @@ const report: api.KnowledgeReview = { report_id: 9, task_id: 7, version: 2, revi
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(fetchChallengePreview).mockResolvedValue({ items: [], total: 0, can_manage: false });
   vi.mocked(fetchRewardStats).mockResolvedValue({ pending_amount: 0, pending_count: 0, withdrawn_amount: 0 });
   useAuthStore.setState({ username: 'knowledge-test', name: '当前用户', projectIds: [], permissions: [], isAdmin: false, roles: null, canViewKnowledgeContribution: true });
   vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue(overview);
@@ -60,7 +64,7 @@ beforeEach(() => {
   vi.mocked(api.fetchKnowledgeQuestion).mockResolvedValue(question);
   vi.mocked(api.fetchKnowledgeDiscussions).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(api.createKnowledgeDiscussion).mockResolvedValue({ id: 1, task_id: 7, author: person, content: '经验补充', created_at: '2026-11-13T01:00:00Z' });
-  vi.mocked(api.fetchContributorQuestions).mockResolvedValue({ user: person, month: '2026-11', months: overview.months, question_count: 4, answer_count: 6, items: [question], total: 1 });
+  vi.mocked(api.fetchContributorQuestions).mockResolvedValue({ user: person, month: '2026-11', months: overview.months, question_count: 4, answer_count: 6, earned_reward_fen: 1250, items: [question], total: 1 });
   vi.mocked(api.fetchPendingReviews).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(api.fetchMyReviewHistory).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(api.fetchKnowledgeReview).mockResolvedValue(report);
@@ -117,6 +121,29 @@ describe('知识贡献榜UI', () => {
     expect(screen.getAllByText('知识贡献榜')).toHaveLength(1);
   });
 
+  it.each([
+    ['知识贡献榜', '详细榜单', '/admin/knowledge', '点击'],
+    ['知识贡献榜', '详细榜单', '/admin/knowledge', '回车'],
+    ['高价值问题榜单', '所有问题', '/admin/knowledge/challenges', '点击'],
+    ['高价值问题榜单', '所有问题', '/admin/knowledge/challenges', '回车'],
+  ])('%s标题右侧的%s进入%s，支持%s操作', async (title, label, path, interaction) => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><Routes><Route path="/" element={<Dashboard />} /><Route path={path} element={<p>二级页面内容</p>} /></Routes></MemoryRouter>);
+    await screen.findByText('贡献甲');
+    const heading = screen.getByRole('heading', { name: title });
+    const entry = within(heading.parentElement!).getByRole('link', { name: label });
+    expect(entry).toHaveClass('mac-section-title__more');
+    expect(entry.parentElement).toHaveClass('mac-section-title__actions');
+    expect(entry).toHaveAttribute('href', path);
+    if (interaction === '回车') {
+      entry.focus();
+      await user.keyboard('{Enter}');
+    } else {
+      await user.click(entry);
+    }
+    expect(await screen.findByText('二级页面内容')).toBeInTheDocument();
+  });
+
   it.each(['{Enter}', ' '])('原奖励汇总卡片支持通过 %s 键进入奖励详情', async (key) => {
     const user = userEvent.setup();
     render(<MemoryRouter><Routes><Route path="/" element={<Dashboard />} /><Route path="/rewards" element={<p>奖励详情入口</p>} /></Routes></MemoryRouter>);
@@ -126,21 +153,42 @@ describe('知识贡献榜UI', () => {
     expect(await screen.findByText('奖励详情入口')).toBeInTheDocument();
   });
 
-  it('卡片仍可进入知识中心，且不重复显示主标题', async () => {
+  it.each(['贡献甲', '按月统计 · 以有效归档贡献排名'])('贡献卡片移除查看全部，点击%s进入知识中心', async (content) => {
     render(<MemoryRouter><Routes><Route path="/" element={<KnowledgeContributionCard />} /><Route path="/admin/knowledge" element={<p>知识中心入口</p>} /></Routes></MemoryRouter>);
     await screen.findByText('贡献甲');
     expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('link', { name: '查看知识贡献榜' }));
+    expect(screen.queryByText(/查看全部/)).not.toBeInTheDocument();
+    const card = screen.getByRole('region', { name: '知识贡献榜' });
+    expect(card).toHaveClass('knowledge-clickable-card');
+    expect(within(card).getAllByRole('link')).toHaveLength(1);
+    expect(within(card).getByRole('link', { name: '查看知识贡献榜' })).toHaveAttribute('href', '/admin/knowledge');
+    fireEvent.click(screen.getByText(content));
+    expect(await screen.findByText('知识中心入口')).toBeInTheDocument();
+  });
+
+  it('贡献卡片保留键盘聚焦和回车导航', async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><Routes><Route path="/" element={<KnowledgeContributionCard />} /><Route path="/admin/knowledge" element={<p>知识中心入口</p>} /></Routes></MemoryRouter>);
+    await screen.findByText('贡献甲');
+    screen.getByRole('link', { name: '查看知识贡献榜' }).focus();
+    await user.keyboard('{Enter}');
     expect(await screen.findByText('知识中心入口')).toBeInTheDocument();
   });
 
   it.each(['首页卡片', '榜单中心'])('%s的路由404提示后端部署问题，并支持重试', async (page) => {
     vi.mocked(api.fetchKnowledgeOverview).mockRejectedValueOnce(new ApiError('Not Found', 404, undefined, { detail: 'Not Found' }));
-    render(<MemoryRouter>{page === '首页卡片' ? <KnowledgeContributionCard /> : <KnowledgeCenter />}</MemoryRouter>);
+    render(<MemoryRouter><Routes>
+      <Route path="/" element={page === '首页卡片' ? <KnowledgeContributionCard /> : <KnowledgeCenter />} />
+      <Route path="/admin/knowledge" element={<p>知识中心入口</p>} />
+    </Routes></MemoryRouter>);
     expect(await screen.findByRole('alert')).toHaveTextContent('知识贡献接口尚未启用，请更新并重启业务后端');
-    fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
+    const retry = screen.getByRole('button', { name: '重新加载' });
+    expect(retry.closest('a')).toBeNull();
+    fireEvent.click(retry);
     await waitFor(() => expect(api.fetchKnowledgeOverview).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect((await screen.findAllByText('贡献甲')).length).toBeGreaterThan(0);
+    expect(screen.queryByText('知识中心入口')).not.toBeInTheDocument();
   });
 
   it('问题资源404保留业务原因，不误报接口未启用', async () => {
@@ -151,11 +199,12 @@ describe('知识贡献榜UI', () => {
     expect(screen.queryByText(/知识贡献接口尚未启用/)).not.toBeInTheDocument();
   });
 
-  it('使用现有卡片样式，展示综合前三和预计奖金，空缺不伪造用户', async () => {
+  it('使用现有卡片样式，综合前三展示提问解答数量而非奖金，空缺不伪造用户', async () => {
     const rendered = render(<MemoryRouter><KnowledgeContributionCard /></MemoryRouter>);
     expect(await screen.findByText('贡献甲')).toBeInTheDocument();
-    expect(screen.getByText('10个有效贡献')).toBeInTheDocument();
-    expect(screen.getByText('¥100')).toBeInTheDocument();
+    expect(screen.getByText('提问4 · 解答6')).toBeInTheDocument();
+    expect(screen.getByText('10次贡献')).toBeInTheDocument();
+    expect(screen.queryByText(/¥/)).not.toBeInTheDocument();
     expect(screen.getAllByText('虚位以待')).toHaveLength(2);
     expect(screen.queryByText('预计月度奖励，核验后发放')).not.toBeInTheDocument();
     expect(rendered.container.querySelector('.mac-card--pad')).not.toBeNull();
@@ -191,13 +240,13 @@ describe('知识贡献榜UI', () => {
     vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue(administratorOverview);
     render(<MemoryRouter initialEntries={[entry]}><KnowledgeCenter /></MemoryRouter>);
     if (entry.includes('tab=')) await screen.findAllByRole('tab');
-    else await screen.findByRole('link', { name: '查看问题榜单' });
+    else await screen.findByRole('link', { name: '查看知识榜单' });
     expect(screen.queryByRole('button', { name: /异常观察|月度结算|冻结月度快照|发放月度奖金/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '异常观察与月度结算' })).not.toBeInTheDocument();
     if (entry.includes('tab=')) {
       expect(screen.getAllByRole('tab')).toHaveLength(3);
     } else {
-      expect(screen.getByRole('link', { name: '查看问题榜单' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: '查看知识榜单' })).toBeInTheDocument();
     }
   });
 
@@ -206,8 +255,9 @@ describe('知识贡献榜UI', () => {
     fireEvent.click(await screen.findByRole('link', { name: '查看最佳解答人榜单' }));
     expect(await screen.findAllByRole('tab')).toHaveLength(3);
     fireEvent.click(screen.getByRole('tab', { name: '最佳解答人榜单' }));
-    expect(await screen.findByText('接单6')).toBeInTheDocument();
-    expect(screen.getByText('¥100')).toBeInTheDocument();
+    expect(await screen.findByText('解答6')).toBeInTheDocument();
+    expect(screen.getByText('已获 ¥12.5')).toBeInTheDocument();
+    expect(screen.queryByText('¥100')).not.toBeInTheDocument();
     expect(api.fetchContributors).toHaveBeenCalledWith('2026-11');
     expect(screen.queryByText('展开异常观察与月度结算')).not.toBeInTheDocument();
   });
@@ -231,7 +281,7 @@ describe('知识贡献榜UI', () => {
     render(<MemoryRouter initialEntries={['/?tab=answerers']}><KnowledgeCenter /></MemoryRouter>);
     await screen.findByText('贡献甲');
     expect(screen.queryByText('未入奖用户')).not.toBeInTheDocument();
-    expect(screen.getByText('¥100')).toBeInTheDocument();
+    expect(screen.getByText('已获 ¥12.5')).toBeInTheDocument();
     expect(screen.queryByText('已入奖励账户')).not.toBeInTheDocument();
   });
 
@@ -250,7 +300,15 @@ describe('知识贡献榜首页可见性', () => {
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
     expect(await screen.findByRole('region', { name: '知识贡献榜' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '知识贡献榜' })).toBeInTheDocument();
-    expect(screen.getByText('查看榜单')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '查看知识贡献榜' })).toHaveAttribute('href', '/admin/knowledge');
+    expect(screen.getByRole('link', { name: '查看高价值问题榜单' })).toHaveAttribute('href', '/admin/knowledge/challenges');
+    expect(screen.getByRole('link', { name: '详细榜单' })).toHaveAttribute('href', '/admin/knowledge');
+    expect(screen.getByRole('link', { name: '所有问题' })).toHaveAttribute('href', '/admin/knowledge/challenges');
+    expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
+    expect(screen.queryByText(/查看全部/)).not.toBeInTheDocument();
+    const contributionHeading = screen.getByRole('heading', { name: '知识贡献榜' });
+    const challengeHeading = screen.getByRole('heading', { name: '高价值问题榜单' });
+    expect(contributionHeading.compareDocumentPosition(challengeHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(await screen.findByText('贡献甲')).toBeInTheDocument();
   });
 
@@ -259,10 +317,13 @@ describe('知识贡献榜首页可见性', () => {
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
     expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: '知识贡献榜' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '详细榜单' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '所有问题' })).not.toBeInTheDocument();
     expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
     expect(screen.queryByText(/每人每天最多点赞5个不同问题/)).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '工单数据看板' })).toBeInTheDocument();
     expect(api.fetchKnowledgeOverview).not.toHaveBeenCalled();
+    expect(fetchChallengePreview).not.toHaveBeenCalled();
   });
 
   it('单独挂载卡片同样默认隐藏且不发送榜单请求', () => {
@@ -278,29 +339,37 @@ describe('知识贡献榜首页可见性', () => {
     act(() => useAuthStore.setState({ canViewKnowledgeContribution: false }));
     expect(screen.queryByRole('region', { name: '知识贡献榜' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '详细榜单' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '所有问题' })).not.toBeInTheDocument();
     expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
   });
 });
 
 describe('每日点赞限制提示', () => {
-  it('首页卡片在前三名列表上方展示每日5题及重置规则', async () => {
+  it('首页卡片保留前三名列表但不常驻展示点赞限制', async () => {
     render(<MemoryRouter><KnowledgeContributionCard /></MemoryRouter>);
-    const notice = screen.getByText(/每人每天最多点赞5个不同问题/);
-    expect(notice).toHaveTextContent('北京时间每日0点重置');
-    expect(notice).toHaveTextContent('取消点赞不返还当日名额');
-    const preview = await screen.findByRole('list', { name: '知识贡献榜前三名' });
-    expect(notice.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(await screen.findByRole('list', { name: '知识贡献榜前三名' })).toBeInTheDocument();
+    expect(screen.queryByText(/每人每天最多点赞5个不同问题/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/北京时间每日0点重置|取消点赞不返还当日名额/)).not.toBeInTheDocument();
+    expect(Toast).not.toHaveBeenCalled();
   });
 
-  it.each(['active', 'upcoming', 'ended'] as const)('%s状态的榜单顶部展示点赞规则', async (status) => {
+  it.each(['active', 'upcoming', 'ended'] as const)('%s状态的榜单不常驻展示点赞规则', async (status) => {
     vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue({ ...overview, campaign_status: status });
     const rendered = render(<MemoryRouter><KnowledgeCenter /></MemoryRouter>);
-    const notice = await screen.findByText(/每人每天最多点赞5个不同问题/);
-    expect(notice).toHaveClass('knowledge-note');
-    expect(notice).toHaveTextContent('北京时间每日0点重置');
-    expect(notice).toHaveTextContent('取消点赞不返还当日名额');
-    const boards = rendered.container.querySelector('.knowledge-board-stack')!;
-    expect(notice.compareDocumentPosition(boards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(await screen.findByRole('link', { name: '查看知识榜单' })).toBeInTheDocument();
+    expect(rendered.container).not.toHaveTextContent(/每人每天最多点赞5个不同问题|北京时间每日0点重置|取消点赞不返还当日名额/);
+    expect(Toast).not.toHaveBeenCalled();
+  });
+
+  it.each(['/admin/knowledge?tab=questions', '/admin/knowledge/questions/7'])('%s额度内正常点赞不弹出限制提示', async (path) => {
+    render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/admin/knowledge" element={<KnowledgeCenter />} /><Route path="/admin/knowledge/questions/:taskId" element={<KnowledgeQuestionDetail />} /></Routes></MemoryRouter>);
+    const like = await screen.findByRole('button', { name: `点赞：${question.title}` });
+    expect(Toast).not.toHaveBeenCalled();
+    fireEvent.click(like);
+    await waitFor(() => expect(api.toggleKnowledgeLike).toHaveBeenCalledWith(question));
+    await waitFor(() => expect(like).not.toBeDisabled());
+    expect(Toast).not.toHaveBeenCalled();
   });
 
   it.each(['/admin/knowledge?tab=questions', '/admin/knowledge/questions/7'])('%s超额点赞展示后端提示且不改变点赞数', async (path) => {
@@ -308,8 +377,10 @@ describe('每日点赞限制提示', () => {
     vi.mocked(api.toggleKnowledgeLike).mockRejectedValueOnce(new ApiError(message, 429));
     render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/admin/knowledge" element={<KnowledgeCenter />} /><Route path="/admin/knowledge/questions/:taskId" element={<KnowledgeQuestionDetail />} /></Routes></MemoryRouter>);
     const like = await screen.findByRole('button', { name: `点赞：${question.title}` });
+    expect(Toast).not.toHaveBeenCalled();
     fireEvent.click(like);
     await waitFor(() => expect(Toast).toHaveBeenCalledWith({ message, theme: 'error' }));
+    expect(Toast).toHaveBeenCalledTimes(1);
     expect(like).toHaveAttribute('aria-pressed', 'false');
     expect(like).toHaveTextContent('2');
     expect(api.fetchKnowledgeQuestion).toHaveBeenCalledTimes(path.includes('/questions/') ? 1 : 0);
@@ -329,10 +400,13 @@ describe('奖金激励说明由专门入口承载', () => {
     const rendered = render(<MemoryRouter initialEntries={[entry]}><KnowledgeCenter /></MemoryRouter>);
     if (entry.includes('tab=questions')) await screen.findByText(question.title);
     else if (entry.includes('tab=')) await screen.findByRole('button', { name: '查看贡献甲的工单' });
-    else await screen.findByRole('link', { name: '查看问题榜单' });
+    else await screen.findByRole('link', { name: '查看知识榜单' });
     expect(screen.queryByText(internalNotice)).not.toBeInTheDocument();
     expect(rendered.container).not.toHaveTextContent(/前三各100元|第4—10名各50元|奖励金额待公布|奖励待公布|奖金叠加|奖励叠加|叠加领奖|不另设.*奖金|预计月度奖励|核验后发放|已入奖励账户/);
-    if (!entry.includes('tab=questions')) expect(screen.getAllByText('¥100').length).toBeGreaterThan(0);
+    expect(screen.queryByText('¥100')).not.toBeInTheDocument();
+    if (entry.includes('tab=questioners') || entry.includes('tab=answerers')) {
+      expect(screen.getByText('已获 ¥12.5')).toBeInTheDocument();
+    } else expect(screen.queryByText(/¥/)).not.toBeInTheDocument();
   });
 
   it.each(['live', 'reviewing', 'held', 'approved', 'granting', 'granted', 'stale'])('状态为%s时首页及总览不显示发奖/结算提示', async (status) => {
@@ -340,7 +414,7 @@ describe('奖金激励说明由专门入口承载', () => {
     const rendered = render(<MemoryRouter><KnowledgeContributionCard /><KnowledgeCenter /></MemoryRouter>);
     await screen.findByRole('link', { name: '查看最佳提问人榜单' });
     expect(rendered.container).not.toHaveTextContent(/预计月度奖励|月度奖励已发放|已入奖励账户|核验|发放|结算|计奖|规则待定|奖励待公布/);
-    expect(screen.getAllByText('¥100')).toHaveLength(3);
+    expect(screen.queryByText(/¥/)).not.toBeInTheDocument();
   });
 });
 
@@ -364,9 +438,11 @@ describe('横向榜单预览', () => {
   it('默认展示三个横向模块，每个只展示前三，不改变提单接单合并排序', async () => {
     const rendered = openBoards();
     await screen.findByText('充电桩故障处理');
+    expect(screen.getByRole('heading', { name: '让每一次问题的解决，都沉淀为知识。' })).toBeInTheDocument();
+    expect(screen.queryByText('问题榜单')).not.toBeInTheDocument();
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
     expect(rendered.container.querySelectorAll('.knowledge-board-card__body')).toHaveLength(3);
-    for (const title of ['问题榜单', '最佳提问人榜单', '最佳解答人榜单']) {
+    for (const title of ['知识榜单', '最佳提问人榜单', '最佳解答人榜单']) {
       const board = screen.getByRole('region', { name: title });
       expect(within(board).getAllByRole('listitem')).toHaveLength(3);
       expect(within(board).getByRole('link', { name: `查看${title}` })).toHaveAttribute('href', expect.stringContaining('month=2026-11'));
@@ -377,7 +453,10 @@ describe('横向榜单预览', () => {
       expect(rows[0]).toHaveTextContent('贡献甲');
       expect(rows[1]).toHaveTextContent('贡献乙');
       expect(rows[2]).toHaveTextContent('贡献丙');
-      expect(within(board).getAllByText('¥100')).toHaveLength(3);
+      expect(within(board).queryByText(/¥/)).not.toBeInTheDocument();
+      expect(rows[0]).toHaveTextContent(title === '最佳提问人榜单' ? '4次提问' : '6次解答');
+      expect(rows[1]).toHaveTextContent(title === '最佳提问人榜单' ? '9次提问' : '0次解答');
+      expect(rows[2]).toHaveTextContent(title === '最佳提问人榜单' ? '0次提问' : '8次解答');
       expect(within(board).queryByText('预计月度奖励，核验后发放')).not.toBeInTheDocument();
     }
     expect(screen.queryByText('完整榜第四名')).not.toBeInTheDocument();
@@ -385,20 +464,20 @@ describe('横向榜单预览', () => {
     expect(api.fetchKnowledgeQuestions).toHaveBeenCalledWith('2026-11', 'likes', 1, 3);
   });
 
-  it.each(['问题榜单', '最佳提问人榜单', '最佳解答人榜单'])('%s可进入完整列表并返回概览，月份保持不变', async (title) => {
+  it.each(['知识榜单', '最佳提问人榜单', '最佳解答人榜单'])('%s可进入完整列表并返回概览，月份保持不变', async (title) => {
     openBoards('2026-12');
     fireEvent.click(await screen.findByRole('link', { name: `查看${title}` }));
-    expect(await screen.findByText(title === '问题榜单' ? '完整列表第四题' : '完整榜第四名')).toBeInTheDocument();
+    expect(await screen.findByText(title === '知识榜单' ? '完整列表第四题' : '完整榜第四名')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: title })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByLabelText('榜单月份')).toHaveValue('2026-12');
-    if (title === '问题榜单') {
+    if (title === '知识榜单') {
       expect(screen.getByLabelText('问题排序')).toHaveValue('likes');
       expect(api.fetchKnowledgeQuestions).toHaveBeenLastCalledWith('2026-12', 'likes', 1);
     } else {
       expect(api.fetchContributors).toHaveBeenCalledWith('2026-12');
     }
     fireEvent.click(screen.getByRole('button', { name: '← 返回榜单概览' }));
-    expect(await screen.findByRole('link', { name: '查看问题榜单' })).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: '查看知识榜单' })).toBeInTheDocument();
     expect(screen.getByLabelText('榜单月份')).toHaveValue('2026-12');
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
   });
@@ -442,7 +521,7 @@ describe('横向榜单预览', () => {
     openBoards('2026-12');
     vi.mocked(api.fetchKnowledgeQuestions).mockResolvedValue({ items: [question], total: 1 });
     vi.mocked(api.fetchKnowledgeQuestion).mockResolvedValueOnce(question);
-    fireEvent.click(await screen.findByRole('link', { name: '查看问题榜单' }));
+    fireEvent.click(await screen.findByRole('link', { name: '查看知识榜单' }));
     fireEvent.click(await screen.findByRole('button', { name: '查看问题、解答与审核意见 →' }));
     expect(await screen.findByText('检查供电后恢复')).toBeInTheDocument();
     expect(screen.getByText('验证完整')).toBeInTheDocument();
@@ -467,19 +546,73 @@ describe('知识列表、人员工单和讨论区', () => {
     return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/admin/knowledge" element={<KnowledgeCenter />} /><Route path="/admin/knowledge/contributors/:userId" element={<KnowledgeContributorPage />} /><Route path="/admin/knowledge/questions/:taskId" element={<KnowledgeQuestionDetail />} /></Routes></MemoryRouter>);
   }
 
+  it.each(['questioners', 'answerers'])('%s完整榜头像下展示提问解答与实际已获金额，不展示预计奖金', async (focus) => {
+    openKnowledge(`/admin/knowledge?tab=${focus}&month=2026-11`);
+    const tile = await screen.findByRole('button', { name: '查看贡献甲的工单' });
+    expect(within(tile).getByLabelText(person.name)).toHaveClass('knowledge-avatar');
+    expect(tile).toHaveTextContent('提问4');
+    expect(tile).toHaveTextContent('解答6');
+    expect(tile).toHaveTextContent('已获 ¥12.5');
+    expect(tile).not.toHaveTextContent('¥100');
+    fireEvent.click(tile);
+    expect(await screen.findByText('已获 ¥12.5')).toBeInTheDocument();
+    expect(screen.getByText('提问4 · 解答6')).toBeInTheDocument();
+  });
+
+  it('尚未入账时显示已获零元，不用预计奖金回填', async () => {
+    vi.mocked(api.fetchContributors).mockResolvedValue({ items: [{ ...person, earned_reward_fen: 0 }] });
+    openKnowledge('/admin/knowledge?tab=questioners&month=2026-11');
+    expect(await screen.findByText('已获 ¥0')).toBeInTheDocument();
+    expect(screen.queryByText('¥100')).not.toBeInTheDocument();
+  });
+
+  it.each(['卡片空白', '问题摘要', '价值点', '人员信息', '问题标题', '查看详情按钮'])('点击优质问题%s直接进入归档详情，返回保留月份和排序', async (area) => {
+    openKnowledge('/admin/knowledge?tab=questions&month=2026-11&sort=likes');
+    const card = await screen.findByRole('region', { name: question.title });
+    const targets = {
+      卡片空白: card,
+      问题摘要: within(card).getByText(question.problem),
+      价值点: within(card).getByText(`价值点：${question.value_point}`),
+      人员信息: within(card).getByText(/提单：贡献甲/),
+      问题标题: within(card).getByRole('button', { name: question.title }),
+      查看详情按钮: within(card).getByRole('button', { name: '查看问题、解答与审核意见 →' }),
+    };
+    fireEvent.click(targets[area as keyof typeof targets]);
+    expect(await screen.findByText(question.content)).toBeInTheDocument();
+    expect(api.fetchKnowledgeQuestion).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: '返回' }));
+    expect(await screen.findByLabelText('榜单月份')).toHaveValue('2026-11');
+    expect(screen.getByLabelText('问题排序')).toHaveValue('likes');
+  });
+
+  it('卡片点赞不进入详情，键盘仍可打开归档详情', async () => {
+    const user = userEvent.setup();
+    openKnowledge('/admin/knowledge?tab=questions&month=2026-11');
+    const card = await screen.findByRole('region', { name: question.title });
+    await user.click(within(card).getByRole('button', { name: `点赞：${question.title}` }));
+    expect(api.toggleKnowledgeLike).toHaveBeenCalledWith(question);
+    expect(api.fetchKnowledgeQuestion).not.toHaveBeenCalled();
+    const heading = await screen.findByRole('button', { name: question.title });
+    heading.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText(question.content)).toBeInTheDocument();
+  });
+
   it('问题榜的二级页面为知识列表，点赞按钮位于问题卡片右侧标题栏', async () => {
     openKnowledge('/admin/knowledge?tab=questions&month=2026-11');
     expect(await screen.findByRole('heading', { name: '知识列表' })).toBeInTheDocument();
     const card = await screen.findByRole('region', { name: question.title });
-    expect(within(card).getByRole('button', { name: `点赞：${question.title}` }).closest('.knowledge-question-head')).not.toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: `点赞：${question.title}` }));
+    const like = within(card).getByRole('button', { name: `点赞：${question.title}` });
+    expect(like).toHaveTextContent(`有帮助 · ${question.valid_like_count}`);
+    expect(like.closest('.knowledge-question-head')).not.toBeNull();
+    fireEvent.click(like);
     await waitFor(() => expect(api.toggleKnowledgeLike).toHaveBeenCalledWith(question));
   });
 
   it('前十按三列头像网格展示，点击人员可查看并切换提单接单列表', async () => {
     const people = Array.from({ length: 11 }, (_, position) => ({ ...person, user_id: `person-${position + 1}`, name: `人员${position + 1}`, rank: position + 1 }));
     vi.mocked(api.fetchContributors).mockResolvedValue({ items: people });
-    vi.mocked(api.fetchContributorQuestions).mockResolvedValue({ user: people[0], month: '2026-11', months: overview.months, question_count: 4, answer_count: 6, items: [question], total: 1 });
+    vi.mocked(api.fetchContributorQuestions).mockResolvedValue({ user: people[0], month: '2026-11', months: overview.months, question_count: 4, answer_count: 6, earned_reward_fen: 1250, items: [question], total: 1 });
     openKnowledge('/admin/knowledge?tab=questioners&month=2026-11');
     const grid = await screen.findByRole('list', { name: '综合月榜前十名' });
     await waitFor(() => expect(within(grid).getAllByRole('button')).toHaveLength(10));
@@ -500,7 +633,7 @@ describe('知识列表、人员工单和讨论区', () => {
   it.each(['2026-08', '2026-09'])('人员贡献可切换到%s，保留角色及返回月份', async (month) => {
     openKnowledge('/admin/knowledge/contributors/alice?month=2026-11&role=questioner');
     await screen.findByText(question.title);
-    vi.mocked(api.fetchContributorQuestions).mockResolvedValueOnce({ user: person, month, months: overview.months, question_count: 1, answer_count: 0, items: [question], total: 1 });
+    vi.mocked(api.fetchContributorQuestions).mockResolvedValueOnce({ user: person, month, months: overview.months, question_count: 1, answer_count: 0, earned_reward_fen: 0, items: [question], total: 1 });
     fireEvent.change(screen.getByLabelText('贡献月份'), { target: { value: month } });
     await waitFor(() => expect(api.fetchContributorQuestions).toHaveBeenLastCalledWith('alice', month, 'questioner', 1));
     expect(await screen.findByText(question.title)).toBeInTheDocument();
@@ -533,9 +666,10 @@ describe('知识列表、人员工单和讨论区', () => {
     expect(screen.getByText('贡献甲')).toBeInTheDocument();
     expect(screen.getByText('接单乙')).toBeInTheDocument();
     expect(screen.getByText('审核人身份不公开')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `点赞：${question.title}` })).toHaveTextContent(`有帮助 · ${question.valid_like_count}`);
     vi.mocked(api.fetchKnowledgeQuestion).mockResolvedValueOnce({ ...question, liked_by_me: true, valid_like_count: 3 });
     fireEvent.click(screen.getByRole('button', { name: `点赞：${question.title}` }));
-    expect(await screen.findByRole('button', { name: `取消点赞：${question.title}` })).toHaveTextContent('3');
+    expect(await screen.findByRole('button', { name: `取消点赞：${question.title}` })).toHaveTextContent('有帮助 · 3');
   });
 
   it('讨论区校验空白，发布成功刷新真实讨论且匿名作者不泄露身份', async () => {

@@ -125,6 +125,8 @@ const Dashboard = lazyImport(() => import('@/pages/admin/Dashboard'));
 // 工单数据看板：工单监测/类型分布/接单人响应时间三张看板（首页「工单数据看板」小节的「其他数据统计」进入）
 const TicketDashboard = lazyImport(() => import('@/pages/admin/TicketDashboard'));
 const KnowledgeCenter = lazyImport(() => import('@/pages/admin/KnowledgeCenter'));
+const KnowledgeChallenges = lazyImport(() => import('@/pages/admin/KnowledgeChallenges'));
+const KnowledgeChallengeDetail = lazyImport(() => import('@/pages/admin/KnowledgeChallengeDetail'));
 const KnowledgeQuestionDetail = lazyImport(() => import('@/pages/admin/KnowledgeQuestionDetail'));
 const KnowledgeContributorPage = lazyImport(() => import('@/pages/admin/KnowledgeContributorPage'));
 const KnowledgeReviewPage = lazyImport(() => import('@/pages/admin/KnowledgeReviewPage'));
@@ -133,7 +135,7 @@ const DispatchDev = lazyImport(() => import('@/pages/admin/DispatchDev'));
 const TaskPolicyPage = lazyImport(() => import('@/pages/admin/TaskPolicyPage'));
 const QrcodeManage = lazyImport(() => import('@/pages/admin/QrcodeManage'));
 const WecomSheetManage = lazyImport(() => import('@/pages/admin/WecomSheetManage'));
-// 公告管理：活动中心（首页公告条 + 精品工单榜）的数据源，运营自助发布
+// 公告管理：活动中心（首页公告条 + 优质问题榜）的数据源，运营自助发布
 const AnnouncementManage = lazyImport(() => import('@/pages/admin/AnnouncementManage'));
 const AdminLayout = lazyImport(() => import('@/shared/components/AdminLayout'));
 
@@ -222,6 +224,8 @@ const router = createBrowserRouter([
               // 默认首页：上中下三段式仪表盘（工单数据看板 / 跨项目看板 / 更多功能）
               { index: true, element: <Dashboard /> },
               { path: 'knowledge', element: <KnowledgeCenter /> },
+              { path: 'knowledge/challenges', element: <KnowledgeChallenges /> },
+              { path: 'knowledge/challenges/:challengeId', element: <KnowledgeChallengeDetail /> },
               { path: 'knowledge/questions/:taskId', element: <KnowledgeQuestionDetail /> },
               { path: 'knowledge/contributors/:userId', element: <KnowledgeContributorPage /> },
               { path: 'knowledge/reviews/:reportId', element: <KnowledgeReviewPage /> },

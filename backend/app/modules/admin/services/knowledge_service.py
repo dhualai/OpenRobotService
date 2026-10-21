@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.user_identity import is_admin_user
@@ -15,6 +16,8 @@ from app.models.knowledge import (
     KnowledgePublication, KnowledgeSettlement, KnowledgeDiscussion,
 )
 from app.models.task import ArchiveReport, Task, TaskStatus
+from app.models.wxpay import RewardRecord, RewardStatus
+from app.modules.admin.services.knowledge_like_quota import check_question_quota
 
 
 BEIJING = timezone(timedelta(hours=8))
@@ -195,6 +198,33 @@ async def rankings(db, month, frozen=True):
     return result
 
 
+def monthly_reward_source_id(month, user_id):
+    return hashlib.sha256(f"phase1:{month}:{user_id}".encode()).hexdigest()[:48]
+
+
+async def earned_reward_totals(db, month, user_ids):
+    if not user_ids:
+        return {}
+    start, end = month_bounds(month)
+    task_ids = select(cast(Task.id, String)).where(Task.created_at >= start, Task.created_at < end)
+    monthly_ids = [monthly_reward_source_id(month, user_id) for user_id in user_ids]
+    rows = (await db.execute(select(RewardRecord.user_id, func.sum(RewardRecord.amount)).where(
+        RewardRecord.user_id.in_(user_ids),
+        RewardRecord.status.in_((RewardStatus.PENDING, RewardStatus.WITHDRAWING,
+                                RewardStatus.SUCCESS, RewardStatus.EXPIRED)),
+        ((RewardRecord.source_type == "task_archive") & RewardRecord.source_id.in_(task_ids)
+         & RewardRecord.role.in_(("reporter", "assignee")))
+        | ((RewardRecord.source_type == "knowledge_monthly") & RewardRecord.source_id.in_(monthly_ids))
+    ).group_by(RewardRecord.user_id))).all()
+    return {user_id: int(amount) for user_id, amount in rows}
+
+
+async def public_rankings(db, month):
+    entries = await rankings(db, month)
+    earned = await earned_reward_totals(db, month, [entry["user_id"] for entry in entries])
+    return [{**entry, "earned_reward_fen": earned.get(entry["user_id"], 0)} for entry in entries]
+
+
 async def overview(db, actor, month=None):
     from app.modules.tasks.services.archive_review_dispatch import archive_reviewer_ids
 
@@ -215,7 +245,7 @@ async def overview(db, actor, month=None):
     return {"month": month, "months": list(CAMPAIGN_MONTHS), "starts_at": iso(CAMPAIGN_START),
             "ends_at": iso(CAMPAIGN_END), "campaign_status": "upcoming" if now < CAMPAIGN_START else
             "ended" if now >= CAMPAIGN_END else "active", "settlement_status": snapshot.status if snapshot else "live",
-            "top_three": (await rankings(db, month))[:3],
+            "top_three": (await public_rankings(db, month))[:3],
             "can_review": configured or review is not None or history is not None or is_admin_user(actor),
             "reviewer_configured": configured, "pending_review_count": pending_count,
             "rule_notice": "综合榜统一计奖；同工单双角色暂计1次，同数量按有效获赞排序；未定边界须确认后发奖"}
@@ -268,7 +298,9 @@ async def contributor_questions(db, actor, user_id, month=None, role="all", page
     if not user or not publications:
         raise HTTPException(404, "未找到本月公开知识贡献")
     result = await question_items(db, actor, month, page=page, size=size, contributor_id=user_id, role=role)
+    earned = await earned_reward_totals(db, month, [user_id])
     return {**result, "month": month, "months": list(CAMPAIGN_MONTHS), "user": display_user(user),
+            "earned_reward_fen": earned.get(user_id, 0),
             "question_count": sum(item.questioner_id == user_id for item in publications),
             "answer_count": sum(item.answerer_id == user_id for item in publications)}
 
@@ -327,17 +359,7 @@ async def set_like(db, actor, task_id, active):
     if row and row.risk_status != "valid":
         raise HTTPException(409, "该点赞正在核验或已判无效")
     if active and (not row or not row.active):
-        day_start = now.replace(tzinfo=timezone.utc).astimezone(BEIJING).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ).astimezone(timezone.utc).replace(tzinfo=None)
-        liked_today = set((await db.execute(select(KnowledgeLikeEvent.task_id).where(
-            KnowledgeLikeEvent.user_id == user_id,
-            KnowledgeLikeEvent.active.is_(True),
-            KnowledgeLikeEvent.created_at >= day_start,
-            KnowledgeLikeEvent.created_at < day_start + timedelta(days=1)
-        ).distinct())).scalars().all())
-        if task_id not in liked_today and len(liked_today) >= DAILY_QUESTION_LIKE_LIMIT:
-            raise HTTPException(429, "今日已点赞5个不同问题，不能再点赞新问题（北京时间每日0点重置）")
+        await check_question_quota(db, user_id, f"task:{task_id}", now)
     if not row:
         row = KnowledgeLike(task_id=task_id, user_id=user_id, active=False, risk_status="valid", updated_at=now)
         db.add(row)

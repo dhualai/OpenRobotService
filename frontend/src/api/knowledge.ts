@@ -18,6 +18,7 @@ export interface Contributor extends KnowledgeUser {
   contribution_count: number;
   valid_like_count: number;
   estimated_reward_fen: number;
+  earned_reward_fen: number;
   tied: boolean;
 }
 
@@ -78,6 +79,7 @@ export interface ContributorQuestions {
   months: string[];
   question_count: number;
   answer_count: number;
+  earned_reward_fen: number;
   items: KnowledgeQuestion[];
   total: number;
 }

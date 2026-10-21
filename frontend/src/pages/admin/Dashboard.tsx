@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Navbar, Toast, Popup } from 'tdesign-mobile-react';
 import { UserCircleIcon } from 'tdesign-icons-react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { TICKET_STATUS_LIST, URGENCY_LIST } from '@/shared/constants/dashboard';
 import {
   fetchDashboardSummaryAll, syncWecomProjects,
@@ -32,6 +32,7 @@ import {
 } from '@/stores/dashboardCache';
 import { avatarUrl } from '@/api/profile';
 import KnowledgeContributionCard from './KnowledgeContributionCard';
+import HighValueQuestionCard from './HighValueQuestionCard';
 import { fetchRewardStats, fenToYuan } from '@/api/wxpay';
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
@@ -264,8 +265,10 @@ export default function Dashboard() {
         </section>
 
         {canViewKnowledgeContribution && <>
-          <SectionTitle title="知识贡献榜" moreText="查看榜单" onMore={() => navigate('/admin/knowledge')} />
+          <SectionTitle title="知识贡献榜"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge">详细榜单 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
           <KnowledgeContributionCard key={username} />
+          <SectionTitle title="高价值问题榜单"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge/challenges">所有问题 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
+          <HighValueQuestionCard key={`challenges:${username}`} />
         </>}
 
         {/* ============ 上：工单数据看板 ============ */}

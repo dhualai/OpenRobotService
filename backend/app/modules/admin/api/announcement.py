@@ -13,7 +13,7 @@
 Status 用字符串列（draft/published/offline），见 app/models/announcement.py。
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -50,6 +50,19 @@ _ORDER_BY = (
     Announcement.published_at.desc(),
     Announcement.id.desc(),
 )
+
+
+def _utcnow() -> datetime:
+    """当前 UTC 时间（naive，供 DateTime 列直接落库）。
+
+    全项目时间字段统一存 UTC：`app/core/db.py` 把每个数据库会话的 time_zone 固定为
+    '+00:00'（所以 `created_at`/`updated_at` 的 `func.now()` 就是 UTC），前端
+    `parseUtcDate` 对无时区 ISO 串统一补 `Z` 当 UTC 解析、再转本地展示。
+
+    因此这里必须用 UTC，**不能**用 `datetime.now()`——后者是进程本地时间（生产容器为
+    +08:00），写进去前端再当 UTC 加 8 小时，发布时间会整体偏 8 小时。
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def ensure_announcement_permission() -> None:
@@ -194,7 +207,7 @@ async def create_announcement(
         content=payload.content,
         is_pinned=payload.is_pinned,
         status=st,
-        published_at=datetime.now() if st == AnnouncementStatus.PUBLISHED else None,
+        published_at=_utcnow() if st == AnnouncementStatus.PUBLISHED else None,
         created_by=actor_username(current_user),
     )
     db.add(ann)
@@ -221,7 +234,7 @@ async def update_announcement(
     if payload.status is not None:
         st = _validate_status(payload.status)
         if st == AnnouncementStatus.PUBLISHED and ann.published_at is None:
-            ann.published_at = datetime.now()
+            ann.published_at = _utcnow()
         ann.status = st
 
     await db.commit()
@@ -238,7 +251,7 @@ async def publish_announcement(
     ann = await _get_or_404(db, aid)
     ann.status = AnnouncementStatus.PUBLISHED
     if ann.published_at is None:
-        ann.published_at = datetime.now()
+        ann.published_at = _utcnow()
     await db.commit()
     await db.refresh(ann)
     return {"ok": True, "item": _to_dict(ann)}

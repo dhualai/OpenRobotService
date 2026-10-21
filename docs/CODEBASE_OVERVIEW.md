@@ -14,6 +14,12 @@
 
 ## 一、项目定位
 
+### 2026-10-20 增量：知识榜数量展示与实际已获奖励
+
+- `KnowledgeRankCard` 的综合/提问/解答预览改为对应数量，不显示金额；`KnowledgeCenter` 完整人员榜与 `KnowledgeContributorPage` 展示提问、解答及实际已获金额。标语更新为“让每一次问题的解决，都沉淀为知识。”，问题榜单更名为知识榜单。
+- `knowledge_service.public_rankings` 在原排名上投影 `earned_reward_fen`：按提问月汇总实际财务通过的提问/解答奖励和当月月榜奖励，包含未提现、提现中、已到账和曾入账后过期的记录，排除待审/驳回/其他奖励；不修改冻结快照、内部预计奖金或发奖逻辑。月榜来源ID生成与原发奖服务共用同一函数，无表结构变更。
+- `KnowledgeQuestionCard` 的空白、摘要、价值点与人员区域可直接打开原归档详情，保留键盘查看入口、独立点赞和返回列表上下文；不改变原访问权限。
+
 ### 2026-10-19 增量：知识沉淀按提问时间统计
 
 - 活动内部统计起点扩展为北京时间2026-08-01 00:00，支持8—12月；公开知识仍须满足有效归档及审核通过条件，财务流程与奖励逻辑不变。
@@ -32,13 +38,13 @@
 - 权限管理列表注册“显示知识贡献榜”开关，权限码 `frontend:admin:knowledge:show`；通过既有角色管理勾选/取消，可配置任意系统或项目角色。不再写死角色名称，未显式授权的角色默认隐藏，admin用户名和通配权限不绕过该独立配置；权限关闭时所有已授权角色也隐藏。
 - `PermissionService.get_user_with_roles` 按实际角色关联的该权限及其 `enabled` 状态计算 `can_view_knowledge_contribution`。原全局角色派生权限保持不变；角色权限授予/撤销、权限更新/删除后清除当前进程的用户角色缓存，多进程其余实例沿用现有60秒TTL。
 - `GET /api/admin/users/{username}/detail` 返回该布尔标记，`AuthState.canViewKnowledgeContribution` 默认false且不持久化；登录/恢复会话先隐藏，当前用户详情明确返回true才显示，失败/退出清除，旧账号的迟到响应不恢复新账号的卡片。
-- `Dashboard` 同时隐藏标题、“查看榜单”和完整卡片；`KnowledgeContributionCard` 自身也受控，未获可见标记时不挂载取数组件。只调整首页入口展示，不修改知识中心、公开问题或匿名审核接口权限；复用现有权限表及角色权限关联表，不新增数据库结构或自动给角色授权。
+- `Dashboard` 同时隐藏标题、标题右侧入口和完整卡片；`KnowledgeContributionCard` 自身也受控，未获可见标记时不挂载取数组件。2026-10-21增加知识贡献榜标题右侧“详细榜单”及高价值问题榜单标题右侧“所有问题”，通过 `SectionTitle` 的操作区及原样式链接到已有二级路由，保留整卡导航。只调整首页入口展示，不修改知识中心、公开问题或匿名审核接口权限；复用现有权限表及角色权限关联表，不新增数据库结构或自动给角色授权。
 
 ### 2026-10-16 增量：知识榜单每日点赞限额
 
 - `knowledge_service.set_like` 按北京时间自然日限制每位用户每天成功点赞5个不同问题，超额返回429；同题重试/重赞不重复占额，取消不返还名额，旧日有效点赞不占当天名额。复用 `knowledge_like_events` 统计，不新增表或迁移。
 - 点赞请求的第一次数据库读取即对规范用户行执行 `FOR UPDATE`，在现有每请求独立会话中先串行化同一用户的跨题请求，再建立一致性读快照及统计额度；限额校验在写入点赞状态/事件之前完成，取消保持可用。
-- 首页卡片与榜单顶部复用 `knowledgeLikeRule` 和原有 `knowledge-note` 样式展示限制与重置说明。新增后端额度、幂等/取消、北京时间日界、身份归并、请求并发及API回归，前端覆盖文案位置和列表/详情超额提示。
+- 2026-10-21调整：首页卡片与榜单顶部不再常驻展示点赞限制，保留原榜单样式与统计说明；仅在尝试超额点赞、后端返回429时由 `KnowledgeLikeButton` 弹出错误提示，额度内点赞不提醒。后端额度、幂等/取消、北京时间日界、身份归并、请求并发及API回归保持不变，前端覆盖无常驻文案、正常点赞不提醒及列表/详情超额提示。
 
 ### 2026-10-16 增量：移除异常观察与月度结算界面
 
@@ -50,7 +56,7 @@
 
 - 前端：`frontend/src/pages/admin/KnowledgeContributionCard.tsx` 位于后台首页用户头像/名字下方、工单数据看板之前；“知识贡献榜”标题复用看板的 `SectionTitle`。`KnowledgeRankCard` 统一横向榜单卡片：左侧榜单标识、右侧前三行。`KnowledgeCenter` 默认展示问题榜、最佳提单人榜、最佳接单人榜三个预览模块，点击进入完整列表；两个用户模块沿用同一综合月榜，月份及问题排序保留在URL中。`KnowledgeQuestionDetail`、`KnowledgeReviewPage` 负责公开问题与匿名审核。实际路由注册在 `frontend/src/main.tsx`，样式复用 `mac-card` 与现有颜色变量。
 - 后端：`modules/admin/api/knowledge.py` 提供登录用户开放的读/点赞接口和受限的风险/结算接口；`knowledge_service.py` 负责活动资格、发布投影、综合月榜与点赞截止口径；`knowledge_settlement.py` 负责修订快照、核验与现有奖励服务入账。
-- 审核复用 `Task` / `ArchiveReport`；`modules/tasks/services/knowledge_review.py` 提供匿名投影、本人意见及原始任务读取限制。报告审批要求意见、价值点、revision及指定审核人回避校验，AI初稿与手写模板同步为八章节。
+- 审核复用 `Task` / `ArchiveReport`；`modules/tasks/services/knowledge_review.py` 提供匿名投影、本人意见及原始任务读取限制。报告审批要求意见、价值点、revision及当前指定审核人身份校验；前置派审成功后不因提单人、接单人或报告作者同人而再次拦截，派审失败仍不允许提交，原候选回避优先策略与财务流程不变。AI初稿与手写模板同步为八章节。
 - 新模型集中在 `backend/app/models/knowledge.py`：`knowledge_publications`、`knowledge_question_likes`、`knowledge_like_events`、`archive_review_decisions`、`knowledge_settlements`、`knowledge_discussions`；扩展 `archive_reports.value_point`。迁移链为 `b8c1d4e7f203 → c9d2e5f8a104 → d0e3f6a9b215`；2026-10-15 已对本机 dev 的 `127.0.0.1:3306/helpdesk` 执行增量迁移，生产及其他环境仍需独立执行。
 - 知识列表使用 `KnowledgeQuestionCard`，列表右侧及详情均可点赞；`KnowledgeDiscussion` 通过独立讨论接口展示公开知识讨论，不复用原工单内部评论。人员完整榜采用前十名三列头像网格，`KnowledgeContributorPage` 提供当月公开归档工单及提单/接单筛选；人员归属沿用首次有效发布记录。
 - 评审工作台在榜单总览提供直接入口。平台指定名单人员即使尚无任务也能看到；历史分配人员及管理员可进入，但只能查看/处理本人被分配的报告及本人意见。名单、队列、历史、审批和匿名访问限制统一匹配用户ID/账号/OpenID，待审任务不按活动月份过滤；本机当前有效审核名单为空，须在开发者模式的归档审核面板配置后才能派审。
@@ -165,6 +171,9 @@ backend/
 
 ### 3.4 关键业务功能（2026-08 新增亮点）
 
+- **高价值问题（2026-10-20，代码已实现，未执行目标环境迁移/部署）**：`modules/admin/services/knowledge_challenge.py` 与独立API支持平台直接发布、可选关联工单、匿名答题、独立草稿及版本、问题/答案点赞、管理员状态与结果纠正。`knowledge_challenge_tasks.py` 随后端启动，每60秒扫描持久化到期问题，按答案有效赞、首次提交时间、ID确定唯一最佳并保存截止快照；失败重试，重复扫描不重复奖励。专项来源 `knowledge_challenge`、来源ID为问题ID，调用既有奖励服务进入原奖励管理，不更改财务审核及支付模块。
+- **共享问题点赞额度**：`knowledge_like_quota.py` 在真实用户行锁内合计普通工单与独立问题的当日事件，统一每天5题；工单关联入口共享同题点赞事实。答案独立每天5条，不能自赞。`KNOWLEDGE_CHALLENGES_ENABLED=false` 停止新参与及自动结算，历史只读和原财务处理保留。
+
 - **智能派单 / 重派（dispatch）**：`task_dispatch_log` 落派单日志；AI 端 Assigner（`ai/agents/AiDiagnosisPlatform/assigner.py`）精排推荐候选（倾向人/对接人保底 0.8 分、职级轻微打折），重派候选默认展示全部用户 + 画像，精排推荐仅含真有精排分者；派单说明（`redispatch_tip_service.py`）仅提单人可见。
 - **模块树协同编辑（module-tree）**：产品→界面→功能树管理（`module_tree_ws.py` 提供 WebSocket 协同），编辑审批单（批准/驳回）、按行 id 并发安全的新增/更新/删除、各产品树版本哈希（乐观锁基准）+ 功能级冲突基准哈希。AI 派单据此选择召回目标（保存模块树/用户画像后调用 `/api/ai/assigner/reload` 热更新）。
 - **搬运效率分析（transport-efficiency）**：Excel/JSON 导入搬运效率数据、按项目某日查询、历史数据访问。
@@ -183,6 +192,7 @@ backend/
 | 咨询对话 | conversations / messages | AI 问询 |
 | 模块树 | module_trees / module_tree_nodes / module_tree_edits（审批单） | 派单知识底座 |
 | 组织/资源 | companies / departments / resources / resource_folders | 组织架构 / resource_manager |
+| 高价值问题（2026-10-20增量） | knowledge_challenges / knowledge_challenge_answers / knowledge_challenge_likes / knowledge_challenge_like_events / knowledge_challenge_audits | 独立ORM `knowledge_challenge.py`；迁移 `e1f4a7b0c326`，未在目标库执行 |
 
 ### 3.6 核心设计要点与工程债
 

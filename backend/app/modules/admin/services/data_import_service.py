@@ -6,7 +6,10 @@
 参考实现：项目数据/DAS/customized/groupefficiency.py（transform_data）与
 项目数据/DAS/api/data.py（upload_file 的数据包解析链）。
 """
+import base64
+import binascii
 import bz2
+import gzip
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -20,6 +23,9 @@ ALLOWED_EXTENSIONS = {'.json', '.bz2'}
 
 # 文件大小上限（20MB）
 MAX_FILE_SIZE = 20 * 1024 * 1024
+
+# 二维码内容长度上限（字符数）：21 天分片约 3 × 2900 字符，放大余量防超大 payload 拖垮解码
+MAX_QR_PAYLOAD_CHARS = 200 * 1024
 
 
 def parse_packet_file(file_bytes: bytes, filename: str) -> dict:
@@ -170,6 +176,79 @@ def validate_and_prepare_import_data(data: dict, project: str = None) -> dict:
     data.setdefault("collection_time", datetime.now().isoformat())
 
     return transform_data(data)
+
+
+def decode_qr_payload(payload: str = None, fragments: List[str] = None) -> dict:
+    """解码数据平台导出的数据二维码，返回明文 JSON dict。
+
+    格式（见 qr_samples 样例包）：
+    - 完整数据 = QRV1| + Base64(gzip(UTF-8 JSON))
+    - 分片每片 = QRV2|{片号}/{总片数}| + 片数据（第 1 片数据以 QRV1| 开头）
+
+    分片需收集齐 n 片（片号 1..n 连续无重复），按片号排序去头拼接后恢复完整 QRV1 payload；
+    payload（单码/已拼接）与 fragments（分片列表）二选一，同时传时 payload 优先。
+    """
+    texts: List[str] = []
+    if payload:
+        texts = [str(payload)]
+    elif fragments:
+        texts = [str(t) for t in fragments if t and str(t).strip()]
+    texts = [t.strip() for t in texts if t and t.strip()]
+    if not texts:
+        raise ValueError("缺少二维码内容")
+
+    full = _assemble_qr_payload(texts)
+    if not full.startswith("QRV1|"):
+        raise ValueError("不是数据平台导出的数据二维码（缺少 QRV1 标识）")
+    try:
+        compressed = base64.b64decode(full[len("QRV1|"):])
+        raw = gzip.decompress(compressed).decode("utf-8")
+        return json.loads(raw)
+    except (binascii.Error, OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"二维码数据解压失败: {e}")
+
+
+def _assemble_qr_payload(texts: List[str]) -> str:
+    """把扫码得到的原始字符串列表（单码或分片）恢复成完整 QRV1 payload。
+
+    - 任一文本以 QRV1| 开头视为完整单码，直接返回（分片场景不会与完整码混用）
+    - 全部为 QRV2| 分片时：校验片号 1..n 连续无重复、总数一致，按片号排序去头拼接
+    """
+    for t in texts:
+        if len(t) > MAX_QR_PAYLOAD_CHARS:
+            raise ValueError("二维码内容过长")
+
+    full = next((t for t in texts if t.startswith("QRV1|")), None)
+    if full:
+        return full
+
+    parts = {}
+    total = None
+    for t in texts:
+        if not t.startswith("QRV2|"):
+            raise ValueError(f"无法识别的二维码内容（以「{t[:8]}…」开头）")
+        _, head, data_part = t.split("|", 2)
+        try:
+            idx_s, total_s = head.split("/", 1)
+            idx, frag_total = int(idx_s), int(total_s)
+        except ValueError:
+            raise ValueError(f"二维码分片头格式错误: QRV2|{head}")
+        if idx < 1 or frag_total < 1 or idx > frag_total:
+            raise ValueError(f"二维码分片编号非法: {idx}/{frag_total}")
+        if total is None:
+            total = frag_total
+        elif frag_total != total:
+            raise ValueError("二维码分片总数不一致，请重新扫描")
+        if idx in parts:
+            raise ValueError(f"第 {idx} 片重复，请扫描其他分片")
+        parts[idx] = data_part
+
+    if total is None:
+        raise ValueError("未识别到分片信息")
+    missing = [i for i in range(1, total + 1) if i not in parts]
+    if missing:
+        raise ValueError(f"二维码分片不完整（缺少第 {', '.join(map(str, missing))} 片），请继续扫描")
+    return "".join(parts[i] for i in range(1, total + 1))
 
 
 def summarize_content(content: list) -> List[dict]:

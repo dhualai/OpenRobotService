@@ -1,11 +1,9 @@
-import hashlib
-
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.knowledge import KnowledgeLike, KnowledgePublication, KnowledgeSettlement
 from app.models.task import Task
-from app.modules.admin.services.knowledge_service import actor_id, iso, month_bounds, rankings, utcnow
+from app.modules.admin.services.knowledge_service import actor_id, iso, month_bounds, monthly_reward_source_id, rankings, utcnow
 from app.modules.wxpay.schemas import GrantRewardIn
 from app.modules.wxpay.service import RewardService
 
@@ -125,7 +123,7 @@ async def grant_month(db, actor, month):
     snapshot.status = "granting"
     await db.commit()
     for entry in snapshot.rankings[:10]:
-        source_id = hashlib.sha256(f"phase1:{month}:{entry['user_id']}".encode()).hexdigest()[:48]
+        source_id = monthly_reward_source_id(month, entry["user_id"])
         await RewardService.grant(db, GrantRewardIn(user_id=entry["user_id"],
             amount=entry["estimated_reward_fen"], scene_name="机器人知识贡献月榜",
             reward_desc=f"{month}综合贡献第{entry['rank']}名", source_type="knowledge_monthly", source_id=source_id))

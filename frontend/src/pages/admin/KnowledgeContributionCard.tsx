@@ -1,13 +1,12 @@
 import { fetchKnowledgeOverview } from '@/api/knowledge';
 import { useAuthStore } from '@/stores/auth';
-import { knowledgeLikeRule, useKnowledgeResource } from './knowledgeShared';
+import { useKnowledgeResource } from './knowledgeShared';
 import KnowledgeRankCard, { contributorPreviewEntries } from './KnowledgeRankCard';
 
 function VisibleKnowledgeContributionCard() {
   const resource = useKnowledgeResource('overview', () => fetchKnowledgeOverview());
   const overview = resource.data;
-  return <KnowledgeRankCard title="知识贡献榜" hideTitle kind="combined" className="knowledge-home-card"
-    notice={knowledgeLikeRule}
+  return <KnowledgeRankCard title="知识贡献榜" hideTitle showMore={false} kind="combined" className="knowledge-home-card"
     subtitle={overview ? `${overview.month.replace('-', '年')}月 · 提单接单合并排名` : '提单接单合并排名'}
     entries={contributorPreviewEntries(overview?.top_three || [], 'combined')} to="/admin/knowledge"
     error={resource.error} loading={resource.loading && !overview} retry={resource.reload}

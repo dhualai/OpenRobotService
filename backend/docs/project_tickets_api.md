@@ -15,8 +15,8 @@
    `task_dashboard_service.get_ticket_summary` 的单项目口径——总数 = 监控中的六种状态
    （new / in_progress / paused / resolved / closed / cancelled，后者由 TaskStatus.PENDING /
    CANCELED 回映射）计数之和；**正在处理 = 处理中 + 暂停/挂起**（后端 `pending_count`，
-   即仪表盘「待处理」口径，新建尚未开始处理不计入）；**超期工单 = 截止时间已过且仍未完成**
-   （后端 `overdue_count`，与仪表盘「超时工单」同一口径）。接口返回完整 `by_status`，
+   即仪表盘「待处理」口径，新建尚未开始处理不计入）；**超期工单 = 当前阶段截止时间已过且状态为处理中**
+   （后端 `overdue_count`，仅统计 `in_progress` 且当前 UTC 时间严格超过 `curr_step_endtime` 的工单，与仪表盘「超时工单」同一口径；不含挂起、申请挂起、未到期及未设置当前阶段截止时间的工单）。接口返回完整 `by_status`，
    前端据此派生前两格数字，超期直接取 `overdue_count`（不自行比时间，避免与后端口径漂移）。
    **三格都是下钻入口**：点进 `/admin/project-detail/{id}/tickets/{scope}`，scope ∈
    `all`（总工单）/ `pending`（正在处理）/ `overdue`（超期工单）——复用仪表盘的明细页

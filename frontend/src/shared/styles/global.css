@@ -8610,6 +8610,25 @@ html, body, #root {
   background: var(--primary-soft);
 }
 
+/* ORS-1023 新项目基本信息（输入列表外项目名时出现，字段全选填）：
+   分组标题粗体贴左边距，字段内容相对缩进，风格对齐后台-项目信息管理的一级标签。 */
+.ticket-confirm__newproject {
+  margin-top: 12px; padding: 12px;
+  border: 1px dashed var(--border); border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.ticket-confirm__newproject-title {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px;
+  font-size: 13px; font-weight: 600; color: var(--foreground);
+}
+.ticket-confirm__newproject-name { font-weight: 600; color: var(--primary); }
+.ticket-confirm__newproject-tag { font-size: 11px; font-weight: 400; color: var(--muted-foreground); }
+
+/* 项目选择器「使用『关键词』作为新项目」条目（ORS-1023）：虚线框 + 主色名，与普通条目区分 */
+.user-select__item--create { border: 1px dashed var(--primary); border-radius: var(--radius-sm); margin: 4px 8px; }
+.user-select__item--create .user-select__item-name { color: var(--primary); }
+.user-select__item--create .user-select__item-meta { display: flex; }
+
 /* 转工单确认弹窗：远程方式截图上传区（与 TasksView 新建弹窗 .tasks-create-modal__remote* 对齐） */
 .ticket-confirm__remote {
   display: flex;
@@ -10721,6 +10740,16 @@ button.dispatch-dev__rate-row { cursor: pointer; }
   margin: 0 0 10px;
   font-size: 13px; font-weight: 600; color: var(--foreground);
 }
+/* 榜单小标题 + 月份选择器同一行 */
+.activity-section__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.activity-section__head .activity-section__title { margin: 0; }
+.activity-month-select {
+  flex-shrink: 0;
+  padding: 3px 8px; border-radius: var(--radius-sm, 8px);
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  background: var(--background); color: var(--foreground);
+  font-size: 12px;
+}
 .activity-empty {
   padding: 24px 0; text-align: center;
   font-size: 13px; color: var(--muted-foreground);
@@ -10749,7 +10778,7 @@ button.dispatch-dev__rate-row { cursor: pointer; }
   white-space: pre-wrap; word-break: break-word;
 }
 
-/* 精品工单榜：名次 + 标题/项目 + 点赞胶囊 */
+/* 优质问题榜：名次 + 标题/项目 + 点赞胶囊 */
 .featured-list { list-style: none; margin: 0; padding: 0; }
 .featured-item {
   display: flex; align-items: center; gap: 8px;
@@ -10792,22 +10821,6 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 }
 .featured-item__like:disabled { opacity: 0.6; cursor: default; }
 .featured-item__like.is-liked {
-  background: var(--primary-soft); color: var(--sky);
-  border-color: color-mix(in oklab, var(--primary) 35%, var(--card));
-}
-
-/* 工单详情页点赞（标题下方独立一行；归档工单无操作按钮行，故不复用 detail-card__action-btn） */
-.detail-like-row { display: flex; justify-content: flex-end; margin-top: 4px; }
-.detail-like-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 10px; border-radius: 999px;
-  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
-  background: var(--secondary); color: var(--muted-foreground);
-  font-size: 12.5px; cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
-}
-.detail-like-btn:disabled { opacity: 0.6; cursor: default; }
-.detail-like-btn.is-liked {
   background: var(--primary-soft); color: var(--sky);
   border-color: color-mix(in oklab, var(--primary) 35%, var(--card));
 }

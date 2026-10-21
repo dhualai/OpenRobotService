@@ -8,14 +8,23 @@
 - POST /data/access       数据访问（读取 CollectionData）
 - POST /data/history/access 历史数据访问（指定时间范围读取）
 - POST /data/insert       统一数据插入
+
+二维码导入（POST /data/import-qrcode）：解码数据平台导出的数据二维码（QRV1 单码 /
+QRV2 分片，gzip+Base64 压缩），得到 GroupEfficiency 指标 JSON 后走与文件导入相同的
+落库链路（按导入当天切分入库 CollectionData）。
 """
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 
 from app.modules.admin.schemas_das.request_models import DataAccessRequest
 from app.modules.admin.services.data_import_service import (
     MAX_FILE_SIZE,
+    _BEIJING_TZ,
+    _format_time,
+    decode_qr_payload,
     parse_packet_file,
     summarize_content,
     validate_and_prepare_import_data,
@@ -24,6 +33,14 @@ from app.modules.admin.services.routing_service import DataHandler
 from app.modules.admin.utils_das.config import security, DEBUG_MODE
 
 data_router = APIRouter(prefix="/data", tags=["admin-data"])
+
+
+class QrcodeImportBody(BaseModel):
+    """二维码导入请求体：payload（单码/已拼接完整串）与 fragments（分片列表）二选一。"""
+
+    project: str
+    payload: Optional[str] = None
+    fragments: Optional[List[str]] = None
 
 
 @data_router.post("/upload-file", summary="上传并解析数据包文件(.json/.bz2)")
@@ -62,6 +79,74 @@ async def upload_file(
             "message": "文件上传成功并已处理",
             "filename": file.filename,
             "file_size": f"{len(file_bytes) / 1024:.2f}KB",
+            "project": insert_data.get("project"),
+            "indicator": insert_data.get("indicator"),
+            "chunk_count": len(insert_data.get("content", [])),
+            "chunks": summarize_content(insert_data.get("content", [])),
+            "api_response": result,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"系统错误: {str(e)}")
+
+
+@data_router.post("/import-qrcode", summary="二维码导入数据包(QRV1/QRV2)")
+async def import_qrcode(
+    body: QrcodeImportBody,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None),
+) -> dict:
+    """解码数据平台导出的数据二维码，走与文件导入一致的落库链路。
+
+    二维码内容（QRV1 单码 / QRV2 分片列表）解码后有两种形态：
+    - 新格式（当前数据平台导出）：与文件导出 /exportData 同构的包装结构
+      {project, indicator, content: [{data, start_time, end_time}], collection_time}，
+      直接复用文件导入的校验+按天切分落库（页面选定项目优先于包内 project）。
+    - 旧格式（历史导出，向后兼容）：顶层即扁平指标字段（effectWorkTime/dataIndicators 等），
+      按当前时刻构造当天数据包后走同一链路。
+    """
+    try:
+        # 1. 解码二维码内容 → JSON
+        decoded = decode_qr_payload(body.payload, body.fragments)
+
+        # 2. 识别形态并构造插入数据
+        if isinstance(decoded, dict) and decoded.get("indicator") and isinstance(decoded.get("content"), list):
+            # 新格式：标准包装结构，与文件导入链路共用校验/切分/落库（body.project 优先）
+            insert_data = validate_and_prepare_import_data(decoded, body.project)
+        elif isinstance(decoded, dict) and ("effectWorkTime" in decoded or "dataIndicators" in decoded):
+            # 旧格式：扁平指标字段，时间戳取当前时刻，切分到当天（向后兼容）
+            now = datetime.now(_BEIJING_TZ)
+            insert_data = validate_and_prepare_import_data(
+                {
+                    "project": body.project,
+                    "indicator": "GroupEfficiency",
+                    "content": [{"data": [{_format_time(now): decoded}]}],
+                    "collection_time": now.isoformat(),
+                }
+            )
+        else:
+            raise ValueError("二维码内容不是搬运效率指标数据，请确认二维码来自数据平台导出")
+
+        if not insert_data.get("content"):
+            raise HTTPException(status_code=400, detail="未解析到有效数据，请检查二维码内容")
+
+        # 3. 落库 CollectionData
+        handler = DataHandler()
+        result = await handler._insert_data(insert_data)
+
+        if not isinstance(result, dict) or result.get("code") != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=(result or {}).get("message", "数据入库失败"),
+            )
+
+        return {
+            "success": True,
+            "message": "二维码数据导入成功",
+            "filename": None,
+            "file_size": None,
             "project": insert_data.get("project"),
             "indicator": insert_data.get("indicator"),
             "chunk_count": len(insert_data.get("content", [])),

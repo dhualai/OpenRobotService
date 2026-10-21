@@ -1,8 +1,8 @@
-import { Fragment, useState, useEffect, useRef, useMemo } from 'react';
+import { Fragment, useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList, ThumbsUp } from 'lucide-react';
+import { User, UserCheck, Folder, FolderKanban, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -37,13 +37,13 @@ import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import MDEditor from '@uiw/react-md-editor';
 import '@uiw/react-md-editor/markdown-editor.css';
 import { archiveGenerateStream, fetchWithAuth, taskDiscussStream } from '@/api/ai';
+import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { appUrlTransform } from '@/shared/utils/markdown';
-import { useTaskLike } from '@/shared/hooks/useTaskLike';
 
 // 状态文字色（设计稿 statusText 蓝阶：待处理 blue-3 / 处理中·进行中 blue-2 / 已解决 blue-1 / 关闭·取消 muted）
 const STATUS_TEXT_COLOR_MAP: Record<string, string> = {
@@ -92,7 +92,55 @@ const isImageFile = (filename?: string): boolean => {
   return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext);
 };
 
+// ORS-1010 归档相似工单提示：归档编辑器打开时后台拉取，供归档人对照已沉淀的
+// 相似工单。score 是 RRF 融合分非余弦（后端文档明确警告），前端不展示分值。
+interface ArchiveSimilarItem {
+  task_id: number;
+  title: string;
+  status?: string;
+  project_name?: string;
+  archived?: boolean;
+  score?: number;
+  verified?: 'confirmed' | 'rejected' | 'recurred' | 'unknown' | string;
+  /** 沉淀卡正文（问题/根因/解决三段式）——条目展开显示，替代跳工单详情 */
+  summary?: string;
+  /** ORS-1035：相似单评论区图片（≤3 张 object_path），展开区缩略图对照 */
+  image_paths?: string[];
+  report?: {
+    content: string;
+    version: number;
+    reviewer?: string;
+    reviewer_name?: string;
+    reviewed_at?: string;
+  } | null;
+}
+
 interface MinioPathInfo { bucket: string; objectKey: string; }
+
+// ORS-1010 相似工单的状态展示（后端回表带枚举原值，小写；缺省透传原样）
+const ARCHIVE_SIMILAR_STATUS_ZH: Record<string, string> = {
+  archived: '已归档', closed: '已关闭', resolved: '已解决', new: '新建',
+  in_progress: '处理中', pending: '待处理', canceled: '已取消',
+};
+
+// ORS-1035 相似工单缩略图：object_path → 带鉴权 token 的附件代理 URL（<img> 直连）
+const similarThumbUrl = (objectPath: string): string => {
+  const authToken = readStored('AUTH_TOKEN') || '';
+  return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(objectPath)}&token=${encodeURIComponent(authToken)}`;
+};
+
+const SimilarThumb = ({ objectPath }: { objectPath: string }) => (
+  <img
+    src={similarThumbUrl(objectPath)}
+    alt=""
+    loading="lazy"
+    onClick={(e) => {
+      e.stopPropagation(); // 不触发条目的展开/收起
+      window.open(similarThumbUrl(objectPath), '_blank');
+    }}
+    style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border, #e8eaee)', cursor: 'zoom-in', flexShrink: 0 }}
+  />
+);
 
 const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
   try {
@@ -274,9 +322,9 @@ export default function TaskDetailPage() {
   // AI 判定当前无解决方案（仅占位提示，不填入输入框）
   const [resolutionNoSolution, setResolutionNoSolution] = useState(false);
 
-  // 请求暂停弹窗
-  const [showPausePopup, setShowPausePopup] = useState(false);
-  const [pauseReason, setPauseReason] = useState('');
+  // 标记无法解决弹窗
+  const [showUnsolvablePopup, setShowUnsolvablePopup] = useState(false);
+  const [unsolvableReason, setUnsolvableReason] = useState('');
   // 标记是否已"确认完成"成功（成功后关闭弹窗不应清除草稿；取消/遮罩关闭才清除）
   const resolveConfirmedRef = useRef(false);
   // 轮询停止标志：取消/关闭时置 true，让异步轮询循环及时退出（state 无法中断 while 循环）
@@ -296,6 +344,7 @@ export default function TaskDetailPage() {
   const [approving, setApproving] = useState(false);
   const [showAdjustPopup, setShowAdjustPopup] = useState(false);
   const [adjustName, setAdjustName] = useState('');
+  const [adjustCode, setAdjustCode] = useState('');
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -310,6 +359,21 @@ export default function TaskDetailPage() {
   const [archiveGenerating, setArchiveGenerating] = useState(false);
   const [archiveGenStatus, setArchiveGenStatus] = useState('');
   const [showArchiveRejectPopup, setShowArchiveRejectPopup] = useState(false);
+  // ORS-1010 归档相似工单提示：归档编辑器打开时后台拉取（与 AI 初稿生成并行），
+  // 展示已沉淀的相似工单供归档人对照；不展示相似度分值（RRF 融合分非余弦，
+  // 展示百分比会误导），只有"有没有、是哪几张"。
+  const [archiveSimilar, setArchiveSimilar] = useState<ArchiveSimilarItem[]>([]);
+  const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
+  // ORS-1010：报告预览/编辑切换（生成完默认预览——用户先看到渲染结果含图片）
+  const [archiveReportPreview, setArchiveReportPreview] = useState(false);
+  // ORS-1010：报告插图上传（走评论附件接口拿 object_path，正文插 markdown）
+  const [uploadingReportImage, setUploadingReportImage] = useState(false);
+  const reportImageInputRef = useRef<HTMLInputElement | null>(null);
+  // ORS-1010：展开查看卡正文（问题/根因/解决）的条目
+  const [expandedSimilar, setExpandedSimilar] = useState<Set<number>>(new Set());
+  // 检索成功完成（retrieval_status=ok）：0 条也显示"未发现"提示，让功能存在感在；
+  // 检索挂了保持静默（不假装"没有"）
+  const [archiveSimilarReady, setArchiveSimilarReady] = useState(false);
 
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
@@ -343,9 +407,6 @@ export default function TaskDetailPage() {
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
   const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
-
-  // 点赞（活动中心「精品工单 TOP 榜」的计数来源）：拉取/乐观更新/回滚都在 hook 里
-  const { state: likeState, pending: likePending, toggle: toggleLike } = useTaskLike(detailId);
 
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
@@ -398,14 +459,6 @@ export default function TaskDetailPage() {
       })
       .finally(() => setDetailLoading(false));
   }, [detailId]);
-
-  /** 点赞 / 取消：乐观更新与回滚在 useTaskLike 内完成，这里只负责失败提示 */
-  const handleToggleLike = async () => {
-    const liked = await toggleLike();
-    if (liked === null) {
-      Toast({ message: '点赞操作失败，请稍后重试', theme: 'error' });
-    }
-  };
 
   // 查看停留时长追踪：用户离开页面 / 切后台时回传累计可见秒数
   // 后端将累加到最近一条 VIEW 操作记录上（5 分钟去重窗口内同一条记录）
@@ -545,7 +598,12 @@ export default function TaskDetailPage() {
       // 管理员可以代替任何一方操作（运维兜底），但走和提单人侧一样的确认/驳回按钮
     }
 
-    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
+    // unsolvable_requested：处理人标记无法解决，等待提单人确认——同暂停请求，仅提单人侧可操作
+    if (status === 'unsolvable_requested') {
+      if (!isReporter && !isPrincipal && !canOperate) return [];
+    }
+
+    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused', 'unsolvable'];
     if (assigneeOnlyStatuses.includes(status) && !isAssignee && !canOperate) return [];
 
     // 已解决：与后端口径统一（决策 6）—— 提单人(created_by，即代理人) / 已确认跟进的被代理人 / 管理员
@@ -558,12 +616,20 @@ export default function TaskDetailPage() {
       // new 状态由处理人首次响应（协商节点时间/确认同意）自动转为 in_progress，不再提供「开始处理」按钮
       new: [],
       // 有/无步骤模板的工单：处理人均可从顶部一键触发"处理完成"（走解决方式弹窗）
+      // "暂停工单"仅管理员可见（直达已挂起 pending，跳过两阶段请求暂停）
       in_progress: [
-        { label: '请求暂停', nextStatus: 'pending_requested', theme: 'warning', customStyle: BTN_SECONDARY },
+        ...(canOperate ? [{ label: '暂停工单', nextStatus: 'pending', theme: 'warning' as const, customStyle: BTN_SECONDARY }] : []),
         { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
+        { label: '无法解决', nextStatus: 'unsolvable_requested', theme: 'warning', customStyle: BTN_SECONDARY },
       ],
-      // 暂停请求中：确认/驳回按钮已移至「工单阶段性处理」卡内，顶部不再重复
+      // 暂停请求中：两阶段路径仅兼容历史数据，新流程不再产生；确认/驳回按钮已移至阶段性处理卡内
       pending_requested: [],
+      // 无法解决确认中：确认/驳回按钮已移至「工单阶段性处理」卡内，顶部不再重复
+      unsolvable_requested: [],
+      unsolvable: [
+        // 已被提单人确认无法解决的终态：处理人可点"继续处理"回到 in_progress
+        { label: '继续处理', nextStatus: 'in_progress', theme: 'primary', customStyle: BTN_PRIMARY },
+      ],
       pending: (isAssignee && isReporter)
         ? [
             // 工单退回发起人后：发起人可重新发起（继续处理）或关闭工单
@@ -610,7 +676,7 @@ export default function TaskDetailPage() {
     return actions[status] || [];
   };
 
-  const handleStatusChange = async (action: { nextStatus: string; pauseReason?: string; rejectReason?: string }) => {
+  const handleStatusChange = async (action: { nextStatus: string; pauseReason?: string; rejectReason?: string; unsolvableReason?: string }) => {
     if (!detail) return;
     // 清空前次阻塞提示
     setBlockedError(null);
@@ -619,6 +685,7 @@ export default function TaskDetailPage() {
       const bodyObj: Record<string, string> = { status: action.nextStatus };
       if (action.pauseReason) bodyObj.pause_reason = action.pauseReason;
       if (action.rejectReason) bodyObj.reject_reason = action.rejectReason;
+      if (action.unsolvableReason) bodyObj.unsolvable_reason = action.unsolvableReason;
       await request<Ticket>(`/${detail.id}/status`, {
         method: 'PATCH',
         body: JSON.stringify(bodyObj),
@@ -637,9 +704,9 @@ export default function TaskDetailPage() {
           return;
         }
       }
-      // 请求暂停理由必填（400）
-      if (err instanceof ApiError && err.statusCode === 400 && action.nextStatus === 'pending_requested') {
-        Toast({ message: err.message || '请填写暂停理由', theme: 'error' });
+      // 标记无法解决理由必填（400）
+      if (err instanceof ApiError && err.statusCode === 400 && action.nextStatus === 'unsolvable_requested') {
+        Toast({ message: err.message || '请填写无法解决理由', theme: 'error' });
         return;
       }
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -672,6 +739,55 @@ export default function TaskDetailPage() {
     }
   };
 
+  // ── ORS-1010：归档相似工单拉取（后台并行，不阻塞 AI 初稿生成）──
+  // min_score=0.015（RRF k=60 语义：至少一路检索排进前 6；rejected ×0.7 加权后
+  // 天然过不了线，被推翻的结论自动出局——生产实测有效匹配落在 0.0156~0.033）。
+  // 用默认 remind scope：review scope 要求该单正在审核中且有审核权限（会 403），
+  // 归档人写报告阶段用不到 report 内容，remind 字段（score/verified/status）已够。
+  // verified=rejected 再前端兜底过滤。
+  const fetchArchiveSimilar = useCallback(async (taskId: number) => {
+    setArchiveSimilarLoading(true);
+    setArchiveSimilarReady(false);
+    setExpandedSimilar(new Set()); // 重新拉取即收起所有展开（弹窗重开也从收起态开始）
+    try {
+      const res = await request<{ task_id: number; retrieval_status?: string; similar: ArchiveSimilarItem[] }>(
+        `/${taskId}/similar?limit=5&min_score=0.015`,
+      );
+      const list = (res?.similar || []).filter((s) => s.verified !== 'rejected');
+      setArchiveSimilar(list.slice(0, 5));
+      setArchiveSimilarReady(res?.retrieval_status !== 'unavailable');
+    } catch {
+      setArchiveSimilar([]); setArchiveReportPreview(false); // 静默降级：相似提示拿不到不影响归档
+      setArchiveSimilarReady(false);
+    } finally {
+      setArchiveSimilarLoading(false);
+    }
+  }, []);
+
+  // ── 开始归档（closed → archiving）──
+  /** ORS-1010：报告插图上传——走评论附件接口拿 object_path，正文插相对路径
+      markdown（预览/审核/知识卡全链路 AuthImage 可渲染）。多张逐张传，
+      追加到正文末尾；失败 toast 不中断 */
+  const handleReportImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // 允许重复选同一文件
+    if (!files.length) return;
+    setUploadingReportImage(true);
+    try {
+      const inserts: string[] = [];
+      for (const f of files) {
+        const objectPath = await uploadCommentAttachment(f, `report-${Date.now()}`);
+        inserts.push(`![${f.name}](/api/tasks/attachments/download?path=${encodeURIComponent(objectPath)})`);
+      }
+      setArchiveReportContent((prev) => `${prev || ''}${prev?.trim() ? '\n' : ''}${inserts.join('\n')}\n`);
+      Toast({ message: `已插入 ${inserts.length} 张图片`, theme: 'success' });
+    } catch (err) {
+      Toast({ message: `图片上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setUploadingReportImage(false);
+    }
+  };
+
   // ── 开始归档（closed → archiving）──
   const handleStartArchive = async () => {
     if (!detail || archiveLoading) return;
@@ -682,22 +798,38 @@ export default function TaskDetailPage() {
       setArchiveReportRevision(ticket.current_archive_report?.revision || 1);
       setArchiveEditorMode('edit');
       setArchiveEditorVisible(true);
+      // ORS-1010：相似工单与 AI 初稿并行拉取（失败静默，编辑器不等它）
+      setArchiveSimilar([]); setArchiveReportPreview(false);
+      void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
-      if (existing) {
-        // 已有内容（幂等复用/处理人写过）：不触发 AI，直接编辑
-        setArchiveReportContent(existing);
-        Toast({ message: '已开始归档，请编写归档报告', theme: 'success' });
-        return;
-      }
+      // ORS-1010：AI 生成改为显式按钮（不自动跑）——编辑器空态给引导条，
+      // 处理人自己写或点 AI 均可；已有内容（幂等复用）直接进编辑
+      setArchiveReportContent(existing);
+      Toast({ message: existing ? '已开始归档，请继续编写归档报告' : '已开始归档，可直接手写，或点「AI 生成初稿」', theme: 'success' });
+    } catch (err) {
+      // archive-start 失败兜底
+      Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
 
-      // AI 初稿流式生成：编辑器只读态直播，完成后解锁修改
-      setArchiveGenerating(true);
-      setArchiveGenStatus('AI 正在为您总结归档报告…');
-      let acc = '';
+  // ── ORS-1010：AI 生成初稿（显式按钮触发）──
+  const handleAiGenerateReport = async () => {
+    if (!detail || archiveGenerating || archiveLoading) return;
+    if ((archiveReportContent || '').trim()) {
+      // 已有内容不覆盖（与原有"处理人手写不覆盖"保护同口径），提示走补齐章节
+      Toast({ message: '报告已有内容，AI 不覆盖；缺章节可点「补齐章节」', theme: 'warning' });
+      return;
+    }
+    setArchiveGenerating(true);
+    setArchiveGenStatus('AI 正在为您总结归档报告…');
+    setArchiveReportPreview(false);
+    let acc = '';
+    try {
       await archiveGenerateStream(
-        // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；
-        // detail.id 是路由字符串，与 ticket.ts 既有写法一致显式转换
+        // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；detail.id 是路由字符串
         { task_id: Number(detail.id) },
         {
           onStatus: (m) => setArchiveGenStatus(m),
@@ -706,6 +838,7 @@ export default function TaskDetailPage() {
           onDone: () => {
             setArchiveGenerating(false);
             setArchiveGenStatus('');
+            setArchiveReportPreview(true); // 生成完默认预览：先看渲染结果（含图片）
             Toast({ message: 'AI 初稿已生成，请核对并修改后提交审核', theme: 'success' });
           },
           onError: (m) => {
@@ -727,10 +860,7 @@ export default function TaskDetailPage() {
     } catch (err) {
       setArchiveGenerating(false);
       setArchiveGenStatus('');
-      // 归档已开成、AI 生成链路失败：解锁手写（archive-start 本身失败也在此兜底）
-      Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}（可直接手写报告）`, theme: 'warning' });
-    } finally {
-      setArchiveLoading(false);
+      Toast({ message: `${err instanceof Error ? err.message : 'AI 生成失败'}（可直接手写报告）`, theme: 'warning' });
     }
   };
 
@@ -828,6 +958,9 @@ export default function TaskDetailPage() {
       setArchiveEditorMode('edit');
     }
     setArchiveEditorVisible(true);
+    // ORS-1010：编辑/再编辑打开时后台带出相似工单（失败静默）
+    setArchiveSimilar([]); setArchiveReportPreview(false);
+    void fetchArchiveSimilar(Number(detail.id));
   };
 
   const handleEscalate = async (t: Ticket) => {
@@ -921,26 +1054,40 @@ export default function TaskDetailPage() {
   );
   const resolve = useResolveTicket(detailId ?? '', detail, refreshDetail, refreshTasks, (b) => setBlockedError(b));
 
-  // ===== 公司/部门审核 =====
+  // ===== 公司/部门/项目审核 =====
   const approvalInfo = (() => {
     const meta = detail?.metadata_info || {};
     const approvalType = meta.approval_type as string | undefined;
     if (!approvalType) return null;
+    const type = approvalType as 'new_company' | 'new_department' | 'new_project';
     return {
-      type: approvalType as 'new_company' | 'new_department',
+      type,
       targetTable: (meta.target_table as string) || '',
       targetId: (meta.target_id as string) || '',
       targetName: (meta.target_name as string) || '',
       companyName: meta.company_name as string | undefined,
+      // 新项目额外字段
+      targetCode: (meta.target_code as string) || '',
+      customer: (meta.customer as string) || '',
+      region: (meta.region as string) || '',
     };
   })();
+
+  // approval_type → admin API 的 target_type（company/department/project）
+  const approvalTargetType = (t: typeof approvalInfo) =>
+    !t ? '' : t.type === 'new_company' ? 'company' : t.type === 'new_department' ? 'department' : 'project';
+  // 审核类型对应的中文名（用于 UI 文案）
+  const approvalLabelMap: Record<string, string> = {
+    new_company: '公司',
+    new_department: '部门',
+    new_project: '项目',
+  };
 
   const handleApprove = async () => {
     if (!approvalInfo) return;
     setApproving(true);
     try {
-      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
-      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/approve`, {
+      await adminRequest(`/users/options/${approvalTargetType(approvalInfo)}/${approvalInfo.targetId}/approve`, {
         method: 'PUT',
       });
       await request(`/${detail!.id}/status`, {
@@ -959,25 +1106,29 @@ export default function TaskDetailPage() {
   // 调整名称后通过
   const handleAdjustApprove = async () => {
     if (!approvalInfo) return;
-    const trimmed = (adjustName || '').trim();
-    if (!trimmed) {
-      Toast({ message: '请输入名称', theme: 'warning' });
+    const trimmedName = (adjustName || '').trim();
+    const trimmedCode = (adjustCode || '').trim();
+    if (!trimmedName && !trimmedCode) {
+      Toast({ message: '请输入要调整的内容', theme: 'warning' });
       return;
     }
     setApproving(true);
     try {
-      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
-      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/approve`, {
+      const body: Record<string, string> = {};
+      if (trimmedName) body.new_name = trimmedName;
+      if (approvalInfo.type === 'new_project' && trimmedCode) body.new_code = trimmedCode;
+      await adminRequest(`/users/options/${approvalTargetType(approvalInfo)}/${approvalInfo.targetId}/approve`, {
         method: 'PUT',
-        body: JSON.stringify({ new_name: trimmed }),
+        body: JSON.stringify(body),
       });
       await request(`/${detail!.id}/status`, {
         method: 'PATCH',
         body: JSON.stringify({ status: 'closed' }),
       });
-      Toast({ message: '已调整名称并审核通过', theme: 'success' });
+      Toast({ message: '已调整并审核通过', theme: 'success' });
       setShowAdjustPopup(false);
       setAdjustName('');
+      setAdjustCode('');
       await refreshDetail();
     } catch (err) {
       Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -994,8 +1145,7 @@ export default function TaskDetailPage() {
     }
     setApproving(true);
     try {
-      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
-      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/reject`, {
+      await adminRequest(`/users/options/${approvalTargetType(approvalInfo)}/${approvalInfo.targetId}/reject`, {
         method: 'PUT',
         body: JSON.stringify({ reason: rejectReason.trim() }),
       });
@@ -1670,10 +1820,10 @@ export default function TaskDetailPage() {
                       } else if (action.nextStatus === 'resolved') {
                         // 结束工单（→ resolved）→ 打开 "问题 + AI 解决方式" 确认弹窗
                         resolve.handleResolveClick();
-                      } else if (action.nextStatus === 'pending_requested') {
-                        // 请求暂停 → 先弹理由输入弹窗
-                        setPauseReason('');
-                        setShowPausePopup(true);
+                      } else if (action.nextStatus === 'unsolvable_requested') {
+                        // 标记无法解决 → 先弹理由输入弹窗
+                        setUnsolvableReason('');
+                        setShowUnsolvablePopup(true);
                       } else {
                         handleStatusChange(action);
                       }
@@ -1702,22 +1852,6 @@ export default function TaskDetailPage() {
           <h2 className="detail-card__title">
             <TitleEllipsis text={detail.title} lines={3} titleClassName="detail-card__title-inner" as="span" fontSize={19} lineHeight={1.3} />
           </h2>
-          {/* 点赞：归档工单没有操作按钮行（终态隐藏），故点赞独立成行常驻在标题下 */}
-          {likeState && (
-            <div className="detail-like-row">
-              <button
-                type="button"
-                className={`detail-like-btn ${likeState.liked ? 'is-liked' : ''}`}
-                disabled={likePending}
-                onClick={handleToggleLike}
-                aria-pressed={likeState.liked}
-                aria-label={likeState.liked ? '取消点赞' : '点赞'}
-              >
-                <ThumbsUp size={15} strokeWidth={2} fill={likeState.liked ? 'currentColor' : 'none'} />
-                <span data-testid="detail-like-count">{likeState.like_count}</span>
-              </button>
-            </div>
-          )}
           <div className="detail-card__info-grid">
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><User size={14} strokeWidth={2} /></span>
@@ -1833,46 +1967,71 @@ export default function TaskDetailPage() {
           <SafeHtml className="detail-card__body detail-card__body--pre" html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
 
-        {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用 */}
-        <StepNegotiationCard
-          negotiation={negotiation}
-          detail={detail}
-          // 被代理人仅在已确认跟随后才参与协商（pending 只读，决策 10）
-          roles={{
-            ...getCurrentUserRoles(),
-            isPrincipal: getCurrentUserRoles().isPrincipal && proxyRelation?.relation_status === 'acknowledged',
-          }}
-          onResolve={resolve.handleResolveClick}
-          onEscalate={(round, maxRound) => {
-            setEscalateUser(null);
-            setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入处理。`);
-            setShowEscalatePopup(true);
-          }}
-          onReassign={() => {
-            setReassignUser(null);
-            setReassignReason('');
-            setShowReassignPopup(true);
-          }}
-          onPauseResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
-        />
+        {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用。
+            审核型工单（metadata_info 含 approval_type）不展示，走下方专门的审核卡片。 */}
+        {!approvalInfo && (
+          <StepNegotiationCard
+            negotiation={negotiation}
+            detail={detail}
+            // 被代理人仅在已确认跟随后才参与协商（pending 只读，决策 10）
+            roles={{
+              ...getCurrentUserRoles(),
+              isPrincipal: getCurrentUserRoles().isPrincipal && proxyRelation?.relation_status === 'acknowledged',
+            }}
+            onResolve={resolve.handleResolveClick}
+            onEscalate={(round, maxRound) => {
+              setEscalateUser(null);
+              setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入处理。`);
+              setShowEscalatePopup(true);
+            }}
+            onReassign={() => {
+              setReassignUser(null);
+              setReassignReason('');
+              setShowReassignPopup(true);
+            }}
+            onPauseResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
+            onUnsolvableResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
+          />
+        )}
 
-        {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
+        {/* 公司/部门/项目审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
         {approvalInfo && username === 'admin' && (
           <div className="detail-card" style={{ border: '1.5px solid var(--blue-4)' }}>
             <h4 className="detail-card__h" style={{ color: 'var(--blue-2)', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {approvalInfo.type === 'new_company' ? <Building2 size={15} strokeWidth={2} /> : <Store size={15} strokeWidth={2} />}
-              {approvalInfo.type === 'new_company' ? '新公司录入审核' : '新部门录入审核'}
+              {approvalInfo.type === 'new_company' ? (
+                <Building2 size={15} strokeWidth={2} />
+              ) : approvalInfo.type === 'new_department' ? (
+                <Store size={15} strokeWidth={2} />
+              ) : (
+                <FolderKanban size={15} strokeWidth={2} />
+              )}
+              {approvalInfo.type === 'new_company'
+                ? '新公司录入审核'
+                : approvalInfo.type === 'new_department'
+                  ? '新部门录入审核'
+                  : '新项目录入审核'}
             </h4>
             <div style={{ fontSize: 13, color: 'var(--foreground)', lineHeight: 1.8, marginBottom: 16 }}>
-              <div>
-                <strong>{approvalInfo.type === 'new_company' ? '公司名称' : '部门名称'}：</strong>
-                {approvalInfo.targetName}
-              </div>
-              {approvalInfo.companyName && (
-                <div><strong>所属公司：</strong>{approvalInfo.companyName}</div>
+              {approvalInfo.type === 'new_project' ? (
+                <>
+                  <div><strong>项目名称：</strong>{approvalInfo.targetName}</div>
+                  {approvalInfo.targetCode && <div><strong>项目代码：</strong>{approvalInfo.targetCode}</div>}
+                  {approvalInfo.customer && <div><strong>客户信息：</strong>{approvalInfo.customer}</div>}
+                  {approvalInfo.region && <div><strong>项目区域：</strong>{approvalInfo.region}</div>}
+                </>
+              ) : (
+                <>
+                  <div>
+                    <strong>{approvalInfo.type === 'new_company' ? '公司名称' : '部门名称'}：</strong>
+                    {approvalInfo.targetName}
+                  </div>
+                  {approvalInfo.companyName && (
+                    <div><strong>所属公司：</strong>{approvalInfo.companyName}</div>
+                  )}
+                </>
               )}
               <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
-                请审核以下信息，通过后该{approvalInfo.type === 'new_company' ? '公司' : '部门'}将对所有用户可见
+                请审核以下信息，通过后该{approvalLabelMap[approvalInfo.type]}将对所有用户可见
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -1890,10 +2049,14 @@ export default function TaskDetailPage() {
                 theme="default"
                 variant="outline"
                 disabled={approving}
-                onClick={() => { setAdjustName(approvalInfo.targetName); setShowAdjustPopup(true); }}
+                onClick={() => {
+                  setAdjustName(approvalInfo.targetName);
+                  setAdjustCode(approvalInfo.targetCode);
+                  setShowAdjustPopup(true);
+                }}
                 style={{ borderRadius: '999px' }}
               >
-                调整名称
+                调整后通过
               </Button>
               <Button
                 block
@@ -2299,36 +2462,36 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 请求暂停弹窗：输入理由（提单人将看到） */}
-      <Popup visible={showPausePopup} onClose={() => { setShowPausePopup(false); setPauseReason(''); }} placement="bottom" showOverlay destroyOnClose>
+      {/* 标记无法解决弹窗：输入理由（提单人将看到并决定） */}
+      <Popup visible={showUnsolvablePopup} onClose={() => { setShowUnsolvablePopup(false); setUnsolvableReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
-          <h4 className="ticket-edit__title">请求暂停工单</h4>
+          <h4 className="ticket-edit__title">标记无法解决工单</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            暂停理由将展示给提单人，对方据此决定是否同意暂停。
+            无法解决理由将展示给提单人，对方确认后工单进入「无法解决」终态；驳回则回到处理中继续处理。
           </p>
           <Form initialData={{}}>
-            <FormItem label="暂停理由" name="pauseReason" labelAlign="top" requiredMark>
+            <FormItem label="无法解决理由" name="unsolvableReason" labelAlign="top" requiredMark>
               <Textarea
-                value={pauseReason}
-                onChange={(v) => setPauseReason(String(v))}
-                placeholder="请说明为什么需要暂停工单（例如：需要外部协作 / 等待安全确认 / 资源调配中）"
+                value={unsolvableReason}
+                onChange={(v) => setUnsolvableReason(String(v))}
+                placeholder="请说明为什么无法解决工单（例如：问题本身超出能力范围 / 所需资源无法获取 / 客户需求不清晰）"
                 autosize={{ minRows: 3, maxRows: 6 }}
                 maxlength={500}
               />
             </FormItem>
           </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" onClick={() => { setShowPausePopup(false); setPauseReason(''); }}>取消</Button>
+            <Button theme="default" onClick={() => { setShowUnsolvablePopup(false); setUnsolvableReason(''); }}>取消</Button>
             <Button
               theme="primary"
-              disabled={!pauseReason.trim()}
+              disabled={!unsolvableReason.trim()}
               onClick={async () => {
-                await handleStatusChange({ nextStatus: 'pending_requested', pauseReason: pauseReason.trim() });
-                setShowPausePopup(false);
-                setPauseReason('');
+                await handleStatusChange({ nextStatus: 'unsolvable_requested', unsolvableReason: unsolvableReason.trim() });
+                setShowUnsolvablePopup(false);
+                setUnsolvableReason('');
               }}
             >
-              提交暂停请求
+              提交无法解决请求
             </Button>
           </div>
         </div>
@@ -2634,7 +2797,7 @@ export default function TaskDetailPage() {
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">驳回审核</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            确定要驳回{approvalInfo?.type === 'new_company' ? '公司' : '部门'}「{approvalInfo?.targetName}」的录入申请吗？
+            确定要驳回{approvalInfo ? approvalLabelMap[approvalInfo.type] : '该对象'}「{approvalInfo?.targetName}」的录入申请吗？
           </p>
           <Form initialData={{}}>
             <FormItem label="驳回原因" name="rejectReason" labelAlign="top" requiredMark>
@@ -2654,39 +2817,59 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 调整名称弹窗 */}
+      {/* 调整名称 / 项目代码弹窗 */}
       <Popup
         visible={showAdjustPopup}
-        onClose={() => { if (!approving) { setShowAdjustPopup(false); setAdjustName(''); } }}
+        onClose={() => { if (!approving) { setShowAdjustPopup(false); setAdjustName(''); setAdjustCode(''); } }}
         placement="bottom"
         showOverlay
       >
         <div className="ticket-edit">
-          <h4 className="ticket-edit__title">调整名称</h4>
+          <h4 className="ticket-edit__title">
+            调整{approvalInfo?.type === 'new_project' ? '项目' : approvalInfo?.type === 'new_company' ? '公司' : '部门'}信息
+          </h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            修改{approvalInfo?.type === 'new_company' ? '公司' : '部门'}名称后审核通过：
+            修改{approvalInfo ? approvalLabelMap[approvalInfo.type] : ''}信息后审核通过（留空表示不调整）：
           </p>
           <Form initialData={{}}>
-            <FormItem label="名称" name="adjustName" labelAlign="top" requiredMark>
+            <FormItem label={approvalInfo?.type === 'new_project' ? '项目名称' : '名称'} name="adjustName" labelAlign="top">
               <ClearableInput
                 value={adjustName}
                 onChange={(v) => setAdjustName(String(v))}
-                placeholder="请输入新的名称"
+                placeholder={approvalInfo?.type === 'new_project' ? '请输入新的项目名称' : '请输入新的名称'}
                 maxlength={64}
               />
             </FormItem>
+            {approvalInfo?.type === 'new_project' && (
+              <FormItem label="项目代码" name="adjustCode" labelAlign="top">
+                <ClearableInput
+                  value={adjustCode}
+                  onChange={(v) => setAdjustCode(String(v))}
+                  placeholder="请输入新的项目代码"
+                  maxlength={32}
+                />
+              </FormItem>
+            )}
           </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" disabled={approving} onClick={() => { setShowAdjustPopup(false); setAdjustName(''); }}>取消</Button>
-            <Button theme="primary" loading={approving} onClick={handleAdjustApprove} disabled={!adjustName.trim()}>确认通过</Button>
+            <Button theme="default" disabled={approving} onClick={() => { setShowAdjustPopup(false); setAdjustName(''); setAdjustCode(''); }}>取消</Button>
+            <Button theme="primary" loading={approving} onClick={handleAdjustApprove} disabled={!adjustName.trim() && !adjustCode.trim()}>确认通过</Button>
           </div>
         </div>
       </Popup>
 
       {/* ── 归档报告编辑器 Popup ── */}
-      <Popup visible={archiveEditorVisible} onClose={() => setArchiveEditorVisible(false)} placement="bottom" showOverlay>
-        <div className="ticket-edit-form">
-          <span className="ticket-edit-form__close" onClick={() => setArchiveEditorVisible(false)}>×</span>
+      <Popup
+        visible={archiveEditorVisible}
+        onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}
+        placement="bottom"
+        showOverlay
+      >
+        {/* ORS-1010：编辑器+相似工单块易超 88vh，ticket-edit-form 类本身不滚动
+            （滚动在其 __body 子层，本弹窗未用）——底部内容曾被硬裁（1010 用户
+            iOS 实测提示语只剩半句）。内联开启滚动。 */}
+        <div className="ticket-edit-form" style={{ overflowY: 'auto' }}>
+          <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
           </h4>
@@ -2698,29 +2881,146 @@ export default function TaskDetailPage() {
           )}
           {archiveEditorMode === 'edit' ? (
             <>
-              <div style={{ marginBottom: 12, fontSize: 12, lineHeight: 1.8, color: 'var(--muted-foreground)' }}>
-                活动归档报告须填写问题概述、问题场景、复现条件、原因分析、解决方案、验证结果、适用范围、遗留问题；各章节须有正文，无遗留可写“无”。请勿写入人员姓名及联系方式。
-                <Button size="small" theme="default" disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐报告章节</Button>
+              {/* ORS-1010 精简：章节要求压成一行 + 常用操作（补齐章节/上传图片），
+                  原格式工具栏整排删除——报告写作用不上，还把正文挤出首屏 */}
+          {/* ORS-1010 相似工单提示：归档人对照已沉淀的相似工单（与 AI 初稿并行
+              拉取）。不展示相似度分值——score 是 RRF 融合分非余弦，展示数字会
+              误导。verified=rejected 已被推翻，不出示。0 条且检索正常时也提示
+              （功能存在感 + 讲清沉淀机制）；检索挂了保持静默。 */}
+          {(archiveSimilar.length > 0 || archiveSimilarLoading || archiveSimilarReady) && (
+            <div style={{
+              marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)',
+              maxHeight: 320, overflowY: 'auto',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>相似工单</span>
+                <span style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
+                  {archiveSimilarLoading
+                    ? '检索中…'
+                    : archiveSimilar.length > 0
+                      ? `发现 ${archiveSimilar.length} 张，供对照参考`
+                      : '经验库中暂无相似的已沉淀工单'}
+                </span>
               </div>
+              {archiveSimilar.map((s) => {
+                const expanded = expandedSimilar.has(s.task_id);
+                return (
+                  <div
+                    key={s.task_id}
+                    onClick={() => setExpandedSimilar((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(s.task_id)) next.delete(s.task_id);
+                      else next.add(s.task_id);
+                      return next;
+                    })}
+                    style={{ padding: '10px 0', borderBottom: '1px dashed var(--border, #e8eaee)', cursor: 'pointer' }}
+                  >
+                    {/* 窄屏两行式：行1 = 单号+徽章+展开符（标题不参与挤一行）；行2 = 标题独占整行可换行 */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--brand, #266fe8)', flexShrink: 0 }}>#{s.task_id}</span>
+                      {s.verified === 'confirmed' && (
+                        <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#e3f9e9', color: '#1f8a5a', flexShrink: 0 }}>✓ 已验证</span>
+                      )}
+                      {s.verified === 'recurred' && (
+                        <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, background: '#fff4e0', color: '#b8860b', flexShrink: 0 }}>↻ 曾复发</span>
+                      )}
+                      <span style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginLeft: 'auto', flexShrink: 0 }}>{expanded ? '收起 ▴' : '展开 ▾'}</span>
+                    </div>
+                    <div style={{ fontSize: 13, marginTop: 3, lineHeight: 1.5, wordBreak: 'break-word', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{s.title}</div>
+                    {(s.project_name || s.status) && (
+                      <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
+                        {[s.project_name, ARCHIVE_SIMILAR_STATUS_ZH[s.status || ''] || s.status].filter(Boolean).join(' · ')}
+                      </div>
+                    )}
+                    {expanded && s.summary && (
+                      <pre style={{ marginTop: 8, padding: '8px 10px', background: 'var(--muted, #f6f8fa)', borderRadius: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.7, color: 'var(--foreground)', maxHeight: 200, overflowY: 'auto' }}>{s.summary}</pre>
+                    )}
+                    {expanded && !!s.image_paths?.length && (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                        {s.image_paths.map((p) => (
+                          <SimilarThumb key={p} objectPath={p} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {archiveSimilar.length === 0 && !archiveSimilarLoading && (
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', lineHeight: 1.7, wordBreak: 'break-word' }}>
+                  本单归档审核通过后也会沉淀进经验库，供以后遇到同类问题的同事参考。
+                </div>
+              )}
+              {archiveSimilar.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginTop: 6 }}>
+                  点条目展开查看问题 / 根因 / 解决
+                </div>
+              )}
+            </div>
+          )}
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
+                  须含八个章节且各节有正文（无遗留写「无」）；请勿写入人员姓名及联系方式。
+                </span>
+                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐章节</Button>
+                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
+                  {uploadingReportImage ? '上传中…' : '📷 上传图片'}
+                </Button>
+                <input
+                  ref={reportImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={handleReportImageUpload}
+                />
+              </div>
+              {!archiveGenerating && !archiveReportContent.trim() && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, background: 'var(--muted, #f6f8fa)', borderRadius: 8 }}>
+                  <span style={{ flex: 1, fontSize: 12, color: 'var(--muted-foreground)' }}>
+                    💡 不想手写？让 AI 基于本单讨论先出一份标准结构初稿
+                  </span>
+                  <Button size="small" theme="primary" onClick={handleAiGenerateReport}>✨ AI 生成初稿</Button>
+                </div>
+              )}
               {archiveGenerating ? (
-                /* AI 生成中：只读直播，防止处理人同时手写（服务端 content='' 条件写回兜底） */
-                <div style={{ height: 320, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>
+                /* AI 生成中：只读直播（渲染版——报告内嵌图片随流式内容出现），
+                    防止处理人同时手写（服务端 content='' 条件写回兜底） */
+                <div style={{ height: 380, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
                     <span className="loading" style={{ width: 12, height: 12, display: 'inline-block', border: '2px solid var(--brand, #266fe8)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
                     <b style={{ fontSize: 14 }}>AI 正在为您总结归档报告…</b>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginBottom: 8 }}>{archiveGenStatus}</div>
                   {archiveReportContent && (
-                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.7, color: 'var(--foreground)' }}>{archiveReportContent}</pre>
+                    <MarkdownRenderer content={archiveReportContent} streaming />
                   )}
                 </div>
+              ) : archiveReportPreview ? (
+                /* ORS-1010 预览态：渲染版（图片可见），可切回编辑 */
+                <div style={{ height: 380, overflowY: 'auto', border: '1px solid var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px' }}>
+                  <MarkdownRenderer content={archiveReportContent} />
+                </div>
               ) : (
+                // ORS-1010 精简：MDEditor 工具栏整排删除，写作不需要二十个格式图标
                 <MDEditor
-                  height={320}
+                  commands={[]}
+                  extraCommands={[]}
+                  height={340}
                   value={archiveReportContent}
                   onChange={(v) => setArchiveReportContent(v || '')}
                   preview="edit"
                 />
+              )}
+              {!archiveGenerating && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                  <span
+                    onClick={() => setArchiveReportPreview((v) => !v)}
+                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
+                  >
+                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
+                  </span>
+                </div>
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
                 <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
@@ -2732,11 +3032,14 @@ export default function TaskDetailPage() {
             </>
           ) : (
             <>
-              <MDEditor height={360} value={archiveReportContent} preview="preview" />
+              {/* ORS-1035：报告用 MarkdownRenderer 展示——内嵌的相对路径图片
+                  （attachments/download）走 AuthImage 带登录态加载；MDEditor
+                  的 img 无鉴权渲染会 401 */}
+              <MarkdownRenderer content={archiveReportContent} />
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
-                <Button size="small" theme="default" onClick={() => setArchiveEditorVisible(false)}>关闭</Button>
+                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>关闭</Button>
                 <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
-                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
               </div>
             </>
           )}
