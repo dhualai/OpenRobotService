@@ -167,6 +167,7 @@ describe('高价值问题交互', () => {
       <Route path="/admin/knowledge/challenges/:challengeId" element={<KnowledgeChallengeDetail />} />
     </Routes></MemoryRouter>);
     const likeButton = await screen.findByRole('button', { name: '我也遇到 · 2' });
+    expect(screen.queryByText(/到期按答案有效点赞/)).toBeNull();
     expect(likeButton).toHaveClass('knowledge-like', 'challenge-question-action');
     const answerButton = screen.getByRole('button', { name: '我来解答' });
     expect(answerButton).toHaveClass('knowledge-button', 'challenge-question-action');
@@ -178,6 +179,55 @@ describe('高价值问题交互', () => {
     fireEvent.click(likeButton);
     await waitFor(() => expect(api.likeChallenge).toHaveBeenCalledWith(question));
     await waitFor(() => expect(likeButton).not.toBeDisabled());
+  });
+  it('仅有私有草稿时保留问题区解答入口，取消编辑不发布', async () => {
+    api.fetchChallenge.mockResolvedValue(challenge());
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '尚未发布的私有草稿', version: 1, submitted_at: null, remaining_edits: 1, can_submit: true });
+    detailPage();
+    fireEvent.click(await screen.findByRole('button', { name: '我来解答' }));
+    expect(await screen.findByLabelText('答案内容')).toHaveValue('尚未发布的私有草稿');
+    expect(screen.getByRole('button', { name: '收起我的解答' })).toBeVisible();
+    expect(screen.queryByRole('article')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '取消编辑' }));
+    expect(screen.getByRole('button', { name: '我来解答' })).toBeVisible();
+    expect(api.saveChallengeAnswer).not.toHaveBeenCalled();
+  });
+  it('首次发布后隐藏问题区解答按钮，转为本人置顶卡片编辑', async () => {
+    const mine = publishedAnswer();
+    const other = publishedAnswer({ id: 10, author: '匿名解答者2', content: '其他人的解答', is_mine: false, can_like: true, can_edit: false, remaining_edits: 0 });
+    api.fetchChallenge.mockResolvedValue({ ...challenge(), answers: [other, mine] })
+      .mockResolvedValueOnce({ ...challenge(), answers: [other] });
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.saveChallengeAnswer.mockResolvedValue({ content: mine.content, version: 1, submitted_at: mine.submitted_at, remaining_edits: 1, can_submit: true });
+    detailPage();
+    fireEvent.click(await screen.findByRole('button', { name: '我来解答' }));
+    fireEvent.change(await screen.findByLabelText('答案内容'), { target: { value: mine.content } });
+    fireEvent.click(screen.getByRole('button', { name: '发布答案' }));
+    expect(await screen.findByRole('button', { name: '编辑' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '我来解答' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '收起我的解答' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '查看/编辑我的解答' })).toBeNull();
+    expect(screen.queryByLabelText('答案内容')).toBeNull();
+    expect(screen.getAllByRole('article')[0]).toHaveTextContent(mine.content);
+    expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', mine.content, 0, true);
+  });
+  it.each(['active', 'completed'])('%s状态下本人解答始终置顶，其余保留最佳解答和原获赞顺序', async (state) => {
+    const mine = publishedAnswer({ content: '我的低赞解答', like_count: 0, can_edit: state === 'active' });
+    const popular = publishedAnswer({ id: 10, author: '匿名解答者2', content: '其他人的高赞解答', like_count: 20, is_mine: false, can_like: true, can_edit: false });
+    const best = publishedAnswer({ id: 11, author: '匿名解答者3', content: '其他人的最佳解答', like_count: 5, is_mine: false, is_best: true, can_like: true, can_edit: false });
+    const other = publishedAnswer({ id: 12, author: '匿名解答者4', content: '其他人的低赞解答', like_count: 1, is_mine: false, can_like: true, can_edit: false });
+    const detail = { ...challenge(), state, can_answer: state === 'active', answers: [popular, best, other, mine], best_answer: best };
+    api.fetchChallenge.mockResolvedValue(detail);
+    detailPage();
+    const cards = await screen.findAllByRole('article');
+    expect(cards).toHaveLength(4);
+    expect(cards[0]).toHaveTextContent(mine.content);
+    expect(cards[1]).toHaveTextContent(best.content);
+    expect(cards[2]).toHaveTextContent(popular.content);
+    expect(cards[3]).toHaveTextContent(other.content);
+    expect(detail.answers[0]).toBe(popular);
+    expect(screen.queryByRole('button', { name: '查看/编辑我的解答' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '我来解答' })).toBeNull();
   });
   it('草稿自动保存不会自动发布，手动发布沿用最新版本', async () => {
     api.fetchMyChallengeAnswer.mockResolvedValue({ content: '', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
@@ -198,6 +248,8 @@ describe('高价值问题交互', () => {
     detailPage();
     const editButton = await screen.findByRole('button', { name: '编辑' });
     expect(screen.getAllByRole('button', { name: '编辑' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: '查看/编辑我的解答' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '我来解答' })).toBeNull();
     const card = editButton.closest('article');
     fireEvent.click(editButton);
     const editor = await screen.findByLabelText('答案内容');
@@ -209,6 +261,26 @@ describe('高价值问题交互', () => {
     expect(screen.queryByLabelText('答案内容')).toBeNull();
     expect(screen.getByRole('button', { name: '编辑' })).toBeEnabled();
     expect(api.saveChallengeAnswer).not.toHaveBeenCalled();
+  });
+  it('在本人卡片内提交修改后刷新内容并收起编辑区，不恢复问题区入口', async () => {
+    const mine = publishedAnswer();
+    const updated = { ...mine, content: '补充验证后的完整解答', can_edit: false, remaining_edits: 0 };
+    api.fetchChallenge.mockResolvedValue({ ...challenge(), answers: [updated] })
+      .mockResolvedValueOnce({ ...challenge(), answers: [mine] });
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: mine.content, version: 1, submitted_at: mine.submitted_at, remaining_edits: 1, can_submit: true });
+    api.saveChallengeAnswer.mockResolvedValue({ content: updated.content, version: 2, submitted_at: mine.submitted_at, remaining_edits: 0, can_submit: false });
+    detailPage();
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }));
+    const editor = await screen.findByLabelText('答案内容');
+    expect(editor.closest('article')).toBe(screen.getAllByRole('article')[0]);
+    fireEvent.change(editor, { target: { value: updated.content } });
+    fireEvent.click(screen.getByRole('button', { name: '提交修改' }));
+    expect(await screen.findByText(updated.content, { selector: 'p' })).toBeVisible();
+    expect(screen.queryByLabelText('答案内容')).toBeNull();
+    expect(screen.getByRole('button', { name: '编辑' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '查看/编辑我的解答' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '我来解答' })).toBeNull();
+    expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', updated.content, 1, true);
   });
   it('提交唯一一次修改后禁止继续发布或保存草稿', async () => {
     const mine = publishedAnswer();
@@ -225,26 +297,30 @@ describe('高价值问题交互', () => {
     expect(screen.getByRole('button', { name: '提交修改' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled();
   });
-  it('修改次数用完后，原解答入口也只能查看内容', async () => {
+  it('修改次数用完后仅展示本人解答卡片，编辑禁用且不再提供顶部入口', async () => {
     const mine = publishedAnswer({ can_edit: false, remaining_edits: 0 });
     api.fetchChallenge.mockResolvedValue({ ...challenge(), answers: [mine] });
-    api.fetchMyChallengeAnswer.mockResolvedValue({ content: mine.content, version: 2, submitted_at: mine.submitted_at, remaining_edits: 0, can_submit: false });
     detailPage();
     expect(await screen.findByRole('button', { name: '编辑' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '查看/编辑我的解答' }));
-    expect(await screen.findByLabelText('答案内容')).toBeDisabled();
-    expect(screen.getByRole('button', { name: '提交修改' })).toBeDisabled();
+    expect(screen.getByRole('article')).toHaveTextContent(mine.content);
+    expect(screen.getByRole('article')).toHaveTextContent('本题修改机会已用完');
+    expect(screen.queryByRole('button', { name: '查看/编辑我的解答' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '我来解答' })).toBeNull();
+    expect(screen.queryByLabelText('答案内容')).toBeNull();
+    expect(api.fetchMyChallengeAnswer).not.toHaveBeenCalled();
     expect(api.saveChallengeAnswer).not.toHaveBeenCalled();
   });
   it('问题截止后即使仍有修改次数也不能编辑', async () => {
     const mine = publishedAnswer({ can_edit: false });
     api.fetchChallenge.mockResolvedValue({ ...challenge(), state: 'completed', can_answer: false, ends_at: new Date(Date.now() - 1000).toISOString(), answers: [mine] });
-    api.fetchMyChallengeAnswer.mockResolvedValue({ content: mine.content, version: 1, submitted_at: mine.submitted_at, remaining_edits: 1, can_submit: false });
     detailPage();
     expect(await screen.findByRole('button', { name: '编辑' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '查看/编辑我的解答' }));
-    expect(await screen.findByLabelText('答案内容')).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('问题已截止或暂停');
+    expect(screen.getByRole('article')).toHaveTextContent(mine.content);
+    expect(screen.queryByRole('button', { name: '查看/编辑我的解答' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '我来解答' })).toBeNull();
+    expect(screen.queryByLabelText('答案内容')).toBeNull();
+    expect(api.fetchMyChallengeAnswer).not.toHaveBeenCalled();
+    expect(api.saveChallengeAnswer).not.toHaveBeenCalled();
   });
   it('改选最佳答案携带原因、答案及状态版本，不调用财务接口', async () => {
     const done = vi.fn();

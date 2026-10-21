@@ -7,7 +7,7 @@ import {
   fetchPendingReviews, type KnowledgeOverview,
 } from '@/api/knowledge';
 import {
-  KnowledgeAvatar, KnowledgeEmpty, KnowledgeState, knowledgeCampaignMonths, knowledgeLikeRule, knowledgeMoney, knowledgeTime,
+  KnowledgeAvatar, KnowledgeEmpty, KnowledgeState, knowledgeCampaignMonths, knowledgeMoney, knowledgeTime,
   useKnowledgeResource,
 } from './knowledgeShared';
 import KnowledgeRankCard, { contributorPreviewEntries } from './KnowledgeRankCard';
@@ -107,7 +107,7 @@ export default function KnowledgeCenter() {
       <div className="knowledge-toolbar"><h2>让每一次问题的解决，都沉淀为知识。</h2><select className="knowledge-select" aria-label="榜单月份" value={selectedMonth} onChange={(event) => setParams((previous) => { const next = new URLSearchParams(previous); next.set('month', event.target.value); return next; })}>{(overview?.months || knowledgeCampaignMonths).map((value) => <option key={value} value={value}>{value.replace('-', '年')}月</option>)}</select></div>
       <KnowledgeState error={resource.error} loading={resource.loading && !overview} retry={resource.reload} />
       {overview && <>
-        <div className="knowledge-note">{overview.campaign_status === 'ended' ? '本期统计已结束，可查看归档知识与贡献榜单。' : '按月统计 · 以有效归档贡献排名'}<br />按提问时间归属月份，提单、接单合并排名，贡献数相同按有效获赞数排序。<br />{knowledgeLikeRule}</div>
+        <div className="knowledge-note">{overview.campaign_status === 'ended' ? '本期统计已结束，可查看归档知识与贡献榜单。' : '按月统计 · 以有效归档贡献排名'}<br />按提问时间归属月份，提单、接单合并排名，贡献数相同按有效获赞数排序。</div>
         {!tab && <div className="knowledge-review-entry">{overview.can_review ? <><button type="button" className="knowledge-link" aria-label="进入评审工作台" onClick={() => showTab('questions', 'review')}>评审工作台 · 待审{overview.pending_review_count || 0} →</button><span className="knowledge-muted">查看分配给你的匿名报告及本人审核意见</span></> : <span className="knowledge-muted">评审视角仅向平台指定名单及已有审核任务的人员开放。</span>}</div>}
         {!tab ? <BoardPreviews overview={overview} month={selectedMonth} /> : <>
           <button type="button" className="knowledge-link" onClick={showBoards}>← 返回榜单概览</button>

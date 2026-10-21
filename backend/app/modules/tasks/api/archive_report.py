@@ -307,14 +307,10 @@ async def approve_report(
     if not report:
         raise HTTPException(status_code=404, detail="归档报告未找到")
 
-    # 权限：reviewer 本人或 admin
     if not user_matches(current_user, report.reviewer):
         raise HTTPException(status_code=403, detail="无权限审核该归档报告")
 
     # 业务调用
-    task = await db.get(Task, report.task_id)
-    if user_matches(current_user, task.created_by, task.assigned_to, report.created_by):
-        raise HTTPException(403, "不能审核本人参与的问题")
     approved_report, task_new = await ArchiveReportService.approve(
         db, report_id, operator_id, body.review_comment, body.value_point, body.revision
     )
@@ -366,14 +362,10 @@ async def reject_report(
     if not report:
         raise HTTPException(status_code=404, detail="归档报告未找到")
 
-    # 权限：reviewer 本人或 admin
     if not user_matches(current_user, report.reviewer):
         raise HTTPException(status_code=403, detail="无权限审核该归档报告")
 
     # 业务调用
-    task = await db.get(Task, report.task_id)
-    if user_matches(current_user, task.created_by, task.assigned_to, report.created_by):
-        raise HTTPException(403, "不能审核本人参与的问题")
     rejected_report, task_new = await ArchiveReportService.reject(
         db, report_id, body.review_comment, operator_id, body.revision
     )

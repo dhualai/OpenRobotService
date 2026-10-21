@@ -36,8 +36,6 @@ async def require_assigned_reviewer(db, report, task, operator_id):
     identities = await actor_identities(db, {"id": operator_id})
     if report.reviewer not in identities:
         raise HTTPException(403, "报告已改派或未分配给你，请刷新审核任务")
-    if identities.intersection({task.created_by, task.assigned_to, report.created_by}):
-        raise HTTPException(403, "不能审核本人参与的问题")
 
 
 class ArchiveReportService:
@@ -151,7 +149,6 @@ class ArchiveReportService:
         from app.modules.tasks.services.archive_review_dispatch import (
             assignment_log_detail,
             dispatch_archive_reviewer,
-            expand_exclude_ids,
         )
 
         result = await db.execute(select(ArchiveReport).where(ArchiveReport.id == report_id)
@@ -202,15 +199,9 @@ class ArchiveReportService:
             ) from exc
 
         chosen = assignment.reviewer_id
-        # 兼容旧调用方：若派审未给出人且显式传了 reviewer，才回退（正常不应走到）
-        if not chosen and reviewer_id:
-            chosen = reviewer_id
         if not chosen:
             raise HTTPException(status_code=400, detail="没有可用审核人")
 
-        excluded = await expand_exclude_ids(db, [operator_id, task.created_by, task.assigned_to, report.created_by])
-        if chosen in excluded:
-            raise HTTPException(409, "没有符合回避条件的审核人，请管理员补充名单或改派")
         if content is not None:
             report.content = content
         report.version = (report.version or 1) + 1

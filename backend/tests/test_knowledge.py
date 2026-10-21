@@ -397,9 +397,10 @@ async def test_approve_requires_current_revision_and_queues_finance_without_publ
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('outcome', ['approved', 'rejected'])
-async def test_service_rechecks_reviewer_assignment_and_participation_under_lock(db, outcome):
+@pytest.mark.parametrize('assigned_reviewer', [None, 'voter', 'voter-account'])
+async def test_service_rechecks_reviewer_assignment_under_lock(db, outcome, assigned_reviewer):
     task, report = seed(db)
-    task.status, report.submit_status, report.reviewer = TaskStatus.ARCHIVING, 'submitted', 'voter'
+    task.status, report.submit_status, report.reviewer = TaskStatus.ARCHIVING, 'submitted', assigned_reviewer
     await db.commit()
     async def decide(operator):
         if outcome == 'approved':
@@ -408,11 +409,6 @@ async def test_service_rechecks_reviewer_assignment_and_participation_under_lock
     with pytest.raises(HTTPException) as changed:
         await decide('reviewer')
     assert changed.value.status_code == 403
-    report.reviewer = 'alice-account'
-    await db.commit()
-    with pytest.raises(HTTPException) as self_review:
-        await decide('alice')
-    assert self_review.value.status_code == 403
     assert report.submit_status == 'submitted'
     assert not db.session.scalars(select(ArchiveReviewDecision)).all()
 
