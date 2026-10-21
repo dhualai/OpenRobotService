@@ -34,6 +34,24 @@ METRICS = {
     "dataIndicators": {"taskNumber": {"totalTasks": 460}},
 }
 
+# 新格式：数据平台新版导出为与文件导出 /exportData 同构的标准包装结构（指标字段在
+# content[0].data 的每天时间戳 value 内层），二维码导入需直接复用文件导入切分链路
+PACKAGED = {
+    "project": "XZ-Release",
+    "indicator": "GroupEfficiency",
+    "content": [
+        {
+            "data": [
+                {"2026-03-04T16:00:00Z": dict(METRICS)},
+                {"2026-03-05T16:00:00Z": dict(METRICS)},
+            ],
+            "start_time": "2026-03-04T16:00:00Z",
+            "end_time": "2026-03-06T16:00:00Z",
+        }
+    ],
+    "collection_time": "2026-10-21T05:14:46.384421Z",
+}
+
 
 def make_qr_payload(obj) -> str:
     """构造 QRV1 完整 payload：QRV1| + Base64(gzip(UTF-8 JSON))。"""
@@ -181,6 +199,40 @@ def test_import_qrcode_single_payload(client, captured):
     assert content[0]["start_time"].startswith(today)
     # 指标 JSON 完整落库（供搬运效率分析页 _find_metrics 读取）
     assert content[0]["data"][0]["effectWorkTime"] == METRICS["effectWorkTime"]
+
+
+def test_import_qrcode_packaged_new_format(client, captured):
+    """新格式（数据平台新版导出）：标准包装结构直接走文件导入切分链路，按天切分落库。"""
+    resp = client.post(
+        "/api/admin/data/import-qrcode",
+        json={"project": "P-0001", "payload": make_qr_payload(PACKAGED)},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["indicator"] == "GroupEfficiency"
+    # 两天数据切分成两个 chunk（UTC 时间戳转东八区后按天切分）
+    assert body["chunk_count"] == 2
+
+    batch = captured["batch"]
+    assert batch["project"] == "P-0001"
+    content = batch["content"]
+    assert len(content) == 2
+    # 2026-03-04T16:00:00Z == 东八区 2026-03-05 00:00 → 切到 03-05 当天
+    assert content[0]["start_time"].startswith("2026-03-05")
+    assert content[1]["start_time"].startswith("2026-03-06")
+    # 指标 JSON 完整落库（供搬运效率分析页 _find_metrics 读取）
+    assert content[0]["data"][0]["effectWorkTime"] == METRICS["effectWorkTime"]
+
+
+def test_import_qrcode_packaged_project_fallback(client, captured):
+    """新格式：页面选定项目为空串时回退用包内 project。"""
+    resp = client.post(
+        "/api/admin/data/import-qrcode",
+        json={"project": "", "payload": make_qr_payload(PACKAGED)},
+    )
+    assert resp.status_code == 200
+    assert captured["batch"]["project"] == "XZ-Release"
 
 
 def test_import_qrcode_fragments(client, captured):
