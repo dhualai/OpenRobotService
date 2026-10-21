@@ -66,6 +66,7 @@ const entryGroups: EntryGroup[] = [
       { path: '/admin/wecom-sheets', label: '企微表格', desc: '企微智能表格接入、测试连接、定时同步', icon: <MacTable2 />, tone: 'blue-2' },
       { path: '/admin/announcements', label: '公告管理', desc: '活动中心公告发布、上下线、置顶', icon: <MacFileText />, tone: 'blue-2' },
       { path: '/admin/wxpay-rewards', label: '奖励管理', desc: '转账测试、转账单查单与撤销、奖励记录', icon: <MacWallet />, tone: 'blue-1' },
+      { path: '/admin/knowledge/challenges?view=manage', label: '高价值问题管理', desc: '发布问题与悬赏、处理状态及最佳解答', icon: <MacFileText />, tone: 'blue-2' },
     ],
   },
   {
@@ -88,6 +89,7 @@ export default function AdminEntries() {
   const canShowWecomSheets = useAuthStore((state) => state.hasPermission(PERM_WECOM_SHEETS));
   const canShowWxpayRewards = useAuthStore((state) => state.hasPermission(PERM_WXPAY_ADMIN));
   const canShowAnnouncement = useAuthStore((state) => state.hasPermission(PERM_ANNOUNCEMENT));
+  const canManageChallenges = useAuthStore((state) => state.canManageKnowledgeChallenges);
   const visibleGroups = entryGroups.map((group) => ({
     ...group,
     entries: group.entries.filter((entry) =>
@@ -95,6 +97,7 @@ export default function AdminEntries() {
       (entry.path !== '/admin/task-policy' || canShowTaskPolicy) &&
       (entry.path !== '/admin/wecom-sheets' || canShowWecomSheets) &&
       (entry.path !== '/admin/wxpay-rewards' || canShowWxpayRewards) &&
+      (entry.path !== '/admin/knowledge/challenges?view=manage' || canManageChallenges) &&
       (entry.path !== '/admin/announcements' || canShowAnnouncement),
     ),
   })).filter((group) => group.entries.length > 0);

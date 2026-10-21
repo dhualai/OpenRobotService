@@ -32,6 +32,7 @@ import {
 } from '@/stores/dashboardCache';
 import { avatarUrl } from '@/api/profile';
 import KnowledgeContributionCard from './KnowledgeContributionCard';
+import HighValueQuestionCard from './HighValueQuestionCard';
 import { fetchRewardStats, fenToYuan } from '@/api/wxpay';
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
@@ -266,6 +267,8 @@ export default function Dashboard() {
         {canViewKnowledgeContribution && <>
           <SectionTitle title="知识贡献榜" moreText="查看榜单" onMore={() => navigate('/admin/knowledge')} />
           <KnowledgeContributionCard key={username} />
+          <SectionTitle title="高价值问题榜单" moreText="查看全部" onMore={() => navigate('/admin/knowledge/challenges')} />
+          <HighValueQuestionCard key={`challenges:${username}`} />
         </>}
 
         {/* ============ 上：工单数据看板 ============ */}

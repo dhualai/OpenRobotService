@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     AUTH_STR: str = Field(default="/auth")
     
     APP_ENV: str = Field(default="dev")
+    KNOWLEDGE_CHALLENGES_ENABLED: bool = Field(default=True, description="高价值问题参与及到期自动评奖开关")
 
     # 服务监听端口（main.py 启动时读取，优先来自 backend/.env）
     PORT: int = Field(default=8400, description="后端服务监听端口")

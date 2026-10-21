@@ -513,6 +513,30 @@ erDiagram
 
 2026-10-16 财务闭环增量：无新增表字段或迁移。单题闭环奖励复用 `reward_record`，`source_type=task_archive`、`source_id=工单ID`，`role=reporter/assignee/reviewer` 各一条，复用 `(source_type, source_id, role)` 唯一约束。内容通过只创建 `pending_audit` 奖励；财务整单通过后三方为 `pending`，填充 `audit_by/audit_at/audit_remark` 并从此时计算 `expire_at`，工单终态归档和 `knowledge_publications` 发布同事务落库。新增发布的 `first_approved_at` 表示首次财务闭环时间；2026-10-19起月榜归属改用 `tasks.created_at`（提问时间，北京时间自然月），不回写 `first_approved_at`。财务结果同时写入既有 `task_operation_logs`，本次统计口径调整不修改表结构、资金记录或已冻结/已发奖快照。
 
+### 2.8 高价值问题（2026-10-20增量，未在目标环境迁移）
+
+ORM：`backend/app/models/knowledge_challenge.py`。迁移：`d0e3f6a9b215 → e1f4a7b0c326`，仅新增以下5张表，不修改原财务表。已用隔离SQLite验证升级、重复升级和降级；不代表任何真实环境已完成迁移。时间仍为naive UTC，以下关系均为逻辑关联，无新增物理外键。
+
+| 表 | 关键字段及约束 |
+|---|---|
+| `knowledge_challenges` | INTEGER自增 `id`；可空BIGINT `task_id` 唯一（允许多个NULL独立问题）；唯一发布 `request_key` 与内容指纹 `creation_fingerprint`；发布人、可空实际提问人、匿名标题/正文、整数分奖金、截止/首次发布/提问时间、状态/隐藏/版本、规则版本、默认及当前最佳答案、截止快照JSON、财务差异标记及最后错误 |
+| `knowledge_challenge_answers` | INTEGER自增 `id`；`(challenge_id,author_id)`唯一；公开正文与私有 `draft_content` 分离，首次提交时间、更新/版本、隐藏标记、已发布历史版本JSON |
+| `knowledge_challenge_likes` | `(target_kind,target_id,user_id)`联合主键，激活状态；独立问题和答案使用不同目标类型。有关联工单的问题继续使用原 `knowledge_question_likes` |
+| `knowledge_challenge_like_events` | 自增ID；目标类型/ID、真实用户、点赞或取消状态、UTC事件时间；用户和时间索引，共享问题日额度及独立答案日额度依据 |
+| `knowledge_challenge_audits` | 自增ID、问题ID、操作人、动作、原因、前后值JSON、时间；保存发布、状态操作、系统结算和结果纠正记录 |
+
+```mermaid
+erDiagram
+    tasks o|--o| knowledge_challenges : "可选来源(逻辑)"
+    knowledge_challenges ||--o{ knowledge_challenge_answers : "多人回答(逻辑)"
+    knowledge_challenges ||--o{ knowledge_challenge_audits : "操作留痕(逻辑)"
+    users ||--o{ knowledge_challenge_answers : "非公开真实作者(逻辑)"
+    users ||--o{ knowledge_challenge_likes : "目标去重(逻辑)"
+    users ||--o{ knowledge_challenge_like_events : "额度事件(逻辑)"
+```
+
+专项奖复用 `reward_record`，`source_type=knowledge_challenge`、`source_id=问题ID`、`role=answerer`，保留原唯一约束。管理员改选不修改原账本收款人、金额或支付状态，已存在记录的差异交原财务路径核对，不重新生成一笔奖励。社区知识直接读取问题截止快照及当前最佳，不创建伪工单或冒充已审核归档报告。
+
 ## 3. 关系总表（父子 + 基数 + 是否物理约束）
 
 ### 3.1 物理外键

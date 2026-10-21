@@ -120,6 +120,10 @@ from app.models.usp_env import UspEnv
 
 # 企业微信表格数据源 + 记录镜像
 from app.models.wecom_sheet import WecomSheetSource, ExternalRecord
+from app.models.knowledge_challenge import (
+    KnowledgeChallenge, KnowledgeChallengeAnswer, KnowledgeChallengeLike,
+    KnowledgeChallengeLikeEvent, KnowledgeChallengeAudit,
+)
 
 # 直答率周报（ORS-#981：AI 直答率上服务号后台）
 from app.models.dar_report import DarWeeklyReport
@@ -135,6 +139,8 @@ from app.models.wxpay import (
 )
 
 __all__ = [
+    "KnowledgeChallenge", "KnowledgeChallengeAnswer", "KnowledgeChallengeLike",
+    "KnowledgeChallengeLikeEvent", "KnowledgeChallengeAudit",
     "KnowledgePublication", "KnowledgeLike", "KnowledgeLikeEvent",
     "ArchiveReviewDecision", "KnowledgeSettlement", "KnowledgeDiscussion",
     "Base",

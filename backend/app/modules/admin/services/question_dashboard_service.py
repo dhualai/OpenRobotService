@@ -6,14 +6,18 @@ from typing import Any, Dict, Optional
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.wecom_sheet import ExternalRecord
+from app.models.wecom_sheet import ExternalRecord, WecomSheetSource
 
 
 logger = logging.getLogger(__name__)
-SOURCE_KEY = "zl_question_robots"
+SOURCE_DISPLAY_NAME = "中力工厂机器人问题收集"
 REPORT_TIME_FIELD = "上报时间(自动生成，无需填写)"
 BUSINESS_TIMEZONE = timezone(timedelta(hours=8))
 EXCEL_EPOCH = datetime(1899, 12, 30, tzinfo=BUSINESS_TIMEZONE)
+
+
+class QuestionSourceConfigurationError(ValueError):
+    pass
 
 
 def parse_report_time(value: Any) -> Optional[datetime]:
@@ -66,12 +70,26 @@ def _text(value: Any) -> str:
 async def get_questions(
     db: AsyncSession, report_date: date, page: int = 1, page_size: int = 20,
 ) -> Dict[str, Any]:
+    source_keys = (await db.execute(
+        select(WecomSheetSource.key)
+        .where(func.trim(WecomSheetSource.display_name) == SOURCE_DISPLAY_NAME)
+        .limit(2)
+    )).scalars().all()
+    if not source_keys:
+        raise QuestionSourceConfigurationError(
+            f'未找到企微表格“{SOURCE_DISPLAY_NAME}”，请在后台管理的企微表格中配置该名称的数据源'
+        )
+    if len(source_keys) > 1:
+        raise QuestionSourceConfigurationError(
+            f'存在多个名为“{SOURCE_DISPLAY_NAME}”的企微表格数据源，请保留唯一名称后重试'
+        )
+
     raw_report_value = func.coalesce(
         func.nullif(func.trim(cast(ExternalRecord.values[REPORT_TIME_FIELD].as_string(), String(128))), ""),
         func.trim(cast(ExternalRecord.values["上报时间"].as_string(), String(128))),
     )
     report_value = raw_report_value
-    source_filter = ExternalRecord.source_key == SOURCE_KEY
+    source_filter = ExternalRecord.source_key == source_keys[0]
     last_sync_at = (await db.execute(
         select(func.max(ExternalRecord.pulled_at)).where(source_filter)
     )).scalar_one_or_none()

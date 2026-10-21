@@ -17,6 +17,7 @@ from app.models.knowledge import (
 )
 from app.models.task import ArchiveReport, Task, TaskStatus
 from app.models.wxpay import RewardRecord, RewardStatus
+from app.modules.admin.services.knowledge_like_quota import check_question_quota
 
 
 BEIJING = timezone(timedelta(hours=8))
@@ -358,17 +359,7 @@ async def set_like(db, actor, task_id, active):
     if row and row.risk_status != "valid":
         raise HTTPException(409, "该点赞正在核验或已判无效")
     if active and (not row or not row.active):
-        day_start = now.replace(tzinfo=timezone.utc).astimezone(BEIJING).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ).astimezone(timezone.utc).replace(tzinfo=None)
-        liked_today = set((await db.execute(select(KnowledgeLikeEvent.task_id).where(
-            KnowledgeLikeEvent.user_id == user_id,
-            KnowledgeLikeEvent.active.is_(True),
-            KnowledgeLikeEvent.created_at >= day_start,
-            KnowledgeLikeEvent.created_at < day_start + timedelta(days=1)
-        ).distinct())).scalars().all())
-        if task_id not in liked_today and len(liked_today) >= DAILY_QUESTION_LIKE_LIMIT:
-            raise HTTPException(429, "今日已点赞5个不同问题，不能再点赞新问题（北京时间每日0点重置）")
+        await check_question_quota(db, user_id, f"task:{task_id}", now)
     if not row:
         row = KnowledgeLike(task_id=task_id, user_id=user_id, active=False, risk_status="valid", updated_at=now)
         db.add(row)

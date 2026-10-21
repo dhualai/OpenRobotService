@@ -62,7 +62,9 @@ def db(monkeypatch):
     metadata = MetaData()
     names = ['companies', 'departments', 'users', 'tasks', 'archive_reports', 'reward_record', 'reward_config', 'transfer_bill', 'task_operation_logs',
              'knowledge_publications', 'knowledge_question_likes', 'knowledge_like_events',
-             'archive_review_decisions', 'knowledge_settlements', 'knowledge_discussions']
+             'archive_review_decisions', 'knowledge_settlements', 'knowledge_discussions',
+             'knowledge_challenges', 'knowledge_challenge_answers', 'knowledge_challenge_likes',
+             'knowledge_challenge_like_events', 'knowledge_challenge_audits']
     for name in names:
         Base.metadata.tables[name].to_metadata(metadata)
     metadata.tables['users'].c.job_level.type = Integer()
