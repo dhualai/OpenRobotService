@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockRequest = vi.hoisted(() => vi.fn());
 vi.mock('@/api/client', () => ({ createRequest: () => mockRequest }));
 
-import { createKnowledgeDiscussion, fetchContributorQuestions, fetchKnowledgeDiscussions, fetchKnowledgeQuestions } from '../knowledge';
+import { createKnowledgeDiscussion, fetchContributorQuestions, fetchContributors, fetchKnowledgeDiscussions, fetchKnowledgeQuestions } from '../knowledge';
 
 describe('fetchKnowledgeQuestions', () => {
   beforeEach(() => {
@@ -24,6 +24,16 @@ describe('fetchKnowledgeQuestions', () => {
   it('本期全部问题不添加月份过滤', async () => {
     await fetchKnowledgeQuestions('', 'likes', 1);
     expect(mockRequest).toHaveBeenCalledWith('/questions?sort=likes&page=1&size=20', { skipCache: true });
+  });
+
+  it('综合榜保留原请求地址', async () => {
+    await fetchContributors('2026-11');
+    expect(mockRequest).toHaveBeenCalledWith('/rankings?month=2026-11', { skipCache: true });
+  });
+
+  it.each(['questioner', 'answerer'] as const)('%s榜请求独立角色排名', async (role) => {
+    await fetchContributors('2026-12', role);
+    expect(mockRequest).toHaveBeenCalledWith(`/rankings?month=2026-12&role=${role}`, { skipCache: true });
   });
 
   it('人员工单请求保留月份、角色和分页，编码人员ID', async () => {
