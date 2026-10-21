@@ -365,6 +365,9 @@ export default function TaskDetailPage() {
   const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
   // ORS-1010：报告预览/编辑切换（生成完默认预览——用户先看到渲染结果含图片）
   const [archiveReportPreview, setArchiveReportPreview] = useState(false);
+  // ORS-1010：报告插图上传（走评论附件接口拿 object_path，正文插 markdown）
+  const [uploadingReportImage, setUploadingReportImage] = useState(false);
+  const reportImageInputRef = useRef<HTMLInputElement | null>(null);
   // ORS-1010：展开查看卡正文（问题/根因/解决）的条目
   const [expandedSimilar, setExpandedSimilar] = useState<Set<number>>(new Set());
   // 检索成功完成（retrieval_status=ok）：0 条也显示"未发现"提示，让功能存在感在；
@@ -759,6 +762,30 @@ export default function TaskDetailPage() {
       setArchiveSimilarLoading(false);
     }
   }, []);
+
+  // ── 开始归档（closed → archiving）──
+  /** ORS-1010：报告插图上传——走评论附件接口拿 object_path，正文插相对路径
+      markdown（预览/审核/知识卡全链路 AuthImage 可渲染）。多张逐张传，
+      追加到正文末尾；失败 toast 不中断 */
+  const handleReportImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // 允许重复选同一文件
+    if (!files.length) return;
+    setUploadingReportImage(true);
+    try {
+      const inserts: string[] = [];
+      for (const f of files) {
+        const objectPath = await uploadCommentAttachment(f, `report-${Date.now()}`);
+        inserts.push(`![${f.name}](/api/tasks/attachments/download?path=${encodeURIComponent(objectPath)})`);
+      }
+      setArchiveReportContent((prev) => `${prev || ''}${prev?.trim() ? '\n' : ''}${inserts.join('\n')}\n`);
+      Toast({ message: `已插入 ${inserts.length} 张图片`, theme: 'success' });
+    } catch (err) {
+      Toast({ message: `图片上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setUploadingReportImage(false);
+    }
+  };
 
   // ── 开始归档（closed → archiving）──
   const handleStartArchive = async () => {
@@ -2786,9 +2813,24 @@ export default function TaskDetailPage() {
           )}
           {archiveEditorMode === 'edit' ? (
             <>
-              <div style={{ marginBottom: 12, fontSize: 12, lineHeight: 1.8, color: 'var(--muted-foreground)' }}>
-                活动归档报告须填写问题概述、问题场景、复现条件、原因分析、解决方案、验证结果、适用范围、遗留问题；各章节须有正文，无遗留可写“无”。请勿写入人员姓名及联系方式。
-                <Button size="small" theme="default" disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐报告章节</Button>
+              {/* ORS-1010 精简：章节要求压成一行 + 常用操作（补齐章节/上传图片），
+                  原格式工具栏整排删除——报告写作用不上，还把正文挤出首屏 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
+                  须含八个章节且各节有正文（无遗留写「无」）；请勿写入人员姓名及联系方式。
+                </span>
+                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐章节</Button>
+                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
+                  {uploadingReportImage ? '上传中…' : '📷 上传图片'}
+                </Button>
+                <input
+                  ref={reportImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={handleReportImageUpload}
+                />
               </div>
               {archiveGenerating ? (
                 /* AI 生成中：只读直播（渲染版——报告内嵌图片随流式内容出现），
@@ -2809,8 +2851,11 @@ export default function TaskDetailPage() {
                   <MarkdownRenderer content={archiveReportContent} />
                 </div>
               ) : (
+                // ORS-1010 精简：MDEditor 工具栏整排删除，写作不需要二十个格式图标
                 <MDEditor
-                  height={320}
+                  commands={[]}
+                  extraCommands={[]}
+                  height={340}
                   value={archiveReportContent}
                   onChange={(v) => setArchiveReportContent(v || '')}
                   preview="edit"
@@ -2852,7 +2897,10 @@ export default function TaskDetailPage() {
               误导。verified=rejected 已被推翻，不出示。0 条且检索正常时也提示
               （功能存在感 + 讲清沉淀机制）；检索挂了保持静默。 */}
           {(archiveSimilar.length > 0 || archiveSimilarLoading || archiveSimilarReady) && (
-            <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)' }}>
+            <div style={{
+              marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)',
+              maxHeight: 320, overflowY: 'auto',
+            }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>相似工单</span>
                 <span style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
