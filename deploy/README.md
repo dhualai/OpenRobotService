@@ -40,6 +40,10 @@
 | `DEPLOY_PROD_HEALTH_URLS` | Variable | 否 | 见「健康检查默认地址」 |
 | `DEPLOY_BACKUP_KEEP` | Variable | 否 | 保留备份份数，缺省 `10` |
 | `DEPLOY_SCHEMA_MODE` | Variable | 否 | 后端部署前的数据库结构处理：`off` / `check`（默认 prod）/ `sync`（默认 test）。见「数据库结构门禁」 |
+| `RELEASE_LLM_API_KEY` | Secret | 否 | 自动发行说明用的 OpenAI 兼容 LLM Key。**缺省=不自动生成**，继续沿用人工维护的 `docs/RELEASE_NOTES.md` |
+| `RELEASE_LLM_BASE_URL` | Variable | 否 | LLM 根地址，缺省 `https://api.deepseek.com`（只允许公网 https，防 SSRF） |
+| `RELEASE_LLM_MODEL` | Variable | 否 | 模型名，缺省 `deepseek-v4-flash` |
+| `RELEASE_LLM_TIMEOUT` | Variable | 否 | 单次请求超时秒，缺省 `60`（代码内限制在 5~180） |
 
 即 **零新增配置也能直接跑**：SSH 连接信息从既有的 `UI_REGRESSION_*` 回退，健康地址内置实测默认值。
 
@@ -52,9 +56,19 @@
 
 - **群路由**：`NOTIFY_WEBHOOKS` 每项的第 4 段 `envs`（分号分隔环境名 test / prod）控制只在哪些环境发送，缺省所有环境。当前约定：**测试环境只发「开源小组」群；生产环境（成功 + 失败）两个群都发**。配置示例：
   `开源小组url|always|开源小组,发布群url|always|【USP】开源机器人服务平台|prod`
-- **生产发布成功**：自动改用「更新日志」卡片（简约风：纯文字组标题 + 小黑点），内容取自
-  [`docs/RELEASE_NOTES.md`](../docs/RELEASE_NOTES.md) 的「## 未发布」区——各功能负责人在合入后
-  自行往里追加 `- 条目`（写法见文件头注释）；文件缺失或没有条目时退回默认版面（最近一条 PR 标题）。
+- **生产发布成功**：「更新日志」卡片（简约风：纯文字组标题 + 小黑点）内容按以下顺序确定：
+  1. **自动生成（配置了 Key 时默认走这条）**：build job 用
+     [`gen_release_notes.py`](gen_release_notes.py) 截取**最近 7 天**已合并 PR
+     （`mergedAt` 落在 `now-7d` 内），交给 LLM 合并去重、归纳成「新增功能 / 体验优化 / BUG 修复」
+     三组，成功即覆盖打包进 artifact 的 `RELEASE_NOTES.md`；
+  2. **人工兜底**：未配置 `RELEASE_LLM_API_KEY`、窗口内无 PR、LLM 调用失败或产出为空时，
+     沿用仓库里人工维护的 [`docs/RELEASE_NOTES.md`](../docs/RELEASE_NOTES.md) 的「## 未发布」区
+     （各功能负责人在合入后自行追加 `- 条目`）；
+  3. 两处都没有条目时退回默认版面（最近一条 PR 标题）。
+- 时间口径是**固定往前推 7 天**，不是「上次发布以来」——同一批 PR 跨多次发布会在通知里
+  重复出现（产品上接受：宁重不漏）。`chore / docs / ci / test / refactor` 等内部改动不进 LLM 归纳。
+- 自动化不触碰通知渲染：生成的文件与人工版同构（`## 未发布` + 三个 `### 组` + `- 条目`），
+  `notify.py` 的 `parse_release_notes` 与三种版面逻辑零改动；生成失败只回退、不阻断发布。
 - **生产发布失败**：自动改用「建议操作」卡片（红色状态 + 自动回滚告警 + 编号步骤 + 部署元信息）。
 - 以上两种生产版面仅影响企微 `image` 样式；降级到 `card` / `markdown_v2` / 纯文本时，
   发布说明会以列表形式附带在 markdown / 文本里，不会丢。
@@ -161,7 +175,9 @@ $HOME/deploy_backups/test/20260923-152741-381030/
 
 ## 六、通知脚本测试（deploy/tests）
 
-发布说明解析 / 群路由 envs / 版面选择 / 数据库结构栏 / 三种版面渲染的回归测试：
+发布说明解析 / 群路由 envs / 版面选择 / 数据库结构栏 / 三种版面渲染的回归测试，
+以及自动发行说明的 7 天窗口 / 内部改动过滤 / LLM 输出解析 / 渲染兼容
+（`deploy/tests/test_gen_release_notes.py`，LLM 全部 mock、不发真实请求）：
 
 （后端 `schema_sync.py` 的纯逻辑单测在 `backend/tests/test_schema_sync.py`，随 gate 的 `pytest` 一起跑。）
 
