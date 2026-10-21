@@ -14,6 +14,12 @@
 
 ## 一、项目定位
 
+### 2026-10-21 增量：提问榜与解答榜独立排名
+
+- 最佳提问人按有效沉淀工单的提问数量排名，最佳解答人按解答数量排名；各榜仅收录对应角色贡献者，同数量按本角色工单有效获赞数排序。继续使用有效知识发布、报告通过及财务闭环后的工单归档状态，不增加必须提现的条件，不修改财务、奖励入账或支付流程。
+- `GET /api/admin/knowledge/rankings` 新增 `role=all/questioner/answerer`，默认仍为综合榜；`overview` 保留综合 `top_three`，新增 `top_questioners` 和 `top_answerers`。独立角色榜不复用或改写综合冻结快照，不产生分类奖金，不新增表、字段或迁移。
+- `KnowledgeCenter` 的角色前三预览和前十列表使用独立榜单，只展示本榜名次及数量，不再展示综合名次或另一角色数量；缓存键包含月份及角色，切换角色重新取数。首页综合卡片、原卡片样式和人员工单详情保持不变。
+
 ### 2026-10-20 增量：知识榜数量展示与实际已获奖励
 
 - `KnowledgeRankCard` 的综合/提问/解答预览改为对应数量，不显示金额；`KnowledgeCenter` 完整人员榜与 `KnowledgeContributorPage` 展示提问、解答及实际已获金额。标语更新为“让每一次问题的解决，都沉淀为知识。”，问题榜单更名为知识榜单。
@@ -54,7 +60,7 @@
 
 ### 2026-10-15 增量：知识贡献榜与匿名审核
 
-- 前端：`frontend/src/pages/admin/KnowledgeContributionCard.tsx` 位于后台首页用户头像/名字下方、工单数据看板之前；“知识贡献榜”标题复用看板的 `SectionTitle`。`KnowledgeRankCard` 统一横向榜单卡片：左侧榜单标识、右侧前三行。`KnowledgeCenter` 默认展示问题榜、最佳提单人榜、最佳接单人榜三个预览模块，点击进入完整列表；两个用户模块沿用同一综合月榜，月份及问题排序保留在URL中。`KnowledgeQuestionDetail`、`KnowledgeReviewPage` 负责公开问题与匿名审核。实际路由注册在 `frontend/src/main.tsx`，样式复用 `mac-card` 与现有颜色变量。
+- 前端：`frontend/src/pages/admin/KnowledgeContributionCard.tsx` 位于后台首页用户头像/名字下方、工单数据看板之前；“知识贡献榜”标题复用看板的 `SectionTitle`。`KnowledgeRankCard` 统一横向榜单卡片：左侧榜单标识、右侧前三行。`KnowledgeCenter` 默认展示知识榜单、最佳提问人榜、最佳解答人榜三个预览模块，点击进入完整列表；两个用户模块按各自角色独立展示前三和前十，首页保留综合月榜，月份及问题排序保留在URL中。`KnowledgeQuestionDetail`、`KnowledgeReviewPage` 负责公开问题与匿名审核。实际路由注册在 `frontend/src/main.tsx`，样式复用 `mac-card` 与现有颜色变量。
 - 后端：`modules/admin/api/knowledge.py` 提供登录用户开放的读/点赞接口和受限的风险/结算接口；`knowledge_service.py` 负责活动资格、发布投影、综合月榜与点赞截止口径；`knowledge_settlement.py` 负责修订快照、核验与现有奖励服务入账。
 - 审核复用 `Task` / `ArchiveReport`；`modules/tasks/services/knowledge_review.py` 提供匿名投影、本人意见及原始任务读取限制。报告审批要求意见、价值点、revision及当前指定审核人身份校验；前置派审成功后不因提单人、接单人或报告作者同人而再次拦截，派审失败仍不允许提交，原候选回避优先策略与财务流程不变。AI初稿与手写模板同步为八章节。
 - 新模型集中在 `backend/app/models/knowledge.py`：`knowledge_publications`、`knowledge_question_likes`、`knowledge_like_events`、`archive_review_decisions`、`knowledge_settlements`、`knowledge_discussions`；扩展 `archive_reports.value_point`。迁移链为 `b8c1d4e7f203 → c9d2e5f8a104 → d0e3f6a9b215`；2026-10-15 已对本机 dev 的 `127.0.0.1:3306/helpdesk` 执行增量迁移，生产及其他环境仍需独立执行。

@@ -22,6 +22,8 @@ export interface Contributor extends KnowledgeUser {
   tied: boolean;
 }
 
+export type KnowledgeRankingRole = 'all' | 'questioner' | 'answerer';
+
 export interface KnowledgeOverview {
   month: string;
   months: string[];
@@ -30,6 +32,8 @@ export interface KnowledgeOverview {
   campaign_status: 'upcoming' | 'active' | 'ended';
   settlement_status: string;
   top_three: Contributor[];
+  top_questioners: Contributor[];
+  top_answerers: Contributor[];
   can_review: boolean;
   reviewer_configured?: boolean;
   pending_review_count?: number;
@@ -104,7 +108,7 @@ export interface SimilarQuestion {
 }
 
 export const fetchKnowledgeOverview = (month?: string) => admin<KnowledgeOverview>(`/overview${month ? `?month=${encodeURIComponent(month)}` : ''}`, fresh);
-export const fetchContributors = (month: string) => admin<{ items: Contributor[] }>(`/rankings?month=${encodeURIComponent(month)}`, fresh);
+export const fetchContributors = (month: string, role: KnowledgeRankingRole = 'all') => admin<{ items: Contributor[] }>(`/rankings?month=${encodeURIComponent(month)}${role === 'all' ? '' : `&role=${role}`}`, fresh);
 export const fetchKnowledgeQuestions = (month: string, sort: string, page: number, size = 20) => admin<{ items: KnowledgeQuestion[]; total: number }>(`/questions?sort=${sort}&page=${page}&size=${size}${month ? `&month=${encodeURIComponent(month)}` : ''}`, fresh);
 export const fetchKnowledgeQuestion = (taskId: string) => admin<KnowledgeQuestion>(`/questions/${encodeURIComponent(taskId)}`, fresh);
 export const fetchContributorQuestions = (userId: string, month: string | undefined, role: string, page: number) => admin<ContributorQuestions>(`/contributors/${encodeURIComponent(userId)}/questions?role=${encodeURIComponent(role)}&page=${page}&size=20${month ? `&month=${encodeURIComponent(month)}` : ''}`, fresh);

@@ -27,9 +27,8 @@ export function contributorPreviewEntries(contributors: Contributor[], focus: Bo
     id: person.user_id,
     rank: person.rank,
     label: person.name,
-    description: focus === 'questioners' ? `解答${person.answer_count} · 综合${person.contribution_count}`
-      : focus === 'answerers' ? `提问${person.question_count} · 综合${person.contribution_count}`
-        : `提问${person.question_count} · 解答${person.answer_count}`,
+    description: focus === 'questioners' || focus === 'answerers' ? `获赞${person.valid_like_count}`
+      : `提问${person.question_count} · 解答${person.answer_count}`,
     metric: focus === 'questioners' ? `${person.question_count}次提问`
       : focus === 'answerers' ? `${person.answer_count}次解答` : `${person.contribution_count}次贡献`,
     user: person,

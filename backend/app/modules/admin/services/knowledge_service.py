@@ -161,8 +161,8 @@ async def like_state(db, cutoff=None):
             if latest.get((row.task_id, row.user_id), False) and row.risk_status == "valid"}
 
 
-async def rankings(db, month, frozen=True):
-    if frozen:
+async def rankings(db, month, frozen=True, role="all"):
+    if frozen and role == "all":
         snapshot = await db.get(KnowledgeSettlement, month)
         if snapshot:
             return snapshot.rankings
@@ -176,7 +176,9 @@ async def rankings(db, month, frozen=True):
         counts[task_id] += 1
     entries = {}
     for publication in publications:
-        for user_id in {publication.questioner_id, publication.answerer_id}:
+        contributors = {publication.questioner_id} if role == "questioner" else (
+            {publication.answerer_id} if role == "answerer" else {publication.questioner_id, publication.answerer_id})
+        for user_id in contributors:
             if user_id not in users:
                 continue
             entry = entries.setdefault(user_id, {**display_user(users[user_id]), "question_count": 0,
@@ -188,12 +190,13 @@ async def rankings(db, month, frozen=True):
             entry["has_dual_role"] |= publication.questioner_id == publication.answerer_id
             entry["valid_like_count"] += counts[publication.task_id]
             entry["last_contribution_at"] = max(entry["last_contribution_at"], iso(created_at_by_task[publication.task_id]))
-    result = sorted(entries.values(), key=lambda entry: (-entry["contribution_count"],
+    count_field = {"all": "contribution_count", "questioner": "question_count", "answerer": "answer_count"}[role]
+    result = sorted(entries.values(), key=lambda entry: (-entry[count_field],
         -entry["valid_like_count"], entry["last_contribution_at"], entry["user_id"]))
     for position, entry in enumerate(result, 1):
         entry["rank"] = position
-        entry["estimated_reward_fen"] = 10000 if position <= 3 else 5000 if position <= 10 else 0
-        entry["tied"] = sum(other["contribution_count"] == entry["contribution_count"] and
+        entry["estimated_reward_fen"] = (10000 if position <= 3 else 5000 if position <= 10 else 0) if role == "all" else 0
+        entry["tied"] = sum(other[count_field] == entry[count_field] and
                             other["valid_like_count"] == entry["valid_like_count"] for other in result) > 1
     return result
 
@@ -219,8 +222,8 @@ async def earned_reward_totals(db, month, user_ids):
     return {user_id: int(amount) for user_id, amount in rows}
 
 
-async def public_rankings(db, month):
-    entries = await rankings(db, month)
+async def public_rankings(db, month, role="all"):
+    entries = await rankings(db, month, role=role)
     earned = await earned_reward_totals(db, month, [entry["user_id"] for entry in entries])
     return [{**entry, "earned_reward_fen": earned.get(entry["user_id"], 0)} for entry in entries]
 
@@ -246,6 +249,8 @@ async def overview(db, actor, month=None):
             "ends_at": iso(CAMPAIGN_END), "campaign_status": "upcoming" if now < CAMPAIGN_START else
             "ended" if now >= CAMPAIGN_END else "active", "settlement_status": snapshot.status if snapshot else "live",
             "top_three": (await public_rankings(db, month))[:3],
+            "top_questioners": (await public_rankings(db, month, role="questioner"))[:3],
+            "top_answerers": (await public_rankings(db, month, role="answerer"))[:3],
             "can_review": configured or review is not None or history is not None or is_admin_user(actor),
             "reviewer_configured": configured, "pending_review_count": pending_count,
             "rule_notice": "综合榜统一计奖；同工单双角色暂计1次，同数量按有效获赞排序；未定边界须确认后发奖"}
