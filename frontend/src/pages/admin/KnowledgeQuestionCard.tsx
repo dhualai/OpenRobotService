@@ -15,7 +15,7 @@ export function KnowledgeLikeButton({ question, onChange }: { question: Knowledg
     finally { setBusy(false); }
   };
   return <button type="button" className="knowledge-like" aria-label={`${question.liked_by_me ? '取消点赞' : '点赞'}：${question.title}`} aria-pressed={question.liked_by_me} disabled={busy || !question.can_like} onClick={(event) => { event.stopPropagation(); void toggle(); }}>
-    <ThumbsUp size={14} />{question.valid_like_count}
+    <ThumbsUp size={14} />有帮助 · {question.valid_like_count}
   </button>;
 }
 

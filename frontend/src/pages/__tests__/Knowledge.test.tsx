@@ -565,8 +565,10 @@ describe('知识列表、人员工单和讨论区', () => {
     openKnowledge('/admin/knowledge?tab=questions&month=2026-11');
     expect(await screen.findByRole('heading', { name: '知识列表' })).toBeInTheDocument();
     const card = await screen.findByRole('region', { name: question.title });
-    expect(within(card).getByRole('button', { name: `点赞：${question.title}` }).closest('.knowledge-question-head')).not.toBeNull();
-    fireEvent.click(within(card).getByRole('button', { name: `点赞：${question.title}` }));
+    const like = within(card).getByRole('button', { name: `点赞：${question.title}` });
+    expect(like).toHaveTextContent(`有帮助 · ${question.valid_like_count}`);
+    expect(like.closest('.knowledge-question-head')).not.toBeNull();
+    fireEvent.click(like);
     await waitFor(() => expect(api.toggleKnowledgeLike).toHaveBeenCalledWith(question));
   });
 
@@ -627,9 +629,10 @@ describe('知识列表、人员工单和讨论区', () => {
     expect(screen.getByText('贡献甲')).toBeInTheDocument();
     expect(screen.getByText('接单乙')).toBeInTheDocument();
     expect(screen.getByText('审核人身份不公开')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `点赞：${question.title}` })).toHaveTextContent(`有帮助 · ${question.valid_like_count}`);
     vi.mocked(api.fetchKnowledgeQuestion).mockResolvedValueOnce({ ...question, liked_by_me: true, valid_like_count: 3 });
     fireEvent.click(screen.getByRole('button', { name: `点赞：${question.title}` }));
-    expect(await screen.findByRole('button', { name: `取消点赞：${question.title}` })).toHaveTextContent('3');
+    expect(await screen.findByRole('button', { name: `取消点赞：${question.title}` })).toHaveTextContent('有帮助 · 3');
   });
 
   it('讨论区校验空白，发布成功刷新真实讨论且匿名作者不泄露身份', async () => {
