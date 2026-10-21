@@ -146,6 +146,28 @@ class TestStandardReportMechanicalCard:
         assert _card_from_standard_report("随便写的几行话\n没有小节结构") is None
         assert _card_from_standard_report("") is None
 
+    def test_tolerates_one_deleted_section(self):
+        """审核改稿删掉一节（7/8）→ 仍机械映射，不跌回 LLM。"""
+        from ai.core.solution_sink import _card_from_standard_report
+        report = self.REPORT.replace("## 遗留问题\n无\n", "")
+        card = _card_from_standard_report(report)
+        assert card is not None and "货叉" in card["problem_summary"]
+
+    def test_fuzzy_reworded_headers(self):
+        """改措辞（问题概述→现象描述、解决方案→处理方式）仍按类识别。"""
+        from ai.core.solution_sink import _card_from_standard_report
+        report = self.REPORT.replace("## 问题概述", "## 现象描述").replace("## 解决方案", "## 处理方式")
+        card = _card_from_standard_report(report)
+        assert card is not None
+        assert "货叉" in card["problem_summary"]
+        assert "XP1152" in card["solution_steps"]
+
+    def test_too_few_sections_returns_none(self):
+        """只剩 3 类（<5）→ 不算标准 MD，走 LLM。"""
+        from ai.core.solution_sink import _card_from_standard_report
+        report = "## 问题概述\n现象\n\n## 原因分析\n原因\n\n## 验证结果\n已验证\n"
+        assert _card_from_standard_report(report) is None
+
 
 class TestProjectCandidatesRevert:
     """ORS-1035：选题环回退票史口径——智能匹配源已摘除。"""
