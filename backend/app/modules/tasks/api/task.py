@@ -529,6 +529,53 @@ def _actor_side(ticket, current_user, username: str) -> Optional[str]:
     return None
 
 
+async def _build_step_notify_users(
+    db,
+    ticket,
+    operator_side: Optional[str],
+    op_username: str,
+) -> List[str]:
+    """构造步骤协商通知的收件人列表（对方侧）。
+
+    规则：
+    - 操作人是接单人侧(assigned) → 通知提单人(created_by) + 被代理人(principal)
+    - 操作人是提单人侧(creator) → 通知接单人(assigned_to)
+    - 其他（管理员/运维）→ 两侧都通知
+
+    自动排除操作者本人（用 identity_keys 比对）。
+    """
+    created_by = getattr(ticket, 'created_by', None)
+    assigned_to = getattr(ticket, 'assigned_to', None)
+
+    if operator_side == _ACTOR_SIDE_ASSIGNED:
+        targets = [created_by]
+    elif operator_side == _ACTOR_SIDE_CREATOR:
+        targets = [assigned_to]
+    else:
+        targets = [created_by, assigned_to]
+
+    # 代提关系：追加已确认跟进的被代理人
+    principal_key = None
+    try:
+        relation = await ProxyRelationService.get_task_relation(db, getattr(ticket, 'id', None))
+        if relation and getattr(relation, 'principal_username', None):
+            principal_key = getattr(relation, 'principal_username', None) or getattr(relation, 'principal_id', None)
+    except Exception:
+        pass
+    if principal_key and principal_key not in targets:
+        targets.append(principal_key)
+
+    # 去 None / 空串 / 去重
+    targets = list({t for t in targets if t})
+
+    # 排除操作者本人（同一请求侧可能 created_by==assigned_to，也要去掉）
+    if op_username:
+        op_keys = set(identity_keys(op_username))
+        targets = [t for t in targets if t not in op_keys]
+
+    return targets
+
+
 # 请求级角色缓存：键为 (操作人标识, task_id)，值 TicketRoles。
 # 用 ContextVar 而非全局 dict，避免并发请求间串数据（安全：仅缓存本请求内已鉴权结果）。
 _roles_cache: "contextvars.ContextVar[Optional[Dict[Any, Any]]]" = contextvars.ContextVar(
@@ -2796,6 +2843,28 @@ async def respond_task(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：确认同意后通知对方侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            if is_first_response:
+                # 首次响应(new→in_progress)：通知 creator 侧"工单开始处理"
+                action_label = "处理人确认节点，工单开始处理"
+            else:
+                action_label = f"节点「{step_name}」已确认"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="节点已确认",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -2956,6 +3025,24 @@ async def complete_task_step(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：处理人推进到下一阶段，通知提单人侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            action_label = f"进入「{next_step.step_name}」，请确认新阶段"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="待确认新阶段",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -3121,6 +3208,31 @@ async def negotiate_step(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：通知对方侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            # 协商动作文案："等待{角色}确认节点时间"
+            action_label = "待确认节点时间"
+            if op_side == _ACTOR_SIDE_ASSIGNED:
+                action_label = f"请提单人确认节点「{ticket.curr_step_name}」"
+            elif op_side == _ACTOR_SIDE_CREATOR:
+                action_label = f"请处理人确认节点「{ticket.curr_step_name}」"
+            else:
+                action_label = f"节点「{ticket.curr_step_name}」时间待确认"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="节点待确认",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -3196,6 +3308,24 @@ async def set_step_time(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：一锤定音后通知提单人侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            action_label = f"已定节点「{ticket.curr_step_name}」时间"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="节点已定案",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 
@@ -3307,6 +3437,24 @@ async def reopen_step(
         await ws_broadcast_task_updated(task_id, ticket)
     except Exception:
         pass
+
+    # ── 步骤协商通知：提单人打回，通知处理人侧 ──
+    try:
+        op_side = _actor_side(ticket, current_user, username)
+        step_notify_users = await _build_step_notify_users(db, ticket, op_side, username)
+        if step_notify_users:
+            action_label = f"工单被打回，重开「{target_step.step_name}」"
+            await NotificationUtils.send_step_notification(
+                ticket_id=task_id,
+                title=ticket.title,
+                status_label="工单被打回",
+                action_detail=action_label,
+                user_names=step_notify_users,
+                token=token,
+            )
+    except Exception as _notify_err:
+        logger_task.warning(f"步骤协商通知发送失败 task_id={task_id}: {_notify_err}")
+
     return await _reload_ticket_with_comments(db, task_id)
 
 

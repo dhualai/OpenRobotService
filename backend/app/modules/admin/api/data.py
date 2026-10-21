@@ -98,28 +98,37 @@ async def import_qrcode(
     body: QrcodeImportBody,
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None),
 ) -> dict:
-    """解码数据平台导出的数据二维码，按导入当天落库 CollectionData。
+    """解码数据平台导出的数据二维码，走与文件导入一致的落库链路。
 
-    二维码内容（QRV1 单码 / QRV2 分片列表）解码后为 GroupEfficiency 指标 JSON
-    （effectWorkTime/dataIndicators 等 17 字段），构造与文件导入一致的数据包结构
-    （时间戳取当前时刻，切分到当天），走 DataHandler._insert_data 落库。
+    二维码内容（QRV1 单码 / QRV2 分片列表）解码后有两种形态：
+    - 新格式（当前数据平台导出）：与文件导出 /exportData 同构的包装结构
+      {project, indicator, content: [{data, start_time, end_time}], collection_time}，
+      直接复用文件导入的校验+按天切分落库（页面选定项目优先于包内 project）。
+    - 旧格式（历史导出，向后兼容）：顶层即扁平指标字段（effectWorkTime/dataIndicators 等），
+      按当前时刻构造当天数据包后走同一链路。
     """
     try:
-        # 1. 解码二维码内容 → GroupEfficiency 指标 JSON
-        metrics = decode_qr_payload(body.payload, body.fragments)
-        if not isinstance(metrics, dict) or not ("effectWorkTime" in metrics or "dataIndicators" in metrics):
+        # 1. 解码二维码内容 → JSON
+        decoded = decode_qr_payload(body.payload, body.fragments)
+
+        # 2. 识别形态并构造插入数据
+        if isinstance(decoded, dict) and decoded.get("indicator") and isinstance(decoded.get("content"), list):
+            # 新格式：标准包装结构，与文件导入链路共用校验/切分/落库（body.project 优先）
+            insert_data = validate_and_prepare_import_data(decoded, body.project)
+        elif isinstance(decoded, dict) and ("effectWorkTime" in decoded or "dataIndicators" in decoded):
+            # 旧格式：扁平指标字段，时间戳取当前时刻，切分到当天（向后兼容）
+            now = datetime.now(_BEIJING_TZ)
+            insert_data = validate_and_prepare_import_data(
+                {
+                    "project": body.project,
+                    "indicator": "GroupEfficiency",
+                    "content": [{"data": [{_format_time(now): decoded}]}],
+                    "collection_time": now.isoformat(),
+                }
+            )
+        else:
             raise ValueError("二维码内容不是搬运效率指标数据，请确认二维码来自数据平台导出")
 
-        # 2. 构造 GroupEfficiency 数据包：时间戳取当前时刻，与文件导入链路共用切分/落库
-        now = datetime.now(_BEIJING_TZ)
-        insert_data = validate_and_prepare_import_data(
-            {
-                "project": body.project,
-                "indicator": "GroupEfficiency",
-                "content": [{"data": [{_format_time(now): metrics}]}],
-                "collection_time": now.isoformat(),
-            }
-        )
         if not insert_data.get("content"):
             raise HTTPException(status_code=400, detail="未解析到有效数据，请检查二维码内容")
 
