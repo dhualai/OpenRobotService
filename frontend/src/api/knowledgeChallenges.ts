@@ -14,6 +14,8 @@ export interface ChallengeAnswer {
   is_best: boolean;
   liked_by_me: boolean;
   can_like: boolean;
+  can_edit: boolean;
+  remaining_edits: number;
 }
 
 export interface Challenge {
@@ -57,6 +59,8 @@ export interface MyChallengeAnswer {
   content: string;
   version: number;
   submitted_at: string | null;
+  remaining_edits: number;
+  can_submit: boolean;
 }
 
 export interface CreateChallengeBody {

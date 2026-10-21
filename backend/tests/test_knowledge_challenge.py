@@ -109,6 +109,59 @@ async def test_drafts_do_not_qualify_and_private_edits_do_not_replace_public_ans
 
 
 @pytest.mark.asyncio
+async def test_answer_allows_only_one_published_edit_and_drafts_do_not_consume_it(db):
+    challenge = await published(db)
+    answer = await submitted(db, challenge["id"])
+    original_content, original_time = answer.content, answer.submitted_at
+    await service.set_like(db, actor("voter"), challenge["id"], True, answer.id)
+    mine = (await service.detail(db, actor("alice"), challenge["id"]))["answers"][0]
+    assert mine["can_edit"] is True and mine["remaining_edits"] == 1
+    for content in ("修订草稿一", "修订草稿二"):
+        saved = await service.write_answer(db, actor("alice"), challenge["id"], content, answer.version)
+        assert saved["remaining_edits"] == 1 and saved["can_submit"] is True
+        assert answer.history == []
+        assert answer.content == original_content
+    revision_version = answer.version
+    revised = await service.write_answer(db, actor("alice"), challenge["id"], "补充后的完整解答", revision_version, submit=True)
+    assert revised["remaining_edits"] == 0 and revised["can_submit"] is False
+    assert answer.content == "补充后的完整解答"
+    assert answer.submitted_at == original_time
+    assert len(answer.history) == 1 and answer.history[0]["content"] == original_content
+    assert await service.answer_votes(db, answer.id) == 1
+    mine = (await service.detail(db, actor("alice"), challenge["id"]))["answers"][0]
+    assert mine["can_edit"] is False and mine["remaining_edits"] == 0
+    for submit in (False, True):
+        with pytest.raises(HTTPException) as error:
+            await service.write_answer(db, actor("alice"), challenge["id"], "禁止再次修改", answer.version, submit=submit)
+        assert error.value.status_code == 409
+        assert "只能修改一次" in error.value.detail
+    with pytest.raises(HTTPException) as stale:
+        await service.write_answer(db, actor("alice"), challenge["id"], "旧版本重复提交", revision_version, submit=True)
+    assert stale.value.status_code == 409
+    assert answer.content == "补充后的完整解答" and len(answer.history) == 1
+    assert (await service.my_answer(db, actor("bob"), challenge["id"]))["remaining_edits"] == 1
+    await submitted(db, challenge["id"], "bob")
+
+
+@pytest.mark.asyncio
+async def test_answer_edit_permission_is_private_and_expires_with_the_question(db, monkeypatch):
+    challenge = await published(db)
+    answer = await submitted(db, challenge["id"])
+    other = (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]
+    assert other["can_edit"] is False and other["remaining_edits"] == 0
+    assert (await service.my_answer(db, actor("alice"), challenge["id"]))["can_submit"] is True
+    after_deadline(monkeypatch)
+    mine = (await service.detail(db, actor("alice"), challenge["id"]))["answers"][0]
+    assert mine["can_edit"] is False and mine["remaining_edits"] == 1
+    private = await service.my_answer(db, actor("alice"), challenge["id"])
+    assert private["can_submit"] is False and private["content"] == answer.content
+    with pytest.raises(HTTPException) as error:
+        await service.write_answer(db, actor("alice"), challenge["id"], "截止后修改", answer.version, submit=True)
+    assert error.value.status_code == 409
+    assert answer.history == []
+
+
+@pytest.mark.asyncio
 async def test_no_answers_finish_without_reward(db, monkeypatch):
     challenge = await published(db)
     after_deadline(monkeypatch)
