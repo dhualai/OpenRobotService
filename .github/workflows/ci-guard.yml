@@ -1,0 +1,114 @@
+name: CI Guard
+
+# 部署工作流的「能力断言」守卫。
+#
+# 背景：2026-10-20 PR #338 的功能分支 merge 了 main（旧快照），
+# 解冲突时把 .github/workflows/deploy-split.yml 整份换成了 main 版，
+# 删掉结构门禁（--schema-mode）、40x5s 健康窗口、gate outcome 标注，
+# 导致 2026-10-21 test 部署报 1054 Unknown column。
+#
+# 本守卫在两个时机断言这些能力仍存在：
+#   1. PR 改动该文件时 —— 缺失即 fail，PR 上红叉并自动评论；
+#   2. 合入 test 之后 —— 再断言一次，缺失即 fail 并开 issue 兜底。
+#
+# 说明：ruleset 的 code owner review 开关需要 admin 权限，本守卫不依赖它。
+# 它挡不住「连守卫一起改」，但会让削弱 CI 的改动在 PR 页面显性变红。
+
+on:
+  pull_request:
+    branches: [test, dev]
+    paths:
+      - '.github/workflows/deploy-split.yml'
+  push:
+    branches: [test]
+    paths:
+      - '.github/workflows/deploy-split.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ci-guard-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: 断言部署工作流关键能力
+        run: |
+          set -uo pipefail
+          f=.github/workflows/deploy-split.yml
+          if [ ! -f "$f" ]; then
+            echo "::error::文件 $f 不存在"
+            exit 1
+          fi
+
+          fail=0
+          check() {
+            if ! grep -qF -- "$2" "$f"; then
+              echo "::error::缺失关键能力：$1（未找到 \"$2\"）"
+              fail=1
+            fi
+          }
+
+          # 数据库结构门禁
+          check "结构门禁参数" "--schema-mode"
+          check "结构模式覆盖开关" "SCHEMA_MODE_OVERRIDE"
+          check "schema_sync 打包" "backend/scripts/schema_sync.py"
+          check "结构模式输出" "DEPLOY_SCHEMA_MODE"
+          check "结构阻塞标记" "DEPLOY_SCHEMA_BLOCKED"
+          # 健康检查窗口
+          check "健康窗口 40 次" "--health-retries 40"
+          check "健康间隔 5s" "--health-interval 5"
+          # gate 结果透出
+          check "pytest 结果透出" "pytest_outcome"
+          check "vitest 结果透出" "vitest_outcome"
+
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "::error::部署工作流能力不完整。常见原因：功能分支 merge 了 main 的旧版 workflow，解冲突时整份取了 main 侧。"
+            exit 1
+          fi
+          echo "部署工作流关键能力完整。"
+
+      - name: PR 上说明失败原因
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "**CI Guard 拦下了一次部署工作流削弱**"
+            echo ""
+            echo "\`.github/workflows/deploy-split.yml\` 缺少结构门禁 / 健康窗口 / gate outcome 的关键片段。"
+            echo "常见原因是功能分支 merge 了 main 的旧版工作流，解冲突时整份取了 main 侧。"
+            echo ""
+            echo "如确需调整 CI 能力，请在 PR 描述里说明变更内容，并找 @dhualai 复核后重跑。"
+          } > /tmp/body.md
+          gh pr comment "$PR" --body-file /tmp/body.md || true
+
+      - name: 合入 test 后开 issue 兜底
+        if: failure() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          short=$(printf '%s' "$SHA" | cut -c1-7)
+          title="CI Guard: test 部署工作流能力缺失（$short）"
+          {
+            echo "提交 \`$SHA\` 合入 test 后，\`.github/workflows/deploy-split.yml\` 缺少结构门禁或健康窗口片段。"
+            echo ""
+            echo "部署可能再次报 \`1054 Unknown column\`，请立即检查该提交并回滚相关改动。"
+            echo ""
+            echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > /tmp/issue.md
+          gh issue create --title "$title" --body-file /tmp/issue.md || true
