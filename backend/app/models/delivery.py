@@ -161,6 +161,14 @@ class Project(Base):
     export_version = Column(Integer, nullable=False, default=0, server_default='0', comment='导出授权包版本号')
     export_version_updated_at = Column(Float, nullable=True, comment='export_version 最后一次变更时间戳(Unix秒)')
 
+    # 审核流字段：新申请项目以 status='pending' 入库，管理员审核通过后置为 'approved'（或保留 'active'），
+    # 驳回则置为 'rejected'。已存在的 'active'/'已删除' 项目不受此审核流影响。
+    # 审计字段用普通字符串存储（不建立外键），避免与 users 表形成循环依赖。
+    created_by = Column(String(64), nullable=True, comment='提交者用户ID/用户名')
+    approved_by = Column(String(64), nullable=True, comment='审核人用户ID/用户名')
+    approved_at = Column(Float, nullable=True, comment='审核时间戳(Unix秒)')
+    reject_reason = Column(String(500), nullable=True, comment='驳回原因')
+
     __table_args__ = (
         Index('idx_project_code', 'code', unique=True),
         Index('idx_project_status', 'status'),

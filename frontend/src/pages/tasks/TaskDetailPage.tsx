@@ -2,7 +2,7 @@ import { Fragment, useState, useEffect, useRef, useMemo, useCallback } from 'rea
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
+import { User, UserCheck, Folder, FolderKanban, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -344,6 +344,7 @@ export default function TaskDetailPage() {
   const [approving, setApproving] = useState(false);
   const [showAdjustPopup, setShowAdjustPopup] = useState(false);
   const [adjustName, setAdjustName] = useState('');
+  const [adjustCode, setAdjustCode] = useState('');
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -1013,26 +1014,40 @@ export default function TaskDetailPage() {
   );
   const resolve = useResolveTicket(detailId ?? '', detail, refreshDetail, refreshTasks, (b) => setBlockedError(b));
 
-  // ===== 公司/部门审核 =====
+  // ===== 公司/部门/项目审核 =====
   const approvalInfo = (() => {
     const meta = detail?.metadata_info || {};
     const approvalType = meta.approval_type as string | undefined;
     if (!approvalType) return null;
+    const type = approvalType as 'new_company' | 'new_department' | 'new_project';
     return {
-      type: approvalType as 'new_company' | 'new_department',
+      type,
       targetTable: (meta.target_table as string) || '',
       targetId: (meta.target_id as string) || '',
       targetName: (meta.target_name as string) || '',
       companyName: meta.company_name as string | undefined,
+      // 新项目额外字段
+      targetCode: (meta.target_code as string) || '',
+      customer: (meta.customer as string) || '',
+      region: (meta.region as string) || '',
     };
   })();
+
+  // approval_type → admin API 的 target_type（company/department/project）
+  const approvalTargetType = (t: typeof approvalInfo) =>
+    !t ? '' : t.type === 'new_company' ? 'company' : t.type === 'new_department' ? 'department' : 'project';
+  // 审核类型对应的中文名（用于 UI 文案）
+  const approvalLabelMap: Record<string, string> = {
+    new_company: '公司',
+    new_department: '部门',
+    new_project: '项目',
+  };
 
   const handleApprove = async () => {
     if (!approvalInfo) return;
     setApproving(true);
     try {
-      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
-      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/approve`, {
+      await adminRequest(`/users/options/${approvalTargetType(approvalInfo)}/${approvalInfo.targetId}/approve`, {
         method: 'PUT',
       });
       await request(`/${detail!.id}/status`, {
@@ -1051,25 +1066,29 @@ export default function TaskDetailPage() {
   // 调整名称后通过
   const handleAdjustApprove = async () => {
     if (!approvalInfo) return;
-    const trimmed = (adjustName || '').trim();
-    if (!trimmed) {
-      Toast({ message: '请输入名称', theme: 'warning' });
+    const trimmedName = (adjustName || '').trim();
+    const trimmedCode = (adjustCode || '').trim();
+    if (!trimmedName && !trimmedCode) {
+      Toast({ message: '请输入要调整的内容', theme: 'warning' });
       return;
     }
     setApproving(true);
     try {
-      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
-      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/approve`, {
+      const body: Record<string, string> = {};
+      if (trimmedName) body.new_name = trimmedName;
+      if (approvalInfo.type === 'new_project' && trimmedCode) body.new_code = trimmedCode;
+      await adminRequest(`/users/options/${approvalTargetType(approvalInfo)}/${approvalInfo.targetId}/approve`, {
         method: 'PUT',
-        body: JSON.stringify({ new_name: trimmed }),
+        body: JSON.stringify(body),
       });
       await request(`/${detail!.id}/status`, {
         method: 'PATCH',
         body: JSON.stringify({ status: 'closed' }),
       });
-      Toast({ message: '已调整名称并审核通过', theme: 'success' });
+      Toast({ message: '已调整并审核通过', theme: 'success' });
       setShowAdjustPopup(false);
       setAdjustName('');
+      setAdjustCode('');
       await refreshDetail();
     } catch (err) {
       Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -1086,8 +1105,7 @@ export default function TaskDetailPage() {
     }
     setApproving(true);
     try {
-      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
-      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/reject`, {
+      await adminRequest(`/users/options/${approvalTargetType(approvalInfo)}/${approvalInfo.targetId}/reject`, {
         method: 'PUT',
         body: JSON.stringify({ reason: rejectReason.trim() }),
       });
@@ -1909,47 +1927,71 @@ export default function TaskDetailPage() {
           <SafeHtml className="detail-card__body detail-card__body--pre" html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
 
-        {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用 */}
-        <StepNegotiationCard
-          negotiation={negotiation}
-          detail={detail}
-          // 被代理人仅在已确认跟随后才参与协商（pending 只读，决策 10）
-          roles={{
-            ...getCurrentUserRoles(),
-            isPrincipal: getCurrentUserRoles().isPrincipal && proxyRelation?.relation_status === 'acknowledged',
-          }}
-          onResolve={resolve.handleResolveClick}
-          onEscalate={(round, maxRound) => {
-            setEscalateUser(null);
-            setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入处理。`);
-            setShowEscalatePopup(true);
-          }}
-          onReassign={() => {
-            setReassignUser(null);
-            setReassignReason('');
-            setShowReassignPopup(true);
-          }}
-          onPauseResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
-          onUnsolvableResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
-        />
+        {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用。
+            审核型工单（metadata_info 含 approval_type）不展示，走下方专门的审核卡片。 */}
+        {!approvalInfo && (
+          <StepNegotiationCard
+            negotiation={negotiation}
+            detail={detail}
+            // 被代理人仅在已确认跟随后才参与协商（pending 只读，决策 10）
+            roles={{
+              ...getCurrentUserRoles(),
+              isPrincipal: getCurrentUserRoles().isPrincipal && proxyRelation?.relation_status === 'acknowledged',
+            }}
+            onResolve={resolve.handleResolveClick}
+            onEscalate={(round, maxRound) => {
+              setEscalateUser(null);
+              setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入处理。`);
+              setShowEscalatePopup(true);
+            }}
+            onReassign={() => {
+              setReassignUser(null);
+              setReassignReason('');
+              setShowReassignPopup(true);
+            }}
+            onPauseResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
+            onUnsolvableResponse={(nextStatus, rejectReason) => handleStatusChange({ nextStatus, rejectReason })}
+          />
+        )}
 
-        {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
+        {/* 公司/部门/项目审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
         {approvalInfo && username === 'admin' && (
           <div className="detail-card" style={{ border: '1.5px solid var(--blue-4)' }}>
             <h4 className="detail-card__h" style={{ color: 'var(--blue-2)', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {approvalInfo.type === 'new_company' ? <Building2 size={15} strokeWidth={2} /> : <Store size={15} strokeWidth={2} />}
-              {approvalInfo.type === 'new_company' ? '新公司录入审核' : '新部门录入审核'}
+              {approvalInfo.type === 'new_company' ? (
+                <Building2 size={15} strokeWidth={2} />
+              ) : approvalInfo.type === 'new_department' ? (
+                <Store size={15} strokeWidth={2} />
+              ) : (
+                <FolderKanban size={15} strokeWidth={2} />
+              )}
+              {approvalInfo.type === 'new_company'
+                ? '新公司录入审核'
+                : approvalInfo.type === 'new_department'
+                  ? '新部门录入审核'
+                  : '新项目录入审核'}
             </h4>
             <div style={{ fontSize: 13, color: 'var(--foreground)', lineHeight: 1.8, marginBottom: 16 }}>
-              <div>
-                <strong>{approvalInfo.type === 'new_company' ? '公司名称' : '部门名称'}：</strong>
-                {approvalInfo.targetName}
-              </div>
-              {approvalInfo.companyName && (
-                <div><strong>所属公司：</strong>{approvalInfo.companyName}</div>
+              {approvalInfo.type === 'new_project' ? (
+                <>
+                  <div><strong>项目名称：</strong>{approvalInfo.targetName}</div>
+                  {approvalInfo.targetCode && <div><strong>项目代码：</strong>{approvalInfo.targetCode}</div>}
+                  {approvalInfo.customer && <div><strong>客户信息：</strong>{approvalInfo.customer}</div>}
+                  {approvalInfo.region && <div><strong>项目区域：</strong>{approvalInfo.region}</div>}
+                </>
+              ) : (
+                <>
+                  <div>
+                    <strong>{approvalInfo.type === 'new_company' ? '公司名称' : '部门名称'}：</strong>
+                    {approvalInfo.targetName}
+                  </div>
+                  {approvalInfo.companyName && (
+                    <div><strong>所属公司：</strong>{approvalInfo.companyName}</div>
+                  )}
+                </>
               )}
               <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
-                请审核以下信息，通过后该{approvalInfo.type === 'new_company' ? '公司' : '部门'}将对所有用户可见
+                请审核以下信息，通过后该{approvalLabelMap[approvalInfo.type]}将对所有用户可见
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -1967,10 +2009,14 @@ export default function TaskDetailPage() {
                 theme="default"
                 variant="outline"
                 disabled={approving}
-                onClick={() => { setAdjustName(approvalInfo.targetName); setShowAdjustPopup(true); }}
+                onClick={() => {
+                  setAdjustName(approvalInfo.targetName);
+                  setAdjustCode(approvalInfo.targetCode);
+                  setShowAdjustPopup(true);
+                }}
                 style={{ borderRadius: '999px' }}
               >
-                调整名称
+                调整后通过
               </Button>
               <Button
                 block
@@ -2711,7 +2757,7 @@ export default function TaskDetailPage() {
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">驳回审核</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            确定要驳回{approvalInfo?.type === 'new_company' ? '公司' : '部门'}「{approvalInfo?.targetName}」的录入申请吗？
+            确定要驳回{approvalInfo ? approvalLabelMap[approvalInfo.type] : '该对象'}「{approvalInfo?.targetName}」的录入申请吗？
           </p>
           <Form initialData={{}}>
             <FormItem label="驳回原因" name="rejectReason" labelAlign="top" requiredMark>
@@ -2731,31 +2777,43 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 调整名称弹窗 */}
+      {/* 调整名称 / 项目代码弹窗 */}
       <Popup
         visible={showAdjustPopup}
-        onClose={() => { if (!approving) { setShowAdjustPopup(false); setAdjustName(''); } }}
+        onClose={() => { if (!approving) { setShowAdjustPopup(false); setAdjustName(''); setAdjustCode(''); } }}
         placement="bottom"
         showOverlay
       >
         <div className="ticket-edit">
-          <h4 className="ticket-edit__title">调整名称</h4>
+          <h4 className="ticket-edit__title">
+            调整{approvalInfo?.type === 'new_project' ? '项目' : approvalInfo?.type === 'new_company' ? '公司' : '部门'}信息
+          </h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            修改{approvalInfo?.type === 'new_company' ? '公司' : '部门'}名称后审核通过：
+            修改{approvalInfo ? approvalLabelMap[approvalInfo.type] : ''}信息后审核通过（留空表示不调整）：
           </p>
           <Form initialData={{}}>
-            <FormItem label="名称" name="adjustName" labelAlign="top" requiredMark>
+            <FormItem label={approvalInfo?.type === 'new_project' ? '项目名称' : '名称'} name="adjustName" labelAlign="top">
               <ClearableInput
                 value={adjustName}
                 onChange={(v) => setAdjustName(String(v))}
-                placeholder="请输入新的名称"
+                placeholder={approvalInfo?.type === 'new_project' ? '请输入新的项目名称' : '请输入新的名称'}
                 maxlength={64}
               />
             </FormItem>
+            {approvalInfo?.type === 'new_project' && (
+              <FormItem label="项目代码" name="adjustCode" labelAlign="top">
+                <ClearableInput
+                  value={adjustCode}
+                  onChange={(v) => setAdjustCode(String(v))}
+                  placeholder="请输入新的项目代码"
+                  maxlength={32}
+                />
+              </FormItem>
+            )}
           </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" disabled={approving} onClick={() => { setShowAdjustPopup(false); setAdjustName(''); }}>取消</Button>
-            <Button theme="primary" loading={approving} onClick={handleAdjustApprove} disabled={!adjustName.trim()}>确认通过</Button>
+            <Button theme="default" disabled={approving} onClick={() => { setShowAdjustPopup(false); setAdjustName(''); setAdjustCode(''); }}>取消</Button>
+            <Button theme="primary" loading={approving} onClick={handleAdjustApprove} disabled={!adjustName.trim() && !adjustCode.trim()}>确认通过</Button>
           </div>
         </div>
       </Popup>
