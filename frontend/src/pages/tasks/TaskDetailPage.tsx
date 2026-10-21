@@ -1994,8 +1994,9 @@ export default function TaskDetailPage() {
           />
         )}
 
-        {/* 公司/部门/项目审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
-        {approvalInfo && username === 'admin' && (
+        {/* 公司/部门/项目审核入口：工单 metadata_info 含 approval_type 时展示卡片（所有人可见信息），
+            仅工单处理人或有 backend:tasks:operate 权限的管理员可点击通过/驳回按钮 */}
+        {approvalInfo && (
           <div className="detail-card" style={{ border: '1.5px solid var(--blue-4)' }}>
             <h4 className="detail-card__h" style={{ color: 'var(--blue-2)', display: 'flex', alignItems: 'center', gap: 6 }}>
               {approvalInfo.type === 'new_company' ? (
@@ -2034,7 +2035,8 @@ export default function TaskDetailPage() {
                 请审核以下信息，通过后该{approvalLabelMap[approvalInfo.type]}将对所有用户可见
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
+            {(isAssignee || hasPermission('backend:tasks:operate')) ? (
+              <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 block
                 theme="primary"
@@ -2068,7 +2070,12 @@ export default function TaskDetailPage() {
               >
                 驳回
               </Button>
-            </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
+                审核操作由工单处理人或管理员完成
+              </div>
+            )}
           </div>
         )}
 
