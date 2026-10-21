@@ -363,6 +363,8 @@ export default function TaskDetailPage() {
   // 展示百分比会误导），只有"有没有、是哪几张"。
   const [archiveSimilar, setArchiveSimilar] = useState<ArchiveSimilarItem[]>([]);
   const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
+  // ORS-1010：报告预览/编辑切换（生成完默认预览——用户先看到渲染结果含图片）
+  const [archiveReportPreview, setArchiveReportPreview] = useState(false);
   // ORS-1010：展开查看卡正文（问题/根因/解决）的条目
   const [expandedSimilar, setExpandedSimilar] = useState<Set<number>>(new Set());
   // 检索成功完成（retrieval_status=ok）：0 条也显示"未发现"提示，让功能存在感在；
@@ -751,7 +753,7 @@ export default function TaskDetailPage() {
       setArchiveSimilar(list.slice(0, 5));
       setArchiveSimilarReady(res?.retrieval_status !== 'unavailable');
     } catch {
-      setArchiveSimilar([]); // 静默降级：相似提示拿不到不影响归档
+      setArchiveSimilar([]); setArchiveReportPreview(false); // 静默降级：相似提示拿不到不影响归档
       setArchiveSimilarReady(false);
     } finally {
       setArchiveSimilarLoading(false);
@@ -769,7 +771,7 @@ export default function TaskDetailPage() {
       setArchiveEditorMode('edit');
       setArchiveEditorVisible(true);
       // ORS-1010：相似工单与 AI 初稿并行拉取（失败静默，编辑器不等它）
-      setArchiveSimilar([]);
+      setArchiveSimilar([]); setArchiveReportPreview(false);
       void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
@@ -795,6 +797,7 @@ export default function TaskDetailPage() {
           onDone: () => {
             setArchiveGenerating(false);
             setArchiveGenStatus('');
+            setArchiveReportPreview(true); // 生成完默认预览：先看渲染结果（含图片）
             Toast({ message: 'AI 初稿已生成，请核对并修改后提交审核', theme: 'success' });
           },
           onError: (m) => {
@@ -918,7 +921,7 @@ export default function TaskDetailPage() {
     }
     setArchiveEditorVisible(true);
     // ORS-1010：编辑/再编辑打开时后台带出相似工单（失败静默）
-    setArchiveSimilar([]);
+    setArchiveSimilar([]); setArchiveReportPreview(false);
     void fetchArchiveSimilar(Number(detail.id));
   };
 
@@ -2763,7 +2766,7 @@ export default function TaskDetailPage() {
       {/* ── 归档报告编辑器 Popup ── */}
       <Popup
         visible={archiveEditorVisible}
-        onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}
+        onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}
         placement="bottom"
         showOverlay
       >
@@ -2771,7 +2774,7 @@ export default function TaskDetailPage() {
             （滚动在其 __body 子层，本弹窗未用）——底部内容曾被硬裁（1010 用户
             iOS 实测提示语只剩半句）。内联开启滚动。 */}
         <div className="ticket-edit-form" style={{ overflowY: 'auto' }}>
-          <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>×</span>
+          <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
           </h4>
@@ -2788,16 +2791,22 @@ export default function TaskDetailPage() {
                 <Button size="small" theme="default" disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐报告章节</Button>
               </div>
               {archiveGenerating ? (
-                /* AI 生成中：只读直播，防止处理人同时手写（服务端 content='' 条件写回兜底） */
-                <div style={{ height: 320, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>
+                /* AI 生成中：只读直播（渲染版——报告内嵌图片随流式内容出现），
+                    防止处理人同时手写（服务端 content='' 条件写回兜底） */
+                <div style={{ height: 380, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
                     <span className="loading" style={{ width: 12, height: 12, display: 'inline-block', border: '2px solid var(--brand, #266fe8)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
                     <b style={{ fontSize: 14 }}>AI 正在为您总结归档报告…</b>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginBottom: 8 }}>{archiveGenStatus}</div>
                   {archiveReportContent && (
-                    <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.7, color: 'var(--foreground)' }}>{archiveReportContent}</pre>
+                    <MarkdownRenderer content={archiveReportContent} streaming />
                   )}
+                </div>
+              ) : archiveReportPreview ? (
+                /* ORS-1010 预览态：渲染版（图片可见），可切回编辑 */
+                <div style={{ height: 380, overflowY: 'auto', border: '1px solid var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px' }}>
+                  <MarkdownRenderer content={archiveReportContent} />
                 </div>
               ) : (
                 <MDEditor
@@ -2806,6 +2815,16 @@ export default function TaskDetailPage() {
                   onChange={(v) => setArchiveReportContent(v || '')}
                   preview="edit"
                 />
+              )}
+              {!archiveGenerating && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                  <span
+                    onClick={() => setArchiveReportPreview((v) => !v)}
+                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
+                  >
+                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
+                  </span>
+                </div>
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
                 <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
@@ -2822,9 +2841,9 @@ export default function TaskDetailPage() {
                   的 img 无鉴权渲染会 401 */}
               <MarkdownRenderer content={archiveReportContent} />
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
-                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>关闭</Button>
+                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>关闭</Button>
                 <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
-                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
               </div>
             </>
           )}
