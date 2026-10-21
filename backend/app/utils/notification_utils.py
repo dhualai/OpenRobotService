@@ -70,6 +70,7 @@ class NotificationUtils:
     MENTION_TICKET = 8
     OVERDUE_WARNING_TICKET = 9
     ROBOT_ALARM = 10
+    STEP_NOTIFICATION = 11  # 步骤协商通知模板
     TICKET_HOST = "https://usp.ep-zl.com/p/app/tasks"
 
     @classmethod
@@ -338,6 +339,7 @@ class NotificationUtils:
         operator: str,
         user_names: List[str] = None,
         token: Optional[str] = None,
+        reason_suffix: str = '',
     ) -> Dict[str, Any]:
         def _send():
             try:
@@ -355,16 +357,26 @@ class NotificationUtils:
                     'other': '其他',
                     'TicketStatus.NEW': '待处理',
                     'TicketStatus.IN_PROGRESS': '处理中',
+                    'TicketStatus.PENDING_REQUESTED': '暂停请求中',
                     'TicketStatus.PENDING': '已挂起',
+                    'TicketStatus.UNSOLVABLE_REQUESTED': '无法解决确认中',
+                    'TicketStatus.UNSOLVABLE': '无法解决',
                     'TicketStatus.RESOLVED': '已解决',
                     'TicketStatus.CANCELED': '已取消',
                     'TicketStatus.CLOSED': '已关闭',
+                    'TicketStatus.ARCHIVING': '归档中',
+                    'TicketStatus.ARCHIVED': '已归档',
                     'new': '待处理',
                     'in_progress': '处理中',
+                    'pending_requested': '暂停请求中',
                     'pending': '已挂起',
+                    'unsolvable_requested': '无法解决确认中',
+                    'unsolvable': '无法解决',
                     'resolved': '已解决',
                     'canceled': '已取消',
                     'closed': '已关闭',
+                    'archiving': '归档中',
+                    'archived': '已归档',
                     'TicketPriority.LOW': '低',
                     'TicketPriority.MEDIUM': '中',
                     'TicketPriority.HIGH': '高',
@@ -431,6 +443,9 @@ class NotificationUtils:
                     reason = f"{'、'.join(labels)}等{len(updated_fields)}项信息已更新"
                 else:
                     reason = "工单信息已更新"
+
+                if reason_suffix:
+                    reason = f"{reason}{reason_suffix}"
 
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -770,3 +785,56 @@ class NotificationUtils:
         
         asyncio.get_event_loop().run_in_executor(_executor, _send)
         return {"code": 200, "message": "通知已发送"}
+
+    @staticmethod
+    async def send_step_notification(
+        ticket_id: int,
+        title: str,
+        status_label: str,
+        action_detail: str,
+        user_names: List[str] = None,
+        token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """步骤协商通知（模板 11）。
+
+        模板字段顺序：[工单标题(thing33), 工单状态(phrase15), 处理措施(thing13)]
+
+        用于 negotiate-step / respond / complete-step / set-step-time / reopen-step
+        等阶段性处理接口，通知协商对方侧"轮到你操作了"。
+        """
+        def _send():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    processed_title = loop.run_until_complete(
+                        NotificationUtils.simplify_title(title)
+                    )
+                    processed_status = loop.run_until_complete(
+                        NotificationUtils.simplify_title(status_label)
+                    )
+                    processed_action = loop.run_until_complete(
+                        NotificationUtils.simplify_title(action_detail)
+                    )
+                finally:
+                    loop.close()
+
+                payload = NotificationUtils.instantiate_template(
+                    NotificationUtils.STEP_NOTIFICATION,
+                    processed_title,
+                    processed_status,
+                    processed_action,
+                    user_names=user_names,
+                    url=NotificationUtils.TICKET_HOST + f"/{ticket_id}",
+                )
+                loop2 = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop2)
+                try:
+                    loop2.run_until_complete(NotificationUtils.send_notification(payload, token))
+                finally:
+                    loop2.close()
+            except Exception as e:
+                logger.error(f"发送步骤协商通知失败 ticket_id={ticket_id}: {str(e)}")
+
+        asyncio.get_event_loop().run_in_executor(_executor, _send)
+        return {"code": 200, "message": "步骤协商通知已发送"}
