@@ -1704,12 +1704,17 @@ class TicketService:
                 operator_name = user_map.get(operator_id, operator_id or '系统')
                 update_content = f"status: {status.value}"
                 
+                # resolved 终态：整组收件人（提单人+被代理人均属 creator 侧）统一追加验证提醒
+                # 注：notify_users 已剔除 operator（assigned_to 处理人自己），
+                #     剩余集合 = {created_by, principal}，均属 creator 侧
+                suffix = '，请及时验证确认' if status == TicketStatus.RESOLVED else ''
                 await NotificationUtils.send_ticket_update_notification(
                     ticket_id=ticket_id,
                     title=ticket.title,
                     operator=operator_name,
                     project_name=ticket.project_name,
                     update_content=update_content,
+                    reason_suffix=suffix,
                     user_names=notify_users,
                     token=token
                 )
