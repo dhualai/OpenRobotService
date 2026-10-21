@@ -2035,7 +2035,7 @@ export default function TaskDetailPage() {
                 请审核以下信息，通过后该{approvalLabelMap[approvalInfo.type]}将对所有用户可见
               </div>
             </div>
-            {(isAssignee || hasPermission('backend:tasks:operate')) ? (
+            {(getCurrentUserRoles().isAssignee || hasPermission('backend:tasks:operate')) ? (
               <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 block
