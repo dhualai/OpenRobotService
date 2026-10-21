@@ -72,9 +72,10 @@ _REPORT_PROMPT = """请根据以下工单素材撰写归档报告，格式要求
 ## 遗留问题
 （未解决事项与后续动作；素材明确没有时写「无」）
 
-## 现场图片
-（素材提供了现场图片 markdown 时，**逐行原样嵌入**到本节下——路径与文件名
-一字不改、不得虚构或改写图片；每张后跟一行描述文字。素材没有图片时整节约省略）
+（素材提供了"现场图片"markdown 时：按图片内容与描述判断它最能佐证哪一节，
+把 markdown **原样嵌入**该节正文之后的独立一行——如报错截图配「问题概述」、
+现场照片配「复现条件」、部件照片配「原因分析」；无法判断时放「问题概述」
+末尾。路径与文件名一字不改、不得虚构图片；每张全篇恰好出现一次）
 
 ----------
 
@@ -211,6 +212,14 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
         if not report:
             await q({"type": "error", "msg": "生成结果为空，可直接手写报告"})
             return
+        # ORS-1035 兜底：素材有现场图片但 LLM 没嵌任何一张（内联指引偶尔失守）
+        # → 自动补「## 现场图片」小节，保证图片不因模型失守而整体丢失
+        if img_refs and "attachments/download" not in report:
+            fallback = "\n\n## 现场图片\n\n" + "\n".join(
+                f"- {r['markdown']}" + (f"（{r['desc']}）" if r["desc"] else "")
+                for r in img_refs)
+            report = report.rstrip() + fallback
+            await q({"type": "delta", "text": fallback})
 
         await q({"type": "status", "msg": "正在保存初稿…"})
         # 写回前再查一次：生成期间处理人可能已开始手写
