@@ -54,6 +54,8 @@ const OVERVIEW: KnowledgeOverview = {
   campaign_status: 'active',
   settlement_status: 'live',
   top_three: [],
+  top_questioners: [],
+  top_answerers: [],
   can_review: false,
   rule_notice: '',
 };
