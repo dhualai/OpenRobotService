@@ -383,6 +383,8 @@ class PermissionService:
                 'permissions': list(all_permissions),
                 'roles': user_roles,
                 'can_view_knowledge_contribution': can_view_knowledge_contribution,
+                'can_manage_knowledge_challenges': "admin" in all_permissions or bool(
+                    global_role_names & {"超级管理员", "管理员"}),
                 'projectPermissions': project_permissions_dict,
                 'name': getattr(db_user, 'name', None),
                 'status': getattr(db_user, 'status', 'inactive'),

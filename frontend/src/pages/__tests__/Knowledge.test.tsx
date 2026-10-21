@@ -13,6 +13,9 @@ import KnowledgeReviewPage from '../admin/KnowledgeReviewPage';
 import KnowledgeQuestionDetail from '../admin/KnowledgeQuestionDetail';
 import KnowledgeContributorPage from '../admin/KnowledgeContributorPage';
 import Dashboard from '../admin/Dashboard';
+import { fetchChallengePreview } from '@/api/knowledgeChallenges';
+
+vi.mock('@/api/knowledgeChallenges', () => ({ fetchChallengePreview: vi.fn() }));
 
 vi.mock('@/shared/components/UserAvatarMenu', () => ({ default: () => null }));
 vi.mock('@/shared/components/SubscriptionReminder', () => ({ default: () => null }));
@@ -52,6 +55,7 @@ const report: api.KnowledgeReview = { report_id: 9, task_id: 7, version: 2, revi
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(fetchChallengePreview).mockResolvedValue({ items: [], total: 0, can_manage: false });
   vi.mocked(fetchRewardStats).mockResolvedValue({ pending_amount: 0, pending_count: 0, withdrawn_amount: 0 });
   useAuthStore.setState({ username: 'knowledge-test', name: '当前用户', projectIds: [], permissions: [], isAdmin: false, roles: null, canViewKnowledgeContribution: true });
   vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue(overview);
@@ -253,6 +257,9 @@ describe('知识贡献榜首页可见性', () => {
     expect(await screen.findByRole('region', { name: '知识贡献榜' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '知识贡献榜' })).toBeInTheDocument();
     expect(screen.getByText('查看榜单')).toBeInTheDocument();
+    const contributionHeading = screen.getByRole('heading', { name: '知识贡献榜' });
+    const challengeHeading = screen.getByRole('heading', { name: '高价值问题榜单' });
+    expect(contributionHeading.compareDocumentPosition(challengeHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(await screen.findByText('贡献甲')).toBeInTheDocument();
   });
 
@@ -265,6 +272,7 @@ describe('知识贡献榜首页可见性', () => {
     expect(screen.queryByText(/每人每天最多点赞5个不同问题/)).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '工单数据看板' })).toBeInTheDocument();
     expect(api.fetchKnowledgeOverview).not.toHaveBeenCalled();
+    expect(fetchChallengePreview).not.toHaveBeenCalled();
   });
 
   it('单独挂载卡片同样默认隐藏且不发送榜单请求', () => {

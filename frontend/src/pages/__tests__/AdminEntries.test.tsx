@@ -53,6 +53,15 @@ const renderView = (path = '/admin/entries') => {
 };
 
 describe('AdminEntries', () => {
+  it('仅服务端确认的管理员显示高价值问题管理入口', () => {
+    useAuthStore.setState({ canManageKnowledgeChallenges: false });
+    renderView('/admin/entries/operations');
+    expect(screen.queryByRole('button', { name: /^高价值问题管理/ })).not.toBeInTheDocument();
+    act(() => useAuthStore.setState({ canManageKnowledgeChallenges: true }));
+    expect(screen.getByRole('button', { name: /^高价值问题管理/ })).toBeInTheDocument();
+    act(() => useAuthStore.setState({ canManageKnowledgeChallenges: false }));
+    expect(screen.queryByRole('button', { name: /^高价值问题管理/ })).not.toBeInTheDocument();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     useAuthStore.setState({ username: 'admin', permissions: ['admin'] });

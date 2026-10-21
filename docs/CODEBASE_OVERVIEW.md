@@ -171,6 +171,9 @@ backend/
 
 ### 3.4 关键业务功能（2026-08 新增亮点）
 
+- **高价值问题（2026-10-20，代码已实现，未执行目标环境迁移/部署）**：`modules/admin/services/knowledge_challenge.py` 与独立API支持平台直接发布、可选关联工单、匿名答题、独立草稿及版本、问题/答案点赞、管理员状态与结果纠正。`knowledge_challenge_tasks.py` 随后端启动，每60秒扫描持久化到期问题，按答案有效赞、首次提交时间、ID确定唯一最佳并保存截止快照；失败重试，重复扫描不重复奖励。专项来源 `knowledge_challenge`、来源ID为问题ID，调用既有奖励服务进入原奖励管理，不更改财务审核及支付模块。
+- **共享问题点赞额度**：`knowledge_like_quota.py` 在真实用户行锁内合计普通工单与独立问题的当日事件，统一每天5题；工单关联入口共享同题点赞事实。答案独立每天5条，不能自赞。`KNOWLEDGE_CHALLENGES_ENABLED=false` 停止新参与及自动结算，历史只读和原财务处理保留。
+
 - **智能派单 / 重派（dispatch）**：`task_dispatch_log` 落派单日志；AI 端 Assigner（`ai/agents/AiDiagnosisPlatform/assigner.py`）精排推荐候选（倾向人/对接人保底 0.8 分、职级轻微打折），重派候选默认展示全部用户 + 画像，精排推荐仅含真有精排分者；派单说明（`redispatch_tip_service.py`）仅提单人可见。
 - **模块树协同编辑（module-tree）**：产品→界面→功能树管理（`module_tree_ws.py` 提供 WebSocket 协同），编辑审批单（批准/驳回）、按行 id 并发安全的新增/更新/删除、各产品树版本哈希（乐观锁基准）+ 功能级冲突基准哈希。AI 派单据此选择召回目标（保存模块树/用户画像后调用 `/api/ai/assigner/reload` 热更新）。
 - **搬运效率分析（transport-efficiency）**：Excel/JSON 导入搬运效率数据、按项目某日查询、历史数据访问。
@@ -189,6 +192,7 @@ backend/
 | 咨询对话 | conversations / messages | AI 问询 |
 | 模块树 | module_trees / module_tree_nodes / module_tree_edits（审批单） | 派单知识底座 |
 | 组织/资源 | companies / departments / resources / resource_folders | 组织架构 / resource_manager |
+| 高价值问题（2026-10-20增量） | knowledge_challenges / knowledge_challenge_answers / knowledge_challenge_likes / knowledge_challenge_like_events / knowledge_challenge_audits | 独立ORM `knowledge_challenge.py`；迁移 `e1f4a7b0c326`，未在目标库执行 |
 
 ### 3.6 核心设计要点与工程债
 

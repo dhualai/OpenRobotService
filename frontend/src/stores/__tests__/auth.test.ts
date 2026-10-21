@@ -11,6 +11,7 @@ describe('Auth Store', () => {
       isLoading: true,
       isAdmin: false,
       canViewKnowledgeContribution: false,
+      canManageKnowledgeChallenges: false,
       roles: null,
       permissions: [],
     });
@@ -182,6 +183,16 @@ describe('Auth Store', () => {
   });
 
   describe('knowledge contribution visibility', () => {
+    it.each([true, false, undefined, 'true'])('高价值问题管理权仅接受当前用户的服务端布尔标记 %s', async (allowed) => {
+      useAuthStore.setState({ isLoggedIn: true, username: 'challenge-manager', token: 'auth-token' });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: true,
+        json: async () => ({ can_manage_knowledge_challenges: allowed }),
+      } as Response);
+      await useAuthStore.getState().fetchUserDetails('challenge-manager', 'auth-token');
+      expect(useAuthStore.getState().canManageKnowledgeChallenges).toBe(allowed === true);
+      useAuthStore.getState().logout();
+      expect(useAuthStore.getState().canManageKnowledgeChallenges).toBe(false);
+    });
     it.each([true, false, undefined, 'true'])('only accepts the current user explicit boolean flag %s', async (visible) => {
       useAuthStore.setState({ isLoggedIn: true, username: 'flag-user', token: 'auth-token', canViewKnowledgeContribution: true });
       vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({

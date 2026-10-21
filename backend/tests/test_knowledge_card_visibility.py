@@ -29,6 +29,18 @@ ROLE_IDS = {'超级管理员': 'role-91b', '管理员': 'role-72a', '调度研�
             '开发者': 'role-64d', '现场工程师': 'role-85e', '项目经理': 'role-26f'}
 
 
+@pytest.mark.parametrize('assignments,allowed', [
+    ([(None, '超级管理员')], True), ([(None, '管理员')], True),
+    ([('project-A', '管理员')], False), ([(None, '开发者')], False),
+    ([('project-A', '现场工程师')], False), ([], False),
+])
+def test_challenge_management_only_for_global_admin_roles(sessions, assignments, allowed):
+    seed_user(sessions, assignments)
+    user = PermissionService.get_user_with_roles('viewer')
+    assert user['can_manage_knowledge_challenges'] is allowed
+    assert UserDetail(**user).can_manage_knowledge_challenges is allowed
+
+
 @pytest.fixture
 def sessions(monkeypatch):
     engine = create_engine('sqlite://', poolclass=StaticPool, connect_args={'check_same_thread': False})
