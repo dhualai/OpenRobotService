@@ -803,20 +803,33 @@ export default function TaskDetailPage() {
       void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
-      if (existing) {
-        // 已有内容（幂等复用/处理人写过）：不触发 AI，直接编辑
-        setArchiveReportContent(existing);
-        Toast({ message: '已开始归档，请编写归档报告', theme: 'success' });
-        return;
-      }
+      // ORS-1010：AI 生成改为显式按钮（不自动跑）——编辑器空态给引导条，
+      // 处理人自己写或点 AI 均可；已有内容（幂等复用）直接进编辑
+      setArchiveReportContent(existing);
+      Toast({ message: existing ? '已开始归档，请继续编写归档报告' : '已开始归档，可直接手写，或点「AI 生成初稿」', theme: 'success' });
+    } catch (err) {
+      // archive-start 失败兜底
+      Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}`, theme: 'error' });
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
 
-      // AI 初稿流式生成：编辑器只读态直播，完成后解锁修改
-      setArchiveGenerating(true);
-      setArchiveGenStatus('AI 正在为您总结归档报告…');
-      let acc = '';
+  // ── ORS-1010：AI 生成初稿（显式按钮触发）──
+  const handleAiGenerateReport = async () => {
+    if (!detail || archiveGenerating || archiveLoading) return;
+    if ((archiveReportContent || '').trim()) {
+      // 已有内容不覆盖（与原有"处理人手写不覆盖"保护同口径），提示走补齐章节
+      Toast({ message: '报告已有内容，AI 不覆盖；缺章节可点「补齐章节」', theme: 'warning' });
+      return;
+    }
+    setArchiveGenerating(true);
+    setArchiveGenStatus('AI 正在为您总结归档报告…');
+    setArchiveReportPreview(false);
+    let acc = '';
+    try {
       await archiveGenerateStream(
-        // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；
-        // detail.id 是路由字符串，与 ticket.ts 既有写法一致显式转换
+        // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；detail.id 是路由字符串
         { task_id: Number(detail.id) },
         {
           onStatus: (m) => setArchiveGenStatus(m),
@@ -847,10 +860,7 @@ export default function TaskDetailPage() {
     } catch (err) {
       setArchiveGenerating(false);
       setArchiveGenStatus('');
-      // 归档已开成、AI 生成链路失败：解锁手写（archive-start 本身失败也在此兜底）
-      Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}（可直接手写报告）`, theme: 'warning' });
-    } finally {
-      setArchiveLoading(false);
+      Toast({ message: `${err instanceof Error ? err.message : 'AI 生成失败'}（可直接手写报告）`, theme: 'warning' });
     }
   };
 
@@ -2873,83 +2883,6 @@ export default function TaskDetailPage() {
             <>
               {/* ORS-1010 精简：章节要求压成一行 + 常用操作（补齐章节/上传图片），
                   原格式工具栏整排删除——报告写作用不上，还把正文挤出首屏 */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
-                  须含八个章节且各节有正文（无遗留写「无」）；请勿写入人员姓名及联系方式。
-                </span>
-                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐章节</Button>
-                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
-                  {uploadingReportImage ? '上传中…' : '📷 上传图片'}
-                </Button>
-                <input
-                  ref={reportImageInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={handleReportImageUpload}
-                />
-              </div>
-              {archiveGenerating ? (
-                /* AI 生成中：只读直播（渲染版——报告内嵌图片随流式内容出现），
-                    防止处理人同时手写（服务端 content='' 条件写回兜底） */
-                <div style={{ height: 380, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-                    <span className="loading" style={{ width: 12, height: 12, display: 'inline-block', border: '2px solid var(--brand, #266fe8)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                    <b style={{ fontSize: 14 }}>AI 正在为您总结归档报告…</b>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginBottom: 8 }}>{archiveGenStatus}</div>
-                  {archiveReportContent && (
-                    <MarkdownRenderer content={archiveReportContent} streaming />
-                  )}
-                </div>
-              ) : archiveReportPreview ? (
-                /* ORS-1010 预览态：渲染版（图片可见），可切回编辑 */
-                <div style={{ height: 380, overflowY: 'auto', border: '1px solid var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px' }}>
-                  <MarkdownRenderer content={archiveReportContent} />
-                </div>
-              ) : (
-                // ORS-1010 精简：MDEditor 工具栏整排删除，写作不需要二十个格式图标
-                <MDEditor
-                  commands={[]}
-                  extraCommands={[]}
-                  height={340}
-                  value={archiveReportContent}
-                  onChange={(v) => setArchiveReportContent(v || '')}
-                  preview="edit"
-                />
-              )}
-              {!archiveGenerating && (
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                  <span
-                    onClick={() => setArchiveReportPreview((v) => !v)}
-                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
-                  >
-                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
-                  </span>
-                </div>
-              )}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
-                <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>提交后系统自动指定审核人</span>
-                  <Button size="small" theme="primary" onClick={handleSubmitArchive} loading={archiveLoading} disabled={archiveGenerating}>提交审核</Button>
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-              {/* ORS-1035：报告用 MarkdownRenderer 展示——内嵌的相对路径图片
-                  （attachments/download）走 AuthImage 带登录态加载；MDEditor
-                  的 img 无鉴权渲染会 401 */}
-              <MarkdownRenderer content={archiveReportContent} />
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
-                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>关闭</Button>
-                <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
-                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
-              </div>
-            </>
-          )}
           {/* ORS-1010 相似工单提示：归档人对照已沉淀的相似工单（与 AI 初稿并行
               拉取）。不展示相似度分值——score 是 RRF 融合分非余弦，展示数字会
               误导。verified=rejected 已被推翻，不出示。0 条且检索正常时也提示
@@ -3023,6 +2956,92 @@ export default function TaskDetailPage() {
                 </div>
               )}
             </div>
+          )}
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
+                  须含八个章节且各节有正文（无遗留写「无」）；请勿写入人员姓名及联系方式。
+                </span>
+                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐章节</Button>
+                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
+                  {uploadingReportImage ? '上传中…' : '📷 上传图片'}
+                </Button>
+                <input
+                  ref={reportImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={handleReportImageUpload}
+                />
+              </div>
+              {!archiveGenerating && !archiveReportContent.trim() && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, background: 'var(--muted, #f6f8fa)', borderRadius: 8 }}>
+                  <span style={{ flex: 1, fontSize: 12, color: 'var(--muted-foreground)' }}>
+                    💡 不想手写？让 AI 基于本单讨论先出一份标准结构初稿
+                  </span>
+                  <Button size="small" theme="primary" onClick={handleAiGenerateReport}>✨ AI 生成初稿</Button>
+                </div>
+              )}
+              {archiveGenerating ? (
+                /* AI 生成中：只读直播（渲染版——报告内嵌图片随流式内容出现），
+                    防止处理人同时手写（服务端 content='' 条件写回兜底） */
+                <div style={{ height: 380, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                    <span className="loading" style={{ width: 12, height: 12, display: 'inline-block', border: '2px solid var(--brand, #266fe8)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                    <b style={{ fontSize: 14 }}>AI 正在为您总结归档报告…</b>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginBottom: 8 }}>{archiveGenStatus}</div>
+                  {archiveReportContent && (
+                    <MarkdownRenderer content={archiveReportContent} streaming />
+                  )}
+                </div>
+              ) : archiveReportPreview ? (
+                /* ORS-1010 预览态：渲染版（图片可见），可切回编辑 */
+                <div style={{ height: 380, overflowY: 'auto', border: '1px solid var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px' }}>
+                  <MarkdownRenderer content={archiveReportContent} />
+                </div>
+              ) : (
+                // ORS-1010 精简：MDEditor 工具栏整排删除，写作不需要二十个格式图标
+                <MDEditor
+                  commands={[]}
+                  extraCommands={[]}
+                  height={340}
+                  value={archiveReportContent}
+                  onChange={(v) => setArchiveReportContent(v || '')}
+                  preview="edit"
+                />
+              )}
+              {!archiveGenerating && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                  <span
+                    onClick={() => setArchiveReportPreview((v) => !v)}
+                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
+                  >
+                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
+                  </span>
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
+                <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>提交后系统自动指定审核人</span>
+                  <Button size="small" theme="primary" onClick={handleSubmitArchive} loading={archiveLoading} disabled={archiveGenerating}>提交审核</Button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* ORS-1035：报告用 MarkdownRenderer 展示——内嵌的相对路径图片
+                  （attachments/download）走 AuthImage 带登录态加载；MDEditor
+                  的 img 无鉴权渲染会 401 */}
+              <MarkdownRenderer content={archiveReportContent} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>关闭</Button>
+                <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
+              </div>
+            </>
           )}
         </div>
       </Popup>
