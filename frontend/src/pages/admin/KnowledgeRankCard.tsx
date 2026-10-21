@@ -36,7 +36,7 @@ export function contributorPreviewEntries(contributors: Contributor[], focus: Bo
   }));
 }
 
-export default function KnowledgeRankCard({ title, subtitle, notice, kind, entries, to, hideTitle, loading, error, retry, footer, className = '' }: {
+export default function KnowledgeRankCard({ title, subtitle, notice, kind, entries, to, hideTitle, showMore = true, loading, error, retry, footer, className = '' }: {
   title: string;
   subtitle: string;
   notice?: string;
@@ -44,6 +44,7 @@ export default function KnowledgeRankCard({ title, subtitle, notice, kind, entri
   entries: KnowledgePreviewEntry[];
   to: string;
   hideTitle?: boolean;
+  showMore?: boolean;
   loading?: boolean;
   error?: string;
   retry?: () => void;
@@ -52,11 +53,11 @@ export default function KnowledgeRankCard({ title, subtitle, notice, kind, entri
 }) {
   const artwork = boardArtwork[kind];
   const ArtworkIcon = artwork.icon;
-  return <section className={`mac-card mac-card--pad knowledge-board-card ${className}`} aria-label={title}>
-    <Link className="knowledge-board-card__link" to={to} aria-label={`查看${title}`}>
+  return <section className={`mac-card mac-card--pad knowledge-board-card knowledge-clickable-card ${className}`} aria-label={title}>
+    <Link className="knowledge-board-card__link knowledge-clickable-card__link" to={to} aria-label={`查看${title}`}>
       <div className="knowledge-board-card__heading">
         <div className="knowledge-board-card__title">{!hideTitle && <h3>{title}</h3>}<span className="knowledge-muted">{subtitle}</span></div>
-        <span className="knowledge-board-card__more">查看全部<ChevronRight size={14} aria-hidden /></span>
+        {showMore && <span className="knowledge-board-card__more">查看全部<ChevronRight size={14} aria-hidden /></span>}
       </div>
       {notice && <div className="knowledge-note">{notice}</div>}
       {!loading && !error && <div className="knowledge-board-card__body">
@@ -75,8 +76,8 @@ export default function KnowledgeRankCard({ title, subtitle, notice, kind, entri
           })}
         </ol>
       </div>}
+      {footer && <div className="knowledge-card-footer">{footer}</div>}
     </Link>
     <KnowledgeState loading={loading} error={error} retry={retry} />
-    {footer && <div className="knowledge-card-footer">{footer}</div>}
   </section>;
 }

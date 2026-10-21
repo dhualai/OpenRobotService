@@ -126,6 +126,12 @@ def load_comments_text(task_id: int) -> tuple[str, str]:
         db.close()
     lines, total, last_human = [], 0, ""
     for content, created_by, display_name, attachments in rows:
+        if isinstance(attachments, str):
+            # 裸 text() SQL 不带类型装饰器，JSON 列回来是字符串
+            try:
+                attachments = json.loads(attachments) if attachments else []
+            except Exception:
+                attachments = []
         if created_by in _AI_AUTHORS:
             continue
         name = display_name or created_by
@@ -142,6 +148,10 @@ def load_comments_text(task_id: int) -> tuple[str, str]:
         total += len(line)
         last_human = name
     return "\n".join(lines), last_human
+
+
+def _is_image_path(p: str) -> bool:
+    return str(p or "").lower().rsplit(".", 1)[-1] in {"jpg", "jpeg", "png", "bmp", "gif", "webp"}
 
 
 def _comment_image_descs(attachments) -> list:
@@ -192,15 +202,27 @@ def load_comment_image_refs(task_id: int, limit: int = 6) -> list:
     finally:
         db.close()
     out = []
-    for (atts,) in rows:
+    for atts, _created_by in rows:
+        if isinstance(atts, str):
+            # 裸 text() SQL 不带类型装饰器，JSON 列回来是字符串
+            try:
+                atts = json.loads(atts) if atts else []
+            except Exception:
+                atts = []
         for a in atts or []:
-            if not isinstance(a, dict):
+            # 两种历史形态：{path, filename, desc?} dict 与纯 path 字符串（无 desc）
+            if isinstance(a, dict):
+                p = str(a.get("path") or "")
+                filename = str(a.get("filename") or os.path.basename(p))
+                desc = str(a.get("desc") or "").strip()
+            elif isinstance(a, str):
+                p = a
+                filename = os.path.basename(p)
+                desc = ""
+            else:
                 continue
-            p = str(a.get("path") or "")
             if not p or not _is_image_path(p) or any(x["path"] == p for x in out):
                 continue
-            filename = str(a.get("filename") or os.path.basename(p))
-            desc = str(a.get("desc") or "").strip()
             url = f"/api/tasks/attachments/download?path={quote(p)}"
             md = f"![{filename}]({url})"
             out.append({"filename": filename, "path": p, "desc": desc, "markdown": md})

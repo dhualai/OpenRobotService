@@ -265,9 +265,9 @@ export default function Dashboard() {
         </section>
 
         {canViewKnowledgeContribution && <>
-          <SectionTitle title="知识贡献榜" moreText="查看榜单" onMore={() => navigate('/admin/knowledge')} />
+          <SectionTitle title="知识贡献榜" />
           <KnowledgeContributionCard key={username} />
-          <SectionTitle title="高价值问题榜单" moreText="查看全部" onMore={() => navigate('/admin/knowledge/challenges')} />
+          <SectionTitle title="高价值问题榜单" />
           <HighValueQuestionCard key={`challenges:${username}`} />
         </>}
 

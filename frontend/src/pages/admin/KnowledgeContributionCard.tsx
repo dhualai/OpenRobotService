@@ -6,7 +6,7 @@ import KnowledgeRankCard, { contributorPreviewEntries } from './KnowledgeRankCar
 function VisibleKnowledgeContributionCard() {
   const resource = useKnowledgeResource('overview', () => fetchKnowledgeOverview());
   const overview = resource.data;
-  return <KnowledgeRankCard title="知识贡献榜" hideTitle kind="combined" className="knowledge-home-card"
+  return <KnowledgeRankCard title="知识贡献榜" hideTitle showMore={false} kind="combined" className="knowledge-home-card"
     notice={knowledgeLikeRule}
     subtitle={overview ? `${overview.month.replace('-', '年')}月 · 提单接单合并排名` : '提单接单合并排名'}
     entries={contributorPreviewEntries(overview?.top_three || [], 'combined')} to="/admin/knowledge"

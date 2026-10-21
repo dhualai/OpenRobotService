@@ -2964,6 +2964,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
   // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
   const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
+  const adminReq = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, '后台管理'), []);
   const pollTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const pollingRef = useRef<Set<string>>(new Set()); // 正在轮询的 msgId（含 await 期间，防恢复 useEffect 重复启动）
   const cancelledRef = useRef(false); // 组件卸载标记（防卸载后 setMessages 产生 React warning）
@@ -3282,6 +3283,32 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               .join('\n')
           : '';
         try {
+          // ORS-11xx：选了新项目时，先在后端 project 表建 status='pending' 记录（不建工单，skip_ticket=true），
+          // 拿到 target_id 后再创建工单2，metadata_info 带上 approval_type='new_project' 使 TaskDetailPage
+          // 能渲染"新项目录入审核"卡片并走 admin approve/reject 闭环。
+          let pendingProjectId = '';
+          if (npInfo) {
+            try {
+              const projResp = await adminReq<{ project: { id: string; code: string; name: string } }>(
+                '/users/options/project?skip_ticket=true',
+                {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    name: npInfo.name,
+                    code: npInfo.code,
+                    customer: npInfo.customer,
+                    region: npInfo.region,
+                    description: issueDesc,
+                  }),
+                },
+              );
+              pendingProjectId = projResp?.project?.id || '';
+            } catch (projErr) {
+              // pending 项目创建失败不阻塞工单创建——工单仍带 new_project_info 供人工建档，
+              // 只是不会走 admin approve/reject 闭环
+              console.warn('[ChatPanel] 创建 pending 项目记录失败，工单仍会创建但无审核闭环', projErr);
+            }
+          }
           const created = await createTicket({
             title: '【项目申请】请求新建项目/添加用户',
             description: `用户提单时项目「${expectedProj}」不在系统项目集中，请处理：1）新建项目；2）将用户加入对应项目。${npDesc}\n\n【用户问题描述】\n${issueDesc}`,
@@ -3294,11 +3321,24 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             // 工单2 同步透传远程方式（写入 metadata_info）+ 远程截图（与工单1 共用 object_path）。
             // metadata_info 是 json 列，createTicket 透传；attachments 同 TasksView 新建路径。
             // ORS-1023：新项目基本信息一并落 metadata_info.new_project_info（结构化，便于后续建档读取）。
+            // ORS-11xx：若后端已建 pending 项目记录，则一并写入 approval_type / target_id，
+            // 使 TaskDetailPage 显示"新项目录入审核"卡片并走 admin approve/reject 闭环。
             ...(finalRemoteType || npInfo
               ? {
                   metadata_info: {
                     ...(finalRemoteType ? { remote_type: finalRemoteType } : {}),
                     ...(npInfo ? { new_project_info: npInfo } : {}),
+                    ...(npInfo && pendingProjectId
+                      ? {
+                          approval_type: 'new_project',
+                          target_table: 'project',
+                          target_id: pendingProjectId,
+                          target_name: npInfo.name,
+                          target_code: npInfo.code,
+                          customer: npInfo.customer,
+                          region: npInfo.region,
+                        }
+                      : {}),
                   },
                 }
               : {}),
