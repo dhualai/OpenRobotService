@@ -21,23 +21,25 @@ export function useChallengePolling(reload: () => void) {
 }
 
 export function ChallengeSummary({ challenge, rank }: { challenge: Challenge; rank?: number }) {
-  return <Link to={`/admin/knowledge/challenges/${challenge.id}`} className="challenge-summary">
+  return <div className="challenge-summary">
     {rank !== undefined && <span className="knowledge-board-preview__rank">{rank}</span>}
     <span className="challenge-summary__text"><strong>{challenge.title}</strong><small>{challenge.like_count}人也遇到 · {knowledgeTime(challenge.ends_at)}截止</small></span>
     <span className="knowledge-ranking-prize">{knowledgeMoney(challenge.bounty_fen)}<small>悬赏奖金</small></span>
-  </Link>;
+  </div>;
 }
 
 export default function HighValueQuestionCard() {
   const resource = useKnowledgeResource('challenge-preview', fetchChallengePreview);
   useChallengePolling(resource.reload);
-  return <section className="mac-card mac-card--pad knowledge-board-card knowledge-home-card" aria-label="高价值问题榜单">
-    <div className="knowledge-board-card__heading"><span className="knowledge-muted">共同解答复杂问题</span><Link className="knowledge-link" to="/admin/knowledge/challenges">查看全部 →</Link></div>
+  return <section className="mac-card mac-card--pad knowledge-board-card knowledge-home-card knowledge-clickable-card" aria-label="高价值问题榜单">
+    <Link className="knowledge-board-card__link knowledge-clickable-card__link" to="/admin/knowledge/challenges" aria-label="查看高价值问题榜单">
+      <div className="knowledge-board-card__heading"><span className="knowledge-muted">共同解答复杂问题</span></div>
+      {resource.data && <div className="knowledge-board-card__body">
+        <div className="knowledge-board-cover" data-kind="questions" aria-hidden><span className="knowledge-board-cover__face"><Trophy size={28} /><strong>高价值问题</strong><small>TOP 3</small></span></div>
+        {resource.data.items.length ? <ol className="challenge-preview" aria-label="高价值问题前三名">{resource.data.items.slice(0, 3).map((challenge, index) => <li key={challenge.id}><ChallengeSummary challenge={challenge} rank={index + 1} /></li>)}</ol> : <KnowledgeEmpty>暂无进行中的高价值问题</KnowledgeEmpty>}
+      </div>}
+      <div className="knowledge-card-footer">按问题点赞排序 · 到期按答案有效赞选出最佳解答</div>
+    </Link>
     <KnowledgeState loading={resource.loading && !resource.data} error={resource.error} retry={resource.reload} />
-    {resource.data && <div className="knowledge-board-card__body">
-      <div className="knowledge-board-cover" data-kind="questions" aria-hidden><span className="knowledge-board-cover__face"><Trophy size={28} /><strong>高价值问题</strong><small>TOP 3</small></span></div>
-      {resource.data.items.length ? <ol className="challenge-preview" aria-label="高价值问题前三名">{resource.data.items.slice(0, 3).map((challenge, index) => <li key={challenge.id}><ChallengeSummary challenge={challenge} rank={index + 1} /></li>)}</ol> : <KnowledgeEmpty>暂无进行中的高价值问题</KnowledgeEmpty>}
-    </div>}
-    <div className="knowledge-card-footer">按问题点赞排序 · 到期按答案有效赞选出最佳解答</div>
   </section>;
 }

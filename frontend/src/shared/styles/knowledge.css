@@ -5,6 +5,12 @@
 .knowledge-board-card { min-width: 0; }
 .knowledge-board-card__link { display: block; border-radius: 8px; color: inherit; text-decoration: none; }
 .knowledge-board-card__link:focus-visible { outline: 2px solid var(--blue-2); outline-offset: 6px; }
+.knowledge-clickable-card { position: relative; isolation: isolate; }
+.knowledge-clickable-card__link { display: block; color: inherit; text-decoration: none; }
+.knowledge-clickable-card__link::after { content: ''; position: absolute; inset: 0; z-index: 1; border-radius: inherit; cursor: pointer; }
+.knowledge-clickable-card__link:focus-visible { outline: none; }
+.knowledge-clickable-card__link:focus-visible::after { outline: 2px solid var(--blue-2); outline-offset: 3px; }
+.knowledge-clickable-card > .knowledge-state button { position: relative; z-index: 2; }
 .knowledge-board-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .knowledge-board-card__title { min-width: 0; }
 .knowledge-board-card .knowledge-board-card__title h3 { margin: 0 0 5px; font-size: 16px; font-weight: 650; }

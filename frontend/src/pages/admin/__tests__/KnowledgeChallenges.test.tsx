@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChallengeAnswer, ChallengeDetail } from '@/api/knowledgeChallenges';
@@ -14,7 +14,7 @@ vi.mock('@/shared/components/UserAvatarMenu', () => ({ default: () => null }));
 vi.mock('tdesign-mobile-react', () => ({ Navbar: ({ title }: { title: string }) => <div>{title}</div> }));
 
 import HighValueQuestionCard from '../HighValueQuestionCard';
-import { ChallengePublishForm, parseBountyFen } from '../KnowledgeChallenges';
+import KnowledgeChallenges, { ChallengePublishForm, parseBountyFen } from '../KnowledgeChallenges';
 import KnowledgeChallengeDetail, { ChallengeAnswerEditor, ChallengeManagement } from '../KnowledgeChallengeDetail';
 
 function challenge(id = 1): ChallengeDetail {
@@ -42,13 +42,99 @@ function detailPage() {
 describe('高价值问题交互', () => {
   beforeEach(() => { vi.resetAllMocks(); });
   afterEach(cleanup);
-  it('首页最多展示三题及奖金，链接没有嵌套', async () => {
+  it.each(['高价值问题1', '按问题点赞排序 · 到期按答案有效赞选出最佳解答'])('首页最多展示三题及奖金，点击%s进入完整榜单', async (content) => {
     api.fetchChallengePreview.mockResolvedValue({ items: [1, 2, 3, 4].map(challenge), total: 4, can_manage: false });
-    const rendered = wrapped(<HighValueQuestionCard />);
+    const rendered = render(<MemoryRouter><Routes>
+      <Route path="/" element={<HighValueQuestionCard />} />
+      <Route path="/admin/knowledge/challenges" element={<p>高价值问题完整榜单</p>} />
+    </Routes></MemoryRouter>);
     await screen.findByText('高价值问题1');
     expect(screen.queryByText('高价值问题4')).toBeNull();
     expect(screen.getAllByText('¥100')).toHaveLength(3);
+    const card = screen.getByRole('region', { name: '高价值问题榜单' });
+    expect(card).toHaveClass('mac-card', 'mac-card--pad', 'knowledge-clickable-card');
+    expect(within(card).getAllByRole('link')).toHaveLength(1);
+    expect(within(card).getByRole('link', { name: '查看高价值问题榜单' })).toHaveAttribute('href', '/admin/knowledge/challenges');
+    expect(screen.queryByText(/查看全部/)).toBeNull();
     expect(rendered.container.querySelector('a a')).toBeNull();
+    fireEvent.click(screen.getByText(content));
+    expect(await screen.findByText('高价值问题完整榜单')).toBeVisible();
+  });
+  it('首页空态仍可整卡进入完整榜单', async () => {
+    api.fetchChallengePreview.mockResolvedValue({ items: [], total: 0, can_manage: false });
+    render(<MemoryRouter><Routes>
+      <Route path="/" element={<HighValueQuestionCard />} />
+      <Route path="/admin/knowledge/challenges" element={<p>高价值问题完整榜单</p>} />
+    </Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByText('暂无进行中的高价值问题'));
+    expect(await screen.findByText('高价值问题完整榜单')).toBeVisible();
+  });
+  it('首页加载失败时重试独立生效，不跳转榜单', async () => {
+    api.fetchChallengePreview.mockRejectedValueOnce(new Error('暂时无法加载'))
+      .mockResolvedValueOnce({ items: [challenge()], total: 1, can_manage: false });
+    render(<MemoryRouter><Routes>
+      <Route path="/" element={<HighValueQuestionCard />} />
+      <Route path="/admin/knowledge/challenges" element={<p>高价值问题完整榜单</p>} />
+    </Routes></MemoryRouter>);
+    await screen.findByRole('alert');
+    const retry = screen.getByRole('button', { name: '重新加载' });
+    expect(retry.closest('a')).toBeNull();
+    fireEvent.click(retry);
+    expect(await screen.findByText('高价值问题1')).toBeVisible();
+    expect(api.fetchChallengePreview).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('高价值问题完整榜单')).toBeNull();
+  });
+  it.each(['高价值问题1', '已暂停'])('列表去掉查看问题与解答，点击卡片%s进入详情', async (content) => {
+    api.fetchChallenges.mockResolvedValue({ items: [{ ...challenge(), state: 'paused' }], total: 1, can_manage: false });
+    const rendered = render(<MemoryRouter><Routes>
+      <Route path="/" element={<KnowledgeChallenges />} />
+      <Route path="/admin/knowledge/challenges/:challengeId" element={<p>问题解答详情</p>} />
+    </Routes></MemoryRouter>);
+    await screen.findByText('高价值问题1');
+    expect(screen.queryByText(/查看问题与解答/)).toBeNull();
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(screen.getByRole('link')).toHaveAttribute('href', '/admin/knowledge/challenges/1');
+    expect(screen.getByRole('link')).toHaveClass('knowledge-clickable-card__link');
+    expect(rendered.container.querySelector('a a')).toBeNull();
+    fireEvent.click(screen.getByText(content));
+    expect(await screen.findByText('问题解答详情')).toBeVisible();
+  });
+  it('列表移除顶部蓝色提示，三个分类在同一横向切换组内并重置页码', async () => {
+    api.fetchChallenges.mockResolvedValue({ items: [], total: 0, can_manage: false });
+    const rendered = render(<MemoryRouter initialEntries={['/admin/knowledge/challenges?page=2']}><KnowledgeChallenges /></MemoryRouter>);
+    await waitFor(() => expect(api.fetchChallenges).toHaveBeenCalledWith('active', 2));
+    await screen.findByText('暂无符合条件的高价值问题');
+    expect(rendered.container.querySelector('.knowledge-note')).toBeNull();
+    const navigation = screen.getByRole('group', { name: '高价值问题分类' });
+    expect(navigation).toHaveClass('knowledge-tabs', 'challenge-view-switch');
+    expect(within(navigation).getAllByRole('button').map((button) => button.textContent)).toEqual(['进行中', '我的参与', '已结束']);
+    expect(within(navigation).getByRole('button', { name: '进行中' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(within(navigation).getByRole('button', { name: '我的参与' }));
+    await waitFor(() => expect(api.fetchChallenges).toHaveBeenLastCalledWith('mine', 1));
+    expect(within(navigation).getByRole('button', { name: '我的参与' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(within(navigation).getByRole('button', { name: '已结束' }));
+    await waitFor(() => expect(api.fetchChallenges).toHaveBeenLastCalledWith('ended', 1));
+    expect(within(navigation).getByRole('button', { name: '已结束' })).toHaveAttribute('aria-pressed', 'true');
+  });
+  it('管理员管理入口独立于三个用户分类并可进入管理视图', async () => {
+    api.fetchChallenges.mockResolvedValue({ items: [], total: 0, can_manage: true });
+    wrapped(<KnowledgeChallenges />);
+    const management = await screen.findByRole('link', { name: '管理问题' });
+    const navigation = screen.getByRole('group', { name: '高价值问题分类' });
+    expect(navigation).not.toContainElement(management);
+    expect(within(navigation).getAllByRole('button')).toHaveLength(3);
+    expect(screen.getByRole('button', { name: '发布问题' })).toBeVisible();
+    fireEvent.click(management);
+    await waitFor(() => expect(api.fetchChallenges).toHaveBeenLastCalledWith('manage', 1));
+    expect(await screen.findByRole('link', { name: '管理问题' })).toHaveAttribute('aria-current', 'page');
+  });
+  it.each([false, 'true'])('未获服务端明确管理授权时不显示管理或发布入口：%s', async (canManage) => {
+    api.fetchChallenges.mockResolvedValue({ items: [], total: 0, can_manage: canManage });
+    wrapped(<KnowledgeChallenges />);
+    await screen.findByText('暂无符合条件的高价值问题');
+    expect(screen.queryByRole('link', { name: '管理问题' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '发布问题' })).toBeNull();
+    expect(within(screen.getByRole('group', { name: '高价值问题分类' })).getAllByRole('button')).toHaveLength(3);
   });
   it('普通用户看不到状态按钮，管理员由服务端标记控制', () => {
     const rendered = wrapped(<ChallengeManagement challenge={challenge()} onChanged={vi.fn()} />);

@@ -130,21 +130,42 @@ describe('知识贡献榜UI', () => {
     expect(await screen.findByText('奖励详情入口')).toBeInTheDocument();
   });
 
-  it('卡片仍可进入知识中心，且不重复显示主标题', async () => {
+  it.each(['贡献甲', '按月统计 · 以有效归档贡献排名'])('贡献卡片移除查看全部，点击%s进入知识中心', async (content) => {
     render(<MemoryRouter><Routes><Route path="/" element={<KnowledgeContributionCard />} /><Route path="/admin/knowledge" element={<p>知识中心入口</p>} /></Routes></MemoryRouter>);
     await screen.findByText('贡献甲');
     expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('link', { name: '查看知识贡献榜' }));
+    expect(screen.queryByText(/查看全部/)).not.toBeInTheDocument();
+    const card = screen.getByRole('region', { name: '知识贡献榜' });
+    expect(card).toHaveClass('knowledge-clickable-card');
+    expect(within(card).getAllByRole('link')).toHaveLength(1);
+    expect(within(card).getByRole('link', { name: '查看知识贡献榜' })).toHaveAttribute('href', '/admin/knowledge');
+    fireEvent.click(screen.getByText(content));
+    expect(await screen.findByText('知识中心入口')).toBeInTheDocument();
+  });
+
+  it('贡献卡片保留键盘聚焦和回车导航', async () => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><Routes><Route path="/" element={<KnowledgeContributionCard />} /><Route path="/admin/knowledge" element={<p>知识中心入口</p>} /></Routes></MemoryRouter>);
+    await screen.findByText('贡献甲');
+    screen.getByRole('link', { name: '查看知识贡献榜' }).focus();
+    await user.keyboard('{Enter}');
     expect(await screen.findByText('知识中心入口')).toBeInTheDocument();
   });
 
   it.each(['首页卡片', '榜单中心'])('%s的路由404提示后端部署问题，并支持重试', async (page) => {
     vi.mocked(api.fetchKnowledgeOverview).mockRejectedValueOnce(new ApiError('Not Found', 404, undefined, { detail: 'Not Found' }));
-    render(<MemoryRouter>{page === '首页卡片' ? <KnowledgeContributionCard /> : <KnowledgeCenter />}</MemoryRouter>);
+    render(<MemoryRouter><Routes>
+      <Route path="/" element={page === '首页卡片' ? <KnowledgeContributionCard /> : <KnowledgeCenter />} />
+      <Route path="/admin/knowledge" element={<p>知识中心入口</p>} />
+    </Routes></MemoryRouter>);
     expect(await screen.findByRole('alert')).toHaveTextContent('知识贡献接口尚未启用，请更新并重启业务后端');
-    fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
+    const retry = screen.getByRole('button', { name: '重新加载' });
+    expect(retry.closest('a')).toBeNull();
+    fireEvent.click(retry);
     await waitFor(() => expect(api.fetchKnowledgeOverview).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect((await screen.findAllByText('贡献甲')).length).toBeGreaterThan(0);
+    expect(screen.queryByText('知识中心入口')).not.toBeInTheDocument();
   });
 
   it('问题资源404保留业务原因，不误报接口未启用', async () => {
@@ -256,7 +277,10 @@ describe('知识贡献榜首页可见性', () => {
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
     expect(await screen.findByRole('region', { name: '知识贡献榜' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '知识贡献榜' })).toBeInTheDocument();
-    expect(screen.getByText('查看榜单')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '查看知识贡献榜' })).toHaveAttribute('href', '/admin/knowledge');
+    expect(screen.getByRole('link', { name: '查看高价值问题榜单' })).toHaveAttribute('href', '/admin/knowledge/challenges');
+    expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
+    expect(screen.queryByText(/查看全部/)).not.toBeInTheDocument();
     const contributionHeading = screen.getByRole('heading', { name: '知识贡献榜' });
     const challengeHeading = screen.getByRole('heading', { name: '高价值问题榜单' });
     expect(contributionHeading.compareDocumentPosition(challengeHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
