@@ -121,6 +121,29 @@ describe('知识贡献榜UI', () => {
     expect(screen.getAllByText('知识贡献榜')).toHaveLength(1);
   });
 
+  it.each([
+    ['知识贡献榜', '详细榜单', '/admin/knowledge', '点击'],
+    ['知识贡献榜', '详细榜单', '/admin/knowledge', '回车'],
+    ['高价值问题榜单', '所有问题', '/admin/knowledge/challenges', '点击'],
+    ['高价值问题榜单', '所有问题', '/admin/knowledge/challenges', '回车'],
+  ])('%s标题右侧的%s进入%s，支持%s操作', async (title, label, path, interaction) => {
+    const user = userEvent.setup();
+    render(<MemoryRouter><Routes><Route path="/" element={<Dashboard />} /><Route path={path} element={<p>二级页面内容</p>} /></Routes></MemoryRouter>);
+    await screen.findByText('贡献甲');
+    const heading = screen.getByRole('heading', { name: title });
+    const entry = within(heading.parentElement!).getByRole('link', { name: label });
+    expect(entry).toHaveClass('mac-section-title__more');
+    expect(entry.parentElement).toHaveClass('mac-section-title__actions');
+    expect(entry).toHaveAttribute('href', path);
+    if (interaction === '回车') {
+      entry.focus();
+      await user.keyboard('{Enter}');
+    } else {
+      await user.click(entry);
+    }
+    expect(await screen.findByText('二级页面内容')).toBeInTheDocument();
+  });
+
   it.each(['{Enter}', ' '])('原奖励汇总卡片支持通过 %s 键进入奖励详情', async (key) => {
     const user = userEvent.setup();
     render(<MemoryRouter><Routes><Route path="/" element={<Dashboard />} /><Route path="/rewards" element={<p>奖励详情入口</p>} /></Routes></MemoryRouter>);
@@ -279,6 +302,8 @@ describe('知识贡献榜首页可见性', () => {
     expect(screen.getByRole('heading', { name: '知识贡献榜' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '查看知识贡献榜' })).toHaveAttribute('href', '/admin/knowledge');
     expect(screen.getByRole('link', { name: '查看高价值问题榜单' })).toHaveAttribute('href', '/admin/knowledge/challenges');
+    expect(screen.getByRole('link', { name: '详细榜单' })).toHaveAttribute('href', '/admin/knowledge');
+    expect(screen.getByRole('link', { name: '所有问题' })).toHaveAttribute('href', '/admin/knowledge/challenges');
     expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
     expect(screen.queryByText(/查看全部/)).not.toBeInTheDocument();
     const contributionHeading = screen.getByRole('heading', { name: '知识贡献榜' });
@@ -292,6 +317,8 @@ describe('知识贡献榜首页可见性', () => {
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
     expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: '知识贡献榜' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '详细榜单' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '所有问题' })).not.toBeInTheDocument();
     expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
     expect(screen.queryByText(/每人每天最多点赞5个不同问题/)).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '工单数据看板' })).toBeInTheDocument();
@@ -312,29 +339,37 @@ describe('知识贡献榜首页可见性', () => {
     act(() => useAuthStore.setState({ canViewKnowledgeContribution: false }));
     expect(screen.queryByRole('region', { name: '知识贡献榜' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '详细榜单' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '所有问题' })).not.toBeInTheDocument();
     expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
   });
 });
 
 describe('每日点赞限制提示', () => {
-  it('首页卡片在前三名列表上方展示每日5题及重置规则', async () => {
+  it('首页卡片保留前三名列表但不常驻展示点赞限制', async () => {
     render(<MemoryRouter><KnowledgeContributionCard /></MemoryRouter>);
-    const notice = screen.getByText(/每人每天最多点赞5个不同问题/);
-    expect(notice).toHaveTextContent('北京时间每日0点重置');
-    expect(notice).toHaveTextContent('取消点赞不返还当日名额');
-    const preview = await screen.findByRole('list', { name: '知识贡献榜前三名' });
-    expect(notice.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(await screen.findByRole('list', { name: '知识贡献榜前三名' })).toBeInTheDocument();
+    expect(screen.queryByText(/每人每天最多点赞5个不同问题/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/北京时间每日0点重置|取消点赞不返还当日名额/)).not.toBeInTheDocument();
+    expect(Toast).not.toHaveBeenCalled();
   });
 
-  it.each(['active', 'upcoming', 'ended'] as const)('%s状态的榜单顶部展示点赞规则', async (status) => {
+  it.each(['active', 'upcoming', 'ended'] as const)('%s状态的榜单不常驻展示点赞规则', async (status) => {
     vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue({ ...overview, campaign_status: status });
     const rendered = render(<MemoryRouter><KnowledgeCenter /></MemoryRouter>);
-    const notice = await screen.findByText(/每人每天最多点赞5个不同问题/);
-    expect(notice).toHaveClass('knowledge-note');
-    expect(notice).toHaveTextContent('北京时间每日0点重置');
-    expect(notice).toHaveTextContent('取消点赞不返还当日名额');
-    const boards = rendered.container.querySelector('.knowledge-board-stack')!;
-    expect(notice.compareDocumentPosition(boards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(await screen.findByRole('link', { name: '查看知识榜单' })).toBeInTheDocument();
+    expect(rendered.container).not.toHaveTextContent(/每人每天最多点赞5个不同问题|北京时间每日0点重置|取消点赞不返还当日名额/);
+    expect(Toast).not.toHaveBeenCalled();
+  });
+
+  it.each(['/admin/knowledge?tab=questions', '/admin/knowledge/questions/7'])('%s额度内正常点赞不弹出限制提示', async (path) => {
+    render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/admin/knowledge" element={<KnowledgeCenter />} /><Route path="/admin/knowledge/questions/:taskId" element={<KnowledgeQuestionDetail />} /></Routes></MemoryRouter>);
+    const like = await screen.findByRole('button', { name: `点赞：${question.title}` });
+    expect(Toast).not.toHaveBeenCalled();
+    fireEvent.click(like);
+    await waitFor(() => expect(api.toggleKnowledgeLike).toHaveBeenCalledWith(question));
+    await waitFor(() => expect(like).not.toBeDisabled());
+    expect(Toast).not.toHaveBeenCalled();
   });
 
   it.each(['/admin/knowledge?tab=questions', '/admin/knowledge/questions/7'])('%s超额点赞展示后端提示且不改变点赞数', async (path) => {
@@ -342,8 +377,10 @@ describe('每日点赞限制提示', () => {
     vi.mocked(api.toggleKnowledgeLike).mockRejectedValueOnce(new ApiError(message, 429));
     render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/admin/knowledge" element={<KnowledgeCenter />} /><Route path="/admin/knowledge/questions/:taskId" element={<KnowledgeQuestionDetail />} /></Routes></MemoryRouter>);
     const like = await screen.findByRole('button', { name: `点赞：${question.title}` });
+    expect(Toast).not.toHaveBeenCalled();
     fireEvent.click(like);
     await waitFor(() => expect(Toast).toHaveBeenCalledWith({ message, theme: 'error' }));
+    expect(Toast).toHaveBeenCalledTimes(1);
     expect(like).toHaveAttribute('aria-pressed', 'false');
     expect(like).toHaveTextContent('2');
     expect(api.fetchKnowledgeQuestion).toHaveBeenCalledTimes(path.includes('/questions/') ? 1 : 0);
