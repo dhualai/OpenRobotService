@@ -24,6 +24,13 @@ from app.modules.wxpay.schemas import GrantRewardIn
 from app.modules.wxpay.service import RewardService
 
 
+ANSWER_EDIT_LIMIT = 1
+
+
+def remaining_answer_edits(answer):
+    return max(0, ANSWER_EDIT_LIMIT - len(answer.history or [])) if answer else ANSWER_EDIT_LIMIT
+
+
 def utcnow():
     return knowledge.utcnow()
 
@@ -275,6 +282,8 @@ async def detail(db, actor, challenge_id):
             "submitted_at": knowledge.iso(answer.submitted_at), "is_mine": answer.author_id == user_id,
             "is_best": answer.id == challenge.best_answer_id,
             "liked_by_me": bool(liked and liked.active),
+            "can_edit": answer.author_id == user_id and accepting(challenge) and remaining_answer_edits(answer) > 0,
+            "remaining_edits": remaining_answer_edits(answer) if answer.author_id == user_id else 0,
             "can_like": accepting(challenge) and answer.author_id != user_id})
     items.sort(key=lambda entry: (-entry["like_count"], entry["submitted_at"], entry["id"]))
     reward = (await db.execute(select(RewardRecord).where(RewardRecord.source_type == "knowledge_challenge",
@@ -291,13 +300,16 @@ async def detail(db, actor, challenge_id):
 
 async def my_answer(db, actor, challenge_id):
     user_id = await knowledge.actor_id(db, actor)
-    await get_challenge(db, challenge_id, actor)
+    challenge = await get_challenge(db, challenge_id, actor)
     answer = (await db.execute(select(KnowledgeChallengeAnswer).where(
         KnowledgeChallengeAnswer.challenge_id == challenge_id,
         KnowledgeChallengeAnswer.author_id == user_id))).scalar_one_or_none()
     return {"content": (answer.draft_content if answer.draft_content is not None else answer.content) if answer else "",
         "version": answer.version if answer else 0,
-        "submitted_at": knowledge.iso(answer.submitted_at) if answer else None}
+        "submitted_at": knowledge.iso(answer.submitted_at) if answer else None,
+        "remaining_edits": remaining_answer_edits(answer),
+        "can_submit": accepting(challenge) and (not answer or (not answer.hidden and (
+            answer.submitted_at is None or remaining_answer_edits(answer) > 0)))}
 
 
 async def community_result(db, actor, challenge_id):
@@ -324,6 +336,8 @@ async def write_answer(db, actor, challenge_id, content, version, submit=False):
         db.add(answer)
     if answer.hidden:
         raise HTTPException(409, "该答案已隐藏，请联系管理员")
+    if answer.submitted_at is not None and remaining_answer_edits(answer) == 0:
+        raise HTTPException(409, "每个问题的已发布解答只能修改一次，本题修改机会已用完")
     if submit and answer.submitted_at is not None:
         answer.history = [*answer.history, {"version": answer.version,
             "content": answer.content, "at": knowledge.iso(utcnow())}]

@@ -5,7 +5,7 @@ import { Navbar } from 'tdesign-mobile-react';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import {
   changeChallengeState, fetchChallenge, fetchMyChallengeAnswer, likeChallenge, likeChallengeAnswer,
-  overrideChallengeResult, publishChallenge, saveChallengeAnswer, type ChallengeDetail,
+  overrideChallengeResult, publishChallenge, saveChallengeAnswer, type ChallengeDetail, type MyChallengeAnswer,
 } from '@/api/knowledgeChallenges';
 import { challengeStateLabels, useChallengePolling } from './HighValueQuestionCard';
 import { localDateInput } from './KnowledgeChallenges';
@@ -67,13 +67,14 @@ export function ChallengeManagement({ challenge, onChanged }: { challenge: Chall
   </>;
 }
 
-export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted }: { id: string; canAnswer: boolean; onSubmitted: () => void }) {
+export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted, onCancel, embedded = false }: { id: string; canAnswer: boolean; onSubmitted: () => void; onCancel?: () => void; embedded?: boolean }) {
   const resource = useKnowledgeResource(`my-challenge-answer:${id}`, () => fetchMyChallengeAnswer(id));
   const [content, setContent] = useState('');
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [answerState, setAnswerState] = useState<MyChallengeAnswer | null>(null);
   const version = useRef(0);
   const saved = useRef('');
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -83,6 +84,7 @@ export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted }: { id: stri
     if (resource.data && !ready) {
       setContent(resource.data.content); saved.current = resource.data.content;
       version.current = resource.data.version; setReady(true);
+      setAnswerState(resource.data);
       setStatus(resource.data.submitted_at ? '已有已发布答案，修改后需再次发布' : '草稿仅自己可见');
     }
   }, [resource.data, ready]);
@@ -91,32 +93,38 @@ export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted }: { id: stri
       if (!submit && value === saved.current) return;
       const answer = await saveChallengeAnswer(id, value, version.current, submit);
       version.current = answer.version; saved.current = value;
-      if (mounted.current) { setStatus(submit ? '答案已发布' : '草稿已保存，仅自己可见'); setError(''); }
+      if (mounted.current) { setAnswerState(answer); setStatus(submit ? '答案已发布' : '草稿已保存，仅自己可见'); setError(''); }
     });
     queue.current = operation.catch(() => undefined);
     return operation;
   }, [id]);
+  const canSubmit = canAnswer && answerState?.can_submit === true;
+  const isEditing = !!answerState?.submitted_at;
+  const editExhausted = isEditing && answerState.remaining_edits === 0;
   useEffect(() => {
-    if (!ready || !canAnswer || busy || content === saved.current) return;
+    if (!ready || !canSubmit || busy || content === saved.current) return;
     const timer = window.setTimeout(() => {
       void persist(content, false).catch((failure: unknown) => {
         if (mounted.current) setError(failure instanceof Error ? failure.message : '自动保存失败，请重试');
       });
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [content, ready, canAnswer, busy, persist]);
+  }, [content, ready, canSubmit, busy, persist]);
   async function publish(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError('');
+    event.preventDefault();
+    if (!canSubmit) return;
+    setBusy(true); setError('');
     try { await persist(content, true); onSubmitted(); }
     catch (failure) { setError(failure instanceof Error ? failure.message : '发布失败'); }
     finally { if (mounted.current) setBusy(false); }
   }
-  return <section className="mac-card mac-card--pad"><h3>我的解答</h3><KnowledgeState loading={resource.loading && !ready} error={resource.error} retry={resource.reload} />
+  return <section className={embedded ? 'challenge-answer-editor' : 'mac-card mac-card--pad'}><h3>{isEditing ? '编辑我的解答' : '我的解答'}</h3><KnowledgeState loading={resource.loading && !ready} error={resource.error} retry={resource.reload} />
     {ready && <form className="challenge-form" onSubmit={publish}><p className="challenge-notice">匿名展示，请勿填写姓名、电话、客户信息或原工单内部链接。每人每天最多点赞5条不同答案，不能给自己的答案点赞。</p>
-      <label>答案内容<textarea className="knowledge-textarea" value={content} onChange={(event) => setContent(event.target.value)} required maxLength={20000} disabled={busy || !canAnswer} /></label>
-      <span className="knowledge-muted" role="status">{canAnswer ? status : '问题已截止或暂停，不能继续提交'}</span>
+      <p role="note" className="knowledge-note">{editExhausted ? '本题解答已修改过一次，不能再次编辑。' : isEditing ? '每个问题的已发布解答仅可修改一次。提交修改后不能再次编辑；保存草稿或取消编辑不消耗修改次数。' : '首次发布后，每个问题的解答仅可再修改一次，请确认内容后发布。'}</p>
+      <label>答案内容<textarea className="knowledge-textarea" value={content} onChange={(event) => setContent(event.target.value)} required maxLength={20000} disabled={busy || !canSubmit} /></label>
+      <span className="knowledge-muted" role="status">{editExhausted ? '本题修改机会已用完' : canAnswer ? status : '问题已截止或暂停，不能继续提交'}</span>
       {error && <p role="alert" className="knowledge-discussion-error">{error}</p>}
-      <div className="challenge-actions"><button type="submit" className="knowledge-button" disabled={!canAnswer || busy || !content.trim()}>{busy ? '发布中…' : '发布答案'}</button><button type="button" className="knowledge-link" disabled={!canAnswer || busy} onClick={() => void persist(content, false).catch((failure: unknown) => setError(failure instanceof Error ? failure.message : '保存失败'))}>保存草稿</button></div>
+      <div className="challenge-actions"><button type="submit" className="knowledge-button" disabled={!canSubmit || busy || !content.trim()}>{busy ? '发布中…' : isEditing ? '提交修改' : '发布答案'}</button><button type="button" className="knowledge-link" disabled={!canSubmit || busy} onClick={() => void persist(content, false).catch((failure: unknown) => setError(failure instanceof Error ? failure.message : '保存失败'))}>保存草稿</button>{onCancel && <button type="button" className="knowledge-link" disabled={busy} onClick={onCancel}>取消编辑</button>}</div>
     </form>}
   </section>;
 }
@@ -130,9 +138,16 @@ export default function KnowledgeChallengeDetail() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const editorContainer = useRef<HTMLDivElement>(null);
   const [, refreshClock] = useState(0);
   useEffect(() => { const timer = window.setInterval(() => refreshClock((value) => value + 1), 15000); return () => window.clearInterval(timer); }, []);
   const canAnswer = !!challenge && challenge.can_answer && new Date(challenge.ends_at).getTime() > Date.now();
+  const myAnswer = challenge?.answers.find((answer) => answer.is_mine);
+  useEffect(() => { if (editorOpen) editorContainer.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }); }, [editorOpen]);
+  function submitted() {
+    setEditorOpen(false);
+    resource.reload();
+  }
   async function vote(operation: () => Promise<unknown>) {
     setBusy(true); setError('');
     try { await operation(); resource.reload(); }
@@ -148,14 +163,14 @@ export default function KnowledgeChallengeDetail() {
           <p className="knowledge-muted">{knowledgeTime(challenge.ends_at)} 截止{challenge.asked_at ? ` · 提问于 ${knowledgeTime(challenge.asked_at)}` : ''}</p>
           <p className="challenge-content">{challenge.content}</p>
           <div className="knowledge-note">到期按答案有效点赞选出最佳解答，管理员可处理异常结果；奖金按平台既有流程发放。每人每天最多点赞5个问题，答案另有每天5条额度。</div>
-          <div className="challenge-actions"><button type="button" className="knowledge-like" aria-pressed={challenge.liked_by_me} disabled={busy || !challenge.can_like || !canAnswer} onClick={() => void vote(() => likeChallenge(challenge))}>我也遇到 · {challenge.like_count}</button><button type="button" className="knowledge-button" disabled={!canAnswer && !challenge.answers.some((answer) => answer.is_mine)} onClick={() => setEditorOpen(!editorOpen)}>{editorOpen ? '收起我的解答' : challenge.answers.some((answer) => answer.is_mine) ? '查看/编辑我的解答' : '我来解答'}</button></div>
+          <div className="challenge-actions"><button type="button" className="knowledge-like challenge-question-action" aria-pressed={challenge.liked_by_me} disabled={busy || !challenge.can_like || !canAnswer} onClick={() => void vote(() => likeChallenge(challenge))}>我也遇到 · {challenge.like_count}</button><button type="button" className="knowledge-button challenge-question-action" disabled={!canAnswer && !myAnswer} onClick={() => setEditorOpen(!editorOpen)}>{editorOpen ? '收起我的解答' : myAnswer ? '查看/编辑我的解答' : '我来解答'}</button></div>
         </section>
         {error && <p role="alert" className="knowledge-discussion-error">{error}</p>}
-        {editorOpen && <ChallengeAnswerEditor key={challengeId} id={challengeId} canAnswer={canAnswer} onSubmitted={resource.reload} />}
+        {editorOpen && !myAnswer && <div ref={editorContainer}><ChallengeAnswerEditor key={challengeId} id={challengeId} canAnswer={canAnswer} onSubmitted={submitted} onCancel={() => setEditorOpen(false)} /></div>}
         <section className="mac-card mac-card--pad"><h3>{challenge.best_answer ? '社区优选解答' : '匿名解答'} · {challenge.answers.length}</h3><p className="challenge-notice">社区解答，未经专业验证。问题赞表达共性需求，答案赞决定默认获奖者。</p>
           {challenge.my_reward_status && <div className="knowledge-note">你的奖励已接入原奖励管理，可在<Link className="knowledge-link" to="/rewards">我的奖励</Link>查看实际处理状态。</div>}
           {!challenge.answers.length && <KnowledgeEmpty>暂无解答，期待你的经验与思路</KnowledgeEmpty>}
-          {[...challenge.answers].sort((first, second) => Number(second.is_best) - Number(first.is_best)).map((answer) => <article key={answer.id} className={`challenge-answer${answer.is_best ? ' challenge-answer--best' : ''}`}><div className="knowledge-toolbar"><strong>{answer.author}{answer.is_best ? ' · 最佳解答' : ''}{answer.is_mine ? ' · 我的答案' : ''}</strong><button type="button" className="knowledge-like" aria-pressed={answer.liked_by_me} disabled={busy || !answer.can_like || !canAnswer} onClick={() => void vote(() => likeChallengeAnswer(challenge.id, answer))}>有帮助 · {answer.like_count}</button></div><p className="challenge-content">{answer.content}</p><time className="knowledge-muted">{knowledgeTime(answer.submitted_at)}</time></article>)}
+          {[...challenge.answers].sort((first, second) => Number(second.is_best) - Number(first.is_best)).map((answer) => <article key={answer.id} className={`challenge-answer${answer.is_best ? ' challenge-answer--best' : ''}`}><div className="knowledge-toolbar"><strong>{answer.author}{answer.is_best ? ' · 最佳解答' : ''}{answer.is_mine ? ' · 我的答案' : ''}</strong><div className="challenge-actions">{answer.is_mine && <button type="button" className="knowledge-link" disabled={!canAnswer || !answer.can_edit} title={answer.remaining_edits === 0 ? '本题修改机会已用完' : '每个问题的已发布解答仅可修改一次'} onClick={() => setEditorOpen(!editorOpen)}>{editorOpen ? '收起编辑' : '编辑'}</button>}<button type="button" className="knowledge-like" aria-pressed={answer.liked_by_me} disabled={busy || !answer.can_like || !canAnswer} onClick={() => void vote(() => likeChallengeAnswer(challenge.id, answer))}>有帮助 · {answer.like_count}</button></div></div><p className="challenge-content">{answer.content}</p><time className="knowledge-muted">{knowledgeTime(answer.submitted_at)}</time>{answer.is_mine && answer.remaining_edits === 0 && <p className="challenge-notice">本题修改机会已用完</p>}{answer.is_mine && editorOpen && <div ref={editorContainer}><ChallengeAnswerEditor key={challengeId} id={challengeId} canAnswer={canAnswer} onSubmitted={submitted} onCancel={() => setEditorOpen(false)} embedded /></div>}</article>)}
         </section>
       </>}
     </div></div>;
