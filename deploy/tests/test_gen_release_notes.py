@@ -4,6 +4,7 @@
 运行：仓库根目录 `python -m pytest deploy/tests -q`
 不依赖网络：LLM 调用一律 monkeypatch，不发真实请求。
 """
+import json
 from datetime import datetime, timedelta, timezone
 
 import gen_release_notes as grn
@@ -219,6 +220,59 @@ def test_validate_endpoint_rejects_internal_and_plain_http():
         except ValueError:
             continue
         raise AssertionError(f"应拒绝：{bad}")
+
+
+# ---------- LLM 调用与输出预算 ----------
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._raw = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_call_llm_flags_empty_content_instead_of_silent_fallback(monkeypatch, capsys):
+    """推理模型预算耗尽时 finish_reason=length 且 content 为空。
+
+    这种「HTTP 200 但没有正文」的失败必须留痕，否则线上表现只是悄悄回退人工版，
+    排查时看不出任何线索。
+    """
+    sent = {}
+
+    def fake_urlopen(req, timeout=None):
+        sent["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResp({"choices": [{"message": {"content": ""},
+                                       "finish_reason": "length"}]})
+
+    monkeypatch.setattr(grn.urllib.request, "urlopen", fake_urlopen)
+    assert grn.call_llm("p", api_key="k", base_url="https://api.deepseek.com") == ""
+    out = capsys.readouterr().out
+    assert "content 为空" in out and "length" in out
+    # 预算要盖得住推理模型的 reasoning_tokens（曾因 1500 全部被 reasoning 吃掉而永远拿不到正文）
+    assert sent["body"]["max_tokens"] == grn.MAX_TOKENS >= 4000
+
+
+def test_call_llm_returns_content_on_success(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp({"choices": [{"message": {"content": '{"新增功能": ["甲"]}'},
+                                       "finish_reason": "stop"}]})
+
+    monkeypatch.setattr(grn.urllib.request, "urlopen", fake_urlopen)
+    assert grn.call_llm("p", api_key="k", base_url="https://api.deepseek.com") == \
+        '{"新增功能": ["甲"]}'
+
+
+def test_prompt_caps_items_per_group():
+    """输出条数要贴着通知图的容量，别让 LLM 产出必然被截断的内容。"""
+    prompt = grn.build_prompt([{"number": 1, "title": "feat: x"}])
+    assert f"每组最多 {grn.MAX_ITEMS_PER_GROUP} 条" in prompt
 
 
 # ---------- 视觉边界哨兵 ----------
