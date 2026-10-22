@@ -3895,7 +3895,7 @@ html, body, #root {
   color: var(--muted-foreground);
 }
 /* 排序：胶囊按钮 */
-/* 普通列表 / 关系列表：选中用同色系浅蓝，未选中保持灰字，对比要一眼能分清 */
+/* 普通列表 / 关系列表：选中浅蓝底+蓝字，未选中深色字（与原先 inherit/--text 观感一致） */
 .tasks-view__view-toggle {
   display: flex;
   align-items: center;
@@ -3909,7 +3909,7 @@ html, body, #root {
   display: inline-flex;
   padding: 3px;
   border-radius: 999px;
-  background: var(--gray-soft);
+  background: transparent;
   border: 1px solid var(--border);
 }
 .tasks-view__view-toggle-btn {
@@ -3921,7 +3921,7 @@ html, body, #root {
   cursor: pointer;
   font-family: inherit;
   background: transparent;
-  color: var(--muted-foreground);
+  color: var(--foreground);
   transition: background 0.15s, color 0.15s;
 }
 .tasks-view__view-toggle-btn.is-active {
