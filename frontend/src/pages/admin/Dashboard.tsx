@@ -110,7 +110,7 @@ const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { hasPermission, projectIds, username, name, avatarResourceId, canViewKnowledgeContribution } = useAuthStore();
+  const { hasPermission, projectIds, username, name, avatarResourceId } = useAuthStore();
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
@@ -264,12 +264,10 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {canViewKnowledgeContribution && <>
-          <SectionTitle title="知识贡献榜"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge">详细榜单 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
-          <KnowledgeContributionCard key={username} />
-          <SectionTitle title="高价值问题榜单"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge/challenges">所有问题 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
-          <HighValueQuestionCard key={`challenges:${username}`} />
-        </>}
+        <SectionTitle title="知识贡献榜"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge">详细榜单 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
+        <KnowledgeContributionCard key={username} />
+        <SectionTitle title="高价值问题榜单"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge/challenges">所有问题 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
+        <HighValueQuestionCard key={`challenges:${username}`} />
 
         {/* ============ 上：工单数据看板 ============ */}
         {/* 状态环图 + 图例（点图例下钻工单明细）+ 四指标卡；

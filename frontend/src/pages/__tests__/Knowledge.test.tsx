@@ -89,13 +89,14 @@ describe('知识贡献榜UI', () => {
     expect(await screen.findByText('奖励详情入口')).toBeInTheDocument();
   });
 
-  it('知识榜隐藏且奖励统计失败时仍保留可用的奖励入口', async () => {
+  it('普通用户奖励统计失败时仍可查看榜单并进入奖励入口', async () => {
     useAuthStore.setState({ canViewKnowledgeContribution: false });
     vi.mocked(fetchRewardStats).mockRejectedValue(new Error('奖励暂不可用'));
     render(<MemoryRouter><Routes><Route path="/" element={<Dashboard />} /><Route path="/rewards" element={<p>奖励详情入口</p>} /></Routes></MemoryRouter>);
     await waitFor(() => expect(fetchRewardStats).toHaveBeenCalledOnce());
-    expect(screen.queryByRole('region', { name: '知识贡献榜' })).not.toBeInTheDocument();
-    expect(api.fetchKnowledgeOverview).not.toHaveBeenCalled();
+    expect(screen.getByRole('region', { name: '知识贡献榜' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '高价值问题榜单' })).toBeInTheDocument();
+    expect(api.fetchKnowledgeOverview).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: /待提现（元）/ }));
     expect(await screen.findByText('奖励详情入口')).toBeInTheDocument();
   });
@@ -313,35 +314,41 @@ describe('知识贡献榜首页可见性', () => {
     expect(await screen.findByText('贡献甲')).toBeInTheDocument();
   });
 
-  it.each([{ permissions: [] }, { permissions: ['admin'] }, { permissions: ['*'] }, { permissions: ['frontend:admin:*:show'] }])('无卡片授权标记时不因权限$permissions显示首页入口或请求榜单', ({ permissions }) => {
-    useAuthStore.setState({ canViewKnowledgeContribution: false, permissions, isAdmin: true });
+  it.each([{ permissions: [] }, { permissions: ['admin'] }, { permissions: ['*'] }, { permissions: ['frontend:admin:*:show'] }])('无需单独授权，权限$permissions的用户也可查看两个榜单', async ({ permissions }) => {
+    useAuthStore.setState({ canViewKnowledgeContribution: false, permissions, isAdmin: false, canManageKnowledgeChallenges: false });
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
-    expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: '知识贡献榜' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '详细榜单' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '所有问题' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '知识贡献榜' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '知识贡献榜' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '高价值问题榜单' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '高价值问题榜单' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '详细榜单' })).toHaveAttribute('href', '/admin/knowledge');
+    expect(screen.getByRole('link', { name: '所有问题' })).toHaveAttribute('href', '/admin/knowledge/challenges');
     expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
     expect(screen.queryByText(/每人每天最多点赞5个不同问题/)).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '工单数据看板' })).toBeInTheDocument();
-    expect(api.fetchKnowledgeOverview).not.toHaveBeenCalled();
-    expect(fetchChallengePreview).not.toHaveBeenCalled();
+    await screen.findByText('贡献甲');
+    expect(api.fetchKnowledgeOverview).toHaveBeenCalledOnce();
+    expect(fetchChallengePreview).toHaveBeenCalledOnce();
+    expect(useAuthStore.getState().canManageKnowledgeChallenges).toBe(false);
   });
 
-  it('单独挂载卡片同样默认隐藏且不发送榜单请求', () => {
+  it('单独挂载卡片时普通用户同样可查看榜单', async () => {
     useAuthStore.setState({ canViewKnowledgeContribution: false });
-    const rendered = render(<MemoryRouter><KnowledgeContributionCard /></MemoryRouter>);
-    expect(rendered.container).toBeEmptyDOMElement();
-    expect(api.fetchKnowledgeOverview).not.toHaveBeenCalled();
+    render(<MemoryRouter><KnowledgeContributionCard /></MemoryRouter>);
+    expect(await screen.findByText('贡献甲')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '知识贡献榜' })).toBeInTheDocument();
+    expect(api.fetchKnowledgeOverview).toHaveBeenCalledOnce();
   });
 
-  it('角色刷新撤回可见标记后整块消失', async () => {
+  it('角色刷新或历史可见标记变化不再隐藏公开榜单', async () => {
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
     await screen.findByText('贡献甲');
     act(() => useAuthStore.setState({ canViewKnowledgeContribution: false }));
-    expect(screen.queryByRole('region', { name: '知识贡献榜' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '详细榜单' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '所有问题' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '知识贡献榜' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '知识贡献榜' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '高价值问题榜单' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '详细榜单' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '所有问题' })).toBeInTheDocument();
     expect(screen.queryByText('查看榜单')).not.toBeInTheDocument();
   });
 });
