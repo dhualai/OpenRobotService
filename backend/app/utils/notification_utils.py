@@ -794,8 +794,12 @@ class NotificationUtils:
                     create_str = _format_local(create_at, tz_name)
 
                     if notify_type == 1:
+                        # 模板 1 字段顺序固定（见 template.yaml 注释）：
+                        # [工单名称, 提报时间, 催办原因, 催办方, 截止时间]
+                        # const13 是枚举字段，只能取「工单长时间未更新」/「紧急工单」，
+                        # 此前把处理人姓名填进去会被微信判为非法数据，整条消息发送失败
                         payload = NotificationUtils.instantiate_template(NotificationUtils.CUIBAN_TICKET,
-                                                                         ticket_id, processed_project_name, assigned_name, reason, deadline_str,
+                                                                         processed_ticket_name, create_str, reason, assigned_name, deadline_str,
                                                                          user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                     elif notify_type == 3:
                         payload = NotificationUtils.instantiate_template(NotificationUtils.YUQU_TICKET, ticket_id,
