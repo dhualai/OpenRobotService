@@ -11,7 +11,7 @@ template:
       time12: ""
 # 工单处理结果通知 [工单编号, 工单名称, 受理时间, 处理人, 处理结果]
   2:
-    id: 7zjOnZPzoEiMTUUTTtn1XZlc-DmMAimFzFlZQod3h0k
+    id: gx8x_GNebjgZ5dWTW8i4_Xpy3jz2NkyY5ih3Eeuv9bc
     data:
       character_string6: ""
       thing7: ""
@@ -28,15 +28,6 @@ template:
       short_thing5: ""
       thing15: ""
       thing26: ""
-# 
-  4:
-    id: y5Oh6AHXFrVUk5WLnGkCgUBN-Tk8QscEnRtZ10gU5P0
-    data:
-      character_string1: ""
-      thing26: ""
-      thing15: ""
-      time2: ""
-      time18: ""
 # 新建工单模板, [工单编号, 项目名称, 工单标题, 发起人, 工单截止时间]
   5:
     id: fCQaTl2YWka7MDPwJVT1zdolmNTRwPkaIPW0cZbk_mE
