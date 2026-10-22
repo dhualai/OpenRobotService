@@ -11,6 +11,11 @@ import {
   clearTasksListScroll,
   restoreTasksListScrollFromDom,
 } from '@/shared/utils/tasksListScroll';
+import {
+  buildTasksListCacheKey,
+  readTasksListCache,
+  writeTasksListCache,
+} from '@/pages/tasks/tasksListCache';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem, Switch } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
@@ -870,12 +875,24 @@ export default function TasksView() {
 
   // 从 URL 初始化筛选状态
   const initialFilter = useRef(parseFilterFromUrl(searchParams));
+  // 进详情再返回会卸掉本页；用内存缓存先画出上一屏，避免整页「加载中」
+  const bootListCacheKey = useRef(buildTasksListCacheKey({
+    ...initialFilter.current,
+    view: 'relation',
+    user: userId || username || '',
+    projects: [...(projectIds || [])].sort(),
+    canViewAll: canViewAllTasks,
+  })).current;
+  const bootListCache = readTasksListCache(bootListCacheKey);
 
-  const [tickets, setTickets] = useState<Ticket[]>([]);
-  const [relatedTickets, setRelatedTickets] = useState<Ticket[]>([]);
-  const [loading, setLoading] = useState(false);
-  // 详情返回恢复滚动：须等首轮 /filter 完成（见下方 effect）
-  const hasFetchedTicketsOnceRef = useRef(false);
+  const [tickets, setTickets] = useState<Ticket[]>(() => (bootListCache?.tickets as Ticket[]) || []);
+  const [relatedTickets, setRelatedTickets] = useState<Ticket[]>(
+    () => (bootListCache?.relatedTickets as Ticket[]) || [],
+  );
+  const [loading, setLoading] = useState(() => !bootListCache);
+  const silentFirstFetchRef = useRef(!!bootListCache);
+  // 详情返回恢复滚动：有缓存视为已有首屏数据
+  const hasFetchedTicketsOnceRef = useRef(!!bootListCache);
   const didRestoreListScrollRef = useRef(false);
   // 搜索双 state：searchInput 即时反映输入（URL 同步），search 防抖 400ms 后提交（触发列表请求）
   const [searchInput, setSearchInput] = useState(() => initialFilter.current.search);
@@ -930,7 +947,7 @@ export default function TasksView() {
     closedStart: string; closedEnd: string;
   } | null>(null);
   const [page, setPage] = useState(() => initialFilter.current.page);
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState(() => bootListCache?.total ?? 0);
   const [sortBy, setSortBy] = useState(() => initialFilter.current.sortBy);
   const [sortOrder, setSortOrder] = useState(() => initialFilter.current.sortOrder);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -1206,9 +1223,24 @@ export default function TasksView() {
 
       // 回包与当前数据一致时复用旧引用，避免轮询触发整列表无效重渲染
       const items = data.items || [];
+      const related = data.related_tickets ?? [];
       setTickets((prev) => (sameTicketItems(prev, items) ? prev : items));
       setTotal(data.total || 0);
-      setRelatedTickets(data.related_tickets ?? []);
+      setRelatedTickets(related);
+      writeTasksListCache({
+        key: buildTasksListCacheKey({
+          search, statusFilter, priorityFilter, typeFilter, relevanceFilter,
+          projectFilter, assigneeFilter, creatorFilter,
+          createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd,
+          page, sortBy, sortOrder, view,
+          user: userId || username || '',
+          projects: [...(projectIds || [])].sort(),
+          canViewAll: canViewAllTasks,
+        }),
+        tickets: items,
+        total: data.total || 0,
+        relatedTickets: related,
+      });
     } catch (err) {
       if (!silent) {
         Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -1218,7 +1250,9 @@ export default function TasksView() {
       hasFetchedTicketsOnceRef.current = true;
       if (!silent) setLoading(false);
     }
-  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks, view]);
+  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks, view,
+    search, statusFilter, priorityFilter, typeFilter, projectFilter, assigneeFilter, creatorFilter,
+    createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -1250,7 +1284,11 @@ export default function TasksView() {
     }
   }, [searchInput, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
 
-  useEffect(() => { fetchTickets(); }, [fetchTickets]);
+  useEffect(() => {
+    const silent = silentFirstFetchRef.current;
+    silentFirstFetchRef.current = false;
+    fetchTickets(silent);
+  }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
 
   // 从详情返回：等首轮列表请求完成后再恢复 .tasks-list-section 滚动
@@ -1319,8 +1357,9 @@ export default function TasksView() {
   const openDetail = useCallback((id: string) => {
     // PC 微信是整页跳转，MainLayout 的 pathname effect 来不及存滚动；点进前先抓一层。
     captureTasksListScrollFromDom();
-    navigateInWechat(navigate, `/tasks/${id}`);
-  }, [navigate]);
+    const preview = tickets.find((t) => String(t.id) === String(id));
+    navigateInWechat(navigate, `/tasks/${id}`, preview ? { state: { listPreview: preview } } : undefined);
+  }, [navigate, tickets]);
 
   // 点列表卡片上的参与人头像 → 进详情页并定位到讨论区。
   // 与详情页 DiscussionPanel.locateComment 同口径：URL 带 focus=discussion 落到讨论区，
@@ -1329,8 +1368,13 @@ export default function TasksView() {
     captureTasksListScrollFromDom();
     const qs = new URLSearchParams({ focus: 'discussion' });
     if (p?.username) qs.set('author', p.username);
-    navigateInWechat(navigate, `/tasks/${id}?${qs.toString()}`);
-  }, [navigate]);
+    const preview = tickets.find((t) => String(t.id) === String(id));
+    navigateInWechat(
+      navigate,
+      `/tasks/${id}?${qs.toString()}`,
+      preview ? { state: { listPreview: preview } } : undefined,
+    );
+  }, [navigate, tickets]);
 
   // PC 微信下点工单是整页跳转（详情页/操作记录页均为懒加载 chunk），列表挂载即预取，
   // 缩短首次点击后的下载等待；普通浏览器 / SPA 路径不受影响。

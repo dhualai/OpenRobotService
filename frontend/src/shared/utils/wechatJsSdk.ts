@@ -291,14 +291,17 @@ export const isPcWechat = (): boolean => /WindowsWechat|MacWechat/i.test(navigat
  * @param navigate react-router 的 navigate 函数
  * @param path 目标路由（不含 base 前缀，如 /tasks/123）
  */
-export function navigateInWechat(navigate: (path: string) => void, path: string): void {
+type NavigateLike = (path: string, opts?: { state?: unknown; replace?: boolean }) => void;
+
+export function navigateInWechat(navigate: NavigateLike, path: string, opts?: { state?: unknown }): void {
   if (isPcWechat()) {
     // base 必须用路由 basename（RAW_BASE），不能用 pathname 正则硬截，否则列表页
     // /app/tasks（末尾无 '/tasks/'）截不出正确前缀，会拼成 /app/tasks/tasks/123 导致跳转错位。
+    // 整页跳转带不走 location.state，预览态只在 SPA 路径生效。
     const base = RAW_BASE === '/' ? '' : RAW_BASE.replace(/\/+$/, '');
     const target = `${window.location.origin}${base}${path}`;
     window.location.href = target;
   } else {
-    navigate(path);
+    navigate(path, opts);
   }
 }

@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
 import { User, UserCheck, Folder, FolderKanban, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
@@ -245,19 +245,23 @@ const AI_NAME = 'U老师';
 export default function TaskDetailPage() {
   const { id: detailId } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   // 从列表卡片跳进来时的讨论区定位参数（点参与人头像 → focus=discussion[&author=xxx|&commentId=xxx]）
   const [searchParams] = useSearchParams();
   const focusDiscussion = searchParams.get('focus') === 'discussion';
   const focusCommentId = searchParams.get('commentId');
   const focusAuthor = searchParams.get('author');
+  // SPA 从列表点进时带上的卡片预览，先出壳再拉完整详情（PC 微信整页跳转带不走 state）
+  const listPreview = (location.state as { listPreview?: Ticket } | null)?.listPreview;
+  const previewMatches = !!(listPreview && detailId && String(listPreview.id) === String(detailId));
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
   const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
   const { username, userId, name, hasPermission, isAdmin } = useAuthStore();
 
-  const [detail, setDetail] = useState<Ticket | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [detail, setDetail] = useState<Ticket | null>(() => (previewMatches ? listPreview! : null));
+  const [detailLoading, setDetailLoading] = useState(() => !previewMatches);
   // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
   // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可看到）
@@ -1734,7 +1738,16 @@ export default function TaskDetailPage() {
     }
   };
 
-  if (detailLoading) return <Loading text="加载中…" />;
+  if (!detail && detailLoading) {
+    return (
+      <div>
+        <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
+        <div style={{ padding: 32, textAlign: 'center', marginTop: 56 }}>
+          <Loading text="加载中…" />
+        </div>
+      </div>
+    );
+  }
   if (!detail) return (
     <div>
       <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
