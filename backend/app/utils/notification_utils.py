@@ -83,8 +83,9 @@ class NotificationUtils:
     STATUS_CHANGE = 3
     NEW_TICKET = 5
     CUIBAN_TICKET = 1
-    DAYILY_TICKET = 2
-    YUQU_TICKET = 4
+    # 模板 2 = 工单处理结果通知 [工单编号, 工单名称, 受理时间, 处理人, 处理结果]
+    # 注意：语义是「处理结果」，不是每日统计；当前无调用方，接入时需按上面 5 个字段传参
+    TICKET_RESULT = 2
     YUQU_TICKET_STATUS_CHANGE = 6
     REASSIGN_TICKET = 7
     MENTION_TICKET = 8
@@ -732,11 +733,7 @@ class NotificationUtils:
         def _send() -> Dict[str, Any]:
             try:
                 payload = {}
-                if notify_type == 2:
-                    payload = NotificationUtils.instantiate_template(NotificationUtils.DAYILY_TICKET,
-                                                                     extr.get('pending_count', 0), extr.get('near_overdue_count', 0),
-                                                                     extr.get('overdue_count', 0), user_names=user_names)
-                elif notify_type == 6:
+                if notify_type == 6:
                     # 工单逾期提醒, [工单名称, 项目名称, 逾期天数, 派单时间, 逾期时间]
                     deadline_str = _format_local(deadline_at, tz_name)
                     create_str = _format_local(create_at, tz_name)
@@ -777,13 +774,19 @@ class NotificationUtils:
                                                                      processed_ticket_name, processed_project_name, assigned_name, create_str, deadline_str,
                                                                      user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 else:
+                    # 兜底分支只处理人工催办（notify_type=1）。notify_type=3 用的模板 4 已从
+                    # template.yaml 移除，其余类型没有对应模板，一律跳过，避免把空 payload 发给微信
+                    if notify_type != 1:
+                        logger.warning(
+                            f"跳过无对应模板的通知 notify_type={notify_type} ticket={ticket_id}"
+                        )
+                        return {"code": 400, "message": f"不支持的通知类型: {notify_type}",
+                                "data": {"recipients": []}}
+
                     reason = "工单长时间未更新"
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
-                        processed_project_name = loop.run_until_complete(
-                            NotificationUtils.simplify_title(project_name)
-                        )
                         processed_ticket_name = loop.run_until_complete(
                             NotificationUtils.simplify_title(ticket_name)
                         )
@@ -793,18 +796,13 @@ class NotificationUtils:
                     deadline_str = _format_local(deadline_at, tz_name)
                     create_str = _format_local(create_at, tz_name)
 
-                    if notify_type == 1:
-                        # 模板 1 字段顺序固定（见 template.yaml 注释）：
-                        # [工单名称, 提报时间, 催办原因, 催办方, 截止时间]
-                        # const13 是枚举字段，只能取「工单长时间未更新」/「紧急工单」，
-                        # 此前把处理人姓名填进去会被微信判为非法数据，整条消息发送失败
-                        payload = NotificationUtils.instantiate_template(NotificationUtils.CUIBAN_TICKET,
-                                                                         processed_ticket_name, create_str, reason, assigned_name, deadline_str,
-                                                                         user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
-                    elif notify_type == 3:
-                        payload = NotificationUtils.instantiate_template(NotificationUtils.YUQU_TICKET, ticket_id,
-                                                                         processed_project_name, processed_ticket_name, create_str, deadline_str,
-                                                                         user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
+                    # 模板 1 字段顺序固定（见 template.yaml 注释）：
+                    # [工单名称, 提报时间, 催办原因, 催办方, 截止时间]
+                    # const13 是枚举字段，只能取「工单长时间未更新」/「紧急工单」，
+                    # 此前把处理人姓名填进去会被微信判为非法数据，整条消息发送失败
+                    payload = NotificationUtils.instantiate_template(NotificationUtils.CUIBAN_TICKET,
+                                                                     processed_ticket_name, create_str, reason, assigned_name, deadline_str,
+                                                                     user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 
                 loop2 = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop2)

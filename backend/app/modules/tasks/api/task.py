@@ -4148,14 +4148,9 @@ async def send_cuiban_notification(
             )
 
         else:
-            extr = await TicketService.get_user_ticket_stats(db, assigned_to)
-            token = current_user.get('token')
-            result = await NotificationUtils.send_ticket_cuiban_notification(
-                notify_type=notify_type,
-                user_names=[assigned_to],
-                extr=extr,
-                token=token
-            )
+            # 无 ticket_id 的分支原本按「每日统计」用模板 2，但该模板实为「工单处理结果通知」，
+            # 字段语义不符，且当前无调用方。这里直接拒绝，避免发出空模板或错配内容。
+            raise HTTPException(status_code=400, detail="缺少 ticket_id：统计类通知暂不支持")
 
         return result
     except HTTPException:
