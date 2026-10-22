@@ -722,7 +722,7 @@ class TicketService:
         size = query_params.size
         skip = (page - 1) * size
 
-        query = query.order_by(Ticket.created_at.desc()).offset(skip).limit(size)
+        query = query.order_by(Ticket.created_at.desc(), Ticket.id.desc()).offset(skip).limit(size)
 
         result = await db.execute(query)
         tickets = result.scalars().all()
@@ -1147,6 +1147,11 @@ class TicketService:
                     query = query.order_by(column.desc())
         else:
             query = query.order_by(Ticket.created_at.desc())
+
+        # 稳定次键：主排序字段（尤其 priority）大量并列时，MySQL 不保证同行相对顺序，
+        # OFFSET 翻页会出现第 1/2 页重复。id 唯一，始终垫在最后（调用方已按 id 排则跳过）。
+        if not any(s.field == "id" for s in (filter_request.sorts or [])):
+            query = query.order_by(Ticket.id.desc())
 
         return query
 
@@ -1858,7 +1863,7 @@ class TicketService:
 
         skip = (page - 1) * size
 
-        query = query.order_by(Ticket.created_at.desc()).offset(skip).limit(size)
+        query = query.order_by(Ticket.created_at.desc(), Ticket.id.desc()).offset(skip).limit(size)
 
         result = await db.execute(query)
         tickets = result.scalars().all()

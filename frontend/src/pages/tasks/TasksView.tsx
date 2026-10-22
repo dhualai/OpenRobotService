@@ -6,6 +6,16 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
+import {
+  captureTasksListScrollFromDom,
+  clearTasksListScroll,
+  restoreTasksListScrollFromDom,
+} from '@/shared/utils/tasksListScroll';
+import {
+  buildTasksListCacheKeyFromState,
+  readTasksListCache,
+  writeTasksListCache,
+} from '@/pages/tasks/tasksListCache';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem, Switch } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
@@ -149,8 +159,30 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     page: parseInt(params.get('page') || '1', 10),
     sortBy: params.get('sort') || 'priority',
     sortOrder: params.get('order') || 'desc',
+    // 视图：URL > localStorage > 默认关系列表（用户选过平铺后应记住，不要每次回默认）
+    view: parseTasksViewParam(params.get('view')) ?? readStoredTasksView(),
   };
 };
+
+const TASKS_VIEW_PREF_KEY = 'ors:tasks-list-view';
+
+function parseTasksViewParam(raw: string | null): 'flat' | 'relation' | null {
+  return raw === 'flat' || raw === 'relation' ? raw : null;
+}
+
+function readStoredTasksView(): 'flat' | 'relation' {
+  try {
+    const v = localStorage.getItem(TASKS_VIEW_PREF_KEY);
+    if (v === 'flat' || v === 'relation') return v;
+  } catch { /* 隐私模式等 */ }
+  return 'relation';
+}
+
+function writeStoredTasksView(view: 'flat' | 'relation'): void {
+  try {
+    localStorage.setItem(TASKS_VIEW_PREF_KEY, view);
+  } catch { /* ignore */ }
+}
 
 // 数组对比：判断两个无序数组是否包含相同元素
 const sameSet = (a: string[], b: string[]) =>
@@ -246,7 +278,8 @@ function DateRangeField({ startValue, endValue, onStartChange, onEndChange, star
 const buildFilterParams = (filter: {
   search: string; statusFilter: string[]; priorityFilter: string[]; typeFilter: string[];
   relevanceFilter: string; projectFilter: string[]; assigneeFilter: string; creatorFilter: string;
-  createdStart: string; createdEnd: string; resolvedStart: string; resolvedEnd: string; closedStart: string; closedEnd: string; page: number; sortBy: string; sortOrder: string;
+  createdStart: string; createdEnd: string; resolvedStart: string; resolvedEnd: string; closedStart: string; closedEnd: string;
+  page: number; sortBy: string; sortOrder: string; view: 'flat' | 'relation';
 }) => {
   const params = new URLSearchParams();
   if (filter.search) params.set('q', filter.search);
@@ -285,6 +318,8 @@ const buildFilterParams = (filter: {
     params.set('sort', filter.sortBy);
     params.set('order', filter.sortOrder);
   }
+  // 默认关系列表不写 URL；平铺写出，返回/刷新才能保持
+  if (filter.view === 'flat') params.set('view', 'flat');
   return params.toString();
 };
 
@@ -865,10 +900,25 @@ export default function TasksView() {
 
   // 从 URL 初始化筛选状态
   const initialFilter = useRef(parseFilterFromUrl(searchParams));
+  // 进详情再返回会卸掉本页；用内存缓存先画出上一屏，避免整页「加载中」
+  const bootListCacheKey = useRef(buildTasksListCacheKeyFromState({
+    ...initialFilter.current,
+    view: initialFilter.current.view,
+    user: userId || username || '',
+    projects: projectIds || [],
+    canViewAll: canViewAllTasks,
+  })).current;
+  const bootListCache = readTasksListCache(bootListCacheKey);
 
-  const [tickets, setTickets] = useState<Ticket[]>([]);
-  const [relatedTickets, setRelatedTickets] = useState<Ticket[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [tickets, setTickets] = useState<Ticket[]>(() => (bootListCache?.tickets as Ticket[]) || []);
+  const [relatedTickets, setRelatedTickets] = useState<Ticket[]>(
+    () => (bootListCache?.relatedTickets as Ticket[]) || [],
+  );
+  const [loading, setLoading] = useState(() => !bootListCache);
+  const silentFirstFetchRef = useRef(!!bootListCache);
+  // 详情返回恢复滚动：有缓存视为已有首屏数据
+  const hasFetchedTicketsOnceRef = useRef(!!bootListCache);
+  const didRestoreListScrollRef = useRef(false);
   // 搜索双 state：searchInput 即时反映输入（URL 同步），search 防抖 400ms 后提交（触发列表请求）
   const [searchInput, setSearchInput] = useState(() => initialFilter.current.search);
   const [search, setSearch] = useState(() => initialFilter.current.search);
@@ -922,15 +972,19 @@ export default function TasksView() {
     closedStart: string; closedEnd: string;
   } | null>(null);
   const [page, setPage] = useState(() => initialFilter.current.page);
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState(() => bootListCache?.total ?? 0);
   const [sortBy, setSortBy] = useState(() => initialFilter.current.sortBy);
   const [sortOrder, setSortOrder] = useState(() => initialFilter.current.sortOrder);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
-  // ── 关系列表视图状态 ──
-  const [view, setView] = useState<'flat' | 'relation'>('relation');
+  // ── 列表视图：关系 / 平铺（记住用户选择，进详情返回或刷新不丢）──
+  const [view, setViewState] = useState<'flat' | 'relation'>(() => initialFilter.current.view);
+  const setView = useCallback((next: 'flat' | 'relation') => {
+    writeStoredTasksView(next);
+    setViewState(next);
+  }, []);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   // 关系视图时把后端补查的关联工单也纳入，让父子缩进/子工单行跨页可见
@@ -1198,18 +1252,36 @@ export default function TasksView() {
 
       // 回包与当前数据一致时复用旧引用，避免轮询触发整列表无效重渲染
       const items = data.items || [];
+      const related = data.related_tickets ?? [];
       setTickets((prev) => (sameTicketItems(prev, items) ? prev : items));
       setTotal(data.total || 0);
-      setRelatedTickets(data.related_tickets ?? []);
+      setRelatedTickets(related);
+      writeTasksListCache({
+        key: buildTasksListCacheKeyFromState({
+          search, statusFilter, priorityFilter, typeFilter, relevanceFilter,
+          projectFilter, assigneeFilter, creatorFilter,
+          createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd,
+          page, sortBy, sortOrder, view,
+          user: userId || username || '',
+          projects: projectIds || [],
+          canViewAll: canViewAllTasks,
+        }),
+        tickets: items,
+        total: data.total || 0,
+        relatedTickets: related,
+      });
     } catch (err) {
       if (!silent) {
         Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
       }
     } finally {
       isFetchingRef.current = false;
+      hasFetchedTicketsOnceRef.current = true;
       if (!silent) setLoading(false);
     }
-  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks, view]);
+  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks, view,
+    search, statusFilter, priorityFilter, typeFilter, projectFilter, assigneeFilter, creatorFilter,
+    createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -1234,15 +1306,47 @@ export default function TasksView() {
   useEffect(() => {
     const newParams = buildFilterParams({
       search: searchInput, statusFilter, priorityFilter, typeFilter,
-      relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder,
+      relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder, view,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [searchInput, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
+  }, [searchInput, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder, view]);
 
-  useEffect(() => { fetchTickets(); }, [fetchTickets]);
+  useEffect(() => {
+    const silent = silentFirstFetchRef.current;
+    silentFirstFetchRef.current = false;
+    fetchTickets(silent);
+  }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
+
+  // 从详情返回：等首轮列表请求完成后再恢复 .tasks-list-section 滚动
+  useEffect(() => {
+    if (loading || !hasFetchedTicketsOnceRef.current || didRestoreListScrollRef.current) return;
+    if (tickets.length === 0) {
+      clearTasksListScroll();
+      didRestoreListScrollRef.current = true;
+      return;
+    }
+    let tries = 0;
+    let timer = 0;
+    const attempt = () => {
+      tries += 1;
+      if (restoreTasksListScrollFromDom()) {
+        didRestoreListScrollRef.current = true;
+        return;
+      }
+      // 短列表撑不起旧 scrollTop 时别把脏值留到下次进页
+      if (tries >= 8) {
+        clearTasksListScroll();
+        didRestoreListScrollRef.current = true;
+        return;
+      }
+      timer = window.setTimeout(attempt, 50);
+    };
+    timer = window.setTimeout(attempt, 0);
+    return () => window.clearTimeout(timer);
+  }, [loading, tickets]);
 
   // 轮询刷新：按 VITE_POLL_INTERVAL_MS（默认 10s，见 @/config/poll）静默拉取列表与角标；
   // 页面不可见时暂停（省电省请求），恢复可见时立即同步一次再恢复轮询。
@@ -1285,16 +1389,27 @@ export default function TasksView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketDraft]);
 
-  const openDetail = useCallback((id: string) => { navigateInWechat(navigate, `/tasks/${id}`); }, [navigate]);
+  const openDetail = useCallback((id: string) => {
+    // PC 微信是整页跳转，MainLayout 的 pathname effect 来不及存滚动；点进前先抓一层。
+    captureTasksListScrollFromDom();
+    const preview = tickets.find((t) => String(t.id) === String(id));
+    navigateInWechat(navigate, `/tasks/${id}`, preview ? { state: { listPreview: preview } } : undefined);
+  }, [navigate, tickets]);
 
   // 点列表卡片上的参与人头像 → 进详情页并定位到讨论区。
   // 与详情页 DiscussionPanel.locateComment 同口径：URL 带 focus=discussion 落到讨论区，
   // 带 commentId 时再做锚点定位 + is-flash 高亮（目标页读取并消费该参数）。
   const openParticipantDiscussion = useCallback((id: string, p: ParticipantItem) => {
+    captureTasksListScrollFromDom();
     const qs = new URLSearchParams({ focus: 'discussion' });
     if (p?.username) qs.set('author', p.username);
-    navigateInWechat(navigate, `/tasks/${id}?${qs.toString()}`);
-  }, [navigate]);
+    const preview = tickets.find((t) => String(t.id) === String(id));
+    navigateInWechat(
+      navigate,
+      `/tasks/${id}?${qs.toString()}`,
+      preview ? { state: { listPreview: preview } } : undefined,
+    );
+  }, [navigate, tickets]);
 
   // PC 微信下点工单是整页跳转（详情页/操作记录页均为懒加载 chunk），列表挂载即预取，
   // 缩短首次点击后的下载等待；普通浏览器 / SPA 路径不受影响。
@@ -1988,20 +2103,9 @@ export default function TasksView() {
           </div>
         </div>
 
-      {/* 视图切换：普通列表 / 关系列表 */}
-      <div
-        className="tasks-view__view-toggle"
-        style={{
-          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-          marginTop: 8, marginBottom: 4, padding: '0 4px',
-        }}
-      >
-        <div
-          style={{
-            display: 'inline-flex', padding: 3, borderRadius: 999,
-            background: 'var(--bg-muted)', border: '1px solid var(--border)',
-          }}
-        >
+      {/* 视图切换：普通列表 / 关系列表（选中浅蓝底 + 蓝字） */}
+      <div className="tasks-view__view-toggle">
+        <div className="tasks-view__view-toggle-track">
           {([
             { value: 'flat', label: '普通列表' },
             { value: 'relation', label: '关系列表' },
@@ -2009,16 +2113,8 @@ export default function TasksView() {
             <button
               key={opt.value}
               type="button"
+              className={`tasks-view__view-toggle-btn${view === opt.value ? ' is-active' : ''}`}
               onClick={() => setView(opt.value)}
-              style={{
-                padding: '4px 12px', fontSize: 12, fontWeight: 600,
-                borderRadius: 999, border: 'none', cursor: 'pointer',
-                fontFamily: 'inherit',
-                background: view === opt.value ? 'var(--bg-card)' : 'transparent',
-                color: view === opt.value ? 'var(--text)' : 'var(--text-muted)',
-                boxShadow: view === opt.value ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
-                transition: 'background 0.15s',
-              }}
             >
               {opt.label}
             </button>
@@ -2054,8 +2150,8 @@ export default function TasksView() {
         )}
       </div>
 
-      {/* 工单卡片列表：唯一滚动区 */}
-      <div className="tasks-list-section">
+      {/* 工单卡片列表：唯一滚动区（进详情/返回滚动位置靠这个容器，见 tasksListScroll） */}
+      <div className="tasks-list-section" data-testid="tasks-list-scroll">
         <div className="tasks-cards">
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>

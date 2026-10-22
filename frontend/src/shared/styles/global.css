@@ -3895,6 +3895,39 @@ html, body, #root {
   color: var(--muted-foreground);
 }
 /* 排序：胶囊按钮 */
+/* 普通列表 / 关系列表：选中浅蓝底+蓝字，未选中深色字（与原先 inherit/--text 观感一致） */
+.tasks-view__view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  margin-bottom: 4px;
+  padding: 0 4px;
+}
+.tasks-view__view-toggle-track {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--border);
+}
+.tasks-view__view-toggle-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  background: transparent;
+  color: var(--foreground);
+  transition: background 0.15s, color 0.15s;
+}
+.tasks-view__view-toggle-btn.is-active {
+  background: var(--blue-soft);
+  color: var(--blue-2);
+}
 .tasks-view__sort-row {
   display: flex;
   align-items: center;
