@@ -2924,8 +2924,8 @@ export default function TaskDetailPage() {
               （功能存在感 + 讲清沉淀机制）；检索挂了保持静默。 */}
           {(archiveSimilar.length > 0 || archiveSimilarLoading || archiveSimilarReady) && (
             <div style={{
-              marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)',
-              maxHeight: 320, overflowY: 'auto',
+              paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)',
+              maxHeight: '40vh', overflowY: 'auto', overscrollBehavior: 'contain',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>相似工单</span>
@@ -2993,25 +2993,29 @@ export default function TaskDetailPage() {
             </div>
           )}
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
+              {/* ORS-1010 精简：章节要求一句话 + 操作按钮独立一行（上下结构——
+                  横排会把文字压成七行细条，1021 用户实测丑） */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
                   须含「问题描述」与「解决方案/回答」两部分且各有正文；请勿写入人员姓名及联系方式。
-                </span>
-                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent, String(detail?.ticket_type || '')))}>补齐章节</Button>
-                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
-                  {uploadingReportImage ? '上传中…' : '📷 上传图片'}
-                </Button>
-                <Button size="small" theme="primary" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={handleAiGenerateReport}>
-                  ✨AI 初稿
-                </Button>
-                <input
-                  ref={reportImageInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={handleReportImageUpload}
-                />
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <Button size="small" theme="default" disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent, String(detail?.ticket_type || '')))}>补齐章节</Button>
+                  <Button size="small" theme="default" disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
+                    {uploadingReportImage ? '上传中…' : '📷 上传图片'}
+                  </Button>
+                  <Button size="small" theme="primary" disabled={archiveGenerating} onClick={handleAiGenerateReport}>
+                    ✨AI 初稿
+                  </Button>
+                  <input
+                    ref={reportImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={handleReportImageUpload}
+                  />
+                </div>
               </div>
               {!archiveGenerating && !archiveReportContent.trim() && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, background: 'var(--muted, #f6f8fa)', borderRadius: 8 }}>
@@ -3044,7 +3048,7 @@ export default function TaskDetailPage() {
                 <MDEditor
                   commands={[]}
                   extraCommands={[]}
-                  height={340}
+                  height={380}
                   value={archiveReportContent}
                   onChange={(v) => setArchiveReportContent(v || '')}
                   preview="edit"
