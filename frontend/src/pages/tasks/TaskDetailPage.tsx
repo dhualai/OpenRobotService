@@ -459,6 +459,9 @@ export default function TaskDetailPage() {
           navigate(`/admin/knowledge/reviews/${body.detail.report_id}`, { replace: true });
           return;
         }
+        // 列表预览先出壳时：404/无权限应清掉预览，避免一直停在残缺卡片上可点操作
+        const status = err instanceof ApiError ? err.statusCode : 0;
+        if (status === 404 || status === 403) setDetail(null);
         Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
       })
       .finally(() => setDetailLoading(false));

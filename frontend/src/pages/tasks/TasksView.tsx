@@ -12,7 +12,7 @@ import {
   restoreTasksListScrollFromDom,
 } from '@/shared/utils/tasksListScroll';
 import {
-  buildTasksListCacheKey,
+  buildTasksListCacheKeyFromState,
   readTasksListCache,
   writeTasksListCache,
 } from '@/pages/tasks/tasksListCache';
@@ -876,11 +876,11 @@ export default function TasksView() {
   // 从 URL 初始化筛选状态
   const initialFilter = useRef(parseFilterFromUrl(searchParams));
   // 进详情再返回会卸掉本页；用内存缓存先画出上一屏，避免整页「加载中」
-  const bootListCacheKey = useRef(buildTasksListCacheKey({
+  const bootListCacheKey = useRef(buildTasksListCacheKeyFromState({
     ...initialFilter.current,
     view: 'relation',
     user: userId || username || '',
-    projects: [...(projectIds || [])].sort(),
+    projects: projectIds || [],
     canViewAll: canViewAllTasks,
   })).current;
   const bootListCache = readTasksListCache(bootListCacheKey);
@@ -1228,13 +1228,13 @@ export default function TasksView() {
       setTotal(data.total || 0);
       setRelatedTickets(related);
       writeTasksListCache({
-        key: buildTasksListCacheKey({
+        key: buildTasksListCacheKeyFromState({
           search, statusFilter, priorityFilter, typeFilter, relevanceFilter,
           projectFilter, assigneeFilter, creatorFilter,
           createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd,
           page, sortBy, sortOrder, view,
           user: userId || username || '',
-          projects: [...(projectIds || [])].sort(),
+          projects: projectIds || [],
           canViewAll: canViewAllTasks,
         }),
         tickets: items,
@@ -1303,7 +1303,13 @@ export default function TasksView() {
     let timer = 0;
     const attempt = () => {
       tries += 1;
-      if (restoreTasksListScrollFromDom() || tries >= 8) {
+      if (restoreTasksListScrollFromDom()) {
+        didRestoreListScrollRef.current = true;
+        return;
+      }
+      // 短列表撑不起旧 scrollTop 时别把脏值留到下次进页
+      if (tries >= 8) {
+        clearTasksListScroll();
         didRestoreListScrollRef.current = true;
         return;
       }
