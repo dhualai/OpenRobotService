@@ -164,6 +164,8 @@ async def send_notification_core(payload: dict, token: str = None):
                         "status": "failed",
                         "platform": "wechat",
                         "error_code": "SEND_FAILED",
+                        # 原始微信错误码：调用方据此区分「限流可重试」与「配置/绑定类不可重试」
+                        "errcode": err_code,
                         "error_message": error_message
                     }
             except Exception as e:

@@ -64,6 +64,8 @@ from app.modules.tasks.api.ws import (
 )
 from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils, _format_shanghai
+from app.services.working_time_service import WorkingTimeService
+from app.services.notification_outbox_service import NotificationOutboxService
 from app.integrations.api import verify_sync_api_key, verify_robot_alarm_api_key
 from app.services.identity_service import IdentityService
 from app.core.config import settings
@@ -3838,6 +3840,9 @@ async def re_dispatch_task(
 
     await db.commit()
 
+    # 重置派单清空了处理人 → 旧处理人的待发提醒作废
+    NotificationOutboxService.cancel_task_notifications(ticket.id)
+
     # 触发派单 Worker：向 Redis 发布 usp:new_ticket（与 AI 服务 publish_new_ticket 同通道）
     try:
         import redis.asyncio as aioredis
@@ -4083,11 +4088,41 @@ async def send_cuiban_notification(
             if notification_data.to_admin:
                 user_names.extend(['wechat_oM1WF6jUTn', 'wechat_oM1WF6hHVK'])
 
+            # ── 工作时间排程分流 ──────────────────────────────
+            # 逾期/临期等「系统自动提醒」不即时推送，改按各接收人所在时区的工作时间排程；
+            # 人工催办、@提醒、状态变更等实时性强的类型，以及管理员 force 的紧急通知，仍立即发。
+            force = bool(notification_data.force)
+            if force and "admin" not in (current_user.get('permissions') or []):
+                raise HTTPException(status_code=403, detail="仅管理员可强制立即发送")
+
+            if not force and WorkingTimeService.should_schedule(notify_type):
+                scheduled = []
+                seen = set()
+                for recipient in user_names:
+                    if not recipient or recipient in seen:
+                        continue
+                    seen.add(recipient)
+                    scheduled.append(
+                        NotificationOutboxService.schedule(
+                            notify_type=notify_type,
+                            recipient_id=recipient,
+                            task_id=ticket_id,
+                            deadline_at=ticket.deadline_at,
+                            occurrence=notification_data.occurrence,
+                        )
+                    )
+                return {
+                    "code": 200,
+                    "message": "通知已按接收人工作时间排程",
+                    "scheduled": scheduled,
+                }
+
             yuqi_day = ""
             if ticket.deadline_at:
-                current_time = datetime.now()
-                if current_time > ticket.deadline_at:
-                    yuqi_seconds = (current_time - ticket.deadline_at).total_seconds()
+                # 统一按 UTC 比较：deadline_at 存的是 UTC，本地 naive now 会差一个时区
+                deadline_utc = WorkingTimeService.to_utc(ticket.deadline_at)
+                if WorkingTimeService.now_utc() > deadline_utc:
+                    yuqi_seconds = (WorkingTimeService.now_utc() - deadline_utc).total_seconds()
                     yuqi_days = yuqi_seconds / (24 * 3600)
                     yuqi_day = f"{yuqi_days:.0f}"
 
@@ -4105,7 +4140,9 @@ async def send_cuiban_notification(
                 create_at=ticket.created_at,
                 user_names=user_names,
                 token=token,
-                yuqi_day=yuqi_day
+                yuqi_day=yuqi_day,
+                # 模板时间按目标接收人时区渲染（多接收人共用目标用户的时区）
+                tz_name=(WorkingTimeService.get_user_context(target_user) or {}).get("timezone"),
             )
 
         else:
@@ -4600,6 +4637,11 @@ async def _sync_duplicate_status(
 
     if synced_count > 0:
         await db.commit()
+
+        # 同步到的状态可能是终态 → 取消被同步工单尚未发出的提醒
+        if new_status in (TaskStatus.RESOLVED, TaskStatus.CLOSED, TaskStatus.ARCHIVED, TaskStatus.CANCELED):
+            for tid in list(targets.keys()):
+                NotificationOutboxService.cancel_task_notifications(tid)
 
         # 广播 WS
         for tid in list(targets.keys()):

@@ -117,3 +117,58 @@ export function avatarUrl(resourceId: number): string {
   const token = encodeURIComponent(readStored('AUTH_TOKEN') || '');
   return `${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${resourceId}/download?token=${token}`;
 }
+
+// ── 通知时区 ────────────────────────────────────────────────
+// 用于「按接收人工作时间推送」：浏览器直接给出 IANA 时区，比任何服务端推断都准。
+// 用户可锁定，锁定后自动上报不再覆盖（外派/长期跨时区场景）。
+
+export interface MyTimezone {
+  timezone: string | null;
+  locked: boolean;
+  source: string | null;
+  updated_at: string | null;
+  /** 后端系统兜底时区，未上报时生效 */
+  system_default: string;
+}
+
+export async function getMyTimezone(): Promise<MyTimezone> {
+  return authRequest<MyTimezone>('/me/timezone', { skipCache: true });
+}
+
+export async function updateMyTimezone(
+  timezone: string,
+  locked: boolean,
+  /** browser=浏览器静默上报；manual=用户在个人中心手工选择。仅用于溯源展示 */
+  source: 'browser' | 'manual' = 'manual',
+): Promise<{ timezone: string; locked: boolean }> {
+  return authRequest('/me/timezone', {
+    method: 'PATCH',
+    body: JSON.stringify({ timezone, locked, source }),
+  });
+}
+
+/** 浏览器当前时区（IANA，如 Asia/Shanghai）；不支持时返回 null */
+export function detectTimezone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 静默上报：未锁定且浏览器时区与库中不一致时写回一次。
+ * 失败一律静默——时区只是提醒时机的优化项，不能影响登录/主流程。
+ */
+export async function syncTimezone(): Promise<void> {
+  try {
+    const tz = detectTimezone();
+    if (!tz) return;
+    const current = await getMyTimezone();
+    if (current?.locked) return;
+    if (current?.timezone === tz) return;
+    await updateMyTimezone(tz, false, 'browser');
+  } catch {
+    /* 静默 */
+  }
+}

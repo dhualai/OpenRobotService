@@ -33,6 +33,10 @@ from app.wechat.services.user_statistics_snapshot import (
     start_user_statistics_scheduler,
     stop_user_statistics_scheduler,
 )
+from app.services.notification_outbox_worker import (
+    start_notification_outbox_worker,
+    stop_notification_outbox_worker,
+)
 security = HTTPBearer()
 
 # 随 shutdown 执行的清理钩子（模块内按需 append）
@@ -139,6 +143,9 @@ async def startup_event():
     except Exception as e:  # noqa: BLE001
         print(f"[wxpay] 兜底任务调度器启动失败（不影响启动）: {e}")
 
+    # 通知排程投递：按接收人工作时间把 Outbox 中的待发提醒投递出去
+    start_notification_outbox_worker()
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -149,6 +156,7 @@ async def shutdown_event():
             hook()
         except Exception as e:  # noqa: BLE001
             print(f"[wxpay] 停止调度器异常: {e}")
+    stop_notification_outbox_worker()
 
 app.add_middleware(
     CORSMiddleware,
