@@ -16,8 +16,6 @@ import { getMyFollowupsCount } from '@/api/ticket';
 import AdminDataAssistant from '@/shared/components/AdminDataAssistant';
 import {
   clearTasksListScroll,
-  readTasksListScroll,
-  saveTasksListScroll,
   tasksScrollAction,
 } from '@/shared/utils/tasksListScroll';
 
@@ -166,18 +164,12 @@ export default function MainLayout() {
       return;
     }
     if (action === 'save') {
-      saveTasksListScroll(el.scrollTop);
+      // 列表滚动在 .tasks-list-section，已由 TasksView 点进时 capture；这里只清外层
       el.scrollTop = 0;
       return;
     }
     if (action === 'restore') {
-      const saved = readTasksListScroll();
-      if (saved != null && saved > 0) {
-        // 先试一次；列表数据异步回来后 TasksView 还会再 restore 一次（那时高度才够）
-        requestAnimationFrame(() => {
-          el.scrollTop = saved;
-        });
-      }
+      // 真正恢复交给 TasksView（等 .tasks-list-section 挂载且列表数据到位）
       return;
     }
     clearTasksListScroll();

@@ -1,12 +1,15 @@
 /**
  * 系统任务列表 ↔ 详情往返时的滚动位置。
  *
- * 列表与详情是同级路由，进详情会卸掉 TasksView；MainLayout 又在 pathname
- * 变化时把外层 `.tabbar-shell__content` 滚回顶部。PC 微信还是整页跳转。
+ * 真正滚动的是 `.tasks-list-section`（filters 固定，卡片区 overflow:auto），
+ * 不是外层 `.tabbar-shell__content`（tasks-view 自身 overflow:hidden）。
+ * 列表与详情同级路由会卸掉 TasksView；PC 微信还是整页跳转。
  * 用 sessionStorage 记住列表滚动，返回时再写回去。
  */
 
 export const TASKS_LIST_SCROLL_KEY = 'ors:tasks-list-scroll';
+/** 系统任务页唯一纵向滚动容器（见 global.css .tasks-list-section） */
+export const TASKS_LIST_SCROLL_SELECTOR = '.tasks-list-section';
 
 export function isTasksListPath(pathname: string): boolean {
   return pathname === '/tasks' || pathname === '/tasks/';
@@ -74,11 +77,16 @@ export function clearTasksListScroll(): void {
   }
 }
 
-/** 从外层滚动容器读取并保存（列表点进详情前调用，覆盖 PC 微信整页跳转） */
+export function getTasksListScrollEl(): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  const el = document.querySelector(TASKS_LIST_SCROLL_SELECTOR);
+  return el instanceof HTMLElement ? el : null;
+}
+
+/** 从列表滚动容器读取并保存（点进详情前调用；覆盖 PC 微信整页跳转） */
 export function captureTasksListScrollFromDom(): void {
-  if (typeof document === 'undefined') return;
-  const el = document.querySelector('.tabbar-shell__content');
-  if (el instanceof HTMLElement) saveTasksListScroll(el.scrollTop, { force: true });
+  const el = getTasksListScrollEl();
+  if (el) saveTasksListScroll(el.scrollTop, { force: true });
 }
 
 /**
@@ -86,12 +94,13 @@ export function captureTasksListScrollFromDom(): void {
  * 成功则清掉存储，避免下次误跳。
  */
 export function restoreTasksListScrollFromDom(): boolean {
-  if (typeof document === 'undefined') return false;
   const saved = readTasksListScroll();
   if (saved == null || saved <= 0) return false;
-  const el = document.querySelector('.tabbar-shell__content');
-  if (!(el instanceof HTMLElement)) return false;
+  const el = getTasksListScrollEl();
+  if (!el) return false;
   el.scrollTop = saved;
+  // 高度仍不够时先别清，留给下一次 tickets 更新后再试
+  if (el.scrollHeight <= el.clientHeight + 8) return false;
   clearTasksListScroll();
   return true;
 }

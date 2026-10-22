@@ -6,7 +6,11 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
-import { captureTasksListScrollFromDom, restoreTasksListScrollFromDom } from '@/shared/utils/tasksListScroll';
+import {
+  captureTasksListScrollFromDom,
+  clearTasksListScroll,
+  restoreTasksListScrollFromDom,
+} from '@/shared/utils/tasksListScroll';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem, Switch } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
@@ -1249,13 +1253,25 @@ export default function TasksView() {
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
 
-  // 从详情返回：等首轮列表请求完成后再恢复滚动（早写会被空列表高度钳回顶部）
+  // 从详情返回：等首轮列表请求完成后再恢复 .tasks-list-section 滚动
   useEffect(() => {
     if (loading || !hasFetchedTicketsOnceRef.current || didRestoreListScrollRef.current) return;
-    const timer = window.setTimeout(() => {
-      restoreTasksListScrollFromDom();
+    if (tickets.length === 0) {
+      clearTasksListScroll();
       didRestoreListScrollRef.current = true;
-    }, 0);
+      return;
+    }
+    let tries = 0;
+    let timer = 0;
+    const attempt = () => {
+      tries += 1;
+      if (restoreTasksListScrollFromDom() || tries >= 8) {
+        didRestoreListScrollRef.current = true;
+        return;
+      }
+      timer = window.setTimeout(attempt, 50);
+    };
+    timer = window.setTimeout(attempt, 0);
     return () => window.clearTimeout(timer);
   }, [loading, tickets]);
 
@@ -2074,8 +2090,8 @@ export default function TasksView() {
         )}
       </div>
 
-      {/* 工单卡片列表：唯一滚动区 */}
-      <div className="tasks-list-section">
+      {/* 工单卡片列表：唯一滚动区（进详情/返回滚动位置靠这个容器，见 tasksListScroll） */}
+      <div className="tasks-list-section" data-testid="tasks-list-scroll">
         <div className="tasks-cards">
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>

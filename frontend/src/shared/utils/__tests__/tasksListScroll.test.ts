@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   TASKS_LIST_SCROLL_KEY,
+  TASKS_LIST_SCROLL_SELECTOR,
   clearTasksListScroll,
+  captureTasksListScrollFromDom,
   isTaskDetailPath,
   isTasksListPath,
   readTasksListScroll,
+  restoreTasksListScrollFromDom,
   saveTasksListScroll,
   tasksScrollAction,
 } from '../tasksListScroll';
@@ -66,5 +69,40 @@ describe('tasksListScroll storage', () => {
   it('非法值视为 null', () => {
     sessionStorage.setItem(TASKS_LIST_SCROLL_KEY, 'nope');
     expect(readTasksListScroll()).toBeNull();
+  });
+});
+
+describe('tasksListScroll dom', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    document.body.innerHTML = '';
+  });
+
+  it('capture/restore 读写 .tasks-list-section 而非外层 content', () => {
+    expect(TASKS_LIST_SCROLL_SELECTOR).toBe('.tasks-list-section');
+    const outer = document.createElement('div');
+    outer.className = 'tabbar-shell__content';
+    Object.defineProperty(outer, 'scrollTop', { value: 999, writable: true, configurable: true });
+    const list = document.createElement('div');
+    list.className = 'tasks-list-section';
+    let listTop = 420;
+    Object.defineProperty(list, 'scrollTop', {
+      get: () => listTop,
+      set: (v: number) => { listTop = v; },
+      configurable: true,
+    });
+    Object.defineProperty(list, 'scrollHeight', { value: 2000, configurable: true });
+    Object.defineProperty(list, 'clientHeight', { value: 600, configurable: true });
+    outer.appendChild(list);
+    document.body.appendChild(outer);
+
+    captureTasksListScrollFromDom();
+    expect(readTasksListScroll()).toBe(420);
+
+    listTop = 0;
+    expect(restoreTasksListScrollFromDom()).toBe(true);
+    expect(listTop).toBe(420);
+    expect(readTasksListScroll()).toBeNull();
+    expect(outer.scrollTop).toBe(999);
   });
 });
