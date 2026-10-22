@@ -57,6 +57,7 @@ from app.modules.wxpay.archive_finance import (
 )
 from app.modules.admin.services.knowledge_service import actor_id
 from app.services.identity_service import IdentityService
+from app.services.notification_outbox_service import NotificationOutboxService
 from app.services.logging import get_logger
 
 logger = get_logger(__name__)
@@ -614,6 +615,10 @@ async def batch_audit(
         r.audit_at = now
 
     await db.commit()
+
+    # 财务审核通过 → 对应工单进入 ARCHIVED（终态），取消尚未发出的逾期/临期提醒
+    for task_id in {int(r.source_id) for r in archive_rewards}:
+        NotificationOutboxService.cancel_task_notifications(task_id)
 
     return BatchAuditOut(
         ok_count=len(rewards) + len(archive_rewards),

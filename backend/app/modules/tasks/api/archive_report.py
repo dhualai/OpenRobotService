@@ -332,6 +332,11 @@ async def approve_report(
     )
     await db.commit()
 
+    # 奖励全部自动过审时此处已直接进入 ARCHIVED（终态）→ 取消尚未发出的逾期/临期提醒。
+    # 需财务审核的工单仍是 ARCHIVING，提醒保持有效，等财务审核通过后再取消。
+    if task_new is not None and getattr(task_new, "status", None) == TaskStatus.ARCHIVED:
+        NotificationOutboxService.cancel_task_notifications(report.task_id)
+
     # 系统评论单独 commit
     await _add_system_comment(
         db, report.task_id,

@@ -1,13 +1,16 @@
 """通知按接收人工作时间推送：时区 / 工作日历 / 节假日 / Outbox
 
 Revision ID: c3a1d5e7f902
-Revises: b8c1d4e7f203
+Revises: e1f4a7b0c326
 Create Date: 2026-10-12 00:00:00.000000
 
 1. users 新增 4 列：timezone / timezone_locked / timezone_source / timezone_updated_at
 2. companies 新增 3 列：work_start / work_end / workdays
 3. 新建 company_holidays（法定节假日 / 调休补班）
 4. 新建 notification_outbox（按接收人工作时间排程发送）
+
+注：本迁移原先接在 b8c1d4e7f203 之后，rebase 到 test 后改接 e1f4a7b0c326，
+    避免出现两个 head（alembic upgrade head 会报 "Multiple head revisions"）。
 """
 
 from typing import Sequence, Union
@@ -18,7 +21,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'c3a1d5e7f902'
-down_revision: Union[str, None] = 'b8c1d4e7f203'
+down_revision: Union[str, None] = 'e1f4a7b0c326'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
