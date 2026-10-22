@@ -46,8 +46,8 @@ MAX_LOOKAHEAD_DAYS = 60
 #   两者当前都没有调用方，已从下表中移除，避免给不存在的路径排程。
 NOTIFY_TYPE_WARNING = 9          # 临期预警
 NOTIFY_TYPE_OVERDUE = 6          # 逾期提醒
-IMMEDIATE_NOTIFY_TYPES = {1, 7, 8, 10}      # 立即发：催办/转派/@提醒/机器人告警
-SCHEDULED_NOTIFY_TYPES = {5, 6, 9}          # 排程发：新工单/逾期/临期预警
+IMMEDIATE_NOTIFY_TYPES = {1, 5, 7, 8, 10}   # 立即发：催办/新工单/转派/@提醒/机器人告警
+SCHEDULED_NOTIFY_TYPES = {6, 9}             # 排程发：逾期/临期预警
 
 # 公司日历进程内缓存（公司数量少、变更低频，避免逐条通知查库）
 _CALENDAR_CACHE: Dict[str, Dict[str, Any]] = {}
