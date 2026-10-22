@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
-const mockCreateRequest = vi.fn();
+const { mockCreateRequest } = vi.hoisted(() => ({
+  mockCreateRequest: vi.fn(),
+}));
 const mockToast = vi.fn();
 
 // 网络边界：只换掉 client 的「请求工厂」，其余导出（真 ApiError 等）原样透传 ——

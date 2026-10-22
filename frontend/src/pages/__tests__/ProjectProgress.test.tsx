@@ -5,8 +5,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-const mockRequest = vi.fn();
-const mockAiGet = vi.fn();
+const { mockRequest, mockAiGet } = vi.hoisted(() => ({
+  mockRequest: vi.fn(),
+  mockAiGet: vi.fn(),
+}));
 
 vi.mock('@/api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/client')>()),
