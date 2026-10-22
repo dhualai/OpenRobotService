@@ -39,6 +39,7 @@ def test_challenge_management_only_for_global_admin_roles(sessions, assignments,
     user = PermissionService.get_user_with_roles('viewer')
     assert user['can_manage_knowledge_challenges'] is allowed
     assert UserDetail(**user).can_manage_knowledge_challenges is allowed
+    assert user['can_view_knowledge_contribution'] is True
 
 
 @pytest.fixture
@@ -83,15 +84,15 @@ def grant_visibility(role_name):
     [(None, '超级管理员')], [(None, '管理员')], [('project-A', '调度研发')],
     [(None, '开发者')], [('project-A', '现场工程师')], [('project-A', '项目经理')], [],
 ])
-def test_role_names_without_explicit_permission_do_not_show_card(sessions, assignments):
+def test_all_users_can_view_cards_without_explicit_permission(sessions, assignments):
     seed_user(sessions, assignments)
     ensure_knowledge_contribution_permission()
     user = PermissionService.get_user_with_roles('viewer')
-    assert user['can_view_knowledge_contribution'] is False
+    assert user['can_view_knowledge_contribution'] is True
     assert PERM_KNOWLEDGE_CONTRIBUTION not in user['permissions']
 
 
-@pytest.mark.parametrize('assignments,granted_role,visible', [
+@pytest.mark.parametrize('assignments,granted_role,has_permission', [
     ([(None, '超级管理员')], '超级管理员', True),
     ([(None, '管理员')], '管理员', True),
     ([(None, '开发者')], '开发者', True),
@@ -103,23 +104,24 @@ def test_role_names_without_explicit_permission_do_not_show_card(sessions, assig
     ([('project-A', '现场工程师')], '项目经理', False),
     ([], '管理员', False),
 ])
-def test_visibility_uses_enabled_permission_granted_to_any_actual_role(sessions, assignments, granted_role, visible):
+def test_legacy_role_grants_do_not_restrict_public_card_visibility(sessions, assignments, granted_role, has_permission):
     seed_user(sessions, assignments)
     grant_visibility(granted_role)
     user = PermissionService.get_user_with_roles('viewer')
-    assert user['can_view_knowledge_contribution'] is visible
-    assert UserDetail(**user).can_view_knowledge_contribution is visible
+    assert user['can_view_knowledge_contribution'] is True
+    assert UserDetail(**user).can_view_knowledge_contribution is True
+    assert (PERM_KNOWLEDGE_CONTRIBUTION in user['permissions']) is has_permission
 
 
-def test_admin_username_without_explicit_permission_does_not_bypass_visibility(sessions):
+def test_admin_username_can_view_card_without_explicit_permission(sessions):
     seed_user(sessions, [], username='admin')
     user = PermissionService.get_user_with_roles('admin')
     assert 'admin' in user['permissions']
-    assert user['can_view_knowledge_contribution'] is False
+    assert user['can_view_knowledge_contribution'] is True
 
 
 @pytest.mark.parametrize('code', ['*', 'admin', 'frontend:admin:*:show', 'frontend:admin:knowledge:*'])
-def test_wildcard_permissions_do_not_replace_explicit_card_permission(sessions, code):
+def test_wildcard_permissions_do_not_affect_public_card_visibility(sessions, code):
     seed_user(sessions, [(None, '开发者')])
     with sessions() as session:
         session.add(Permission(id='wildcard', code=code, name='全部权限', resource_type='frontend', action='show'))
@@ -128,17 +130,17 @@ def test_wildcard_permissions_do_not_replace_explicit_card_permission(sessions, 
         session.commit()
     user = PermissionService.get_user_with_roles('viewer')
     assert code in user['permissions']
-    assert user['can_view_knowledge_contribution'] is False
+    assert user['can_view_knowledge_contribution'] is True
 
 
 def test_existing_global_role_derived_permissions_are_preserved(sessions):
     seed_user(sessions, [(None, '超级管理员')])
     user = PermissionService.get_user_with_roles('viewer')
     assert {PERM_PROJECT_INFO_TEMPLATE, PERM_PROJECT_LEDGER_IMPORT} <= set(user['permissions'])
-    assert user['can_view_knowledge_contribution'] is False
+    assert user['can_view_knowledge_contribution'] is True
 
 
-def test_role_removal_recomputes_visibility_after_cache_invalidation(sessions):
+def test_role_removal_preserves_public_card_visibility(sessions):
     seed_user(sessions, [(None, '管理员')])
     grant_visibility('管理员')
     assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
@@ -146,26 +148,26 @@ def test_role_removal_recomputes_visibility_after_cache_invalidation(sessions):
         session.execute(delete(user_project_roles).where(user_project_roles.c.user_id == 'user-visibility'))
         session.commit()
     invalidate_user_roles_cache('viewer')
-    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is False
+    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
 
 
-def test_permission_grant_and_removal_invalidate_cached_visibility(sessions):
+def test_legacy_permission_grant_and_removal_do_not_hide_cards(sessions):
     seed_user(sessions, [('project-A', '现场工程师')])
-    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is False
+    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
     grant_visibility('现场工程师')
     assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
     assert IdentityService.remove_role_permission(ROLE_IDS['现场工程师'], KNOWLEDGE_CONTRIBUTION_PERMISSION_ID)
-    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is False
+    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
 
 
-def test_global_permission_switch_overrides_all_granted_roles_and_invalidates_cache(sessions):
+def test_legacy_permission_switch_does_not_hide_public_cards(sessions):
     seed_user(sessions, [(None, '超级管理员'), ('project-A', '现场工程师')])
     grant_visibility('超级管理员')
     grant_visibility('现场工程师')
     assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
     assert IdentityService.update_permission(KNOWLEDGE_CONTRIBUTION_PERMISSION_ID, enabled=False)
     user = PermissionService.get_user_with_roles('viewer')
-    assert user['can_view_knowledge_contribution'] is False
+    assert user['can_view_knowledge_contribution'] is True
     assert PERM_KNOWLEDGE_CONTRIBUTION not in user['permissions']
     assert IdentityService.update_permission(KNOWLEDGE_CONTRIBUTION_PERMISSION_ID, enabled=True)
     assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
@@ -183,7 +185,7 @@ def test_permission_registration_is_idempotent_and_does_not_restore_disabled_or_
         assert len(rows) == 1
         assert rows[0].enabled == 'false'
         assert not session.execute(select(role_permissions)).all()
-    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is False
+    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
 
 
 def test_existing_permission_with_same_code_and_different_id_is_reused(sessions):
@@ -196,13 +198,13 @@ def test_existing_permission_with_same_code_and_different_id_is_reused(sessions)
     assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
 
 
-def test_permission_deletion_clears_cached_visibility_and_bindings(sessions):
+def test_legacy_permission_deletion_preserves_public_card_visibility(sessions):
     seed_user(sessions, [(None, '管理员')])
     grant_visibility('管理员')
     assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
     assert IdentityService.delete_permission(KNOWLEDGE_CONTRIBUTION_PERMISSION_ID)
     ensure_knowledge_contribution_permission()
-    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is False
+    assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
 
 
 @pytest.fixture
@@ -225,7 +227,7 @@ def permission_app(sessions, monkeypatch):
     return app
 
 
-def test_permission_management_lists_card_switch_and_role_configuration_controls_visibility(sessions, permission_app):
+def test_legacy_permission_management_preserves_configuration_without_restricting_visibility(sessions, permission_app):
     seed_user(sessions, [('project-A', '现场工程师')])
     with TestClient(permission_app) as client:
         response = client.get('/permissions/')
@@ -233,20 +235,20 @@ def test_permission_management_lists_card_switch_and_role_configuration_controls
         permission = next(item for item in response.json()['data'] if item['code'] == PERM_KNOWLEDGE_CONTRIBUTION)
         assert permission['name'] == '显示知识贡献榜'
         assert permission['enabled'] is True
-        assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is False
+        assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
         role_url = f"/roles/{ROLE_IDS['现场工程师']}/permissions"
         payload = {'permission_ids': [permission['id']]}
         assert client.post(role_url, json=payload).status_code == 200
         assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
         assert client.put(f"/permissions/{permission['id']}", json={'enabled': False}).status_code == 200
-        assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is False
+        assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
         response = client.get('/permissions/')
         permission = next(item for item in response.json()['data'] if item['code'] == PERM_KNOWLEDGE_CONTRIBUTION)
         assert permission['enabled'] is False
         assert client.put(f"/permissions/{permission['id']}", json={'enabled': True}).status_code == 200
         assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
         assert client.post(f'{role_url}/remove', json=payload).status_code == 200
-        assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is False
+        assert PermissionService.get_user_with_roles('viewer')['can_view_knowledge_contribution'] is True
 
 
 def test_unprivileged_user_cannot_initialize_or_configure_card_permission(sessions, permission_app):
@@ -261,7 +263,7 @@ def test_unprivileged_user_cannot_initialize_or_configure_card_permission(sessio
 
 
 @pytest.mark.parametrize('visible', [True, False, None])
-def test_user_detail_api_forwards_visibility_and_defaults_to_hidden(monkeypatch, visible):
+def test_user_detail_api_exposes_public_cards_regardless_of_legacy_visibility(monkeypatch, visible):
     user = {'id': 'viewer', 'username': 'viewer', 'permissions': [], 'roles': {}}
     if visible is not None:
         user['can_view_knowledge_contribution'] = visible
@@ -272,4 +274,13 @@ def test_user_detail_api_forwards_visibility_and_defaults_to_hidden(monkeypatch,
     with TestClient(app) as client:
         response = client.get('/users/viewer/detail')
     assert response.status_code == 200
-    assert response.json()['can_view_knowledge_contribution'] is (visible is True)
+    assert response.json()['can_view_knowledge_contribution'] is True
+
+
+def test_ordinary_user_card_visibility_does_not_grant_management_permissions(sessions):
+    seed_user(sessions, [])
+    user = PermissionService.get_user_with_roles('viewer')
+    assert user['can_view_knowledge_contribution'] is True
+    assert user['can_manage_knowledge_challenges'] is False
+    assert set(user['permissions']) == {'user'}
+    assert PermissionService.get_user_with_roles('unknown-user') is None
