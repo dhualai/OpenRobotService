@@ -215,5 +215,45 @@ def main() -> int:
     return 2
 
 
+class _Tee:
+    """把 stdout 同时收集一份，供落盘。"""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self.chunks: list[str] = []
+
+    def write(self, s: str) -> int:
+        self._stream.write(s)
+        self.chunks.append(s)
+        return len(s)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def reconfigure(self, **kw) -> None:  # main() 里会调，转给真实流
+        self._stream.reconfigure(**kw)
+
+
+def append_log(text: str, code: int) -> Path:
+    """追加一次运行记录，超过 1MB 归档为 sentinel.log.1。"""
+    path = Path.home() / ".codebuddy" / "ci-sentinel" / "sentinel.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > 1_000_000:
+        path.replace(path.with_name("sentinel.log.1"))
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"\n===== {stamp}  exit={code} =====\n")
+        f.write(text.rstrip() + "\n")
+    return path
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    _tee = _Tee(sys.stdout)
+    sys.stdout = _tee
+    try:
+        _code = main()
+    finally:
+        sys.stdout = _tee._stream
+        _logpath = append_log("".join(_tee.chunks), _code)
+        print(f"[log] {_logpath}")
+    sys.exit(_code)
