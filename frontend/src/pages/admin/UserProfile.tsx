@@ -615,7 +615,7 @@ export default function UserProfile() {
             </Button>
           </div>
           <div style={{ marginTop: 4, fontSize: 12, color: '#aaa' }}>
-            {`来源：${SOURCE_LABEL[tzSource] || '未设置（按系统默认 Asia/Shanghai）'}`}
+            {`来源：${SOURCE_LABEL[tzSource ?? ''] || '未设置（按系统默认 Asia/Shanghai）'}`}
             {tzUpdatedAt ? ` · 更新于 ${formatTime(tzUpdatedAt)}` : ''}
           </div>
         </Field>
