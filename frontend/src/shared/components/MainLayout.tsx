@@ -14,6 +14,12 @@ import { POLL_INTERVAL_MS } from '@/config/poll';
 import { buildRelevanceFilters } from '@/shared/utils/ticketFilters';
 import { getMyFollowupsCount } from '@/api/ticket';
 import AdminDataAssistant from '@/shared/components/AdminDataAssistant';
+import {
+  clearTasksListScroll,
+  readTasksListScroll,
+  saveTasksListScroll,
+  tasksScrollAction,
+} from '@/shared/utils/tasksListScroll';
 
 const TAB_PATHS: Record<WorkbenchTab, string> = {
   call: '/call',
@@ -138,7 +144,9 @@ export default function MainLayout() {
   // 而 AdminLayout 子页(/admin/*) 又嵌套在此容器内。从 Dashboard 滚到底部再点进
   // 子页时，外层容器的 scrollTop 被保留，导致整个 AdminLayout 被推到视口外，
   // 子页自身重置 scrollTop 也救不回来。路由切换时一并重置外层。
+  // 例外：系统任务列表 ↔ 详情往返要恢复列表滚动（见 tasksListScroll）。
   const contentRef = useRef<HTMLDivElement>(null);
+  const prevPathRef = useRef(location.pathname);
 
   // 路由变化 → 同步 store（直接访问 URL / 浏览器后退时保持高亮正确）
   useEffect(() => {
@@ -146,7 +154,30 @@ export default function MainLayout() {
   }, [location.pathname, setActiveTab]);
 
   useEffect(() => {
-    if (contentRef.current) contentRef.current.scrollTop = 0;
+    const el = contentRef.current;
+    const from = prevPathRef.current;
+    const to = location.pathname;
+    prevPathRef.current = to;
+    if (!el) return;
+
+    const action = tasksScrollAction(from, to);
+    if (action === 'save') {
+      saveTasksListScroll(el.scrollTop);
+      el.scrollTop = 0;
+      return;
+    }
+    if (action === 'restore') {
+      const saved = readTasksListScroll();
+      if (saved != null) {
+        // 等 Outlet 挂回列表后再写，避免被布局首帧盖掉
+        requestAnimationFrame(() => {
+          el.scrollTop = saved;
+        });
+      }
+      return;
+    }
+    clearTasksListScroll();
+    el.scrollTop = 0;
   }, [location.pathname]);
 
   const handleChange = (tab: WorkbenchTab) => {

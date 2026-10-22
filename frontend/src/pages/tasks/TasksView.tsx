@@ -6,6 +6,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
+import { captureTasksListScrollFromDom } from '@/shared/utils/tasksListScroll';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem, Switch } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
@@ -1285,12 +1286,17 @@ export default function TasksView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketDraft]);
 
-  const openDetail = useCallback((id: string) => { navigateInWechat(navigate, `/tasks/${id}`); }, [navigate]);
+  const openDetail = useCallback((id: string) => {
+    // PC 微信是整页跳转，MainLayout 的 pathname effect 来不及存滚动；点进前先抓一层。
+    captureTasksListScrollFromDom();
+    navigateInWechat(navigate, `/tasks/${id}`);
+  }, [navigate]);
 
   // 点列表卡片上的参与人头像 → 进详情页并定位到讨论区。
   // 与详情页 DiscussionPanel.locateComment 同口径：URL 带 focus=discussion 落到讨论区，
   // 带 commentId 时再做锚点定位 + is-flash 高亮（目标页读取并消费该参数）。
   const openParticipantDiscussion = useCallback((id: string, p: ParticipantItem) => {
+    captureTasksListScrollFromDom();
     const qs = new URLSearchParams({ focus: 'discussion' });
     if (p?.username) qs.set('author', p.username);
     navigateInWechat(navigate, `/tasks/${id}?${qs.toString()}`);
