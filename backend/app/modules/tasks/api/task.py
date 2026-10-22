@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
@@ -2221,9 +2221,11 @@ def _maybe_notify_mentions(
                               else str(ticket.status or "")).lower()
                 status_text = status_text_map.get(raw_status, raw_status)
 
-                deadline_str = (ticket.deadline_at.strftime('%Y-%m-%d %H:%M:%S')
-                                if ticket.deadline_at
-                                else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S'))
+                # 截止时间统一走 _format_shanghai：DB 的 deadline_at 是 naive UTC，
+                # 直接 strftime 会把 UTC 当本地时间展示，比真实截止时间早 8 小时
+                deadline_str = _format_shanghai(
+                    ticket.deadline_at or (datetime.now(timezone.utc) + timedelta(days=7))
+                )
                 payload = NotificationUtils.instantiate_template(
                     NotificationUtils.MENTION_TICKET,
                     ticket_title[:20] or f"工单#{task_id}",
@@ -4146,14 +4148,9 @@ async def send_cuiban_notification(
             )
 
         else:
-            extr = await TicketService.get_user_ticket_stats(db, assigned_to)
-            token = current_user.get('token')
-            result = await NotificationUtils.send_ticket_cuiban_notification(
-                notify_type=notify_type,
-                user_names=[assigned_to],
-                extr=extr,
-                token=token
-            )
+            # 无 ticket_id 的分支原本按「每日统计」用模板 2，但该模板实为「工单处理结果通知」，
+            # 字段语义不符，且当前无调用方。这里直接拒绝，避免发出空模板或错配内容。
+            raise HTTPException(status_code=400, detail="缺少 ticket_id：统计类通知暂不支持")
 
         return result
     except HTTPException:
