@@ -7,7 +7,9 @@ import type { ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
-const mockRequest = vi.fn();
+const { mockRequest } = vi.hoisted(() => ({
+  mockRequest: vi.fn(),
+}));
 
 vi.mock('@/api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/client')>()),
