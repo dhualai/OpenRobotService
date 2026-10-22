@@ -39,9 +39,17 @@ export function tasksScrollAction(from: string, to: string): TasksScrollAction {
   return 'reset';
 }
 
-export function saveTasksListScroll(scrollTop: number): void {
+export function saveTasksListScroll(scrollTop: number, opts?: { force?: boolean }): void {
   try {
-    sessionStorage.setItem(TASKS_LIST_SCROLL_KEY, String(Math.max(0, Math.round(scrollTop))));
+    const next = Math.max(0, Math.round(scrollTop));
+    // 列表卸掉后内容变矮，scrollTop 会被钳成 0；此时勿覆盖点进前已抓到的真实位置。
+    // force：列表点击当下的真实位置（含滚在顶部的 0）必须写入。
+    if (next === 0 && !opts?.force) {
+      const existing = sessionStorage.getItem(TASKS_LIST_SCROLL_KEY);
+      const prev = existing == null || existing === '' ? null : Number(existing);
+      if (prev != null && Number.isFinite(prev) && prev > 0) return;
+    }
+    sessionStorage.setItem(TASKS_LIST_SCROLL_KEY, String(next));
   } catch {
     /* 隐私模式等写失败时忽略 */
   }
@@ -70,5 +78,20 @@ export function clearTasksListScroll(): void {
 export function captureTasksListScrollFromDom(): void {
   if (typeof document === 'undefined') return;
   const el = document.querySelector('.tabbar-shell__content');
-  if (el instanceof HTMLElement) saveTasksListScroll(el.scrollTop);
+  if (el instanceof HTMLElement) saveTasksListScroll(el.scrollTop, { force: true });
+}
+
+/**
+ * 列表数据渲染后再写回滚动（列表高度够了才撑得住 scrollTop）。
+ * 成功则清掉存储，避免下次误跳。
+ */
+export function restoreTasksListScrollFromDom(): boolean {
+  if (typeof document === 'undefined') return false;
+  const saved = readTasksListScroll();
+  if (saved == null || saved <= 0) return false;
+  const el = document.querySelector('.tabbar-shell__content');
+  if (!(el instanceof HTMLElement)) return false;
+  el.scrollTop = saved;
+  clearTasksListScroll();
+  return true;
 }

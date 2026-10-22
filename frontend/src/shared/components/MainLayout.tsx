@@ -172,8 +172,8 @@ export default function MainLayout() {
     }
     if (action === 'restore') {
       const saved = readTasksListScroll();
-      if (saved != null) {
-        // 等 Outlet 挂回列表后再写，避免被布局首帧盖掉
+      if (saved != null && saved > 0) {
+        // 先试一次；列表数据异步回来后 TasksView 还会再 restore 一次（那时高度才够）
         requestAnimationFrame(() => {
           el.scrollTop = saved;
         });

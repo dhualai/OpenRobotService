@@ -6,7 +6,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
-import { captureTasksListScrollFromDom } from '@/shared/utils/tasksListScroll';
+import { captureTasksListScrollFromDom, restoreTasksListScrollFromDom } from '@/shared/utils/tasksListScroll';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem, Switch } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
@@ -870,6 +870,9 @@ export default function TasksView() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [relatedTickets, setRelatedTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
+  // 详情返回恢复滚动：须等首轮 /filter 完成（见下方 effect）
+  const hasFetchedTicketsOnceRef = useRef(false);
+  const didRestoreListScrollRef = useRef(false);
   // 搜索双 state：searchInput 即时反映输入（URL 同步），search 防抖 400ms 后提交（触发列表请求）
   const [searchInput, setSearchInput] = useState(() => initialFilter.current.search);
   const [search, setSearch] = useState(() => initialFilter.current.search);
@@ -1208,6 +1211,7 @@ export default function TasksView() {
       }
     } finally {
       isFetchingRef.current = false;
+      hasFetchedTicketsOnceRef.current = true;
       if (!silent) setLoading(false);
     }
   }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks, view]);
@@ -1244,6 +1248,16 @@ export default function TasksView() {
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
+
+  // 从详情返回：等首轮列表请求完成后再恢复滚动（早写会被空列表高度钳回顶部）
+  useEffect(() => {
+    if (loading || !hasFetchedTicketsOnceRef.current || didRestoreListScrollRef.current) return;
+    const timer = window.setTimeout(() => {
+      restoreTasksListScrollFromDom();
+      didRestoreListScrollRef.current = true;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loading, tickets]);
 
   // 轮询刷新：按 VITE_POLL_INTERVAL_MS（默认 10s，见 @/config/poll）静默拉取列表与角标；
   // 页面不可见时暂停（省电省请求），恢复可见时立即同步一次再恢复轮询。

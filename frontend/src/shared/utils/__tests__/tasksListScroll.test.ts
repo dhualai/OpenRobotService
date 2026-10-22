@@ -45,6 +45,18 @@ describe('tasksListScroll storage', () => {
     expect(readTasksListScroll()).toBe(321);
   });
 
+  it('用 0 覆盖时保留已有正滚动值（非 force）', () => {
+    saveTasksListScroll(480);
+    saveTasksListScroll(0);
+    expect(readTasksListScroll()).toBe(480);
+  });
+
+  it('force 写入 0 可清掉已有正滚动值', () => {
+    saveTasksListScroll(480);
+    saveTasksListScroll(0, { force: true });
+    expect(readTasksListScroll()).toBe(0);
+  });
+
   it('清空后读回 null', () => {
     saveTasksListScroll(10);
     clearTasksListScroll();
