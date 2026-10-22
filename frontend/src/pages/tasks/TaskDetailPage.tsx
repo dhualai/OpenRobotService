@@ -825,11 +825,21 @@ export default function TaskDetailPage() {
   // ── ORS-1010：AI 生成初稿（显式按钮触发）──
   const handleAiGenerateReport = async () => {
     if (!detail || archiveGenerating || archiveLoading) return;
+    const taskDetail = detail;
     if ((archiveReportContent || '').trim()) {
-      // 已有内容不覆盖（与原有"处理人手写不覆盖"保护同口径），提示走补齐章节
-      Toast({ message: '报告已有内容，AI 不覆盖；缺章节可点「补齐章节」', theme: 'warning' });
+      // 已有内容 → 覆盖确认（重新生成是显式动作，不能误触丢稿）
+      Dialog.confirm?.({
+        title: '重新生成报告？',
+        content: 'AI 将覆盖当前报告内容（可先「保存草稿」备份），确定继续？',
+        confirmBtn: { content: '覆盖并生成', theme: 'primary' },
+        cancelBtn: '取消',
+        onConfirm: () => { runGenerate(); },
+      });
       return;
     }
+    runGenerate();
+
+    async function runGenerate() {
     setArchiveGenerating(true);
     setArchiveGenStatus('AI 正在为您总结归档报告…');
     setArchiveReportPreview(false);
@@ -837,7 +847,7 @@ export default function TaskDetailPage() {
     try {
       await archiveGenerateStream(
         // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；detail.id 是路由字符串
-        { task_id: Number(detail.id) },
+        { task_id: Number(taskDetail.id) },
         {
           onStatus: (m) => setArchiveGenStatus(m),
           onTitle: (t) => { acc = `# ${t}\n\n`; setArchiveReportContent(acc); },
@@ -869,6 +879,8 @@ export default function TaskDetailPage() {
       setArchiveGenStatus('');
       Toast({ message: `${err instanceof Error ? err.message : 'AI 生成失败'}（可直接手写报告）`, theme: 'warning' });
     }
+    }
+
   };
 
   // ── 保存归档草稿 ──
@@ -2983,11 +2995,14 @@ export default function TaskDetailPage() {
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
-                  须含八个章节且各节有正文（无遗留写「无」）；请勿写入人员姓名及联系方式。
+                  须含「问题描述」与「解决方案/回答」两部分且各有正文；请勿写入人员姓名及联系方式。
                 </span>
-                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐章节</Button>
+                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent, String(detail?.ticket_type || '')))}>补齐章节</Button>
                 <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
                   {uploadingReportImage ? '上传中…' : '📷 上传图片'}
+                </Button>
+                <Button size="small" theme="primary" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={handleAiGenerateReport}>
+                  ✨AI 初稿
                 </Button>
                 <input
                   ref={reportImageInputRef}

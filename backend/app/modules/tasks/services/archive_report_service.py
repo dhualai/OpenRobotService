@@ -16,12 +16,17 @@ logger = logging.getLogger(__name__)
 
 
 def validate_knowledge_report(content):
-    headings = ("问题概述", "问题场景", "复现条件", "原因分析", "解决方案", "验证结果", "适用范围", "遗留问题")
-    pattern = r"(?m)^#{1,6}\s+(?:\d+[.、]\s*)?(" + "|".join(headings) + r")\s*$"
-    matches = list(re.finditer(pattern, content or ""))
-    sections = {match.group(1): content[match.end():matches[position + 1].start() if position + 1 < len(matches) else len(content)].strip()
-                for position, match in enumerate(matches)}
-    missing = [heading for heading in headings if not sections.get(heading)]
+    """ORS-1035 两节制：须含「问题描述」+「解决方案/回答」（咨询问答类第二节
+    用「回答」），各节有正文。老八节报告（问题概述/原因分析…）天然包含这两
+    类，兼容通过。"""
+    text = content or ""
+    problem = re.search(r"(?m)^#{1,6}\s+(?:\d+[.、]\s*)?问题描述\s*$", text)
+    solution = re.search(r"(?m)^#{1,6}\s+(?:\d+[.、]\s*)?(?:解决方案|回答)\s*$", text)
+    missing = []
+    if not problem:
+        missing.append("问题描述")
+    if not solution:
+        missing.append("解决方案/回答")
     if missing:
         from fastapi import HTTPException
         raise HTTPException(422, "归档报告缺少章节或章节正文：" + "、".join(missing))
