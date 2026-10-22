@@ -15,7 +15,7 @@
 | `UI_REGRESSION.md` / `UI_REGRESSION_CI.md` | UI 回归与 CI |
 | `REMOTE_TESTING.md` | 远程环境测试 |
 | `ENVIRONMENT_SCHEDULING.md` | 环境调度 |
-| `TICKET_GATE.md` / `TICKET_PIPELINE.md` | 工单驱动测试门禁与流水线 |
+| `TICKET_LOOP.md` / `TICKET_GATE.md` / `TICKET_PIPELINE.md` | 工单自动化闭环、测试门禁与流水线 |
 | `LOCAL_ENV_SETUP.md` | 本地环境搭建 |
 | `prompt-template-generate-cases.md` | 用例生成提示词模板 |
 | `design-openrobot-test-runtime.md` | 测试运行时设计（现行） |

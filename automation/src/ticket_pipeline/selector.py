@@ -6,10 +6,12 @@ import re
 from pathlib import Path
 from typing import Iterable, List, Sequence
 
+# Ticket numbers in this project are ``ORS-<id>``. A bare ``#123`` is a GitHub
+# issue reference, not a ticket, so it must never trigger a ticket lookup.
 _TICKET_PATTERNS = (
-    re.compile(r"\bORS[-_ ]?(\d+)\b", re.IGNORECASE),
-    re.compile(r"\b(?:ticket(?:_id)?|工单)[\s:#_-]*(\d+)\b", re.IGNORECASE),
-    re.compile(r"#(\d+)\b"),
+    re.compile(r"(?<![A-Za-z0-9_])ORS[-_ ]?(\d+)\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9_])ticket(?:_id)?[\s:#_-]*(\d+)\b", re.IGNORECASE),
+    re.compile(r"工单[\s:#_-]*(\d+)\b"),
 )
 
 

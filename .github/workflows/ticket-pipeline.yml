@@ -3,7 +3,7 @@ name: Ticket-Driven Test Pipeline
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 18 * * 1-5"
+    - cron: "17 * * * 1-5"
 
 env:
   PYTHON_VERSION: "3.11"
@@ -12,7 +12,7 @@ jobs:
   generate:
     name: Scan and generate candidate cases
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +35,17 @@ jobs:
       - name: Install dependencies
         if: steps.gate.outputs.enabled == 'true'
         run: |
+          pip install -r backend/requirements.txt
           pip install -e automation/
+
+      - name: Extract OpenAPI spec
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          AI_EXTRACT_SKIP_DB: "1"
+        run: |
+          python automation/ci_ai_gen/extract_api.py \
+            --out automation/references/spec \
+            --backend-path backend
 
       - name: Prepare SSH key
         if: steps.gate.outputs.enabled == 'true'
@@ -57,11 +67,17 @@ jobs:
           PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
           PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
           PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
+          PROD_TICKET_EXCLUDE_SOURCES: "ai"
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
         run: |
-          python automation/scripts/cli-ticket-pipeline.py run --limit 20
+          python automation/scripts/cli-ticket-pipeline.py run \
+            --limit 20 \
+            --statuses new \
+            --task-types feature \
+            --tag "" \
+            --spec-dir automation/references/spec
 
       - name: Upload candidate cases
         if: steps.gate.outputs.enabled == 'true' && always()
