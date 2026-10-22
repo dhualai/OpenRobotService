@@ -2103,20 +2103,9 @@ export default function TasksView() {
           </div>
         </div>
 
-      {/* 视图切换：普通列表 / 关系列表 */}
-      <div
-        className="tasks-view__view-toggle"
-        style={{
-          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-          marginTop: 8, marginBottom: 4, padding: '0 4px',
-        }}
-      >
-        <div
-          style={{
-            display: 'inline-flex', padding: 3, borderRadius: 999,
-            background: 'var(--bg-muted)', border: '1px solid var(--border)',
-          }}
-        >
+      {/* 视图切换：普通列表 / 关系列表（选中浅蓝底 + 蓝字） */}
+      <div className="tasks-view__view-toggle">
+        <div className="tasks-view__view-toggle-track">
           {([
             { value: 'flat', label: '普通列表' },
             { value: 'relation', label: '关系列表' },
@@ -2124,16 +2113,8 @@ export default function TasksView() {
             <button
               key={opt.value}
               type="button"
+              className={`tasks-view__view-toggle-btn${view === opt.value ? ' is-active' : ''}`}
               onClick={() => setView(opt.value)}
-              style={{
-                padding: '4px 12px', fontSize: 12, fontWeight: 600,
-                borderRadius: 999, border: 'none', cursor: 'pointer',
-                fontFamily: 'inherit',
-                background: view === opt.value ? 'var(--bg-card)' : 'transparent',
-                color: view === opt.value ? 'var(--text)' : 'var(--text-muted)',
-                boxShadow: view === opt.value ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
-                transition: 'background 0.15s',
-              }}
             >
               {opt.label}
             </button>
