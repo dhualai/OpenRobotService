@@ -17,12 +17,25 @@ export function isTaskDetailPath(pathname: string): boolean {
   return /^\/tasks\/[^/]+$/.test(pathname);
 }
 
-export type TasksScrollAction = 'save' | 'restore' | 'reset';
+/** 某张工单下的任意页：详情或 operations 等 */
+export function isTaskTicketPath(pathname: string): boolean {
+  return /^\/tasks\/[^/]+/.test(pathname) && !isTasksListPath(pathname);
+}
 
-/** 根据路由前后决定：离开列表时保存 / 回到列表时恢复 / 其它情况清零 */
+export type TasksScrollAction = 'save' | 'restore' | 'keep' | 'reset';
+
+/**
+ * 根据路由前后决定动作。
+ * - save：列表 → 详情（记下滚动）
+ * - restore：详情（或子页）→ 列表
+ * - keep：同路径首屏 / 详情↔operations —— 不动、更不能清掉已存滚动
+ * - reset：离开任务详情流（切 Tab 等）—— 清零并忘掉
+ */
 export function tasksScrollAction(from: string, to: string): TasksScrollAction {
+  if (from === to) return 'keep';
   if (isTasksListPath(from) && isTaskDetailPath(to)) return 'save';
-  if (isTaskDetailPath(from) && isTasksListPath(to)) return 'restore';
+  if (isTaskTicketPath(from) && isTasksListPath(to)) return 'restore';
+  if (isTaskTicketPath(from) && isTaskTicketPath(to)) return 'keep';
   return 'reset';
 }
 

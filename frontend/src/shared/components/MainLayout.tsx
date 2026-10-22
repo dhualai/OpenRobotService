@@ -161,6 +161,10 @@ export default function MainLayout() {
     if (!el) return;
 
     const action = tasksScrollAction(from, to);
+    if (action === 'keep') {
+      // 首屏 from===to、或详情↔operations：保留 sessionStorage，勿清
+      return;
+    }
     if (action === 'save') {
       saveTasksListScroll(el.scrollTop);
       el.scrollTop = 0;

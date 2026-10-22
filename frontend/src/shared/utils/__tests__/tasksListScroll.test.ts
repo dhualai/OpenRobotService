@@ -24,7 +24,13 @@ describe('tasksListScroll paths', () => {
     expect(tasksScrollAction('/tasks/99', '/tasks')).toBe('restore');
     expect(tasksScrollAction('/tasks', '/call')).toBe('reset');
     expect(tasksScrollAction('/call', '/tasks')).toBe('reset');
-    expect(tasksScrollAction('/tasks/99', '/tasks/99/operations')).toBe('reset');
+  });
+
+  it('同路径首屏与详情子页往返不清掉已存滚动', () => {
+    expect(tasksScrollAction('/tasks/99', '/tasks/99')).toBe('keep');
+    expect(tasksScrollAction('/tasks/99', '/tasks/99/operations')).toBe('keep');
+    expect(tasksScrollAction('/tasks/99/operations', '/tasks/99')).toBe('keep');
+    expect(tasksScrollAction('/tasks/99/operations', '/tasks')).toBe('restore');
   });
 });
 
