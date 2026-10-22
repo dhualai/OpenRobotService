@@ -159,8 +159,30 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     page: parseInt(params.get('page') || '1', 10),
     sortBy: params.get('sort') || 'priority',
     sortOrder: params.get('order') || 'desc',
+    // 视图：URL > localStorage > 默认关系列表（用户选过平铺后应记住，不要每次回默认）
+    view: parseTasksViewParam(params.get('view')) ?? readStoredTasksView(),
   };
 };
+
+const TASKS_VIEW_PREF_KEY = 'ors:tasks-list-view';
+
+function parseTasksViewParam(raw: string | null): 'flat' | 'relation' | null {
+  return raw === 'flat' || raw === 'relation' ? raw : null;
+}
+
+function readStoredTasksView(): 'flat' | 'relation' {
+  try {
+    const v = localStorage.getItem(TASKS_VIEW_PREF_KEY);
+    if (v === 'flat' || v === 'relation') return v;
+  } catch { /* 隐私模式等 */ }
+  return 'relation';
+}
+
+function writeStoredTasksView(view: 'flat' | 'relation'): void {
+  try {
+    localStorage.setItem(TASKS_VIEW_PREF_KEY, view);
+  } catch { /* ignore */ }
+}
 
 // 数组对比：判断两个无序数组是否包含相同元素
 const sameSet = (a: string[], b: string[]) =>
@@ -256,7 +278,8 @@ function DateRangeField({ startValue, endValue, onStartChange, onEndChange, star
 const buildFilterParams = (filter: {
   search: string; statusFilter: string[]; priorityFilter: string[]; typeFilter: string[];
   relevanceFilter: string; projectFilter: string[]; assigneeFilter: string; creatorFilter: string;
-  createdStart: string; createdEnd: string; resolvedStart: string; resolvedEnd: string; closedStart: string; closedEnd: string; page: number; sortBy: string; sortOrder: string;
+  createdStart: string; createdEnd: string; resolvedStart: string; resolvedEnd: string; closedStart: string; closedEnd: string;
+  page: number; sortBy: string; sortOrder: string; view: 'flat' | 'relation';
 }) => {
   const params = new URLSearchParams();
   if (filter.search) params.set('q', filter.search);
@@ -295,6 +318,8 @@ const buildFilterParams = (filter: {
     params.set('sort', filter.sortBy);
     params.set('order', filter.sortOrder);
   }
+  // 默认关系列表不写 URL；平铺写出，返回/刷新才能保持
+  if (filter.view === 'flat') params.set('view', 'flat');
   return params.toString();
 };
 
@@ -878,7 +903,7 @@ export default function TasksView() {
   // 进详情再返回会卸掉本页；用内存缓存先画出上一屏，避免整页「加载中」
   const bootListCacheKey = useRef(buildTasksListCacheKeyFromState({
     ...initialFilter.current,
-    view: 'relation',
+    view: initialFilter.current.view,
     user: userId || username || '',
     projects: projectIds || [],
     canViewAll: canViewAllTasks,
@@ -954,8 +979,12 @@ export default function TasksView() {
   const [creatingTask, setCreatingTask] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
-  // ── 关系列表视图状态 ──
-  const [view, setView] = useState<'flat' | 'relation'>('relation');
+  // ── 列表视图：关系 / 平铺（记住用户选择，进详情返回或刷新不丢）──
+  const [view, setViewState] = useState<'flat' | 'relation'>(() => initialFilter.current.view);
+  const setView = useCallback((next: 'flat' | 'relation') => {
+    writeStoredTasksView(next);
+    setViewState(next);
+  }, []);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   // 关系视图时把后端补查的关联工单也纳入，让父子缩进/子工单行跨页可见
@@ -1277,12 +1306,12 @@ export default function TasksView() {
   useEffect(() => {
     const newParams = buildFilterParams({
       search: searchInput, statusFilter, priorityFilter, typeFilter,
-      relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder,
+      relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder, view,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [searchInput, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
+  }, [searchInput, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder, view]);
 
   useEffect(() => {
     const silent = silentFirstFetchRef.current;
