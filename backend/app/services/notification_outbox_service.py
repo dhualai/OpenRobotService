@@ -265,8 +265,15 @@ class NotificationOutboxService:
 
     # ── 投递 ────────────────────────────────────────────
     @classmethod
-    async def dispatch(cls, record: Dict[str, Any]) -> bool:
-        """投递单条到期通知。重查工单，保证标题/截止时间/逾期天数为最新。"""
+    async def dispatch(cls, record: Dict[str, Any]) -> Dict[str, Any]:
+        """投递单条到期通知。重查工单，保证标题/截止时间/逾期天数为最新。
+
+        返回 ``{"ok": bool, "retryable": bool, "error": str}``：
+
+        - ``wait=True`` 拿到微信真实送达结果，不再把「提交线程池成功」误记为已送达
+        - ``retryable=False`` 表示配置/绑定类失败（未绑定微信、模板错误），重试无意义，
+          Worker 应直接置 failed 而不是耗尽 3 次重试
+        """
         # 延迟导入：避免与 tasks 模块形成启动期循环依赖
         from app.modules.tasks.services.ticket_service import TicketService
         from app.utils.notification_utils import NotificationUtils
@@ -279,14 +286,13 @@ class NotificationOutboxService:
             if not task_id:
                 # 无关联工单（如个人统计类通知）：暂不投递，避免空模板
                 logger.warning(f"通知 {record.get('id')} 缺少 task_id，跳过投递")
-                return False
+                return {"ok": False, "retryable": False, "error": "缺少 task_id"}
 
             async with AsyncSessionLocal() as db:
                 ticket = await TicketService.get_ticket_by_id(db, task_id)
             if not ticket:
                 logger.warning(f"工单 {task_id} 不存在，通知 {record.get('id')} 标记失败")
-                cls.mark_failed(record["id"], "工单不存在")
-                return False
+                return {"ok": False, "retryable": False, "error": "工单不存在"}
 
             user_map = await TicketService._get_user_map(None)
             assigned_name = user_map.get(target_user, target_user)
@@ -299,7 +305,11 @@ class NotificationOutboxService:
                 if now_utc > deadline_utc:
                     yuqi_day = f"{(now_utc - deadline_utc).total_seconds() / 86400:.0f}"
 
-            await NotificationUtils.send_ticket_cuiban_notification(
+            # 模板里的时间按接收人时区渲染（海外用户看到的才是他的本地时间）
+            user_ctx = WorkingTimeService.get_user_context(target_user) or {}
+            tz_name = user_ctx.get("timezone")
+
+            result = await NotificationUtils.send_ticket_cuiban_notification(
                 ticket_id=task_id,
                 notify_type=notify_type,
                 project_name=getattr(ticket, "project_name", "") or "",
@@ -310,12 +320,52 @@ class NotificationOutboxService:
                 user_names=[target_user],
                 token=None,
                 yuqi_day=yuqi_day,
+                wait=True,
+                tz_name=tz_name,
             )
-            logger.info(
-                f"[Outbox] 已投递 工单{task_id} type={notify_type} → {target_user} "
-                f"(计划 {record.get('scheduled_at')})"
-            )
-            return True
+
+            ok, retryable, error = cls._interpret_send_result(result, target_user)
+            if ok:
+                logger.info(
+                    f"[Outbox] 已送达 工单{task_id} type={notify_type} → {target_user} "
+                    f"(计划 {record.get('scheduled_at')})"
+                )
+            else:
+                logger.warning(
+                    f"[Outbox] 未送达 工单{task_id} type={notify_type} → {target_user}: "
+                    f"{error}（retryable={retryable}）"
+                )
+            return {"ok": ok, "retryable": retryable, "error": error}
         except Exception as e:
             logger.error(f"[Outbox] 投递失败 id={record.get('id')}: {e}")
-            return False
+            return {"ok": False, "retryable": True, "error": str(e)}
+
+    @staticmethod
+    def _interpret_send_result(
+        result: Optional[Dict[str, Any]], target_user: Optional[str]
+    ) -> tuple:
+        """解析 send_notification_core 的返回 → (是否送达, 是否可重试, 错误描述)。"""
+        result = result or {}
+        recipients = (result.get("data") or {}).get("recipients") or []
+        if not recipients:
+            # 无接收人明细通常是异常兜底（code=500），按可重试处理
+            return False, True, result.get("message") or "无发送结果"
+
+        item = next(
+            (r for r in recipients if r.get("user_name") == target_user),
+            recipients[0],
+        )
+        if item.get("status") == "delivered":
+            return True, False, ""
+
+        error_code = item.get("error_code") or ""
+        errcode = item.get("errcode") or 0
+        message = item.get("error_message") or error_code or "发送失败"
+
+        # 用户未绑定微信 / 消息类型错误：重试多少次都一样
+        if error_code in {"NO_OPEN_ID", "UNKNOWN_MSG_TYPE"}:
+            return False, False, message
+        # 45047 客服下行条数超限、45015 回复时间超过限制：隔一段时间可能恢复，值得重试
+        if errcode and errcode not in (45047, 45015, -1):
+            return False, False, f"[{errcode}] {message}"
+        return False, True, f"[{errcode}] {message}" if errcode else message

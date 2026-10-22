@@ -3840,6 +3840,9 @@ async def re_dispatch_task(
 
     await db.commit()
 
+    # 重置派单清空了处理人 → 旧处理人的待发提醒作废
+    NotificationOutboxService.cancel_task_notifications(ticket.id)
+
     # 触发派单 Worker：向 Redis 发布 usp:new_ticket（与 AI 服务 publish_new_ticket 同通道）
     try:
         import redis.asyncio as aioredis
@@ -4137,7 +4140,9 @@ async def send_cuiban_notification(
                 create_at=ticket.created_at,
                 user_names=user_names,
                 token=token,
-                yuqi_day=yuqi_day
+                yuqi_day=yuqi_day,
+                # 模板时间按目标接收人时区渲染（多接收人共用目标用户的时区）
+                tz_name=(WorkingTimeService.get_user_context(target_user) or {}).get("timezone"),
             )
 
         else:
@@ -4632,6 +4637,11 @@ async def _sync_duplicate_status(
 
     if synced_count > 0:
         await db.commit()
+
+        # 同步到的状态可能是终态 → 取消被同步工单尚未发出的提醒
+        if new_status in (TaskStatus.RESOLVED, TaskStatus.CLOSED, TaskStatus.ARCHIVED, TaskStatus.CANCELED):
+            for tid in list(targets.keys()):
+                NotificationOutboxService.cancel_task_notifications(tid)
 
         # 广播 WS
         for tid in list(targets.keys()):

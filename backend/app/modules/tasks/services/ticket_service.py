@@ -32,6 +32,41 @@ logger = logging.getLogger(__name__)
 _ASSIGNER_PUBSUB_CHANNEL = "usp:new_ticket"
 
 
+# ──────────────────────────────────────────────────────────────
+# 排程提醒的取消（通知 Outbox）
+# ──────────────────────────────────────────────────────────────
+# 工单进入这些状态后，尚未发出的逾期/临期提醒不应再打扰。
+# ARCHIVING 是过渡态（处理人正在提交归档报告），不取消；ARCHIVED 才是终态。
+_REMINDER_CANCELLED_STATUSES = (
+    TicketStatus.RESOLVED,
+    TicketStatus.CLOSED,
+    TicketStatus.ARCHIVED,
+    TicketStatus.CANCELED,
+    TicketStatus.UNSOLVABLE,
+)
+
+
+def _cancel_reminders_safely(ticket_id: int) -> None:
+    """取消该工单在 Outbox 中尚未发出的排程提醒（pending / sending）。
+
+    必须在 ``await db.commit()`` 之后调用：Outbox 用独立会话读写，
+    提前调用看不到本事务的变更，也可能与主事务争抢同一行锁。
+
+    失败只记日志，绝不影响工单主流程——提醒是次要链路。
+    """
+    if not ticket_id:
+        return
+    try:
+        # 局部导入：notification_outbox_service.dispatch() 反向延迟导入 TicketService，
+        # 顶层互相导入会在启动期形成循环依赖。
+        from app.services.notification_outbox_service import NotificationOutboxService
+        cancelled = NotificationOutboxService.cancel_task_notifications(ticket_id)
+        if cancelled:
+            logger.info(f"工单 {ticket_id} 已取消 {cancelled} 条待发提醒")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"取消工单 {ticket_id} 排程提醒失败: {e}")
+
+
 async def _publish_new_ticket_to_assigner(task_id: int) -> None:
     """发布新工单到 AI 服务 Assigner Worker（异步，fire-and-forget）。
 
@@ -1342,6 +1377,13 @@ class TicketService:
 
         await db.commit()
 
+        # 处理人变更 → 旧接收人的排程作废（新处理人由下一轮 DAG 重新排程）；
+        # 状态转终态 → 提醒不必再发
+        if "assigned_to" in update_data or (
+            "status" in update_data and ticket.status in _REMINDER_CANCELLED_STATUSES
+        ):
+            _cancel_reminders_safely(ticket_id)
+
         notification_result = None
         try:
             notify_users = []
@@ -1426,6 +1468,9 @@ class TicketService:
             ticket.closed_at = func.now()
         
         await db.commit()
+
+        # 删除/软关闭后不再提醒（硬删除时工单已不存在，避免 Worker 反复失败）
+        _cancel_reminders_safely(ticket_id)
         return True
 
     @staticmethod
@@ -1683,6 +1728,10 @@ class TicketService:
         ticket.updated_at = func.now()
         
         await db.commit()
+
+        # 进入终态（含撤回）后，尚未发出的逾期/临期提醒不再打扰
+        if status in _REMINDER_CANCELLED_STATUSES:
+            _cancel_reminders_safely(ticket_id)
         
         try:
             notify_users = []
@@ -1739,6 +1788,9 @@ class TicketService:
         ticket.assigned_to = to_user_id(user_id) or user_id
 
         await db.commit()
+
+        # 转派后旧处理人的待发提醒作废；新处理人由下一轮 DAG 重新排程
+        _cancel_reminders_safely(ticket_id)
         result = await db.execute(
             select(Ticket)
             .where(Ticket.id == ticket_id)

@@ -60,6 +60,17 @@ async def _dispatch_due() -> int:
                 outbox_id, "临期预警已过最后工作时段末尾，不予补发"
             )
             continue
+
+        # 到期时仍处非工作时间（如 Worker 停机到夜里才恢复）→ 顺延到下一工作时段。
+        # 逾期类型的 planned 恒 <= now，仅靠下面的 planned > now 判断拦不住。
+        if not WorkingTimeService.is_working_time(user, now):
+            NotificationOutboxService.reschedule(
+                outbox_id,
+                WorkingTimeService.next_working_start(user, now),
+                "到期时接收人非工作时间，已重新排期",
+            )
+            continue
+
         if planned > now:
             NotificationOutboxService.reschedule(
                 outbox_id, planned, "到期时接收人非工作时间，已重新排期"
@@ -67,23 +78,29 @@ async def _dispatch_due() -> int:
             continue
 
         try:
-            ok = await NotificationOutboxService.dispatch(record)
+            result = await NotificationOutboxService.dispatch(record)
         except Exception as e:  # noqa: BLE001
-            ok = False
+            result = {"ok": False, "retryable": True, "error": str(e)}
             logger.error(f"[Outbox] 投递异常 id={outbox_id}: {e}")
 
-        if ok:
+        if result.get("ok"):
             NotificationOutboxService.mark_sent(outbox_id)
             sent += 1
         else:
             attempts = (record.get("attempt_count") or 0) + 1
-            if attempts >= MAX_ATTEMPTS:
-                NotificationOutboxService.mark_failed(outbox_id, f"重试 {attempts} 次仍失败")
+            error = result.get("error") or "投递失败"
+            # 配置/绑定类失败（未绑定微信、模板错误）重试无意义，直接置 failed
+            if not result.get("retryable") or attempts >= MAX_ATTEMPTS:
+                NotificationOutboxService.mark_failed(outbox_id, error)
             else:
+                retry_at = now + timedelta(minutes=RETRY_BACKOFF_MINUTES * attempts)
+                # 退避点若已落到非工作时间（如下班前失败、退避到夜里）→ 顺延到下一工作时段
+                if not WorkingTimeService.is_working_time(user, retry_at):
+                    retry_at = WorkingTimeService.next_working_start(user, retry_at)
                 NotificationOutboxService.reschedule(
                     outbox_id,
-                    now + timedelta(minutes=RETRY_BACKOFF_MINUTES * attempts),
-                    f"第 {attempts} 次投递失败，等待重试",
+                    retry_at,
+                    f"第 {attempts} 次未送达：{error}",
                 )
     return sent
 

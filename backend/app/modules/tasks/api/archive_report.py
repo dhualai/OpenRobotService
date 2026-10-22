@@ -31,6 +31,7 @@ from app.modules.tasks.schemas.ticket import TicketResponse
 from app.modules.tasks.api.ws import ws_broadcast_task_updated
 from app.modules.tasks.api.task import _add_system_comment
 from app.modules.tasks.services.ticket_service import TicketService
+from app.services.notification_outbox_service import NotificationOutboxService
 
 logger = logging.getLogger(__name__)
 
