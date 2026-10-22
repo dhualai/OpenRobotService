@@ -18,7 +18,11 @@
     python scripts/ci-sentinel.py              # 检查，有变更返回退出码 2
     python scripts/ci-sentinel.py --update     # 确认变更无误后更新基线
     python scripts/ci-sentinel.py --ref origin/dev   # 临时检查别的分支
-    python scripts/ci-sentinel.py --webhook https://qyapi.weixin.qq.com/...  # 变更时推企微
+    python scripts/ci-sentinel.py --test-notify  # 只发一条测试消息，不检查
+
+推送地址默认读 ~/.codebuddy/ci-sentinel/webhook.txt 第一行（本地文件，
+key 不入仓库），也可用 --webhook 或环境变量 CI_SENTINEL_WEBHOOK 覆盖；
+都没有则跳过推送。企微机器人收到 errcode 非 0 也会提示。
 
 退出码
 ------
@@ -33,6 +37,7 @@ import argparse
 import difflib
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -95,9 +100,60 @@ def save_baseline(path: Path, ref: str, content: bytes, missing: list[str]) -> N
     )
 
 
-def notify_wecom(webhook: str, title: str, body: str) -> None:
+WEBHOOK_FILE = Path.home() / ".codebuddy" / "ci-sentinel" / "webhook.txt"
+
+
+def resolve_webhook(explicit: str | None) -> str | None:
+    """取推送地址：显式参数 → 环境变量 → 本地 webhook.txt 第一条非注释行。"""
+    if explicit:
+        return explicit.strip()
+    env = os.environ.get("CI_SENTINEL_WEBHOOK", "").strip()
+    if env:
+        return env
+    if WEBHOOK_FILE.exists():
+        for line in WEBHOOK_FILE.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                # 允许「1.开源小组:https://...」这种带标签的行
+                idx = line.find("http")
+                return line[idx:] if idx > 0 else line
+    return None
+
+
+def build_alert(
+    ref: str,
+    base: dict,
+    digest: str,
+    added: int,
+    removed: int,
+    regressions: list[str],
+    commits: str,
+) -> str:
+    """告警正文：摘要 + 最近改动，详细 diff 留在本地日志。"""
+    rows = [
+        f"> 来源：本地哨兵 · {ref}",
+        f"> 基线 {str(base.get('sha256'))[:8]}（{base.get('captured_at', '?')}）→ 当前 {digest[:8]}",
+        f"> 差异：+{added} / -{removed} 行",
+    ]
+    if regressions:
+        rows.append('> 关键能力缺失：<font color="warning">' + "、".join(regressions) + "</font>")
+    rows.append("")
+    rows.append("最近改动：")
+    for line in commits.splitlines()[:3]:
+        if line.strip():
+            rows.append("> " + line.strip())
+    rows.append("")
+    rows.append("确认变更无误 → `python scripts/ci-sentinel.py --update`")
+    return "\n".join(rows)
+
+
+def notify_wecom(webhook: str, title: str, body: str) -> bool:
+    content = f"**{title}**\n{body}"
+    raw = content.encode("utf-8")
+    if len(raw) > 3800:  # 企微 markdown 上限 4096 字节，留余量
+        content = raw[:3700].decode("utf-8", "ignore") + "\n…（已截断）"
     payload = json.dumps(
-        {"msgtype": "markdown", "markdown": {"content": f"**{title}**\n{body}"}},
+        {"msgtype": "markdown", "markdown": {"content": content}},
         ensure_ascii=False,
     ).encode("utf-8")
     req = urllib.request.Request(
@@ -105,9 +161,14 @@ def notify_wecom(webhook: str, title: str, body: str) -> None:
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            resp.read()
+            result = json.loads(resp.read().decode("utf-8", "ignore") or "{}")
+        if result.get("errcode") not in (0, None):
+            print(f"[warn] 企微通知被拒：{result.get('errcode')} {result.get('errmsg')}")
+            return False
+        return True
     except Exception as exc:  # 通知失败不影响判定结果
         print(f"[warn] 企微通知发送失败：{exc}")
+        return False
 
 
 def recent_commits(repo: Path, ref: str, limit: int = 5) -> str:
@@ -129,12 +190,22 @@ def main() -> int:
     ap.add_argument("--update", action="store_true", help="把当前内容写入基线（确认变更无误后使用）")
     ap.add_argument("--no-fetch", action="store_true", help="不执行 git fetch")
     ap.add_argument("--webhook", help="企业微信机器人 webhook，变更时推送")
+    ap.add_argument("--test-notify", action="store_true", help="只发一条测试消息并退出")
     args = ap.parse_args()
 
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+    webhook = resolve_webhook(args.webhook)
+    if args.test_notify:
+        if not webhook:
+            print(f"[error] 未找到推送地址：写 {WEBHOOK_FILE} 或传 --webhook")
+            return 3
+        ok = notify_wecom(webhook, "哨兵推送联通测试", "> 收到这条说明本地哨兵可以推送到本群。")
+        print("[ok] 测试消息已发送" if ok else "[warn] 测试消息发送失败，检查 webhook key")
+        return 0 if ok else 3
 
     repo = Path(args.repo).expanduser().resolve()
     bpath = Path(args.baseline).expanduser() if args.baseline else baseline_path(repo)
@@ -177,13 +248,14 @@ def main() -> int:
         print(f"[ok] 部署工作流未变更  {ref}  {digest[:16]}")
         return 0
 
+    commits = recent_commits(repo, ref)
     lines = []
     lines.append(f"检测到 {ref}:{args.file} 发生变化")
     lines.append(f"  基线 {base.get('captured_at', '?')}  {str(base.get('sha256'))[:16]}  {base.get('bytes')} 字节")
     lines.append(f"  当前 {datetime.now().astimezone().isoformat(timespec='seconds')}  {digest[:16]}  {len(content_bytes)} 字节")
     lines.append("")
     lines.append("最近改动该文件的提交：")
-    lines.append(recent_commits(repo, ref))
+    lines.append(commits)
 
     old = (base.get("content") or "").splitlines()
     new = text.splitlines()
@@ -207,8 +279,10 @@ def main() -> int:
     report = "\n".join(lines)
     print(report)
 
-    if args.webhook:
-        notify_wecom(args.webhook, "部署工作流被改动", report)
+    if webhook:
+        alert = build_alert(ref, base, digest, added, removed, regressions, commits)
+        if notify_wecom(webhook, "部署工作流被改动", alert):
+            print("[ok] 已推送到开源小组群")
 
     print("")
     print("确认这次变更是有意的 → python scripts/ci-sentinel.py --update")
