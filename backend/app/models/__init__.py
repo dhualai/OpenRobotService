@@ -109,6 +109,17 @@ from app.models.module_tree import ModuleTree
 from app.models.module_tree_edit import ModuleTreeEdit
 from app.models.module_tree_node import ModuleTreeNode
 
+# 责任双树（组织树 + 技能树 + 人挂载）：双树试做页的唯一真相源
+from app.models.resp_tree import (
+    RespTree,
+    RespNode,
+    RespNodeLink,
+    NODE_KINDS,
+    LINK_TYPES,
+    LINK_ROLES,
+    LINK_SOURCES,
+)
+
 # 界面图鉴（标准截图 + 难懂区域标注）
 from app.models.ui_atlas import UiAtlasCard
 
@@ -188,6 +199,9 @@ __all__ = [
     "NotificationOutbox",
     # module tree
     "ModuleTree", "ModuleTreeEdit", "ModuleTreeNode",
+    # 责任双树
+    "RespTree", "RespNode", "RespNodeLink",
+    "NODE_KINDS", "LINK_TYPES", "LINK_ROLES", "LINK_SOURCES",
     # ui atlas
     "UiAtlasCard",
     # user info
