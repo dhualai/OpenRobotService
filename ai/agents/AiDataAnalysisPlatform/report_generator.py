@@ -33,6 +33,7 @@ from ai.core.database import (
     ProjectInfoValue,
     ProjectInfoValueHistory,
     ProjectInfoNodeMark,
+    WechatUserActivity,
 )
 
 from .llm_client import LLMClient
@@ -187,6 +188,15 @@ _PROJECT_INFO_OP_CN = {
     "node_create": "新增节点",
     "node_move": "移动节点",
     "node_rename": "节点改名",
+}
+
+# 日活活跃来源中文化（口径与 backend 埋点一致：当日最后活跃来源）
+_DAU_SOURCE_CN = {
+    "message": "公众号消息",
+    "menu": "菜单点击",
+    "event": "事件交互",
+    "h5": "H5登录",
+    "backfill": "历史回算",
 }
 
 
@@ -752,6 +762,7 @@ class ReportDataCollector:
         risk_keys: set[str] = set()
         collection_keys: set[str] = set()
         project_info_keys: set[str] = set()
+        user_keys: set[str] = set()
 
         for key in metric_keys:
             metric = get_metric_def(key)
@@ -768,10 +779,12 @@ class ReportDataCollector:
                 collection_keys.add(key)
             elif metric.dimension == "project_info":
                 project_info_keys.add(key)
+            elif metric.dimension == "user":
+                user_keys.add(key)
 
         logger.info(
-            "按指标采集 ticket=%s project=%s risk=%s collection=%s project_info=%s",
-            ticket_keys, project_keys, risk_keys, collection_keys, project_info_keys,
+            "按指标采集 ticket=%s project=%s risk=%s collection=%s project_info=%s user=%s",
+            ticket_keys, project_keys, risk_keys, collection_keys, project_info_keys, user_keys,
         )
 
         result: dict = {"date_range": date_range_str}
@@ -792,6 +805,8 @@ class ReportDataCollector:
             result["project_info"] = self._collect_project_info_metrics(
                 project_info_keys, start, end
             )
+        if user_keys:
+            result["user"] = self._collect_user_dau_metrics(user_keys, start, end)
 
         return result
 
@@ -1546,6 +1561,66 @@ class ReportDataCollector:
             return result
         finally:
             db.close()
+
+    # ── 用户日活维度指标采集 ────────────────────────────────────
+
+    def _collect_user_dau_metrics(
+        self, keys: set[str], start: datetime, end: datetime
+    ) -> dict:
+        """采集微信公众号用户日活指标（数据源：wechat_user_activity 埋点表）。
+
+        每行 = 某用户某天活跃一次（UNIQUE(ref_date, openid)），日活口径即按天
+        去重用户数；source 为「当日最后活跃来源」。日活是全局用户行为，与
+        项目无关，不受 project_ids 过滤。
+
+        埋点上线前表尚不存在：查询失败时降级返回空结果，不阻断报告生成。
+        """
+        db = self._get_db()
+        try:
+            rows = (
+                db.query(WechatUserActivity)
+                .filter(
+                    WechatUserActivity.ref_date >= start.date(),
+                    WechatUserActivity.ref_date <= end.date(),
+                )
+                .all()
+            )
+        except Exception as exc:  # 表不存在/连接失败时降级，不让整次查询失败
+            logger.warning("查询用户日活表失败，日活指标返回空: %s", exc)
+            return {}
+        finally:
+            db.close()
+
+        result: dict = {}
+
+        if "user.dau_total" in keys or "user.avg_dau" in keys or "user.dau_by_day" in keys:
+            by_day: dict[str, int] = {}
+            for r in rows:
+                day = r.ref_date.strftime("%Y-%m-%d")
+                by_day[day] = by_day.get(day, 0) + 1
+            by_day = dict(sorted(by_day.items()))
+            total = sum(by_day.values())
+
+            if "user.dau_total" in keys:
+                result["dau_total"] = total
+                # 顺带按天序列：标量指标配趋势图（图+文字展示）
+                result["dau_total_by_day"] = by_day
+            if "user.dau_by_day" in keys:
+                result["dau_by_day"] = by_day
+            if "user.avg_dau" in keys:
+                days = (end.date() - start.date()).days + 1
+                result["avg_dau"] = round(total / days, 1) if days > 0 else 0.0
+
+        if "user.by_source" in keys:
+            by_source: dict[str, int] = {}
+            for r in rows:
+                label = _DAU_SOURCE_CN.get(r.source or "", r.source or "未知")
+                by_source[label] = by_source.get(label, 0) + 1
+            result["by_source"] = dict(
+                sorted(by_source.items(), key=lambda kv: kv[1], reverse=True)
+            )
+
+        return result
 
     # ── 汇总采集 ──────────────────────────────────────────────
 
