@@ -22,6 +22,8 @@ describe('STATUS_DISPLAY_MAP', () => {
     expect(STATUS_DISPLAY_MAP['pending']).toBe('已挂起');
     expect(STATUS_DISPLAY_MAP['resolved']).toBe('已解决');
     expect(STATUS_DISPLAY_MAP['closed']).toBe('已关闭');
+    expect(STATUS_DISPLAY_MAP['archiving']).toBe('知识沉淀中');
+    expect(STATUS_DISPLAY_MAP['archived']).toBe('已沉淀');
   });
 });
 
@@ -32,6 +34,10 @@ describe('STATUS_VALUE_MAP', () => {
     expect(STATUS_VALUE_MAP['已挂起']).toBe('pending');
     expect(STATUS_VALUE_MAP['已解决']).toBe('resolved');
     expect(STATUS_VALUE_MAP['已关闭']).toBe('closed');
+    expect(STATUS_VALUE_MAP['知识沉淀中']).toBe('archiving');
+    expect(STATUS_VALUE_MAP['已沉淀']).toBe('archived');
+    expect(STATUS_VALUE_MAP['归档中']).toBe('archiving');
+    expect(STATUS_VALUE_MAP['已归档']).toBe('archived');
   });
 });
 
@@ -74,6 +80,8 @@ describe('normalizeStatus', () => {
     expect(normalizeStatus('new')).toBe('待处理');
     expect(normalizeStatus('in_progress')).toBe('进行中');
     expect(normalizeStatus('closed')).toBe('已关闭');
+    expect(normalizeStatus('archiving')).toBe('知识沉淀中');
+    expect(normalizeStatus('archived')).toBe('已沉淀');
   });
 
   it('should normalize case-insensitively', () => {

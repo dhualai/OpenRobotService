@@ -20,7 +20,7 @@ def validate_knowledge_report(content):
     提交（质量由人工审核兜底，非标准/自由文本走入库 LLM 提炼）。"""
     if not (content or "").strip():
         from fastapi import HTTPException
-        raise HTTPException(422, "归档报告内容为空，请先填写正文")
+        raise HTTPException(422, "知识沉淀报告内容为空，请先填写正文")
 
 
 async def require_assigned_reviewer(db, report, task, operator_id):
@@ -41,7 +41,7 @@ class ArchiveReportService:
     ) -> tuple[Task, ArchiveReport, bool]:
         """开始归档：创建草稿并将工单状态置为 ARCHIVING。
 
-        返回 (task, report, created)。created=False 表示已有未完成归档，幂等复用
+        返回 (task, report, created)。created=False 表示已有未完成知识沉淀，幂等复用
         （避免「库已写入、响应失败」后再点变成 409）。
         """
         result = await db.execute(select(Task).where(Task.id == task_id))
@@ -59,7 +59,7 @@ class ArchiveReportService:
         ).limit(1))).scalar_one_or_none()
         if finance_reward:
             from fastapi import HTTPException
-            raise HTTPException(409, "该工单尚未完成财务审核，不能重新发起归档")
+            raise HTTPException(409, "该工单尚未完成财务审核，不能重新发起知识沉淀")
 
         # 幂等：已有未完成归档则直接复用
         existing = await db.execute(
@@ -110,10 +110,10 @@ class ArchiveReportService:
         report = result.scalar_one_or_none()
         if not report:
             from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="归档报告未找到")
+            raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
         if report.submit_status in ('approved', 'submitted'):
             from fastapi import HTTPException
-            raise HTTPException(status_code=400, detail="已归档的报告不可修改")
+            raise HTTPException(status_code=400, detail="已完成知识沉淀的报告不可修改")
         if revision_check is not None and report.revision != revision_check:
             from fastapi import HTTPException
             raise HTTPException(status_code=409, detail=f"报告已被他人修改（期望 revision={revision_check}，实际={report.revision}），请刷新后重试")
@@ -151,7 +151,7 @@ class ArchiveReportService:
             .with_for_update().execution_options(populate_existing=True))
         report = result.scalar_one_or_none()
         if not report:
-            raise HTTPException(status_code=404, detail="归档报告未找到")
+            raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
         if report.submit_status not in ('draft', 'rejected'):
             raise HTTPException(status_code=400, detail=f"当前报告状态({report.submit_status})不可提交")
         if revision_check is not None and report.revision != revision_check:
@@ -178,7 +178,7 @@ class ArchiveReportService:
         except Exception as exc:
             # ArchiveReviewError 与其包装（业务性失败：无人可派、领域配置非法等）
             code = getattr(exc, "code", None)
-            message = getattr(exc, "message", None) or str(exc) or "归档派审失败"
+            message = getattr(exc, "message", None) or str(exc) or "知识沉淀派审失败"
             if code:
                 raise HTTPException(status_code=400, detail=message) from exc
             # 非业务异常（依赖缺失/导入失败/配置损坏…）→ 500。
@@ -186,12 +186,12 @@ class ArchiveReportService:
             # （生产实际踩过：AI 侧模块未随产物部署 → ModuleNotFoundError → 500）。
             # 现在把异常类型与消息一并带出，并在服务端留完整堆栈。
             logger.exception(
-                "归档派审失败（非业务异常）report_id=%s task_id=%s: %s: %s",
+                "知识沉淀派审失败（非业务异常）report_id=%s task_id=%s: %s: %s",
                 report_id, getattr(task, "id", None), type(exc).__name__, exc,
             )
             raise HTTPException(
                 status_code=500,
-                detail=f"归档派审服务异常：{type(exc).__name__}: {message}",
+                detail=f"知识沉淀派审服务异常：{type(exc).__name__}: {message}",
             ) from exc
 
         chosen = assignment.reviewer_id
@@ -227,7 +227,7 @@ class ArchiveReportService:
         report = result.scalar_one_or_none()
         if not report:
             from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="归档报告未找到")
+            raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
         if report.submit_status != 'submitted':
             from fastapi import HTTPException
             raise HTTPException(status_code=400, detail=f"当前报告状态({report.submit_status})不可审核通过")
@@ -281,7 +281,7 @@ class ArchiveReportService:
         report = result.scalar_one_or_none()
         if not report:
             from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="归档报告未找到")
+            raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
         if report.submit_status != 'submitted':
             from fastapi import HTTPException
             raise HTTPException(status_code=400, detail=f"当前报告状态({report.submit_status})不可驳回")

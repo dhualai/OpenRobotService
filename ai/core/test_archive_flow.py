@@ -7,6 +7,12 @@ import pytest
 from ai.core import archive_flow
 
 
+def test_report_prompts_use_knowledge_capture_terminology():
+    for prompt in [archive_flow._SYSTEM_PROMPT, archive_flow._REPORT_PROMPT]:
+        assert '知识沉淀报告' in prompt
+        assert '归档报告' not in prompt
+
+
 def test_prompt_requires_eight_report_sections_and_no_invented_facts():
     headings = ('问题概述', '问题场景', '复现条件', '原因分析', '解决方案', '验证结果', '适用范围', '遗留问题')
     for heading in headings:

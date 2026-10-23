@@ -1403,7 +1403,7 @@ export default function DispatchDev() {
           className={`dispatch-dev__tab${mainTab === 'archive-review' ? ' is-active' : ''}`}
           onClick={() => setMainTab('archive-review')}
         >
-          归档审核
+          知识沉淀审核
         </button>
       </div>
       {mainTab === 'atlas' ? (

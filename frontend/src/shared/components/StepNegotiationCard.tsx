@@ -24,6 +24,67 @@ function TestMarkedButton({
   );
 }
 
+/** 特殊 step（等待外部条件 sequence=-2 / 等待前置工单 sequence=-1）的条件输入块。
+ *  协商弹窗与完成弹窗复用：label 自适应 step 类型；等待前置工单时额外显示已有前置工单卡片 + +添加 按钮。 */
+function SpecialStepConditionBlock({
+  step,
+  reason,
+  onReasonChange,
+  predecessorIds,
+  onAddPredecessor,
+  testIdPrefix,
+}: {
+  step: { id: number; step_name: string; sequence: number } | null | undefined;
+  reason: string;
+  onReasonChange: (v: string) => void;
+  predecessorIds?: number[];
+  onAddPredecessor?: () => void;
+  testIdPrefix?: string;
+}) {
+  if (!step || step.sequence >= 0) return null;
+  const label = step.sequence === -2 ? '等待外部条件的理由' : '等待前置工单的理由';
+  const placeholder = step.sequence === -2
+    ? '请说明需要等待的外部条件是什么（例如：等待客户确认方案 / 等待第三方接口上线 / 等待安全审计通过）'
+    : '请说明为什么需要等待前置工单（例如：当前工单依赖工单 #123 的修复结果）';
+  return (
+    <>
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'block', fontSize: 13, color: 'var(--muted-foreground)', marginBottom: 4 }}>
+          {label}<span style={{ color: 'var(--danger)' }}>*</span>
+        </label>
+        <Textarea
+          data-testid={testIdPrefix ? `${testIdPrefix}-reason` : undefined}
+          value={reason}
+          onChange={(v) => onReasonChange(String(v))}
+          placeholder={placeholder}
+          autosize={{ minRows: 3, maxRows: 6 }}
+          maxlength={500}
+        />
+      </div>
+      {step.sequence === -1 && (
+        <div style={{ marginBottom: 12, padding: 10, background: 'var(--muted)', borderRadius: 'var(--radius-sm)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>前置工单</span>
+            <Button size="small" theme="primary" onClick={onAddPredecessor}>+ 添加</Button>
+          </div>
+          {(predecessorIds ?? []).length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>尚无前置工单，点击上方 + 添加</div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {(predecessorIds ?? []).map((pid) => (
+                <span key={pid} style={{
+                  padding: '2px 8px', background: 'var(--card)', borderRadius: 4,
+                  fontSize: 12, color: 'var(--foreground)', border: '1px solid var(--border)',
+                }}>#{pid}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 /** 工单阶段性处理卡所需的工单信息（阶段字段 + 展示/弹窗所需的基础字段） */
 export interface StepCardTicket extends StepNegotiationTicket {
   status?: string;
@@ -617,17 +678,35 @@ export default function StepNegotiationCard({
               />
             );
           })()}
-          <Form initialData={{}}>
-            <FormItem label="协商理由" name="negotiateReason" labelAlign="top" requiredMark>
-              <Textarea
-                value={negotiateReason}
-                onChange={(v) => setNegotiateReason(String(v))}
-                placeholder="请输入协商理由（必填）"
-                autosize={{ minRows: 3, maxRows: 6 }}
-                maxlength={500}
-              />
-            </FormItem>
-          </Form>
+          {(() => {
+            const selectedNegotiateStep = stepTemplate.find((s) => s.id === negotiateStepId);
+            const isNegotiateSpecial = !!selectedNegotiateStep && selectedNegotiateStep.sequence < 0;
+            if (isNegotiateSpecial) {
+              return (
+                <SpecialStepConditionBlock
+                  step={selectedNegotiateStep}
+                  reason={negotiateReason}
+                  onReasonChange={setNegotiateReason}
+                  predecessorIds={detail?.predecessor_ids}
+                  onAddPredecessor={openAddPredecessorPopup}
+                  testIdPrefix="negotiate-step"
+                />
+              );
+            }
+            return (
+              <Form initialData={{}}>
+                <FormItem label="协商理由" name="negotiateReason" labelAlign="top" requiredMark>
+                  <Textarea
+                    value={negotiateReason}
+                    onChange={(v) => setNegotiateReason(String(v))}
+                    placeholder="请输入协商理由（必填）"
+                    autosize={{ minRows: 3, maxRows: 6 }}
+                    maxlength={500}
+                  />
+                </FormItem>
+              </Form>
+            );
+          })()}
           <div className="ticket-edit__btns">
             <Button theme="default" disabled={submittingNegotiate} onClick={() => setShowNegotiateStepPopup(false)}>取消</Button>
             <Button theme="primary" loading={submittingNegotiate} onClick={handleNegotiateStep} disabled={!negotiateEndTime || !negotiateStepId || !negotiateReason.trim()}>保存</Button>
@@ -647,7 +726,6 @@ export default function StepNegotiationCard({
         const range = getDeadlineRange(detail?.priority, detail?.created_at);
         const selectedStep = stepTemplate.find((s) => s.id === completeNextStepId);
         const isCompleteSpecial = !!selectedStep && selectedStep.sequence < 0;
-        const completeReasonLabel = selectedStep?.sequence === -2 ? '等待外部条件的理由' : '等待前置工单的理由';
         return (
           <Popup
             visible={showCompleteStepPopup}
@@ -710,46 +788,14 @@ export default function StepNegotiationCard({
                 styles={{ popup: { root: { zIndex: 13000 } } }}
               />
               {/* 特殊 step 的条件输入区域 */}
-              {isCompleteSpecial && (
-                <>
-                  <div style={{ marginBottom: 12 }}>
-                    <label style={{ display: 'block', fontSize: 13, color: 'var(--muted-foreground)', marginBottom: 4 }}>
-                      {completeReasonLabel}<span style={{ color: 'var(--danger)' }}>*</span>
-                    </label>
-                    <Textarea
-                      data-testid="task-step-complete-reason"
-                      value={completeReasonDraft}
-                      onChange={(v) => setCompleteReasonDraft(String(v))}
-                      placeholder={selectedStep?.sequence === -2
-                        ? '请说明需要等待的外部条件是什么（例如：等待客户确认方案 / 等待第三方接口上线 / 等待安全审计通过）'
-                        : '请说明为什么需要等待前置工单（例如：当前工单依赖工单 #123 的修复结果）'}
-                      autosize={{ minRows: 3, maxRows: 6 }}
-                      maxlength={500}
-                    />
-                  </div>
-                  {/* 等待前置工单：显示已有前置工单 + 添加按钮 */}
-                  {selectedStep?.sequence === -1 && (
-                    <div style={{ marginBottom: 12, padding: 10, background: 'var(--muted)', borderRadius: 'var(--radius-sm)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                        <span style={{ fontSize: 13, fontWeight: 600 }}>前置工单</span>
-                        <Button size="small" theme="primary" onClick={openAddPredecessorPopup}>+ 添加</Button>
-                      </div>
-                      {(detail?.predecessor_ids ?? []).length === 0 ? (
-                        <div style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>尚无前置工单，点击上方 + 添加</div>
-                      ) : (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                          {(detail?.predecessor_ids ?? []).map((pid) => (
-                            <span key={pid} style={{
-                              padding: '2px 8px', background: 'var(--card)', borderRadius: 4,
-                              fontSize: 12, color: 'var(--foreground)', border: '1px solid var(--border)',
-                            }}>#{pid}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
+              <SpecialStepConditionBlock
+                step={isCompleteSpecial ? selectedStep : null}
+                reason={completeReasonDraft}
+                onReasonChange={setCompleteReasonDraft}
+                predecessorIds={detail?.predecessor_ids}
+                onAddPredecessor={openAddPredecessorPopup}
+                testIdPrefix="task-step-complete"
+              />
               <div className="ticket-edit__btns">
                 <Button theme="default" disabled={submittingComplete} onClick={() => setShowCompleteStepPopup(false)}>取消</Button>
                 <TestMarkedButton

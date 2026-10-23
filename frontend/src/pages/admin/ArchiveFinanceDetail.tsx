@@ -27,11 +27,11 @@ export default function ArchiveFinanceDetail({ taskId, onClose }: { taskId: numb
     {error && <div role="alert">{error}<Button size="small" onClick={() => setAttempt((value) => value + 1)}>重新加载</Button></div>}
     {detail && <>
       <h4>{detail.title}</h4><KnowledgeMarkdown text={detail.problem} />
-      <h4>归档报告</h4><KnowledgeMarkdown text={detail.content} />
+      <h4>知识沉淀报告</h4><KnowledgeMarkdown text={detail.content} />
       <h4>内容审核意见</h4><KnowledgeMarkdown text={detail.review_comment} />
       <h4>价值点</h4><KnowledgeMarkdown text={detail.value_point} />
       <p>三方奖励合计：¥{fenToYuan(detail.total_amount)}</p>
-      <p style={{ fontSize: 12, color: '#888' }}>通过或驳回将同时处理该工单的三方奖励。通过后完成归档并按闭环月份入榜，实际微信到账以转账结果为准。</p>
+      <p style={{ fontSize: 12, color: '#888' }}>通过或驳回将同时处理该工单的三方奖励。通过后完成知识沉淀并按闭环月份入榜，实际微信到账以转账结果为准。</p>
     </>}
   </div>;
 }

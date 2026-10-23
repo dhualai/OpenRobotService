@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Toast } from 'tdesign-mobile-react';
 import * as api from '@/api/knowledge';
 import { fetchRewardStats } from '@/api/wxpay';
+import { POLL_INTERVAL_MS } from '@/config/poll';
 import { ApiError } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
 import KnowledgeContributionCard from '../admin/KnowledgeContributionCard';
@@ -89,6 +90,76 @@ describe('知识贡献榜UI', () => {
     expect(await screen.findByText('奖励详情入口')).toBeInTheDocument();
   });
 
+  it('奖励发生变化后定时更新全量待提现合计，卸载后停止刷新', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchRewardStats)
+        .mockResolvedValueOnce({ pending_amount: 1250, pending_count: 1, withdrawn_amount: 0 })
+        .mockResolvedValue({ pending_amount: 1250 + 2350 + 99, pending_count: 3, withdrawn_amount: 7000 });
+      const view = render(<MemoryRouter><Dashboard /></MemoryRouter>);
+      await act(async () => {});
+      const card = screen.getByRole('button', { name: /待提现（元）/ });
+      expect(within(card).getByText('¥12.50')).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
+      expect(within(card).getByText('¥36.99')).toBeInTheDocument();
+      expect(within(card).getByText('3 笔可提')).toBeInTheDocument();
+      expect(within(card).getByText('¥70.00')).toBeInTheDocument();
+      view.unmount();
+      const calls = vi.mocked(fetchRewardStats).mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
+      fireEvent.focus(window);
+      fireEvent(document, new Event('visibilitychange'));
+      expect(fetchRewardStats).toHaveBeenCalledTimes(calls);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('回到前台时重新汇总，临时失败保留金额并可再次刷新', async () => {
+    vi.mocked(fetchRewardStats).mockResolvedValueOnce({ pending_amount: 3699, pending_count: 3, withdrawn_amount: 0 });
+    render(<MemoryRouter><Dashboard /></MemoryRouter>);
+    const card = await screen.findByRole('button', { name: /3 笔可提.*¥36\.99/ });
+    vi.mocked(fetchRewardStats).mockRejectedValueOnce(new Error('temporary failure'));
+    await act(async () => { fireEvent.focus(window); });
+    expect(fetchRewardStats).toHaveBeenCalledTimes(2);
+    expect(within(card).getByText('¥36.99')).toBeInTheDocument();
+    vi.mocked(fetchRewardStats).mockResolvedValue({ pending_amount: 2449, pending_count: 2, withdrawn_amount: 1250 });
+    await act(async () => { fireEvent(document, new Event('visibilitychange')); });
+    expect(within(card).getByText('¥24.49')).toBeInTheDocument();
+    expect(within(card).getByText('2 笔可提')).toBeInTheDocument();
+    expect(within(card).getByText('¥12.50')).toBeInTheDocument();
+  });
+
+  it('首次统计失败后自动重试，不一直将待提现合计显示为零', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchRewardStats)
+        .mockRejectedValueOnce(new Error('temporary failure'))
+        .mockResolvedValue({ pending_amount: 3699, pending_count: 3, withdrawn_amount: 0 });
+      const view = render(<MemoryRouter><Dashboard /></MemoryRouter>);
+      await act(async () => {});
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
+      expect(screen.getByRole('button', { name: /3 笔可提.*¥36\.99/ })).toBeInTheDocument();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('账号变化后刷新本人奖励，不被上一账号的迟到响应覆盖', async () => {
+    let finishPrevious!: (stats: Awaited<ReturnType<typeof fetchRewardStats>>) => void;
+    vi.mocked(fetchRewardStats)
+      .mockReturnValueOnce(new Promise((resolve) => { finishPrevious = resolve; }))
+      .mockResolvedValue({ pending_amount: 2350, pending_count: 1, withdrawn_amount: 0 });
+    render(<MemoryRouter><Dashboard /></MemoryRouter>);
+    await act(async () => { useAuthStore.setState({ username: 'another-user' }); });
+    const card = screen.getByRole('button', { name: /待提现（元）/ });
+    expect(within(card).getByText('¥23.50')).toBeInTheDocument();
+    await act(async () => { finishPrevious({ pending_amount: 9900, pending_count: 9, withdrawn_amount: 0 }); });
+    expect(within(card).getByText('¥23.50')).toBeInTheDocument();
+    expect(within(card).queryByText('¥99.00')).not.toBeInTheDocument();
+  });
+
   it('普通用户奖励统计失败时仍可查看榜单并进入奖励入口', async () => {
     useAuthStore.setState({ canViewKnowledgeContribution: false });
     vi.mocked(fetchRewardStats).mockRejectedValue(new Error('奖励暂不可用'));
@@ -154,7 +225,7 @@ describe('知识贡献榜UI', () => {
     expect(await screen.findByText('奖励详情入口')).toBeInTheDocument();
   });
 
-  it.each(['贡献甲', '按月统计 · 以有效归档贡献排名'])('贡献卡片移除查看全部，点击%s进入知识中心', async (content) => {
+  it.each(['贡献甲', '按月统计 · 以有效知识沉淀贡献排名'])('贡献卡片移除查看全部，点击%s进入知识中心', async (content) => {
     render(<MemoryRouter><Routes><Route path="/" element={<KnowledgeContributionCard />} /><Route path="/admin/knowledge" element={<p>知识中心入口</p>} /></Routes></MemoryRouter>);
     await screen.findByText('贡献甲');
     expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
@@ -290,7 +361,7 @@ describe('知识贡献榜UI', () => {
   it('暂无贡献时不宣传具体开始日期，不伪造榜单数据', async () => {
     vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue({ ...overview, campaign_status: 'upcoming', top_three: [] });
     render(<MemoryRouter><KnowledgeContributionCard /></MemoryRouter>);
-    expect(await screen.findByText('按月统计 · 以有效归档贡献排名')).toBeInTheDocument();
+    expect(await screen.findByText('按月统计 · 以有效知识沉淀贡献排名')).toBeInTheDocument();
     expect(screen.queryByText(/11月1日|活动未开始|活动将于/)).not.toBeInTheDocument();
     expect(screen.queryByText('¥100')).not.toBeInTheDocument();
   });
@@ -530,7 +601,7 @@ describe('横向榜单预览', () => {
     expect(await screen.findAllByText('暂无上榜问题')).toHaveLength(3);
     expect(screen.getAllByText('虚位以待')).toHaveLength(6);
     expect(screen.queryByText('¥100')).not.toBeInTheDocument();
-    expect(screen.getByText(/按月统计 · 以有效归档贡献排名/)).toBeInTheDocument();
+    expect(screen.getByText(/按月统计 · 以有效知识沉淀贡献排名/)).toBeInTheDocument();
     expect(screen.queryByText(/11月1日|活动未开始|活动将于/)).not.toBeInTheDocument();
   });
 
@@ -693,6 +764,8 @@ describe('知识列表、人员工单和讨论区', () => {
   it('详情展示提单接单人、归档报告和匿名意见，并支持点赞', async () => {
     openKnowledge('/admin/knowledge/questions/7');
     await screen.findByText('检查供电后恢复');
+    expect(screen.getByText('沉淀知识')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '问题解答 · 已通过知识沉淀报告' })).toBeInTheDocument();
     expect(screen.getByText('提单人')).toBeInTheDocument();
     expect(screen.getByText('接单人')).toBeInTheDocument();
     expect(screen.getByText('贡献甲')).toBeInTheDocument();

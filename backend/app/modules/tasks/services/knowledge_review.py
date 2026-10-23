@@ -113,7 +113,7 @@ async def project_task_list(db, result, actor):
         if response["id"] in hidden:
             task = await db.get(Task, response["id"])
             response["title"] = await anonymous_text(db, task, response["title"])
-            response["description"] = "待归档审核，请进入匿名审核页面"
+            response["description"] = "待知识沉淀审核，请进入匿名审核页面"
             for key, value in list(response.items()):
                 if key not in allowed:
                     response[key] = "" if isinstance(value, str) else False if isinstance(value, bool) else \
