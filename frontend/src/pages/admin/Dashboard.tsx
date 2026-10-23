@@ -34,6 +34,7 @@ import { avatarUrl } from '@/api/profile';
 import KnowledgeContributionCard from './KnowledgeContributionCard';
 import HighValueQuestionCard from './HighValueQuestionCard';
 import { fetchRewardStats, fenToYuan } from '@/api/wxpay';
+import { POLL_INTERVAL_MS } from '@/config/poll';
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
 
@@ -171,20 +172,38 @@ export default function Dashboard() {
 
   // 奖励汇总数据独立拉取：失败不影响看板，新 Section 照常渲染（0/暂无）
   useEffect(() => {
+    setPendingReward(null);
+    if (!username) return;
     let alive = true;
-    fetchRewardStats()
-      .then((s) => {
+    let fetching = false;
+    const refresh = async () => {
+      if (!alive || fetching) return;
+      fetching = true;
+      try {
+        const stats = await fetchRewardStats();
         if (alive) {
-          setPendingReward({ amount: s.pending_amount, count: s.pending_count, withdrawn: s.withdrawn_amount ?? 0 });
+          setPendingReward({ amount: stats.pending_amount, count: stats.pending_count, withdrawn: stats.withdrawn_amount ?? 0 });
         }
-      })
-      .catch(() => {
-        // 微信支付未启用或接口异常：静默降级为 null
-      });
+      } catch {
+        // 接口异常时保留上次成功的金额，后续刷新自动重试。
+      } finally {
+        fetching = false;
+      }
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    void refresh();
+    const timer = window.setInterval(refreshWhenVisible, POLL_INTERVAL_MS);
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       alive = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
-  }, []);
+  }, [username]);
 
   return (
     <div className="dashboard-page">
