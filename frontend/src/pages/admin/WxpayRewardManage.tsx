@@ -585,7 +585,7 @@ export default function WxpayRewardManage() {
     }
     Dialog.confirm?.({
       title: '确认批量通过',
-      content: `已选 ${ids.length} 笔奖励。工单闭环奖励将连同同工单的三方奖励整单通过，入账并完成归档入榜；实际转账由系统异步处理。确定继续？`,
+      content: `已选 ${ids.length} 笔奖励。工单闭环奖励将连同同工单的三方奖励整单通过，入账并完成知识沉淀、进入榜单；实际转账由系统异步处理。确定继续？`,
       onConfirm: async () => {
         setAuditActing(true);
         try {
@@ -896,7 +896,7 @@ export default function WxpayRewardManage() {
             {fenToYuan(rewardStats?.pending_audit_amount ?? 0)}
           </div>
           <div style={{ fontSize: 12, color: '#888', marginBottom: 10 }}>
-            工单内容审核通过后进入此处。选择任意一笔闭环奖励，将整单审核提问人、解答人和审核人的三方奖励；财务通过后才归档入榜。闭环奖励不参与自动通过。
+            工单内容审核通过后进入此处。选择任意一笔闭环奖励，将整单审核提问人、解答人和审核人的三方奖励；财务通过后才完成知识沉淀并入榜。闭环奖励不参与自动通过。
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <div style={{ ...FIELD_ROW, flex: 1, marginBottom: 0, display: 'flex', gap: 6 }}>
@@ -960,7 +960,7 @@ export default function WxpayRewardManage() {
                     <span style={BADGE}>{REWARD_SOURCE_TYPE_LABELS[r.source_type] ?? r.source_type}</span>
                     {r.source_id ? `工单 ${r.source_id}` : ''}
                   </div>
-                  {r.source_type === 'task_archive' && r.source_id && <Button size="small" variant="outline" onClick={() => setFinanceTaskId(Number(r.source_id))}>查看工单与归档报告</Button>}
+                  {r.source_type === 'task_archive' && r.source_id && <Button size="small" variant="outline" onClick={() => setFinanceTaskId(Number(r.source_id))}>查看工单与知识沉淀报告</Button>}
                   <div style={{ color: '#aaa', marginTop: 2, wordBreak: 'break-all' }}>
                     用户 {r.user_id.slice(0, 12)}｜{r.openid || '无 openid'}｜{fmtTime(r.created_at)}
                   </div>

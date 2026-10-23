@@ -69,7 +69,7 @@ export default function KnowledgeRankCard({ title, subtitle, notice, kind, entri
             return <li key={entry?.id ?? `empty-${position}`} className="knowledge-board-preview__row">
               <span className="knowledge-board-preview__rank">{entry?.rank ?? position + 1}</span>
               {entry?.user && <KnowledgeAvatar user={entry.user} />}
-              <span className="knowledge-board-preview__text"><strong title={entry?.label}>{entry?.label || (kind === 'questions' ? '暂无上榜问题' : '虚位以待')}</strong><small>{entry?.description || '等待有效归档'}</small></span>
+              <span className="knowledge-board-preview__text"><strong title={entry?.label}>{entry?.label || (kind === 'questions' ? '暂无上榜问题' : '虚位以待')}</strong><small>{entry?.description || '等待知识沉淀'}</small></span>
               <span className="knowledge-board-preview__metric">{entry?.metric || '—'}</span>
             </li>;
           })}

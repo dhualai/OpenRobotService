@@ -113,7 +113,7 @@ async def audit_archive_rewards(db, ids, operator_id, approved, remark=""):
         ).order_by(ArchiveReport.version.desc(), ArchiveReport.id.desc()).limit(1)
             .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
         if not task or task.status != TaskStatus.ARCHIVING or not report or report.submit_status != "approved":
-            raise HTTPException(409, "工单或归档报告状态已变更，请刷新后处理")
+            raise HTTPException(409, "工单或知识沉淀报告状态已变更，请刷新后处理")
         now = knowledge_service.utcnow()
         for reward in audit_rewards:
             reward.status = RewardStatus.PENDING if approved else RewardStatus.REJECTED
@@ -129,7 +129,7 @@ async def audit_archive_rewards(db, ids, operator_id, approved, remark=""):
             if publication and not publication.active:
                 publication.first_approved_at = now
             await knowledge_service.publish_report(db, task, report, now)
-        description = "财务审核通过，工单完成归档闭环" if approved else "财务审核驳回，工单暂不进入知识榜"
+        description = "财务审核通过，工单完成知识沉淀闭环" if approved else "财务审核驳回，工单暂不进入知识榜"
         db.add(TaskOperationLog(task_id=task.id, operation_type=OperationType.STATUS_CHANGE,
             operator=operator_id, operator_name="财务审核", description=description,
             to_status=task.status.value, detail={"finance_outcome": "approved" if approved else "rejected",

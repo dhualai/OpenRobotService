@@ -9,5 +9,5 @@ export default function KnowledgeContributionCard() {
     subtitle={overview ? `${overview.month.replace('-', '年')}月 · 提单接单合并排名` : '提单接单合并排名'}
     entries={contributorPreviewEntries(overview?.top_three || [], 'combined')} to="/admin/knowledge"
     error={resource.error} loading={resource.loading && !overview} retry={resource.reload}
-    footer={overview && <span>{overview.campaign_status === 'ended' ? '本期统计已结束 · 查看贡献记录' : '按月统计 · 以有效归档贡献排名'}</span>} />;
+    footer={overview && <span>{overview.campaign_status === 'ended' ? '本期统计已结束 · 查看贡献记录' : '按月统计 · 以有效知识沉淀贡献排名'}</span>} />;
 }

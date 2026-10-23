@@ -225,7 +225,7 @@ describe('知识贡献榜UI', () => {
     expect(await screen.findByText('奖励详情入口')).toBeInTheDocument();
   });
 
-  it.each(['贡献甲', '按月统计 · 以有效归档贡献排名'])('贡献卡片移除查看全部，点击%s进入知识中心', async (content) => {
+  it.each(['贡献甲', '按月统计 · 以有效知识沉淀贡献排名'])('贡献卡片移除查看全部，点击%s进入知识中心', async (content) => {
     render(<MemoryRouter><Routes><Route path="/" element={<KnowledgeContributionCard />} /><Route path="/admin/knowledge" element={<p>知识中心入口</p>} /></Routes></MemoryRouter>);
     await screen.findByText('贡献甲');
     expect(screen.queryByRole('heading', { name: '知识贡献榜' })).not.toBeInTheDocument();
@@ -361,7 +361,7 @@ describe('知识贡献榜UI', () => {
   it('暂无贡献时不宣传具体开始日期，不伪造榜单数据', async () => {
     vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue({ ...overview, campaign_status: 'upcoming', top_three: [] });
     render(<MemoryRouter><KnowledgeContributionCard /></MemoryRouter>);
-    expect(await screen.findByText('按月统计 · 以有效归档贡献排名')).toBeInTheDocument();
+    expect(await screen.findByText('按月统计 · 以有效知识沉淀贡献排名')).toBeInTheDocument();
     expect(screen.queryByText(/11月1日|活动未开始|活动将于/)).not.toBeInTheDocument();
     expect(screen.queryByText('¥100')).not.toBeInTheDocument();
   });
@@ -601,7 +601,7 @@ describe('横向榜单预览', () => {
     expect(await screen.findAllByText('暂无上榜问题')).toHaveLength(3);
     expect(screen.getAllByText('虚位以待')).toHaveLength(6);
     expect(screen.queryByText('¥100')).not.toBeInTheDocument();
-    expect(screen.getByText(/按月统计 · 以有效归档贡献排名/)).toBeInTheDocument();
+    expect(screen.getByText(/按月统计 · 以有效知识沉淀贡献排名/)).toBeInTheDocument();
     expect(screen.queryByText(/11月1日|活动未开始|活动将于/)).not.toBeInTheDocument();
   });
 
@@ -764,6 +764,8 @@ describe('知识列表、人员工单和讨论区', () => {
   it('详情展示提单接单人、归档报告和匿名意见，并支持点赞', async () => {
     openKnowledge('/admin/knowledge/questions/7');
     await screen.findByText('检查供电后恢复');
+    expect(screen.getByText('沉淀知识')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '问题解答 · 已通过知识沉淀报告' })).toBeInTheDocument();
     expect(screen.getByText('提单人')).toBeInTheDocument();
     expect(screen.getByText('接单人')).toBeInTheDocument();
     expect(screen.getByText('贡献甲')).toBeInTheDocument();

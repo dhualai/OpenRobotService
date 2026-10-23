@@ -1427,7 +1427,7 @@ export default function TasksView() {
       { value: 'mine', label: '待我处理' },
       { value: 'related', label: '与我相关' },
       { value: 'followed', label: '我关注的' },
-      { value: 'archive_mine', label: '我归档的' },
+      { value: 'archive_mine', label: '我沉淀的' },
       { value: 'archive_review', label: '待我审核' },
       // 代他人提单：他人代我提交、仍待我确认的单（pending）；有量时才出现，避免空分类占位
       ...(followupCount > 0 ? [{ value: 'followup', label: '待我跟进' }] : []),

@@ -40,13 +40,13 @@ describe('工单看板状态分组', () => {
     expect(getTicketStatusCount({ archived: 2 }, archive)).toBe(2);
   });
 
-  it('展示进行中、已挂起和合并后的无法解决、归档数量', async () => {
+  it('展示进行中、已挂起和合并后的无法解决、知识沉淀数量', async () => {
     const { container } = await act(async () => render(<MemoryRouter><TicketDashboard /></MemoryRouter>));
     expect(screen.queryByText('处理中')).not.toBeInTheDocument();
     expect(screen.queryByText('暂停/挂起')).not.toBeInTheDocument();
     for (const [label, value, percent] of [
       ['进行中', 2, '3%'], ['挂起确认中', 3, '5%'], ['已挂起', 4, '6%'],
-      ['无法解决', 11, '17%'], ['归档', 21, '32%'],
+      ['无法解决', 11, '17%'], ['知识沉淀', 21, '32%'],
     ] as const) {
       const item = screen.getByText(label).closest('li')!;
       expect(within(item).getByText(String(value))).toBeInTheDocument();
@@ -56,7 +56,7 @@ describe('工单看板状态分组', () => {
     expect(container.querySelectorAll('.mac-donut__svg circle[stroke-dasharray]')).toHaveLength(TICKET_STATUS_LIST.length);
   });
 
-  it.each([['无法解决', 'unsolvable'], ['归档', 'archive'], ['已挂起', 'paused']])(
+  it.each([['无法解决', 'unsolvable'], ['知识沉淀', 'archive'], ['已挂起', 'paused']])(
     '点击%s图例进入对应状态明细', async (label, key) => {
       await act(async () => render(
         <MemoryRouter initialEntries={['/admin/ticket-dashboard']}>
