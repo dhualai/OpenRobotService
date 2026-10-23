@@ -55,6 +55,9 @@ CALENDAR_TTL_SECONDS = 60
 class WorkingTimeService:
     """工作时间判定与排程时刻计算。"""
 
+    # 供路由/其它模块以 WorkingTimeService.SYSTEM_DEFAULT_TIMEZONE 读取
+    SYSTEM_DEFAULT_TIMEZONE = SYSTEM_DEFAULT_TIMEZONE
+
     # ── 时间工具 ────────────────────────────────────────
     @staticmethod
     def now_utc() -> datetime:

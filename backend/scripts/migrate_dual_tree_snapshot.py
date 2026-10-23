@@ -147,7 +147,11 @@ async def migrate(snapshot: Dict[str, Any], *, force: bool, dry_run: bool) -> in
             await db.flush()
             org_map[str(item["id"])] = node.id
 
-        # 3) 挂载：节点可能落在任一棵树上
+        # 3) 挂载：节点可能落在任一棵树上。
+        # 试做页允许同一人在同一节点挂多个 role；库表唯一键是 (user_id, node_id)，
+        # 冲突时保留优先级更高的角色（leader > owner > specialist > member）。
+        role_rank = {"leader": 4, "owner": 3, "specialist": 2, "member": 1}
+        picked: Dict[tuple, str] = {}
         added, skipped = 0, 0
         for item in mounts:
             node_id = org_map.get(str(item.get("nodeId"))) or skill_map.get(str(item.get("nodeId")))
@@ -156,11 +160,20 @@ async def migrate(snapshot: Dict[str, Any], *, force: bool, dry_run: bool) -> in
                 skipped += 1
                 continue
             role = str(item.get("role") or "member")
-            if role not in ("leader", "owner", "specialist", "member"):
+            if role not in role_rank:
                 role = "member"
+            key = (user_id, node_id)
+            prev = picked.get(key)
+            if prev is None or role_rank[role] > role_rank[prev]:
+                picked[key] = role
+            else:
+                skipped += 1
+        for (user_id, node_id), role in picked.items():
             db.add(RespNodeLink(user_id=user_id, node_id=node_id, link_type="solid",
                                 role=role, source="migrated_from_engineers"))
             added += 1
+        if skipped:
+            print(f"[DEDUP] 挂载去重/跳过 {skipped} 条")
 
         skill_tree_row = await db.get(RespTree, skill_tree)
         org_tree_row = await db.get(RespTree, org_tree)
