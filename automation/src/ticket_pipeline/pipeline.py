@@ -52,10 +52,34 @@ class TicketPipeline:
     async def generate(self, ticket: TicketCandidate) -> Dict[str, Any]:
         return await self.generator.generate(ticket)
 
+    def _is_stale(self, ticket: TicketCandidate) -> bool:
+        """Return True when a previously generated candidate needs regeneration."""
+        manifest_path = self.candidate_root / str(ticket.id) / "manifest.json"
+        if not manifest_path.is_file():
+            return True
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return True
+        generated_at = manifest.get("generated_at")
+        if ticket.updated_at and generated_at:
+            try:
+                generated = datetime.fromisoformat(generated_at)
+            except ValueError:
+                return True
+            if generated.tzinfo is None:
+                generated = generated.replace(tzinfo=timezone.utc)
+            updated = ticket.updated_at
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            return updated > generated
+        return False
+
     async def run(
         self,
         limit: int = 100,
         ticket_ids: Optional[Sequence[int]] = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         wanted = {int(item) for item in ticket_ids} if ticket_ids else None
         result = TicketPipelineResult(outputs=[])
@@ -63,6 +87,16 @@ class TicketPipeline:
             result.scanned += 1
             if wanted is not None and ticket.id not in wanted:
                 result.skipped += 1
+                continue
+            if not force and not self._is_stale(ticket):
+                result.skipped += 1
+                result.outputs.append(
+                    {
+                        "ticket_id": ticket.id,
+                        "status": "skipped",
+                        "reason": "candidate already generated",
+                    }
+                )
                 continue
             try:
                 output = await self.generate(ticket)
@@ -89,6 +123,11 @@ class TicketPipeline:
         target_dir = (promoted_root / str(ticket_id)).resolve()
         if target_dir != promoted_root and promoted_root not in target_dir.parents:
             raise ValueError(f"Refusing to promote outside {promoted_root}: {target_dir}")
+        if not any(candidate_dir.glob("test_*.py")):
+            raise ValueError(
+                f"Ticket {ticket_id} has no executable test file; "
+                "regenerate the candidate before promotion"
+            )
         if target_dir.exists():
             shutil.rmtree(target_dir)
         shutil.copytree(candidate_dir, target_dir)

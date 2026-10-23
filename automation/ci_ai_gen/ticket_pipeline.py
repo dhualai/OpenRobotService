@@ -11,10 +11,14 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 from automation.ci_ai_gen.gates import strip_code_fence
 from automation.src.ticket_pipeline.models import TicketCandidate
+from automation.src.ticket_pipeline.script_renderer import (
+    render_script,
+    validate_case_requests,
+)
 
 
 class TextLLM(Protocol):
@@ -50,6 +54,7 @@ def extract_cases(text: str) -> list[dict[str, Any]]:
         normalized.setdefault("priority", "P1")
         normalized.setdefault("precondition", "")
         normalized.setdefault("steps", [])
+        normalized.setdefault("requests", [])
         normalized["source"] = "ticket"
         cases.append(normalized)
     return cases
@@ -76,6 +81,17 @@ def _render_cases_md(ticket: TicketCandidate, cases: list[dict[str, Any]]) -> st
                 "",
             ]
         )
+        requests = [item for item in (case.get("requests") or []) if isinstance(item, dict)]
+        if requests:
+            lines.append("接口调用：")
+            lines.append("")
+            for request in requests:
+                lines.append(
+                    f"- `{str(request.get('method', 'GET')).upper()} {request.get('path', '')}`"
+                    f" → 期望 {request.get('expected_status', 200)}"
+                    f"（{request.get('step') or '未命名步骤'}）"
+                )
+            lines.append("")
         for step in case.get("steps") or []:
             if not isinstance(step, dict):
                 continue
@@ -97,11 +113,15 @@ class TicketCaseGenerator:
         *,
         prompts_dir: Path | None = None,
         output_root: Path | None = None,
+        spec: Optional[dict[str, Any]] = None,
+        endpoints: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         automation_root = Path(__file__).resolve().parents[1]
         self.llm = llm
         self.prompts_dir = prompts_dir or Path(__file__).resolve().parent / "prompts"
         self.output_root = output_root or automation_root / "references" / "generated-cases" / "tickets"
+        self.spec = spec
+        self.endpoints = endpoints or []
 
     def _prompt(self, name: str) -> str:
         return (self.prompts_dir / name).read_text(encoding="utf-8")
@@ -123,6 +143,31 @@ class TicketCaseGenerator:
             indent=2,
         )
 
+    def _endpoint_brief(self) -> str:
+        if not self.endpoints:
+            return "（未提供接口清单）"
+        lines = []
+        for endpoint in self.endpoints:
+            if not isinstance(endpoint, dict):
+                continue
+            method = str(endpoint.get("method", "")).upper()
+            path = str(endpoint.get("path", ""))
+            if not method or not path:
+                continue
+            summary = str(endpoint.get("summary") or "").strip()
+            params = [
+                str(item.get("name"))
+                for item in (endpoint.get("params") or [])
+                if isinstance(item, dict) and item.get("name")
+            ]
+            detail = f"- {method} {path}"
+            if summary:
+                detail += f" — {summary}"
+            if params:
+                detail += f"（参数：{', '.join(params)}）"
+            lines.append(detail)
+        return "\n".join(lines) if lines else "（未提供接口清单）"
+
     async def generate(self, ticket: TicketCandidate) -> dict[str, Any]:
         ticket_payload = self._ticket_payload(ticket)
         analysis = await self.llm.complete(
@@ -132,10 +177,14 @@ class TicketCaseGenerator:
         )
         cases_raw = await self.llm.complete(
             self._prompt("ticket_case_gen.md"),
-            f"## 工单\n{ticket_payload}\n\n## 测试分析\n{analysis}",
+            f"## 工单\n{ticket_payload}\n\n## 测试分析\n{analysis}\n\n"
+            f"## 接口清单\n{self._endpoint_brief()}",
             max_tokens=8192,
         )
         cases = extract_cases(cases_raw)
+
+        spec_issues = validate_case_requests(cases, self.spec)
+        script = render_script(ticket, cases)
 
         output_dir = self.output_root / str(ticket.id)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -148,6 +197,7 @@ class TicketCaseGenerator:
             _render_cases_md(ticket, cases),
             encoding="utf-8",
         )
+        (output_dir / "test_gen.py").write_text(script, encoding="utf-8")
         manifest = {
             "ticket_id": ticket.id,
             "ticket_type": ticket.task_type,
@@ -155,9 +205,11 @@ class TicketCaseGenerator:
             "project_name": ticket.project_name,
             "source_title": ticket.title,
             "case_count": len(cases),
+            "request_count": sum(len(case.get("requests") or []) for case in cases),
             "review_status": "pending_review",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "generator": "ticket_case_generator",
+            "spec_issues": spec_issues,
         }
         (output_dir / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2),

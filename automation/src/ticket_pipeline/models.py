@@ -21,3 +21,5 @@ class TicketCandidate(BaseModel):
     created_by: str = ""
     source: str = ""
     created_at: datetime | None = None
+    updated_at: datetime | None = None
+    resolved_at: datetime | None = None
