@@ -323,6 +323,27 @@ def test_report_mdl_blockers_is_best_effort(capsys):
     assert "取不到持锁会话" in capsys.readouterr().out
 
 
+def test_report_mdl_blockers_uses_existing_ps_columns():
+    """performance_schema.metadata_locks 没有 OBJECT_TABLE_NAME 列（8.0 实际是 OBJECT_NAME）。"""
+
+    class _RecordingCursor:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            return []
+
+    cur = _RecordingCursor()
+    sync._report_mdl_blockers(cur)
+
+    assert "ml.OBJECT_NAME" in cur.sql
+    assert "ml.OBJECT_TYPE = 'TABLE'" in cur.sql
+    assert "OBJECT_TABLE_NAME" not in cur.sql
+
+
 def test_lock_wait_timeout_leaves_room_for_short_transaction():
     """15s 太短：应用侧任一 idle-in-transaction 会话都会把整次发版拖失败。"""
     assert "lock_wait_timeout = 45" in sync._LOCK_WAIT_TIMEOUT_SQL

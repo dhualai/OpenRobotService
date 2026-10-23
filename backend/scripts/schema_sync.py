@@ -412,11 +412,11 @@ def _report_mdl_blockers(cur) -> None:
     """打印当前持有本库表级元数据锁的会话（尽力而为，只读，绝不 KILL）。"""
     sql = (
         "SELECT t.PROCESSLIST_ID, t.PROCESSLIST_COMMAND, t.PROCESSLIST_TIME, "
-        "       ml.OBJECT_TABLE_NAME, ml.LOCK_TYPE "
+        "       ml.OBJECT_NAME, ml.LOCK_TYPE "
         "FROM performance_schema.metadata_locks ml "
         "JOIN performance_schema.threads t ON t.THREAD_ID = ml.OWNER_THREAD_ID "
         "WHERE ml.OBJECT_SCHEMA = DATABASE() AND ml.LOCK_STATUS = 'GRANTED' "
-        "  AND ml.OBJECT_TABLE_NAME IS NOT NULL "
+        "  AND ml.OBJECT_TYPE = 'TABLE' AND ml.OBJECT_NAME IS NOT NULL "
         "ORDER BY t.PROCESSLIST_TIME DESC LIMIT 10"
     )
     try:
