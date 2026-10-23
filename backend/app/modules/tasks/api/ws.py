@@ -57,6 +57,52 @@ def restricted_review_room(task_id, user):
         return bool(report and report.submit_status != "approved" and user_matches(user, report.reviewer))
 
 
+def _welcome_snapshot(task_id: int) -> Dict[str, object]:
+    """构建 welcome 快照（已读游标 + 已读名单）：独立短会话，查完立即结束事务。
+
+    历史实现把同一个 Session 复用在整条 WS 连接上，而 SQLAlchemy 默认
+    ``autocommit=False`` —— 只读查询也会开事务，且不提交就一直是 idle-in-transaction。
+    事务期间持有的表级元数据锁（MDL）会一直挂到连接断开，导致任何
+    ``ALTER TABLE``（部署补列）都排到 ``lock_wait_timeout`` 后报 1205。
+    因此这里（以及 ``_report_read_once``）一律「一次操作一个会话」。
+    """
+    read_map: Dict[str, object] = {}
+    read_records: Dict[str, object] = {}
+    with SessionLocal() as snap:
+        try:
+            read_map = read_cursor_map(snap, task_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"welcome 已读游标查询失败 task_id={task_id}: {exc}")
+        try:
+            read_records = read_records_map(snap, task_id, None, READ_RECORDS_SNAPSHOT_LIMIT)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"welcome 已读名单查询失败 task_id={task_id}: {exc}")
+        # 只读事务显式收尾：close() 也会回滚，这里写明意图，避免以后被改成复用会话
+        snap.rollback()
+    return {"read_map": read_map, "read_records": read_records}
+
+
+def _report_read_once(
+    task_id: int,
+    comment_ids,
+    username: str,
+    name: Optional[str],
+    avatar_resource_id: Optional[int],
+    last_read_comment_id,
+) -> Dict[str, object]:
+    """单次已读上报：独立短会话，写完即关（事务不跨帧存活）。"""
+    with SessionLocal() as db:
+        return report_read_sync(
+            db,
+            task_id,
+            comment_ids,
+            username,
+            name=name,
+            avatar_resource_id=avatar_resource_id,
+            last_read_comment_id=last_read_comment_id,
+        )
+
+
 def _build_redis_url() -> Optional[str]:
     """跨进程广播用的 Redis 地址；可用环境变量关闭（关闭后纯本地广播）。"""
     flag = os.getenv("WS_HUB_REDIS_ENABLED", "true").strip().lower()
@@ -178,27 +224,18 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
     conn = WsConnection(websocket, username, name, task_id, avatar_resource_id)
     await manager.connect(task_id, conn)
 
-    # 单个连接生命周期内复用同一同步 session（与 task.py 既有模式一致）
-    db = SessionLocal()
+    # 3/4 两步一律用「短会话」：会话只在一次查询/写入内存在，绝不跨帧复用。
+    #    原因见 _welcome_snapshot 的注释（长事务会把表的元数据锁挂到连接断开）。
     try:
         # 3. welcome：在线成员 + 各用户已读游标 + 已读名单快照
         #    同步 ORM 走线程池，避免大工单快照查询阻塞事件循环
-        try:
-            read_map = await run_in_threadpool(read_cursor_map, db, task_id)
-        except Exception:  # noqa: BLE001
-            read_map = {}
-        try:
-            read_records = await run_in_threadpool(
-                read_records_map, db, task_id, None, READ_RECORDS_SNAPSHOT_LIMIT
-            )
-        except Exception:  # noqa: BLE001
-            read_records = {}
+        snapshot = await run_in_threadpool(_welcome_snapshot, task_id)
         await conn.send({
             "type": "welcome",
             "you": username,
             "online": manager.online_members(task_id),
-            "read_map": read_map,
-            "read_records": read_records,
+            "read_map": snapshot["read_map"],
+            "read_records": snapshot["read_records"],
         })
         # 4. 接收客户端帧
         while True:
@@ -218,8 +255,7 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
                 # 写入逻辑在 read_receipt 中：批量幂等 upsert + 分块失败隔离 + 评论归属校验。
                 try:
                     result = await run_in_threadpool(
-                        report_read_sync,
-                        db,
+                        _report_read_once,
                         task_id,
                         msg.get("comment_ids"),
                         username,
@@ -228,7 +264,6 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
                         msg.get("last_read_comment_id"),
                     )
                 except Exception as exc:  # noqa: BLE001
-                    db.rollback()
                     logger.error(f"已读回执写入失败 task_id={task_id}: {exc}")
                     result = None
                 if result is not None:
@@ -246,10 +281,6 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
     except Exception as e:  # noqa: BLE001
         logger.warning(f"WS 连接异常 task_id={task_id} user={username}: {e}")
     finally:
-        try:
-            db.close()
-        except Exception:  # noqa: BLE001
-            pass
         await manager.disconnect(task_id, conn)
 
 

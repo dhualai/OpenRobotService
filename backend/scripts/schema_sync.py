@@ -56,6 +56,7 @@ import json
 import os
 import re
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -65,7 +66,14 @@ _DB_URL_RE = re.compile(r"mysql\+pymysql://([^:]+):([^@]+)@([^:]+):(\d+)/([^?]+)
 # 执行期的安全护栏
 _LOCK_NAME = "ors_schema_sync"
 _LOCK_TIMEOUT_SECONDS = 30
-_LOCK_WAIT_TIMEOUT_SQL = "SET SESSION lock_wait_timeout = 15"
+# 单条 DDL 等锁上限。15s 太短：应用侧只要有一个 idle-in-transaction 的会话
+# 碰过目标表（或它的外键关联表），ALTER 必然等到超时，整次发版就白跑。
+_LOCK_WAIT_TIMEOUT_SQL = "SET SESSION lock_wait_timeout = 45"
+
+# DDL 遇元数据锁冲突时的退避重试（只对锁冲突生效，其他错误立刻失败）
+_DDL_RETRY_MAX = 3
+_DDL_RETRY_INTERVAL = 5
+_MDL_CONFLICT_CODES = (1205, 1213)  # 1205 锁等待超时 / 1213 死锁
 
 # 人工迁移草稿的文件名（--draft-dir 时生成）
 _DRAFT_FILENAME = "manual_migration.sql"
@@ -390,6 +398,63 @@ def _connect(cfg: dict):
     )
 
 
+def _is_mdl_conflict(exc: BaseException) -> bool:
+    """判断异常是否为『等表/元数据锁超时或被死锁回滚』（可直接重试的那类）。"""
+    candidates = [getattr(exc, "args", ()), getattr(getattr(exc, "orig", None), "args", ())]
+    for args in candidates:
+        if args and isinstance(args[0], int) and args[0] in _MDL_CONFLICT_CODES:
+            return True
+    text = str(exc)
+    return "Lock wait timeout" in text or "Deadlock found" in text
+
+
+def _report_mdl_blockers(cur) -> None:
+    """打印当前持有本库表级元数据锁的会话（尽力而为，只读，绝不 KILL）。"""
+    sql = (
+        "SELECT t.PROCESSLIST_ID, t.PROCESSLIST_COMMAND, t.PROCESSLIST_TIME, "
+        "       ml.OBJECT_NAME, ml.LOCK_TYPE "
+        "FROM performance_schema.metadata_locks ml "
+        "JOIN performance_schema.threads t ON t.THREAD_ID = ml.OWNER_THREAD_ID "
+        "WHERE ml.OBJECT_SCHEMA = DATABASE() AND ml.LOCK_STATUS = 'GRANTED' "
+        "  AND ml.OBJECT_TYPE = 'TABLE' AND ml.OBJECT_NAME IS NOT NULL "
+        "ORDER BY t.PROCESSLIST_TIME DESC LIMIT 10"
+    )
+    try:
+        cur.execute(sql)
+        rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] 取不到持锁会话（不影响补列结果）：{exc}")
+        return
+    if not rows:
+        return
+    print("[WARN] 当前持有表级元数据锁的会话（仅供参考，不会 KILL）：")
+    for row in rows:
+        print(f"[WARN]   conn={row[0]} cmd={row[1]} idle={row[2]}s 持锁={row[3]}({row[4]})")
+
+
+def _ddl_execute(cur, sql: str) -> None:
+    """执行一条 DDL；仅对锁冲突退避重试，其它错误原样抛出。
+
+    部署期间应用侧若有 idle-in-transaction 会话碰过目标表，ALTER 会一直排队。
+    短暂重试能给应用侧留出事务结束的窗口，避免一次瞬时占用就打断整次发版。
+    """
+    for attempt in range(1, _DDL_RETRY_MAX + 1):
+        try:
+            cur.execute(sql)
+            return
+        except Exception as exc:  # noqa: BLE001
+            if not _is_mdl_conflict(exc):
+                raise
+            if attempt >= _DDL_RETRY_MAX:
+                print(f"[WARN] 元数据锁冲突重试 {_DDL_RETRY_MAX} 次仍失败：{sql}")
+                _report_mdl_blockers(cur)
+                raise
+            print(f"[WARN] 元数据锁冲突（第 {attempt}/{_DDL_RETRY_MAX} 次），"
+                  f"{_DDL_RETRY_INTERVAL}s 后重试：{sql}")
+            _report_mdl_blockers(cur)
+            time.sleep(_DDL_RETRY_INTERVAL)
+
+
 def _apply(cur, result: dict, dry_run: bool) -> int:
     """执行 AUTOMATIC 的补列 / 建索引，返回执行条数。"""
     applied = 0
@@ -400,7 +465,7 @@ def _apply(cur, result: dict, dry_run: bool) -> int:
         if dry_run:
             print(f"[dryrun] {sql}")
             continue
-        cur.execute(sql)
+        _ddl_execute(cur, sql)
         print(f"[DONE] {sql}")
         applied += 1
 
@@ -411,7 +476,7 @@ def _apply(cur, result: dict, dry_run: bool) -> int:
         if dry_run:
             print(f"[dryrun] {sql}")
             continue
-        cur.execute(sql)
+        _ddl_execute(cur, sql)
         print(f"[DONE] {sql}")
         applied += 1
     return applied
