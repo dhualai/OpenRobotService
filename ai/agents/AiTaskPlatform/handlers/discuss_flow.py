@@ -600,14 +600,38 @@ class DiscussFlow:
         att_inventory = _attachment_inventory(ctx, kind_of, bool(runtime_ctx.get("log_path")))
 
         project_catalog = ""
-        if getattr(ctx, "project_id", ""):
+        project_roles = ""
+        _pid = getattr(ctx, "project_id", "") or ""
+        _pname = getattr(ctx, "project_name", "") or ""
+        if _pid or _pname:
             try:
                 from ai.agents.AiTaskPlatform.capabilities.tools.project_info import safe_catalog
-                project_catalog = safe_catalog(ctx.project_id)
+                if _pid:
+                    project_catalog = safe_catalog(_pid)
             except Exception as _pi_e:
                 logger.warning(f"[discuss] 项目信息目录失败: {_pi_e}")
+            try:
+                from ai.agents.AiTaskPlatform.contexts import format_project_roles
+                project_roles = format_project_roles(_pid, _pname)
+            except Exception as _pr_e:
+                logger.warning(f"[discuss] 项目主数据角色失败: {_pr_e}")
         if not project_catalog:
             project_catalog = "（工单未关联项目，或该项目还没有可引用的现场信息）"
+        if not project_roles:
+            project_roles = "（工单未关联项目，或项目表无对接人/经理/销售等角色）"
+
+        # 问对接人等：确定性短路——用 project 表主数据作答，禁止再派 project_info（档案会盖掉权威字段）
+        from ai.agents.AiTaskPlatform.contexts import asks_project_role
+        _role_q = asks_project_role(query or "")
+        if _role_q:
+            available_caps = [c for c in available_caps if c != "project_info"]
+            cap_hint = ", ".join(available_caps) or "（无可用能力）"
+            facultative = (
+                f"{project_roles}\n"
+                "（以上为项目主数据，与讨论区 @ 置顶同源；直接据此回答对接人/经理/销售。"
+                "不要用现场档案「项目人员」组，也不要用讨论历史里档案说法覆盖。）"
+            )
+            logger.info(f"[discuss] 角色问句短路，跳过 project_info task={task_id}")
 
         async def _fit_history(extra: str = "", *, for_plan: bool = False) -> tuple[str, str]:
             parts = [
@@ -620,7 +644,7 @@ class DiscussFlow:
                 extra or "",
             ]
             if for_plan:
-                parts.extend([att_inventory, known_txt, new_txt, project_catalog])
+                parts.extend([att_inventory, known_txt, new_txt, project_roles, project_catalog])
             desc, disc = await fit_ticket_history(
                 description=ctx.description or "",
                 comment_lines=comment_lines,
@@ -647,7 +671,8 @@ class DiscussFlow:
             f"历史已解读附件摘要（**仅作历史参考**：图片结论稳定可复述；"
             f"日志/文档摘要不代表已分析完成，若需分析请派 log_analyze 真实重读）:\n{known_txt}\n"
             f"可用能力: {cap_hint}\n"
-            f"本项目现场信息目录（只有组名，没有字段值）:\n{project_catalog}\n\n"
+            f"{project_roles}\n"
+            f"本项目现场信息目录（补充档案，只有组名，没有字段值）:\n{project_catalog}\n\n"
             "根据用户问题（或讨论历史中未解决的疑问）和附件情况，决定派哪些能力分析"
             "（知识库检索/图片/日志/历史/代码）。\n"
             "规则：新增附件必分析；历史图片一般用其摘要即可（除非用户明确要重看）；\n"
@@ -657,7 +682,9 @@ class DiscussFlow:
             "**不要说工单没有任何附件**，但要说清楚这不是车端日志、没法逐行分析 log。"
             "一旦已从 USP 拉到算法日志，**禁止**再说「只有对话记录/没有车端日志」。\n"
             "若问题属于知识问答（怎么操作/错误码含义/协议标准/产品介绍/排查方法）→ 派 retrieve_kb 查知识库。\n"
-            "若用户要看项目信息、现场信息，或问题依赖车型、软件版本、外设、业务系统、人员、风险"
+            "问「项目对接人 / 项目经理 / 销售是谁」→ 直接用上方「项目主数据角色」回答，"
+            "complexity=simple，**不要**派 project_info（现场档案是补充，对接人权威在 project 表）。\n"
+            "若用户要看现场信息，或问题依赖车型、软件版本、外设、业务系统、档案人员、风险"
             " → 派 project_info，目标里保留用户原话。"
             "用户明确要「项目信息」时可以展开已填字段；只是闲聊就不要派。\n"
             "若当前轮仅@U老师无新问题，但讨论历史有未决疑问或刚提到需要分析的内容 → 仍应继续深化分析。\n"
@@ -699,6 +726,11 @@ class DiscussFlow:
                                     output={"router_intent": "fallback"})
             except Exception:
                 is_pure_chat = False
+
+        if _role_q:
+            # 角色问句已有主数据，不再进 Supervisor，避免派档案能力冲掉答案
+            need_supervisor = False
+            is_pure_chat = False
 
         if need_supervisor and available_caps and not is_pure_chat:
             supervisor = Supervisor(llm_client=self._llm_client)
@@ -1362,6 +1394,8 @@ class DiscussFlow:
             system_prompt = f"{system_prompt}\n\n{user_profile_block}"
         if memory_block:
             prompt = f"{prompt}\n\n{memory_block}"
+        if project_roles and not project_roles.startswith("（"):
+            prompt = f"{prompt}\n\n{project_roles}"
 
         if await _client_cancelled(is_cancelled):
             logger.info(f"[discuss] 客户端已离开，仍生成并写入回复 task={task_id}")
