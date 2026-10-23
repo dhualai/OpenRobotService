@@ -2600,16 +2600,6 @@ export default function TaskDetailPage() {
 
             {/* 工单解决方式 */}
             <div className="ticket-edit-form__field">
-              {!archiveGenerating && (
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                  <span
-                    onClick={() => setArchiveReportPreview((v) => !v)}
-                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
-                  >
-                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
-                  </span>
-                </div>
-              )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                 <span className="ticket-edit-form__label" style={{ marginBottom: 0 }}>✅ 工单解决方式</span>
                 {resolve.resolutionFailed && (
@@ -3105,6 +3095,16 @@ export default function TaskDetailPage() {
                 />
               )}
               </div>
+              {!archiveGenerating && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                  <span
+                    onClick={() => setArchiveReportPreview((v) => !v)}
+                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
+                  >
+                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
+                  </span>
+                </div>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingTop: 12 }}>
                 <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
