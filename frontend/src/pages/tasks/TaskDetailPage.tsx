@@ -117,11 +117,6 @@ interface ArchiveSimilarItem {
 
 interface MinioPathInfo { bucket: string; objectKey: string; }
 
-// ORS-1010 相似工单的状态展示（后端回表带枚举原值，小写；缺省透传原样）
-const ARCHIVE_SIMILAR_STATUS_ZH: Record<string, string> = {
-  archived: '已归档', closed: '已关闭', resolved: '已解决', new: '新建',
-  in_progress: '处理中', pending: '待处理', canceled: '已取消',
-};
 
 // ORS-1035 相似工单缩略图：object_path → 带鉴权 token 的附件代理 URL（<img> 直连）
 const similarThumbUrl = (objectPath: string): string => {
@@ -856,6 +851,17 @@ export default function TaskDetailPage() {
             setArchiveGenerating(false);
             setArchiveGenStatus('');
             setArchiveReportPreview(true); // 生成完默认预览：先看渲染结果（含图片）
+            // ORS-1035：服务端生成写回推进了 revision，重取最新版报告同步本地
+            // （内容+版本号），否则保存必撞「已被他人修改」、重开弹窗见旧内容
+            request<Ticket>(`/archive-report/${Number(taskDetail.id)}/archive-report`)
+              .then((r) => {
+                const cr = (r as unknown as {
+                  current_archive_report?: { revision?: number; content?: string } | null;
+                }).current_archive_report;
+                if (cr?.revision) setArchiveReportRevision(cr.revision);
+                if (cr?.content) setArchiveReportContent(cr.content);
+              })
+              .catch(() => {});
             Toast({ message: 'AI 初稿已生成，请核对并修改后提交审核', theme: 'success' });
           },
           onError: (m) => {
@@ -889,15 +895,55 @@ export default function TaskDetailPage() {
     const reportId = detail?.current_archive_report?.id;
     if (!reportId) return;
     setArchiveLoading(true);
+    const doSave = () => request(`/archive-report/archive-reports/${reportId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
+    }) as Promise<{ revision: number }>;
+    const syncFromServer = async () => {
+      const latest = await request<Ticket>(`/archive-report/${Number(detail.id)}/archive-report`);
+      const cr = (latest as unknown as {
+        current_archive_report?: { revision?: number; content?: string } | null;
+      }).current_archive_report;
+      if (cr?.revision) setArchiveReportRevision(cr.revision);
+      return cr;
+    };
     try {
-      const report = await request(`/archive-report/archive-reports/${reportId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
-      });
-      setArchiveReportRevision((report as { revision: number }).revision);
+      const report = await doSave();
+      setArchiveReportRevision(report.revision);
+      // ORS-1035：保存后同步本地 detail 缓存——否则关弹窗再开读到的还是
+      // 旧内容（detail 是进页面时的快照，保存不更新它就一直旧）
+      setDetail((prev) => prev ? {
+        ...prev,
+        current_archive_report: {
+          ...(prev.current_archive_report || {}),
+          content: archiveReportContent,
+          revision: report.revision,
+        },
+      } as Ticket : prev);
       Toast({ message: '草稿已保存', theme: 'success' });
     } catch (err) {
-      Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('已被他人修改')) {
+        // 409：AI 生成写回等推进了版本号——拉最新版本号原地重试一次
+        try {
+          const cr = (await syncFromServer()) || {};
+          const report = await doSave();
+          setArchiveReportRevision(report.revision);
+          setDetail((prev) => prev ? {
+            ...prev,
+            current_archive_report: {
+              ...(prev.current_archive_report || {}),
+              content: archiveReportContent,
+              revision: report.revision,
+            },
+          } as Ticket : prev);
+          Toast({ message: '草稿已保存（已自动合并最新版本）', theme: 'success' });
+        } catch (retryErr) {
+          Toast({ message: `保存失败: ${retryErr instanceof Error ? retryErr.message : ''}`, theme: 'error' });
+        }
+      } else {
+        Toast({ message: `保存失败: ${msg}`, theme: 'error' });
+      }
     } finally {
       setArchiveLoading(false);
     }
@@ -2554,6 +2600,16 @@ export default function TaskDetailPage() {
 
             {/* 工单解决方式 */}
             <div className="ticket-edit-form__field">
+              {!archiveGenerating && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                  <span
+                    onClick={() => setArchiveReportPreview((v) => !v)}
+                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
+                  >
+                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
+                  </span>
+                </div>
+              )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                 <span className="ticket-edit-form__label" style={{ marginBottom: 0 }}>✅ 工单解决方式</span>
                 {resolve.resolutionFailed && (
@@ -2964,9 +3020,9 @@ export default function TaskDetailPage() {
                       <span style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginLeft: 'auto', flexShrink: 0 }}>{expanded ? '收起 ▴' : '展开 ▾'}</span>
                     </div>
                     <div style={{ fontSize: 13, marginTop: 3, lineHeight: 1.5, wordBreak: 'break-word', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{s.title}</div>
-                    {(s.project_name || s.status) && (
+                    {s.project_name && (
                       <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
-                        {[s.project_name, ARCHIVE_SIMILAR_STATUS_ZH[s.status || ''] || s.status].filter(Boolean).join(' · ')}
+                        {s.project_name}
                       </div>
                     )}
                     {expanded && s.summary && (
@@ -3047,16 +3103,6 @@ export default function TaskDetailPage() {
                   onChange={(v) => setArchiveReportContent(v || '')}
                   preview="edit"
                 />
-              )}
-              {!archiveGenerating && (
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                  <span
-                    onClick={() => setArchiveReportPreview((v) => !v)}
-                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
-                  >
-                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
-                  </span>
-                </div>
               )}
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingTop: 12 }}>
