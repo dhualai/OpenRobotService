@@ -8,7 +8,7 @@ import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { setupWechatShare, isPcWechat } from '@/shared/utils/wechatJsSdk';
-import { completeArchiveReportTemplate } from '@/shared/utils/archiveReport';
+import { archiveSkeleton } from '@/shared/utils/archiveReport';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken, ApiError } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -805,10 +805,14 @@ export default function TaskDetailPage() {
       void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
-      // ORS-1010：AI 生成改为显式按钮（不自动跑）——编辑器空态给引导条，
-      // 处理人自己写或点 AI 均可；已有内容（幂等复用）直接进编辑
-      setArchiveReportContent(existing);
-      Toast({ message: existing ? '已开始归档，请继续编写归档报告' : '已开始归档，可直接手写，或点「AI 生成初稿」', theme: 'success' });
+      // ORS-1035：无内容时预填两节骨架（手写往里填=天然标准 MD，入库免 LLM
+      // 提炼；AI 生成也写进这个结构）——补齐章节按钮由此不再需要
+      if (!existing) {
+        setArchiveReportContent(archiveSkeleton(String(ticket.ticket_type || '')));
+      } else {
+        setArchiveReportContent(existing);
+      }
+      Toast({ message: '已开始归档，可直接填写，或点「✨AI 初稿」让 AI 代笔', theme: 'success' });
     } catch (err) {
       // archive-start 失败兜底
       Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}`, theme: 'error' });
@@ -821,7 +825,10 @@ export default function TaskDetailPage() {
   const handleAiGenerateReport = async () => {
     if (!detail || archiveGenerating || archiveLoading) return;
     const taskDetail = detail;
-    if ((archiveReportContent || '').trim()) {
+    // 裸骨架（只有标题行无正文）= 还没写，直接生成不算覆盖
+    const hasBody = (archiveReportContent || '')
+      .replace(/^#{1,6}.*$/gm, '').replace(/\s/g, '').length > 0;
+    if (hasBody) {
       // 已有内容 → 覆盖确认（重新生成是显式动作，不能误触丢稿）
       Dialog.confirm?.({
         title: '重新生成报告？',
@@ -3045,10 +3052,9 @@ export default function TaskDetailPage() {
                   横排会把文字压成七行细条，1021 用户实测丑） */}
               <div style={{ marginBottom: 10 }}>
                 <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
-                  须含「问题描述」与「解决方案/回答」两部分且各有正文；请勿写入人员姓名及联系方式。
+                  两节已备好，直接往里写；咨询问答类第二节可改「回答」。请勿写入人员姓名及联系方式。
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                  <Button size="small" theme="default" disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent, String(detail?.ticket_type || '')))}>补齐章节</Button>
                   <Button size="small" theme="default" disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
                     {uploadingReportImage ? '上传中…' : '📷 上传图片'}
                   </Button>

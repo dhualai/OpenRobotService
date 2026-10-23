@@ -499,12 +499,13 @@ def test_pending_boundary_blocks_grant_without_inventing_prize_rules():
     assert settlement.unresolved_boundary([{'has_dual_role': True}])
 
 
-def test_report_requires_sections_with_body_and_accepts_numbered_headings():
-    headings = ('问题概述', '问题场景', '复现条件', '原因分析', '解决方案', '验证结果', '适用范围', '遗留问题')
+def test_report_rejects_blank_but_accepts_any_structure():
+    """ORS-1035 放宽：不再强制章节（骨架预填+人工审核兜底），只拦全空白。"""
     with pytest.raises(HTTPException) as empty:
-        validate_knowledge_report('\n\n'.join(f'## {heading}' for heading in headings))
+        validate_knowledge_report('   \n  ')
     assert empty.value.status_code == 422
-    validate_knowledge_report('\n\n'.join(f'## {index + 1}. {heading}\n具体内容' for index, heading in enumerate(headings)))
+    validate_knowledge_report('随便写的自由文本，没有章节结构')
+    validate_knowledge_report('## 问题描述\n现场截图显示报错弹窗')
 
 
 @pytest.mark.asyncio

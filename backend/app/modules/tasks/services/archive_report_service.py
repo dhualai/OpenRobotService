@@ -16,20 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 def validate_knowledge_report(content):
-    """ORS-1035 两节制：须含「问题描述」+「解决方案/回答」（咨询问答类第二节
-    用「回答」），各节有正文。老八节报告（问题概述/原因分析…）天然包含这两
-    类，兼容通过。"""
-    text = content or ""
-    problem = re.search(r"(?m)^#{1,6}\s+(?:\d+[.、]\s*)?问题描述\s*$", text)
-    solution = re.search(r"(?m)^#{1,6}\s+(?:\d+[.、]\s*)?(?:解决方案|回答)\s*$", text)
-    missing = []
-    if not problem:
-        missing.append("问题描述")
-    if not solution:
-        missing.append("解决方案/回答")
-    if missing:
+    """ORS-1035 放宽：骨架预填后报告天然带节，不再强制章节——只拦全空白
+    提交（质量由人工审核兜底，非标准/自由文本走入库 LLM 提炼）。"""
+    if not (content or "").strip():
         from fastapi import HTTPException
-        raise HTTPException(422, "归档报告缺少章节或章节正文：" + "、".join(missing))
+        raise HTTPException(422, "归档报告内容为空，请先填写正文")
 
 
 async def require_assigned_reviewer(db, report, task, operator_id):
