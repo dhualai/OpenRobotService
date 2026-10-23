@@ -29,6 +29,8 @@ describe('现有奖励管理的工单财务审核资料', () => {
     const onClose = vi.fn();
     render(<ArchiveFinanceDetail taskId={1} onClose={onClose} />);
     expect(await screen.findByText('充电工单')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '知识沉淀报告' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '归档报告' })).not.toBeInTheDocument();
     for (const text of ['充电中断', '检查电源后恢复', '报告完整', '可复用排查方法', '三方奖励合计：¥6.00']) {
       expect(screen.getByText(text)).toBeInTheDocument();
     }
@@ -42,7 +44,7 @@ describe('现有奖励管理的工单财务审核资料', () => {
     vi.mocked(fetchArchiveFinanceDetail).mockRejectedValueOnce(new Error('权限不足'));
     render(<ArchiveFinanceDetail taskId={1} onClose={() => {}} />);
     expect(await screen.findByRole('alert')).toHaveTextContent('权限不足');
-    expect(screen.queryByText('归档报告')).not.toBeInTheDocument();
+    expect(screen.queryByText('知识沉淀报告')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '重新加载' }));
     expect(await screen.findByText('检查电源后恢复')).toBeInTheDocument();
     expect(fetchArchiveFinanceDetail).toHaveBeenCalledTimes(2);

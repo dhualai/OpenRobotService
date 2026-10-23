@@ -130,7 +130,7 @@ export default function ArchiveReviewersPanel() {
       setOrder(ord);
       setSource(data?.source || source);
       setDirty(false);
-      Toast({ message: '已保存归档审核人', theme: 'success' });
+      Toast({ message: '已保存知识沉淀审核人', theme: 'success' });
     } catch (e) {
       Toast({
         message: `保存失败: ${e instanceof Error ? e.message : ''}`,
@@ -144,7 +144,7 @@ export default function ArchiveReviewersPanel() {
   if (loading) {
     return (
       <div className="dispatch-dev__empty">
-        <Loading text="加载归档审核人..." />
+        <Loading text="加载知识沉淀审核人..." />
       </div>
     );
   }
@@ -155,7 +155,7 @@ export default function ArchiveReviewersPanel() {
   return (
     <section className="dispatch-dev__card">
       <div className="dispatch-dev__head">
-        <span className="dispatch-dev__title">归档审核人</span>
+        <span className="dispatch-dev__title">知识沉淀审核人</span>
         <div style={{ display: 'flex', gap: 8 }}>
           <button type="button" className="dispatch-dev__btn dispatch-dev__btn--ghost" onClick={() => void load()} disabled={saving}>
             刷新
@@ -171,8 +171,8 @@ export default function ArchiveReviewersPanel() {
         </div>
       </div>
       <p className="dispatch-dev__hint">
-        提交归档报告时，系统先判定问题领域，再从该领域名单按在审负荷加权抽签选人。
-        名单保存在运行时覆盖文件，不改 config.yaml 正文；保存后提交归档即可生效。
+        提交知识沉淀报告时，系统先判定问题领域，再从该领域名单按在审负荷加权抽签选人。
+        名单保存在运行时覆盖文件，不改 config.yaml 正文；保存后提交知识沉淀即可生效。
         {source ? ` 当前来源：${source}` : ''}
         {dirty ? '（有未保存修改）' : ''}
       </p>

@@ -178,7 +178,7 @@ def _label_archive_reviewers(data: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-@router.get("/archive-reviewers", response_model=DataResponse, summary="归档审核人配置")
+@router.get("/archive-reviewers", response_model=DataResponse, summary="知识沉淀审核人配置")
 async def get_archive_reviewers(
     current_user: Dict[str, Any] = require_permission(PERM),
 ):
@@ -191,11 +191,11 @@ async def get_archive_reviewers(
         effective_archive_reviewers, _ = _archive_reviewers_helpers()
         data = _label_archive_reviewers(effective_archive_reviewers())
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取归档审核人失败: {e}") from e
+        raise HTTPException(status_code=500, detail=f"读取知识沉淀审核人失败: {e}") from e
     return DataResponse(code=0, message="success", data=data)
 
 
-@router.put("/archive-reviewers", response_model=DataResponse, summary="保存归档审核人配置")
+@router.put("/archive-reviewers", response_model=DataResponse, summary="保存知识沉淀审核人配置")
 async def save_archive_reviewers(
     payload: Dict[str, Any],
     current_user: Dict[str, Any] = require_permission(PERM),
@@ -213,7 +213,7 @@ async def save_archive_reviewers(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"保存归档审核人失败: {e}") from e
+        raise HTTPException(status_code=500, detail=f"保存知识沉淀审核人失败: {e}") from e
     return DataResponse(code=0, message="success", data=data)
 
 

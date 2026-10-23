@@ -9,8 +9,8 @@ export const STATUS_DISPLAY_MAP: Record<string, string> = {
   resolved: '已解决',
   canceled: '已取消',
   closed: '已关闭',
-  archiving: '归档中',
-  archived: '已归档',
+  archiving: '知识沉淀中',
+  archived: '已沉淀',
 };
 
 export const STATUS_VALUE_MAP: Record<string, string> = {
@@ -23,6 +23,8 @@ export const STATUS_VALUE_MAP: Record<string, string> = {
   '已解决': 'resolved',
   '已取消': 'canceled',
   '已关闭': 'closed',
+  '知识沉淀中': 'archiving',
+  '已沉淀': 'archived',
   '归档中': 'archiving',
   '已归档': 'archived',
 };

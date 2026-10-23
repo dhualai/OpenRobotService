@@ -1,7 +1,7 @@
 """归档报告 API 路由（archive workflow）。
 
-承接工单关闭后的归档流程：
-  开始归档 → 编辑/保存草稿 → 提交审核 → 审核通过(归档) / 审核驳回(退回草稿)
+承接工单关闭后的知识沉淀流程：
+  开始知识沉淀 → 编辑/保存草稿 → 提交审核 → 审核通过(知识沉淀) / 审核驳回(退回草稿)
 """
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ async def archive_start(
     operator_id, username, token = await _operator_info(current_user)
 
     if not (roles.is_assignee or roles.is_admin or roles.can_operate):
-        raise HTTPException(status_code=403, detail="无权限开始归档")
+        raise HTTPException(status_code=403, detail="无权限开始知识沉淀")
 
     try:
         # 3) 业务调用（内部 flush）；created=False 为幂等复用已有草稿
@@ -128,7 +128,7 @@ async def archive_start(
                 operator_name=user_name,
                 to_status=TaskStatus.ARCHIVING.value,
                 detail={"to_report_id": report.id, "version": report.version},
-                description=f"{user_name} 开始归档工单，状态变更为「归档中」",
+                description=f"{user_name} 开始工单知识沉淀，状态变更为「知识沉淀中」",
                 auto_commit=False,
             )
             await db.commit()
@@ -136,7 +136,7 @@ async def archive_start(
             # 6) 系统评论单独 commit，失败不回滚归档业务
             await _add_system_comment(
                 db, task_id,
-                f"{user_name} 开始归档工单，状态变更为「归档中」",
+                f"{user_name} 开始工单知识沉淀，状态变更为「知识沉淀中」",
                 username, token,
             )
 
@@ -157,7 +157,7 @@ async def archive_start(
         detail = str(getattr(e, "orig", None) or e)
         raise HTTPException(
             status_code=500,
-            detail=f"开始归档失败（请检查库结构是否已执行 ensure_archive_schema.py）: {detail}",
+            detail=f"开始知识沉淀失败（请检查库结构是否已执行 ensure_archive_schema.py）: {detail}",
         ) from e
 
 
@@ -173,7 +173,7 @@ async def get_latest_archive_report(
     """GET /tasks/{task_id}/archive-report — 取该工单最新版归档报告（查看权限开放）。"""
     report = await ArchiveReportService.get_latest_by_task(db, task_id)
     if not report:
-        raise HTTPException(status_code=404, detail="该工单暂无归档报告")
+        raise HTTPException(status_code=404, detail="该工单暂无知识沉淀报告")
     task = await db.get(Task, task_id)
     if report.submit_status != "approved" and not user_matches(
         current_user, report.created_by, report.reviewer, task.created_by, task.assigned_to
@@ -198,7 +198,7 @@ async def save_draft(
     # 先取报告判定权限
     report = await ArchiveReportService.get_by_id(db, report_id)
     if not report:
-        raise HTTPException(status_code=404, detail="归档报告未找到")
+        raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
 
     # 权限：created_by 或 admin 或 can_operate
     result = await db.execute(select(Task).where(Task.id == report.task_id))
@@ -210,7 +210,7 @@ async def save_draft(
         or (roles and (roles.is_admin or roles.can_operate))
     )
     if not can_edit:
-        raise HTTPException(status_code=403, detail="无权限编辑该归档报告")
+        raise HTTPException(status_code=403, detail="无权限编辑该知识沉淀报告")
 
     # 业务调用
     updated_report = await ArchiveReportService.save_draft(
@@ -225,7 +225,7 @@ async def save_draft(
         op_type=OperationType.UPDATE,
         operator=username,
         operator_name=user_name,
-        description=f"{user_name} 保存了归档报告草稿",
+        description=f"{user_name} 保存了知识沉淀报告草稿",
         detail={"report_id": report_id, "revision": updated_report.revision},
         auto_commit=False,
     )
@@ -251,11 +251,11 @@ async def submit_report(
 
     report = await ArchiveReportService.get_by_id(db, report_id)
     if not report:
-        raise HTTPException(status_code=404, detail="归档报告未找到")
+        raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
 
     # 权限：created_by 或 admin
     if not (user_matches(current_user, report.created_by) or is_admin_user(current_user)):
-        raise HTTPException(status_code=403, detail="无权限提交该归档报告")
+        raise HTTPException(status_code=403, detail="无权限提交该知识沉淀报告")
 
     # 业务调用：系统派审选审核人，只写 archive_reports.reviewer
     updated_report, assignment = await ArchiveReportService.submit(
@@ -273,7 +273,7 @@ async def submit_report(
         operator=username,
         operator_name=user_name,
         description=(
-            "已提交归档报告，等待匿名审核"
+            "已提交知识沉淀报告，等待匿名审核"
         ),
         detail=log_detail,
         auto_commit=False,
@@ -284,7 +284,7 @@ async def submit_report(
     # 系统评论单独 commit，失败不回滚派审结果
     await _add_system_comment(
         db, report.task_id,
-        "已提交归档报告，等待匿名审核",
+        "已提交知识沉淀报告，等待匿名审核",
         username, token,
     )
 
@@ -306,10 +306,10 @@ async def approve_report(
 
     report = await ArchiveReportService.get_by_id(db, report_id)
     if not report:
-        raise HTTPException(status_code=404, detail="归档报告未找到")
+        raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
 
     if not user_matches(current_user, report.reviewer):
-        raise HTTPException(status_code=403, detail="无权限审核该归档报告")
+        raise HTTPException(status_code=403, detail="无权限审核该知识沉淀报告")
 
     # 业务调用
     approved_report, task_new = await ArchiveReportService.approve(
@@ -326,7 +326,7 @@ async def approve_report(
         operator="knowledge_review",
         operator_name="匿名审核人",
         to_status=TaskStatus.ARCHIVING.value,
-        description="归档报告内容审核通过，已提交财务审核，工单暂未完成归档",
+        description="知识沉淀报告内容审核通过，已提交财务审核，工单暂未完成知识沉淀",
         detail={"report_id": report_id},
         auto_commit=False,
     )
@@ -340,7 +340,7 @@ async def approve_report(
     # 系统评论单独 commit
     await _add_system_comment(
         db, report.task_id,
-        "归档报告内容审核通过，已提交财务审核，工单暂未完成归档",
+        "知识沉淀报告内容审核通过，已提交财务审核，工单暂未完成知识沉淀",
         "system", None,
     )
 
@@ -366,10 +366,10 @@ async def reject_report(
 
     report = await ArchiveReportService.get_by_id(db, report_id)
     if not report:
-        raise HTTPException(status_code=404, detail="归档报告未找到")
+        raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
 
     if not user_matches(current_user, report.reviewer):
-        raise HTTPException(status_code=403, detail="无权限审核该归档报告")
+        raise HTTPException(status_code=403, detail="无权限审核该知识沉淀报告")
 
     # 业务调用
     rejected_report, task_new = await ArchiveReportService.reject(
@@ -385,7 +385,7 @@ async def reject_report(
         op_type=OperationType.ARCHIVE_REJECT,
         operator="knowledge_review",
         operator_name="匿名审核人",
-        description="归档报告已驳回，请当事人查看意见后补充",
+        description="知识沉淀报告已驳回，请当事人查看意见后补充",
         detail={"report_id": report_id},
         auto_commit=False,
     )
@@ -395,7 +395,7 @@ async def reject_report(
     # 系统评论单独 commit
     await _add_system_comment(
         db, report.task_id,
-        "归档报告已驳回，请当事人查看意见后补充",
+        "知识沉淀报告已驳回，请当事人查看意见后补充",
         "system", None,
     )
 

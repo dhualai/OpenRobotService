@@ -152,14 +152,14 @@ async def dispatch_archive_reviewer(
         cfg = effective_archive_reviewers()
     except Exception as exc:  # noqa: BLE001 — 配置异常视为服务失败
         logger.exception("加载 archive_reviewers 配置失败")
-        raise ArchiveReviewError("service_error", "归档派审服务异常，请稍后重试") from exc
+        raise ArchiveReviewError("service_error", "知识沉淀派审服务异常，请稍后重试") from exc
 
     # 先取全量在审负荷；抽签只使用候选子集
     try:
         loads = await count_submitted_loads(db)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("统计归档在审负荷失败")
-        raise ArchiveReviewError("service_error", "归档派审服务异常，请稍后重试") from exc
+        logger.exception("统计知识沉淀在审负荷失败")
+        raise ArchiveReviewError("service_error", "知识沉淀派审服务异常，请稍后重试") from exc
 
     report_body = content_override if content_override is not None else (report.content or "")
     # metadata / AI 摘要里常含领域线索（产品、故障摘要），拼进判定文本
@@ -206,8 +206,8 @@ async def dispatch_archive_reviewer(
     except ArchiveReviewError:
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("归档派审选人异常 task_id=%s report_id=%s", task.id, report.id)
-        raise ArchiveReviewError("service_error", "归档派审服务异常，请稍后重试") from exc
+        logger.exception("知识沉淀派审选人异常 task_id=%s report_id=%s", task.id, report.id)
+        raise ArchiveReviewError("service_error", "知识沉淀派审服务异常，请稍后重试") from exc
 
 
 def assignment_log_detail(assignment: Any) -> dict[str, Any]:

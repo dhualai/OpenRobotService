@@ -504,6 +504,7 @@ def test_report_rejects_blank_but_accepts_any_structure():
     with pytest.raises(HTTPException) as empty:
         validate_knowledge_report('   \n  ')
     assert empty.value.status_code == 422
+    assert empty.value.detail == '知识沉淀报告内容为空，请先填写正文'
     validate_knowledge_report('随便写的自由文本，没有章节结构')
     validate_knowledge_report('## 问题描述\n现场截图显示报错弹窗')
 

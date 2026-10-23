@@ -34,7 +34,7 @@ export const TICKET_STATUS_LIST: StatusMeta[] = [
   { key: 'unsolvable', label: '无法解决', color: '#6cbfe2', tone: 'blue-3', backendReady: true, statusKeys: ['unsolvable_requested', 'unsolvable'] },
   { key: 'resolved', label: '已解决', color: '#00a870', tone: 'status-4', backendReady: true },
   { key: 'closed', label: '已关闭', color: '#999999', tone: 'status-5', backendReady: true },
-  { key: 'archive', label: '归档', color: '#cfeaf6', tone: 'blue-5', backendReady: true, statusKeys: ['archiving', 'archived'] },
+  { key: 'archive', label: '知识沉淀', color: '#cfeaf6', tone: 'blue-5', backendReady: true, statusKeys: ['archiving', 'archived'] },
   { key: 'cancelled', label: '已取消', color: '#d54941', tone: 'status-6', backendReady: true },
 ];
 

@@ -70,6 +70,7 @@ async def test_finance_approval_is_whole_task_idempotent_and_uses_question_month
     log = db.session.scalars(select(TaskOperationLog)).one()
     assert log.operator == 'voter'
     assert log.to_status == TaskStatus.ARCHIVED.value
+    assert log.description == '财务审核通过，工单完成知识沉淀闭环'
     assert log.detail == {'finance_outcome': 'approved', 'audit_remark': '金额核对无误', 'report_id': report.id}
     assert await archive_finance.audit_archive_rewards(db, [reward.id for reward in rewards], 'voter', True) == []
     assert len(db.session.scalars(select(TaskOperationLog)).all()) == 1

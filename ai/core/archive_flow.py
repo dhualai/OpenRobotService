@@ -41,7 +41,7 @@ _GENERATE_TIMEOUT = 180    # 初稿生成整体超时（秒）
 _ACTIVE: dict[int, asyncio.Task] = {}
 
 _SYSTEM_PROMPT = (
-    "你是仓储物流机器人的资深售后工程师，为工单系统撰写归档报告。"
+    "你是仓储物流机器人的资深售后工程师，为工单系统撰写知识沉淀报告。"
     "报告将存档并作为后续 AI 客服的知识来源。只依据给出的素材撰写，"
     "禁止编造素材之外的细节；素材没有覆盖的小节如实写「现场素材未提供，"
     "请处理人补充」。语言简洁、步骤落到可操作动作，保留故障码、车型、"
@@ -56,7 +56,7 @@ def clean_report_title_line(line: str) -> str:
     return _TITLE_PREFIX_RE.sub("", line.lstrip("# ").strip(), count=1)
 
 
-_REPORT_PROMPT = """请根据以下工单素材撰写归档报告。报告只有两个小节，用 `## ` 二级标题，各节都须有正文：
+_REPORT_PROMPT = """请根据以下工单素材撰写知识沉淀报告。报告只有两个小节，用 `## ` 二级标题，各节都须有正文：
 
 第一行：`# 标题`——直接写标题本身（现象+关键对象），不要出现「一句话标题」
 等指令字样
@@ -162,7 +162,7 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
     try:
         ctx = await load_archive_context(task_id)
         if ctx is None:
-            await q({"type": "error", "msg": "工单或归档报告不存在"})
+            await q({"type": "error", "msg": "工单或知识沉淀报告不存在"})
             return
         if ctx["submit_status"] not in ("draft", "rejected") or ctx["content"]:
             await q({"type": "skipped",

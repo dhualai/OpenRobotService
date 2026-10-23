@@ -587,7 +587,7 @@ export default function TaskDetailPage() {
       if (!isAssigneeForArchive && !canOperateArchive) return [];
       const BTN_PRIMARY_ARCHIVE = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
       return [
-        { label: '开始归档', nextStatus: 'archiving', theme: 'primary', actionType: 'archive', customStyle: BTN_PRIMARY_ARCHIVE },
+        { label: '知识沉淀', nextStatus: 'archiving', theme: 'primary', actionType: 'archive', customStyle: BTN_PRIMARY_ARCHIVE },
       ];
     }
 
@@ -660,7 +660,7 @@ export default function TaskDetailPage() {
           const BTN_DANGER2 = { backgroundColor: 'var(--destructive)', color: 'var(--destructive-foreground)', borderRadius: '999px', border: 'none' };
           return [
             { label: '审核并提交财务', nextStatus: 'archiving', theme: 'primary', actionType: 'archive-approve', customStyle: BTN_PRIMARY2 },
-            { label: '驳回归档', nextStatus: 'archiving', theme: 'danger', actionType: 'archive-reject', customStyle: BTN_DANGER2 },
+            { label: '驳回知识沉淀', nextStatus: 'archiving', theme: 'danger', actionType: 'archive-reject', customStyle: BTN_DANGER2 },
           ];
         }
 
@@ -668,7 +668,7 @@ export default function TaskDetailPage() {
         if (report && (report.submit_status === 'draft' || report.submit_status === 'rejected') && (isAssignee2 || canOperate2)) {
           const BTN_PRIMARY3 = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
           return [
-            { label: report.submit_status === 'rejected' ? '修改归档报告并重新提交' : '编辑归档报告', nextStatus: 'archiving', theme: 'primary', actionType: 'archive-edit', customStyle: BTN_PRIMARY3 },
+            { label: report.submit_status === 'rejected' ? '修改知识沉淀报告并重新提交' : '编辑知识沉淀报告', nextStatus: 'archiving', theme: 'primary', actionType: 'archive-edit', customStyle: BTN_PRIMARY3 },
           ];
         }
 
@@ -762,7 +762,7 @@ export default function TaskDetailPage() {
       setArchiveSimilar(list.slice(0, 5));
       setArchiveSimilarReady(res?.retrieval_status !== 'unavailable');
     } catch {
-      setArchiveSimilar([]); setArchiveReportPreview(false); // 静默降级：相似提示拿不到不影响归档
+      setArchiveSimilar([]); setArchiveReportPreview(false); // 静默降级：相似提示拿不到不影响知识沉淀
       setArchiveSimilarReady(false);
     } finally {
       setArchiveSimilarLoading(false);
@@ -815,10 +815,10 @@ export default function TaskDetailPage() {
       } else {
         setArchiveReportContent(existing);
       }
-      Toast({ message: '已开始归档，可直接填写，或点「✨AI 初稿」让 AI 代笔', theme: 'success' });
+      Toast({ message: '已开始知识沉淀，可直接填写，或点「✨AI 初稿」让 AI 代笔', theme: 'success' });
     } catch (err) {
       // archive-start 失败兜底
-      Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}`, theme: 'error' });
+      Toast({ message: `${err instanceof Error ? err.message : '开始知识沉淀失败'}`, theme: 'error' });
     } finally {
       setArchiveLoading(false);
     }
@@ -846,7 +846,7 @@ export default function TaskDetailPage() {
 
     async function runGenerate() {
     setArchiveGenerating(true);
-    setArchiveGenStatus('AI 正在为您总结归档报告…');
+    setArchiveGenStatus('AI 正在为您总结知识沉淀报告…');
     setArchiveReportPreview(false);
     let acc = '';
     try {
@@ -964,7 +964,7 @@ export default function TaskDetailPage() {
     if (archiveLoading) return;
     const reportId = detail?.current_archive_report?.id;
     if (!reportId) {
-      Toast({ message: '归档报告未找到，请重新开始归档', theme: 'warning' });
+      Toast({ message: '知识沉淀报告未找到，请重新开始知识沉淀', theme: 'warning' });
       return;
     }
     setArchiveLoading(true);
@@ -976,7 +976,7 @@ export default function TaskDetailPage() {
       });
       setArchiveEditorVisible(false);
       loadDetail();
-      Toast({ message: '已提交归档报告，等待审核', theme: 'success' });
+      Toast({ message: '已提交知识沉淀报告，等待审核', theme: 'success' });
     } catch (err) {
       Toast({ message: `提交失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -1009,7 +1009,7 @@ export default function TaskDetailPage() {
       setShowArchiveRejectPopup(false);
       setArchiveRejectReason('');
       loadDetail();
-      Toast({ message: '已驳回归档报告', theme: 'success' });
+      Toast({ message: '已驳回知识沉淀报告', theme: 'success' });
     } catch (err) {
       Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -1021,7 +1021,7 @@ export default function TaskDetailPage() {
   const handleOpenArchiveEditor = () => {
     const report = detail?.current_archive_report;
     if (!report) {
-      Toast({ message: '归档报告未找到', theme: 'warning' });
+      Toast({ message: '知识沉淀报告未找到', theme: 'warning' });
       return;
     }
     setArchiveReportContent(report.content || '');
@@ -2949,7 +2949,7 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* ── 归档报告编辑器 Popup ── */}
+      {/* ── 知识沉淀报告编辑器 Popup ── */}
       <Popup
         visible={archiveEditorVisible}
         onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}
@@ -2962,7 +2962,7 @@ export default function TaskDetailPage() {
         <div className="ticket-edit-form" style={{ display: 'flex', flexDirection: 'column', maxHeight: '88vh', overflow: 'hidden' }}>
           <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
-            {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
+            {archiveEditorMode === 'review' ? '知识沉淀报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改知识沉淀报告' : '编写知识沉淀报告')}
           </h4>
           {archiveEditorMode === 'edit' && detail?.current_archive_report?.review_comment && (
             <div style={{ padding: '8px 12px', background: 'var(--destructive)/10%', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>
@@ -2976,7 +2976,7 @@ export default function TaskDetailPage() {
                   原格式工具栏整排删除——报告写作用不上，还把正文挤出首屏。
                   只有报告填写区滚动（flex 中段），相似块与按钮行固定 */}
               <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-          {/* ORS-1010 相似工单提示：归档人对照已沉淀的相似工单（与 AI 初稿并行
+          {/* ORS-1010 相似工单提示：知识沉淀人对照已沉淀的相似工单（与 AI 初稿并行
               拉取）。不展示相似度分值——score 是 RRF 融合分非余弦，展示数字会
               误导。verified=rejected 已被推翻，不出示。0 条且检索正常时也提示
               （功能存在感 + 讲清沉淀机制）；检索挂了保持静默。 */}
@@ -3040,7 +3040,7 @@ export default function TaskDetailPage() {
               })}
               {archiveSimilar.length === 0 && !archiveSimilarLoading && (
                 <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', lineHeight: 1.7, wordBreak: 'break-word' }}>
-                  本单归档审核通过后也会沉淀进经验库，供以后遇到同类问题的同事参考。
+                  本单知识沉淀审核通过后也会沉淀进经验库，供以后遇到同类问题的同事参考。
                 </div>
               )}
               {archiveSimilar.length > 0 && (
@@ -3080,7 +3080,7 @@ export default function TaskDetailPage() {
                 <div style={{ height: 380, border: '1px dashed var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px', overflow: 'auto' }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
                     <span className="loading" style={{ width: 12, height: 12, display: 'inline-block', border: '2px solid var(--brand, #266fe8)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
-                    <b style={{ fontSize: 14 }}>AI 正在为您总结归档报告…</b>
+                    <b style={{ fontSize: 14 }}>AI 正在为您总结知识沉淀报告…</b>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginBottom: 8 }}>{archiveGenStatus}</div>
                   {archiveReportContent && (
@@ -3130,19 +3130,19 @@ export default function TaskDetailPage() {
               <MarkdownRenderer content={archiveReportContent} />
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
                 <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>关闭</Button>
-                <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过归档</Button>
-                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回归档</Button>
+                <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过知识沉淀</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回知识沉淀</Button>
               </div>
             </>
           )}
         </div>
       </Popup>
 
-      {/* ── 驳回归档 Popup ── */}
+      {/* ── 驳回知识沉淀 Popup ── */}
       <Popup visible={showArchiveRejectPopup} onClose={() => setShowArchiveRejectPopup(false)} placement="bottom" showOverlay>
         <div className="ticket-edit-form">
           <span className="ticket-edit-form__close" onClick={() => { setShowArchiveRejectPopup(false); setArchiveRejectReason(''); }}>×</span>
-          <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>驳回归档报告</h4>
+          <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>驳回知识沉淀报告</h4>
           <textarea
             value={archiveRejectReason}
             onChange={(e) => setArchiveRejectReason(e.target.value)}
