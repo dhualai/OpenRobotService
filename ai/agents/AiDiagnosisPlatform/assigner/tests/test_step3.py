@@ -172,6 +172,7 @@ class TestL1PromptHasName:
         assert "【咨询/支持/类型不清·项目对接人优先】" in prompt
         assert "项目对接人也逾越不过去" in prompt
         assert "不必一定派给对应功能工程师" in prompt
+        assert "配置类咨询尤其不要按部门/责任模块乱派" in prompt
         assert "分批打分时也必须遵守同一刻度" in prompt
         assert "几个人都能独立解决" in prompt
         assert "最高不要到 0.90" in prompt
@@ -227,6 +228,10 @@ class TestL1PromptHasName:
         assert "【调度USP】" in usp
         assert "规划路径中" in usp
         assert "任务分配挑车" in usp
+        assert "【任务相关·三档分流】" in usp
+        assert "禁止因此一律选「任务分配」" in usp
+        assert "调度中" in usp
+        assert "已下发" in usp
         assert '"station"' in usp
         assert "不要写「调度问题」" in usp
         assert "【调度USP】" not in other

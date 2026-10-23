@@ -42,6 +42,10 @@ def test_r2_and_audit_share_ticket_fields():
     assert "报障(problem)、缺陷(bug)：看【故障现象】" in r2
     assert "需求(feature)、咨询(support)：看【工单涉及的产品/项目】" in r2
     assert "本单是需求(feature)" in r2
+    assert "【咨询/配置/描述不清·跟项目产品】" in r2
+    assert "调度USP 现场 → 智能规划研究院" in r2
+    assert "禁止仅因「配置/参数/车/地图/定位」" in r2
+    assert "咨询/配置/描述不清时尺子是「项目/产品」" in r2
     assert "以正文为准重选尺子" in r2
     assert "Agent假设仅供参考" in r2
     assert "原样复制" in r2
@@ -51,6 +55,7 @@ def test_r2_and_audit_share_ticket_fields():
     assert "车端硬件" in r2 and "机器人事业部" in r2
     assert "车端软件" in r2 and "智能移动研究院" in r2
     assert "调度USP" in r2 and "智能规划研究院" in r2
+    assert "不要凭笼统字眼把调度现场咨询派到车端/硬件" in r2
     assert "【多义现象·证据优先级】" in r2
     assert "NO_SOLUTION" in r2
     assert "TRAFFIC_LOCK" in r2
