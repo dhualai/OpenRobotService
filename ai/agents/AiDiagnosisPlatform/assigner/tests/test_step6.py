@@ -87,6 +87,12 @@ class TestIronRulesPrompt:
         assert "待产品澄清" in prompt
         assert "产品已对齐" in prompt
         assert "不要只按精排分在产品和研发之间瞎猜" in prompt
+        assert "【咨询/支持/类型不清·项目对接人优先】" in prompt
+        assert "不必硬派功能工程师" in prompt
+        assert "项目对接人也逾越不过去" in prompt
+        assert "对接人不得逾越" in prompt or "对接人逾越不过去" in prompt
+        assert "配置类咨询" in prompt
+        assert "不要按部门" in prompt or "禁止按部门乱派" in prompt
         assert "不要只因类型改选" not in prompt
         assert "禁止写总分" in prompt
         assert "正例：" in prompt
@@ -94,6 +100,18 @@ class TestIronRulesPrompt:
         assert "decision_type 可填" in prompt
         assert "auto(>=0.8)" not in prompt
         assert "系统会按 confidence_score 校正" in prompt
+
+    def test_support_contact_priority_in_step6(self):
+        """正常流程：咨询单仲裁含对接人优先口径。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(ticket_type="support", title="怎么配置地图", problem_description="现场问怎么配"),
+            [_eng("u-a", "甲")],
+            RecallResult(),
+            _ranked("u-a"),
+        )
+        assert "【咨询/支持/类型不清·项目对接人优先】" in prompt
+        assert "优先派给该对接人" in prompt
+        assert "类型其它/未填/看不清" in prompt
 
     def test_feature_stage_in_step6(self):
         """正常流程：需求单阶段进入 Step6 分流，设计辅助偏向产品。"""
@@ -171,6 +189,9 @@ class TestProductAppendix:
         assert "【产品附录 · 调度USP】" in prompt
         assert "规划路径中" in prompt
         assert "任务分配挑车" in prompt
+        assert "【任务相关·三档分流】" in prompt
+        assert "禁止因此一律选「任务分配」" in prompt
+        assert "已下发" in prompt
         assert "本产品暂无额外规则" not in prompt
         assert "【产品附录 · 摇人吧服务号】" not in prompt
 
@@ -239,6 +260,8 @@ class TestParseExits:
         assert "【调度USP】" in text
         assert "规划路径中" in text
         assert "路径下发到车" in text
+        assert "【任务相关·三档分流】" in text
+        assert "禁止因此一律选「任务分配」" in text
 
     def test_can_decide_false_is_none(self):
         """异常流程：can_decide=false → None，即使填了人。"""

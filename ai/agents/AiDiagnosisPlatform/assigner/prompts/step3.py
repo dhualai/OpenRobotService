@@ -10,6 +10,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import (
     engineer_brief_lines,
     feature_role_routing_guidance,
     person_anti_hallucination,
+    support_contact_routing_guidance,
     ticket_fields_block,
     ticket_type_person_guidance,
 )
@@ -71,6 +72,7 @@ def build_l1(
         intro,
         ticket_type_person_guidance(ticket).rstrip(),
         feature_role_routing_guidance(ticket).rstrip(),
+        support_contact_routing_guidance(ticket).rstrip(),
         "工单写的是现象或需求，不是职责原文。先看懂本单要解决什么，再对照各人卡片判断谁能接。",
         "职责文案可以为空；责任模块是选人的主依据。负责内容里的关键词和一句话说明来自责任树，"
         "用来认口语/别称，不是另一路召回。有职责或负责内容时作补充，没有时只依据责任模块，"

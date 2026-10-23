@@ -303,3 +303,105 @@ def build_img_ctx(context: TaskContext) -> dict:
         "robot_type": context.robot_type,
     }
 
+
+def _user_display_name(db, user_key: str) -> str:
+    """按 users.id 或 username 取展示名；与讨论区 @ 解析一致。"""
+    key = (user_key or "").strip()
+    if not key:
+        return ""
+    try:
+        from sqlalchemy import or_
+
+        from ai.core.database import User
+
+        user = (
+            db.query(User)
+            .filter(or_(User.id == key, User.username == key))
+            .first()
+        )
+        if not user:
+            return ""
+        return (user.name or user.username or "").strip()
+    except Exception:
+        return ""
+
+
+def format_project_roles(project_id: str, project_name: str = "") -> str:
+    """读 project 表角色（对接人/经理/销售等），与讨论区 @ 置顶同源。
+
+    对接人优先 contact_person 文本；为空则用 contact_person_id 查 users（@ 列表同款）。
+    这是项目主数据，不是现场档案补充；读库失败返回空，不阻断讨论。
+    """
+    pid = (project_id or "").strip()
+    pname = (project_name or "").strip()
+    if not pid and not pname:
+        return ""
+    try:
+        from sqlalchemy import or_
+
+        from ai.core.database import ProjectDelivery, SessionLocal
+
+        db = SessionLocal()
+        try:
+            row = None
+            if pid:
+                row = (
+                    db.query(ProjectDelivery)
+                    .filter(or_(ProjectDelivery.id == pid, ProjectDelivery.code == pid))
+                    .first()
+                )
+            if not row and pname:
+                row = (
+                    db.query(ProjectDelivery)
+                    .filter(ProjectDelivery.name == pname)
+                    .first()
+                )
+            if not row:
+                return ""
+
+            contact = (getattr(row, "contact_person", None) or "").strip()
+            if not contact:
+                contact = (getattr(row, "project_contact", None) or "").strip()
+            if not contact:
+                contact = _user_display_name(
+                    db, getattr(row, "contact_person_id", None) or ""
+                )
+
+            manager = (getattr(row, "project_manager", None) or "").strip()
+            if not manager:
+                manager = _user_display_name(
+                    db, getattr(row, "project_manager_id", None) or ""
+                )
+
+            pairs = (
+                ("项目对接人", contact),
+                ("项目经理", manager),
+                ("销售", (getattr(row, "sales", None) or "").strip()),
+                ("售前", (getattr(row, "pre_sales", None) or "").strip()),
+                ("实施工程师", (getattr(row, "field_engineer", None) or "").strip()),
+            )
+            filled = [(label, name) for label, name in pairs if name]
+            lines = ["## 项目主数据角色（project 表，与讨论区 @ 置顶同源）"]
+            if filled:
+                lines.extend(f"- {label}: {name}" for label, name in filled)
+            else:
+                lines.append("- 未填写对接人/经理/销售/实施")
+            return "\n".join(lines)
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f"[contexts] 项目主数据角色读取失败: {type(exc).__name__}")
+        return ""
+
+
+def asks_project_role(query: str) -> bool:
+    """用户是否在问项目表上的对接人/经理/销售等（确定性，不靠 LLM）。"""
+    blob = (query or "").strip()
+    if not blob:
+        return False
+    keys = (
+        "对接人", "项目对接人", "调度对接人", "项目经理",
+        "销售是谁", "售前是谁", "实施工程师是谁", "联系人是谁",
+    )
+    return any(k in blob for k in keys)
+

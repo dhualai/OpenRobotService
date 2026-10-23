@@ -1744,9 +1744,9 @@ async def get_task_project_members(
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。
+    """获取任务关联项目的成员列表 + 工单关键人（用于讨论区 @ 提及）。
 
-    all=false：仅返回处理人/提单人/代提单人 + 项目成员（默认候选池）。
+    all=false：仅返回处理人/提单人/代提单人/项目对接人 + 项目成员（默认候选池）。
     all=true：在前者基础上再追加全部 active 在职用户（已去重），
              使讨论区输入 @关键字 时可过滤到项目外的人。
     """
@@ -1763,7 +1763,7 @@ async def get_task_project_members(
 
         project_id = getattr(ticket, "project_id", None)
 
-        # ── 1. 处理人 / 提单人 / 代提单人始终排在最前面 ──
+        # ── 1. 处理人 / 提单人 / 代提单人 / 项目对接人始终排在最前面 ──
         key_users = []
         assigned_to = getattr(ticket, "assigned_to", None)
         created_by = getattr(ticket, "created_by", None)
@@ -1784,6 +1784,11 @@ async def get_task_project_members(
             ).strip()
             if principal_key and not any(same_identity(principal_key, existing) for existing, _ in key_users):
                 key_users.append((principal_key, "代提单人"))
+
+        # 项目对接人：有则置顶（与重派选人同一来源）；已是处理人/提单人/代提单人则不重复
+        contact_id, _contact_name = _resolve_project_contact(ticket)
+        if contact_id and not any(same_identity(contact_id, existing) for existing, _ in key_users):
+            key_users.append((contact_id, "项目对接人"))
 
         if key_users:
             from app.core.db import SessionLocal
@@ -1807,8 +1812,8 @@ async def get_task_project_members(
             finally:
                 sync_db.close()
 
-        # ── 2. 处理人/提单人/代提单人 + 项目成员 ──
-        # 即使没有项目也能 @ 处理人、提单人和代提单人
+        # ── 2. 关键置顶人 + 项目成员 ──
+        # 即使没有项目也能 @ 处理人、提单人、代提单人和项目对接人
         if project_id:
             members = db_manager.get_project_members(project_id, include_usp=False)
             for m in members:

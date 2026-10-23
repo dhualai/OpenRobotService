@@ -431,10 +431,10 @@ export default function TaskDetailPage() {
           .then((res) => setStepTemplate(res?.data?.steps || []))
           .catch(() => setStepTemplate([]));
 
-        // 获取项目成员用于 @ 提及（无项目时也能拉到提单人、处理人和代提单人）
+        // 获取项目成员用于 @ 提及（无项目时也能拉到提单人、处理人、代提单人、项目对接人）
         getProjectMembers(detailId)
           .then((members) => {
-            const pinRoles = ['提单人', '处理人', '代提单人'];
+            const pinRoles = ['提单人', '处理人', '代提单人', '项目对接人'];
             const sorted = [...members].sort((a, b) => {
               const ai = pinRoles.indexOf(a.role_name || '');
               const bi = pinRoles.indexOf(b.role_name || '');
