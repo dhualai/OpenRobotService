@@ -225,8 +225,9 @@ def test_validate_endpoint_rejects_internal_and_plain_http():
 # ---------- LLM 调用与输出预算 ----------
 
 class _FakeResp:
-    def __init__(self, payload):
-        self._raw = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload, content_type="application/json"):
+        self._raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
+        self.headers = {"Content-Type": content_type}
 
     def read(self):
         return self._raw
@@ -244,10 +245,10 @@ def test_call_llm_flags_empty_content_instead_of_silent_fallback(monkeypatch, ca
     这种「HTTP 200 但没有正文」的失败必须留痕，否则线上表现只是悄悄回退人工版，
     排查时看不出任何线索。
     """
-    sent = {}
+    sent = []
 
     def fake_urlopen(req, timeout=None):
-        sent["body"] = json.loads(req.data.decode("utf-8"))
+        sent.append(json.loads(req.data.decode("utf-8")))
         return _FakeResp({"choices": [{"message": {"content": ""},
                                        "finish_reason": "length"}]})
 
@@ -256,7 +257,53 @@ def test_call_llm_flags_empty_content_instead_of_silent_fallback(monkeypatch, ca
     out = capsys.readouterr().out
     assert "content 为空" in out and "length" in out
     # 预算要盖得住推理模型的 reasoning_tokens（曾因 1500 全部被 reasoning 吃掉而永远拿不到正文）
-    assert sent["body"]["max_tokens"] == grn.MAX_TOKENS >= 4000
+    assert sent[0]["max_tokens"] == grn.MAX_TOKENS >= 8000
+    # 既然判定是预算不够，就不能拿同样的预算原样重发一遍
+    assert sent[-1]["max_tokens"] > sent[0]["max_tokens"]
+
+
+def test_call_llm_grows_budget_and_recovers(monkeypatch, capsys):
+    """预算被 reasoning 吃光后放大 max_tokens 重试，第二次拿到正文就该成功。"""
+    budgets = []
+
+    def fake_urlopen(req, timeout=None):
+        budgets.append(json.loads(req.data.decode("utf-8"))["max_tokens"])
+        if len(budgets) == 1:
+            return _FakeResp({"choices": [{"message": {"content": "",
+                                                       "reasoning_content": "想很久"},
+                                           "finish_reason": "length"}]})
+        return _FakeResp({"choices": [{"message": {"content": '{"新增功能": ["甲"]}'},
+                                       "finish_reason": "stop"}]})
+
+    monkeypatch.setattr(grn.urllib.request, "urlopen", fake_urlopen)
+    assert grn.call_llm("p", api_key="k", base_url="https://api.deepseek.com") == \
+        '{"新增功能": ["甲"]}'
+    assert budgets == [grn.MAX_TOKENS, min(grn.MAX_TOKENS * 4, grn.MAX_TOKENS_CAP)]
+    assert "放大 max_tokens" in capsys.readouterr().out
+
+
+def test_call_llm_logs_snippet_for_non_json_response(monkeypatch, capsys):
+    """只报「响应格式异常」等于没有线索：必须打出 Content-Type 与响应体片段。"""
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp(b"<html><body>blocked by proxy</body></html>",
+                         content_type="text/html")
+
+    monkeypatch.setattr(grn.urllib.request, "urlopen", fake_urlopen)
+    assert grn.call_llm("p", api_key="topsecret-key",
+                        base_url="https://api.deepseek.com") == ""
+    out = capsys.readouterr().out
+    assert "响应不是 JSON" in out and "text/html" in out and "blocked by proxy" in out
+    # 日志片段不得泄露密钥
+    assert "topsecret-key" not in out
+
+
+def test_default_model_is_not_reasoning():
+    """默认模型必须能直接出正文。
+
+    推理模型会把输出预算先花在 reasoning_tokens 上：实测 72 条 PR 时
+    max_tokens=4000 仍拿不到 content，整批静默回退人工版。
+    """
+    assert grn.DEFAULT_MODEL == "deepseek-chat"
 
 
 def test_call_llm_returns_content_on_success(monkeypatch):
