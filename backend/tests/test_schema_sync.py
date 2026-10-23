@@ -226,6 +226,108 @@ def test_apply_dry_run_executes_nothing():
     assert cur.statements == []
 
 
+# ── DDL 加固：锁冲突退避重试 + 阻断者打印 ─────────────────────────────────
+class _FlakyCursor:
+    """按剧本抛错 / 成功：errors 依次对应每条 DDL 要抛的异常（诊断查询不消耗）。"""
+
+    def __init__(self, errors=()):
+        self.errors = list(errors)
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append(sql)
+        is_ddl = sql.lstrip().upper().startswith(("ALTER", "CREATE"))
+        if is_ddl and self.errors:
+            raise self.errors.pop(0)
+
+    def fetchall(self):
+        return [(754627, "Sleep", 320, "users", "SHARED_READ")]
+
+
+def _lock_error(code: int = 1205) -> Exception:
+    import pymysql.err
+
+    return pymysql.err.OperationalError(
+        code, "Lock wait timeout exceeded; try restarting transaction"
+    )
+
+
+def test_is_mdl_conflict_recognizes_lock_timeout_and_deadlock():
+    assert sync._is_mdl_conflict(_lock_error(1205))
+    assert sync._is_mdl_conflict(_lock_error(1213))
+    assert not sync._is_mdl_conflict(ValueError("bad ddl"))
+
+
+def test_is_mdl_conflict_sees_wrapped_error_via_orig():
+    class _Wrapped(Exception):
+        def __init__(self, orig):
+            super().__init__("wrapped by sqlalchemy")
+            self.orig = orig
+
+    assert sync._is_mdl_conflict(_Wrapped(_lock_error(1213)))
+
+
+def test_ddl_execute_retries_on_lock_conflict(monkeypatch):
+    monkeypatch.setattr(sync.time, "sleep", lambda _s: None)
+    sql = "ALTER TABLE `demo` ADD COLUMN `x` INT"
+    cur = _FlakyCursor([_lock_error()])
+
+    sync._ddl_execute(cur, sql)
+
+    assert cur.executed.count(sql) == 2  # 第一次失败 + 重试成功
+
+
+def test_ddl_execute_raises_after_retries_exhausted(monkeypatch):
+    monkeypatch.setattr(sync.time, "sleep", lambda _s: None)
+    cur = _FlakyCursor([_lock_error() for _ in range(sync._DDL_RETRY_MAX)])
+
+    with pytest.raises(Exception) as excinfo:
+        sync._ddl_execute(cur, "ALTER TABLE `demo` ADD COLUMN `x` INT")
+
+    assert "Lock wait timeout" in str(excinfo.value)
+
+
+def test_ddl_execute_never_retries_non_lock_errors(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(sync.time, "sleep", lambda s: sleeps.append(s))
+    cur = _FlakyCursor([ValueError("syntax error")])
+
+    with pytest.raises(ValueError):
+        sync._ddl_execute(cur, "ALTER TABLE `demo` ADD COLUMN `x` INT")
+
+    assert sleeps == []  # 非锁错误立即失败，不浪费时间
+
+
+def test_apply_still_bubbles_lock_error(monkeypatch):
+    """重试仍失败必须抛给 main（走 exit 1），绝不静默跳过缺列。"""
+    monkeypatch.setattr(sync.time, "sleep", lambda _s: None)
+    result = {
+        "missing_columns": [
+            {"table": "demo", "column": "name", "ddl": "VARCHAR(64) NULL",
+             "classification": "AUTOMATIC"},
+        ],
+        "missing_indexes": [],
+    }
+    cur = _FlakyCursor([_lock_error() for _ in range(sync._DDL_RETRY_MAX)])
+
+    with pytest.raises(Exception):
+        sync._apply(cur, result, dry_run=False)
+
+
+def test_report_mdl_blockers_is_best_effort(capsys):
+    class _BrokenCursor:
+        def execute(self, sql, params=None):
+            raise RuntimeError("no PROCESS privilege")
+
+    sync._report_mdl_blockers(_BrokenCursor())  # 取不到也不能影响补列
+    assert "取不到持锁会话" in capsys.readouterr().out
+
+
+def test_lock_wait_timeout_leaves_room_for_short_transaction():
+    """15s 太短：应用侧任一 idle-in-transaction 会话都会把整次发版拖失败。"""
+    assert "lock_wait_timeout = 45" in sync._LOCK_WAIT_TIMEOUT_SQL
+
+
 # ── 连接参数解析 ────────────────────────────────────────────────────────
 def test_resolve_db_config_from_env(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "mysql+pymysql://u:p@1.2.3.4:3307/mydb")
