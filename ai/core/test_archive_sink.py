@@ -23,6 +23,8 @@ def test_archived_sql_guards_archived_approved_and_unmarked():
     # 独立标记，避免与 closed 路的 solution_indexed 互相屏蔽
     assert "archive_sink_status" in sql
     assert "solution_indexed" not in sql
+    # 兼容 archive_flow 早期版本（2026-10-14 收口前）打的旧标记，别再跑一遍
+    assert "archive_knowledge_indexed" in sql
 
 
 def _retriever(existing=None, patch_ok=True, index_ok=True):

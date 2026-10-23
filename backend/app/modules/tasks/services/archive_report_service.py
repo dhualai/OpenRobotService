@@ -16,15 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 def validate_knowledge_report(content):
-    headings = ("问题概述", "问题场景", "复现条件", "原因分析", "解决方案", "验证结果", "适用范围", "遗留问题")
-    pattern = r"(?m)^#{1,6}\s+(?:\d+[.、]\s*)?(" + "|".join(headings) + r")\s*$"
-    matches = list(re.finditer(pattern, content or ""))
-    sections = {match.group(1): content[match.end():matches[position + 1].start() if position + 1 < len(matches) else len(content)].strip()
-                for position, match in enumerate(matches)}
-    missing = [heading for heading in headings if not sections.get(heading)]
-    if missing:
+    """ORS-1035 放宽：骨架预填后报告天然带节，不再强制章节——只拦全空白
+    提交（质量由人工审核兜底，非标准/自由文本走入库 LLM 提炼）。"""
+    if not (content or "").strip():
         from fastapi import HTTPException
-        raise HTTPException(422, "归档报告缺少章节或章节正文：" + "、".join(missing))
+        raise HTTPException(422, "归档报告内容为空，请先填写正文")
 
 
 async def require_assigned_reviewer(db, report, task, operator_id):

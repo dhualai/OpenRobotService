@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
 import { User, UserCheck, Folder, FolderKanban, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ClipboardList } from 'lucide-react';
@@ -8,7 +8,7 @@ import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { setupWechatShare, isPcWechat } from '@/shared/utils/wechatJsSdk';
-import { completeArchiveReportTemplate } from '@/shared/utils/archiveReport';
+import { archiveSkeleton } from '@/shared/utils/archiveReport';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken, ApiError } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -117,11 +117,6 @@ interface ArchiveSimilarItem {
 
 interface MinioPathInfo { bucket: string; objectKey: string; }
 
-// ORS-1010 相似工单的状态展示（后端回表带枚举原值，小写；缺省透传原样）
-const ARCHIVE_SIMILAR_STATUS_ZH: Record<string, string> = {
-  archived: '已归档', closed: '已关闭', resolved: '已解决', new: '新建',
-  in_progress: '处理中', pending: '待处理', canceled: '已取消',
-};
 
 // ORS-1035 相似工单缩略图：object_path → 带鉴权 token 的附件代理 URL（<img> 直连）
 const similarThumbUrl = (objectPath: string): string => {
@@ -245,19 +240,23 @@ const AI_NAME = 'U老师';
 export default function TaskDetailPage() {
   const { id: detailId } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   // 从列表卡片跳进来时的讨论区定位参数（点参与人头像 → focus=discussion[&author=xxx|&commentId=xxx]）
   const [searchParams] = useSearchParams();
   const focusDiscussion = searchParams.get('focus') === 'discussion';
   const focusCommentId = searchParams.get('commentId');
   const focusAuthor = searchParams.get('author');
+  // SPA 从列表点进时带上的卡片预览，先出壳再拉完整详情（PC 微信整页跳转带不走 state）
+  const listPreview = (location.state as { listPreview?: Ticket } | null)?.listPreview;
+  const previewMatches = !!(listPreview && detailId && String(listPreview.id) === String(detailId));
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
   const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
   const { username, userId, name, hasPermission, isAdmin } = useAuthStore();
 
-  const [detail, setDetail] = useState<Ticket | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [detail, setDetail] = useState<Ticket | null>(() => (previewMatches ? listPreview! : null));
+  const [detailLoading, setDetailLoading] = useState(() => !previewMatches);
   // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
   // 二次派单感知增强：派单理由（为什么派给接单人；接单人/提单人/管理员可看到）
@@ -432,10 +431,10 @@ export default function TaskDetailPage() {
           .then((res) => setStepTemplate(res?.data?.steps || []))
           .catch(() => setStepTemplate([]));
 
-        // 获取项目成员用于 @ 提及（无项目时也能拉到提单人、处理人和代提单人）
+        // 获取项目成员用于 @ 提及（无项目时也能拉到提单人、处理人、代提单人、项目对接人）
         getProjectMembers(detailId)
           .then((members) => {
-            const pinRoles = ['提单人', '处理人', '代提单人'];
+            const pinRoles = ['提单人', '处理人', '代提单人', '项目对接人'];
             const sorted = [...members].sort((a, b) => {
               const ai = pinRoles.indexOf(a.role_name || '');
               const bi = pinRoles.indexOf(b.role_name || '');
@@ -455,6 +454,9 @@ export default function TaskDetailPage() {
           navigate(`/admin/knowledge/reviews/${body.detail.report_id}`, { replace: true });
           return;
         }
+        // 列表预览先出壳时：404/无权限应清掉预览，避免一直停在残缺卡片上可点操作
+        const status = err instanceof ApiError ? err.statusCode : 0;
+        if (status === 404 || status === 403) setDetail(null);
         Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
       })
       .finally(() => setDetailLoading(false));
@@ -803,10 +805,14 @@ export default function TaskDetailPage() {
       void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
-      // ORS-1010：AI 生成改为显式按钮（不自动跑）——编辑器空态给引导条，
-      // 处理人自己写或点 AI 均可；已有内容（幂等复用）直接进编辑
-      setArchiveReportContent(existing);
-      Toast({ message: existing ? '已开始归档，请继续编写归档报告' : '已开始归档，可直接手写，或点「AI 生成初稿」', theme: 'success' });
+      // ORS-1035：无内容时预填两节骨架（手写往里填=天然标准 MD，入库免 LLM
+      // 提炼；AI 生成也写进这个结构）——补齐章节按钮由此不再需要
+      if (!existing) {
+        setArchiveReportContent(archiveSkeleton(String(ticket.ticket_type || '')));
+      } else {
+        setArchiveReportContent(existing);
+      }
+      Toast({ message: '已开始归档，可直接填写，或点「✨AI 初稿」让 AI 代笔', theme: 'success' });
     } catch (err) {
       // archive-start 失败兜底
       Toast({ message: `${err instanceof Error ? err.message : '开始归档失败'}`, theme: 'error' });
@@ -818,11 +824,24 @@ export default function TaskDetailPage() {
   // ── ORS-1010：AI 生成初稿（显式按钮触发）──
   const handleAiGenerateReport = async () => {
     if (!detail || archiveGenerating || archiveLoading) return;
-    if ((archiveReportContent || '').trim()) {
-      // 已有内容不覆盖（与原有"处理人手写不覆盖"保护同口径），提示走补齐章节
-      Toast({ message: '报告已有内容，AI 不覆盖；缺章节可点「补齐章节」', theme: 'warning' });
+    const taskDetail = detail;
+    // 裸骨架（只有标题行无正文）= 还没写，直接生成不算覆盖
+    const hasBody = (archiveReportContent || '')
+      .replace(/^#{1,6}.*$/gm, '').replace(/\s/g, '').length > 0;
+    if (hasBody) {
+      // 已有内容 → 覆盖确认（重新生成是显式动作，不能误触丢稿）
+      Dialog.confirm?.({
+        title: '重新生成报告？',
+        content: 'AI 将覆盖当前报告内容（可先「保存草稿」备份），确定继续？',
+        confirmBtn: { content: '覆盖并生成', theme: 'primary' },
+        cancelBtn: '取消',
+        onConfirm: () => { runGenerate(); },
+      });
       return;
     }
+    runGenerate();
+
+    async function runGenerate() {
     setArchiveGenerating(true);
     setArchiveGenStatus('AI 正在为您总结归档报告…');
     setArchiveReportPreview(false);
@@ -830,7 +849,7 @@ export default function TaskDetailPage() {
     try {
       await archiveGenerateStream(
         // task_id 走 int（后端 ArchiveGenerateRequest.task_id: int）；detail.id 是路由字符串
-        { task_id: Number(detail.id) },
+        { task_id: Number(taskDetail.id) },
         {
           onStatus: (m) => setArchiveGenStatus(m),
           onTitle: (t) => { acc = `# ${t}\n\n`; setArchiveReportContent(acc); },
@@ -839,6 +858,17 @@ export default function TaskDetailPage() {
             setArchiveGenerating(false);
             setArchiveGenStatus('');
             setArchiveReportPreview(true); // 生成完默认预览：先看渲染结果（含图片）
+            // ORS-1035：服务端生成写回推进了 revision，重取最新版报告同步本地
+            // （内容+版本号），否则保存必撞「已被他人修改」、重开弹窗见旧内容
+            request<Ticket>(`/archive-report/${Number(taskDetail.id)}/archive-report`)
+              .then((r) => {
+                const cr = (r as unknown as {
+                  current_archive_report?: { revision?: number; content?: string } | null;
+                }).current_archive_report;
+                if (cr?.revision) setArchiveReportRevision(cr.revision);
+                if (cr?.content) setArchiveReportContent(cr.content);
+              })
+              .catch(() => {});
             Toast({ message: 'AI 初稿已生成，请核对并修改后提交审核', theme: 'success' });
           },
           onError: (m) => {
@@ -862,6 +892,8 @@ export default function TaskDetailPage() {
       setArchiveGenStatus('');
       Toast({ message: `${err instanceof Error ? err.message : 'AI 生成失败'}（可直接手写报告）`, theme: 'warning' });
     }
+    }
+
   };
 
   // ── 保存归档草稿 ──
@@ -870,15 +902,55 @@ export default function TaskDetailPage() {
     const reportId = detail?.current_archive_report?.id;
     if (!reportId) return;
     setArchiveLoading(true);
+    const doSave = () => request(`/archive-report/archive-reports/${reportId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
+    }) as Promise<{ revision: number }>;
+    const syncFromServer = async () => {
+      const latest = await request<Ticket>(`/archive-report/${Number(detail.id)}/archive-report`);
+      const cr = (latest as unknown as {
+        current_archive_report?: { revision?: number; content?: string } | null;
+      }).current_archive_report;
+      if (cr?.revision) setArchiveReportRevision(cr.revision);
+      return cr;
+    };
     try {
-      const report = await request(`/archive-report/archive-reports/${reportId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ content: archiveReportContent, revision: archiveReportRevision }),
-      });
-      setArchiveReportRevision((report as { revision: number }).revision);
+      const report = await doSave();
+      setArchiveReportRevision(report.revision);
+      // ORS-1035：保存后同步本地 detail 缓存——否则关弹窗再开读到的还是
+      // 旧内容（detail 是进页面时的快照，保存不更新它就一直旧）
+      setDetail((prev) => prev ? {
+        ...prev,
+        current_archive_report: {
+          ...(prev.current_archive_report || {}),
+          content: archiveReportContent,
+          revision: report.revision,
+        },
+      } as Ticket : prev);
       Toast({ message: '草稿已保存', theme: 'success' });
     } catch (err) {
-      Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('已被他人修改')) {
+        // 409：AI 生成写回等推进了版本号——拉最新版本号原地重试一次
+        try {
+          const cr = (await syncFromServer()) || {};
+          const report = await doSave();
+          setArchiveReportRevision(report.revision);
+          setDetail((prev) => prev ? {
+            ...prev,
+            current_archive_report: {
+              ...(prev.current_archive_report || {}),
+              content: archiveReportContent,
+              revision: report.revision,
+            },
+          } as Ticket : prev);
+          Toast({ message: '草稿已保存（已自动合并最新版本）', theme: 'success' });
+        } catch (retryErr) {
+          Toast({ message: `保存失败: ${retryErr instanceof Error ? retryErr.message : ''}`, theme: 'error' });
+        }
+      } else {
+        Toast({ message: `保存失败: ${msg}`, theme: 'error' });
+      }
     } finally {
       setArchiveLoading(false);
     }
@@ -1734,7 +1806,16 @@ export default function TaskDetailPage() {
     }
   };
 
-  if (detailLoading) return <Loading text="加载中…" />;
+  if (!detail && detailLoading) {
+    return (
+      <div>
+        <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
+        <div style={{ padding: 32, textAlign: 'center', marginTop: 56 }}>
+          <Loading text="加载中…" />
+        </div>
+      </div>
+    );
+  }
   if (!detail) return (
     <div>
       <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
@@ -1994,8 +2075,9 @@ export default function TaskDetailPage() {
           />
         )}
 
-        {/* 公司/部门/项目审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
-        {approvalInfo && username === 'admin' && (
+        {/* 公司/部门/项目审核入口：工单 metadata_info 含 approval_type 时展示卡片（所有人可见信息），
+            仅工单处理人或有 backend:tasks:operate 权限的管理员可点击通过/驳回按钮 */}
+        {approvalInfo && (
           <div className="detail-card" style={{ border: '1.5px solid var(--blue-4)' }}>
             <h4 className="detail-card__h" style={{ color: 'var(--blue-2)', display: 'flex', alignItems: 'center', gap: 6 }}>
               {approvalInfo.type === 'new_company' ? (
@@ -2034,7 +2116,8 @@ export default function TaskDetailPage() {
                 请审核以下信息，通过后该{approvalLabelMap[approvalInfo.type]}将对所有用户可见
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
+            {(getCurrentUserRoles().isAssignee || hasPermission('backend:tasks:operate')) ? (
+              <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 block
                 theme="primary"
@@ -2068,7 +2151,12 @@ export default function TaskDetailPage() {
               >
                 驳回
               </Button>
-            </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
+                审核操作由工单处理人或管理员完成
+              </div>
+            )}
           </div>
         )}
 
@@ -2868,7 +2956,7 @@ export default function TaskDetailPage() {
         {/* ORS-1010：编辑器+相似工单块易超 88vh，ticket-edit-form 类本身不滚动
             （滚动在其 __body 子层，本弹窗未用）——底部内容曾被硬裁（1010 用户
             iOS 实测提示语只剩半句）。内联开启滚动。 */}
-        <div className="ticket-edit-form" style={{ overflowY: 'auto' }}>
+        <div className="ticket-edit-form" style={{ display: 'flex', flexDirection: 'column', maxHeight: '88vh', overflow: 'hidden' }}>
           <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
@@ -2882,15 +2970,17 @@ export default function TaskDetailPage() {
           {archiveEditorMode === 'edit' ? (
             <>
               {/* ORS-1010 精简：章节要求压成一行 + 常用操作（补齐章节/上传图片），
-                  原格式工具栏整排删除——报告写作用不上，还把正文挤出首屏 */}
+                  原格式工具栏整排删除——报告写作用不上，还把正文挤出首屏。
+                  只有报告填写区滚动（flex 中段），相似块与按钮行固定 */}
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
           {/* ORS-1010 相似工单提示：归档人对照已沉淀的相似工单（与 AI 初稿并行
               拉取）。不展示相似度分值——score 是 RRF 融合分非余弦，展示数字会
               误导。verified=rejected 已被推翻，不出示。0 条且检索正常时也提示
               （功能存在感 + 讲清沉淀机制）；检索挂了保持静默。 */}
           {(archiveSimilar.length > 0 || archiveSimilarLoading || archiveSimilarReady) && (
             <div style={{
-              marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)',
-              maxHeight: 320, overflowY: 'auto',
+              paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)', flexShrink: 0,
+              maxHeight: '40vh', overflowY: 'auto', overscrollBehavior: 'contain',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>相似工单</span>
@@ -2927,9 +3017,9 @@ export default function TaskDetailPage() {
                       <span style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginLeft: 'auto', flexShrink: 0 }}>{expanded ? '收起 ▴' : '展开 ▾'}</span>
                     </div>
                     <div style={{ fontSize: 13, marginTop: 3, lineHeight: 1.5, wordBreak: 'break-word', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{s.title}</div>
-                    {(s.project_name || s.status) && (
+                    {s.project_name && (
                       <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
-                        {[s.project_name, ARCHIVE_SIMILAR_STATUS_ZH[s.status || ''] || s.status].filter(Boolean).join(' · ')}
+                        {s.project_name}
                       </div>
                     )}
                     {expanded && s.summary && (
@@ -2958,31 +3048,29 @@ export default function TaskDetailPage() {
             </div>
           )}
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
-                  须含八个章节且各节有正文（无遗留写「无」）；请勿写入人员姓名及联系方式。
-                </span>
-                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating} onClick={() => setArchiveReportContent(completeArchiveReportTemplate(archiveReportContent))}>补齐章节</Button>
-                <Button size="small" theme="default" style={{ flexShrink: 0 }} disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
-                  {uploadingReportImage ? '上传中…' : '📷 上传图片'}
-                </Button>
-                <input
-                  ref={reportImageInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={handleReportImageUpload}
-                />
-              </div>
-              {!archiveGenerating && !archiveReportContent.trim() && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, background: 'var(--muted, #f6f8fa)', borderRadius: 8 }}>
-                  <span style={{ flex: 1, fontSize: 12, color: 'var(--muted-foreground)' }}>
-                    💡 不想手写？让 AI 基于本单讨论先出一份标准结构初稿
-                  </span>
-                  <Button size="small" theme="primary" onClick={handleAiGenerateReport}>✨ AI 生成初稿</Button>
+              {/* ORS-1010 精简：章节要求一句话 + 操作按钮独立一行（上下结构——
+                  横排会把文字压成七行细条，1021 用户实测丑） */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--muted-foreground)' }}>
+                  两节已备好，直接往里写；咨询问答类第二节可改「回答」。请勿写入人员姓名及联系方式。
                 </div>
-              )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <Button size="small" theme="default" disabled={archiveGenerating || uploadingReportImage} onClick={() => reportImageInputRef.current?.click()}>
+                    {uploadingReportImage ? '上传中…' : '📷 上传图片'}
+                  </Button>
+                  <Button size="small" theme="primary" disabled={archiveGenerating} onClick={handleAiGenerateReport}>
+                    ✨AI 初稿
+                  </Button>
+                  <input
+                    ref={reportImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={handleReportImageUpload}
+                  />
+                </div>
+              </div>
               {archiveGenerating ? (
                 /* AI 生成中：只读直播（渲染版——报告内嵌图片随流式内容出现），
                     防止处理人同时手写（服务端 content='' 条件写回兜底） */
@@ -3006,12 +3094,13 @@ export default function TaskDetailPage() {
                 <MDEditor
                   commands={[]}
                   extraCommands={[]}
-                  height={340}
+                  height={380}
                   value={archiveReportContent}
                   onChange={(v) => setArchiveReportContent(v || '')}
                   preview="edit"
                 />
               )}
+              </div>
               {!archiveGenerating && (
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
                   <span
@@ -3022,7 +3111,7 @@ export default function TaskDetailPage() {
                   </span>
                 </div>
               )}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingTop: 12 }}>
                 <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>提交后系统自动指定审核人</span>

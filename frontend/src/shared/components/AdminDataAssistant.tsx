@@ -76,7 +76,7 @@ const CHIP_QUESTIONS = [
   '项目信息填写率怎么样',
 ];
 
-/** 指标 key → 中文标签映射（与后端 metric_registry.py 对齐，49 个指标） */
+/** 指标 key → 中文标签映射（与后端 metric_registry.py 对齐，53 个指标） */
 const METRIC_LABEL_MAP: Record<string, string> = {
   'ticket.total': '工单总数',
   'ticket.new_count': '新增工单数',
@@ -123,6 +123,10 @@ const METRIC_LABEL_MAP: Record<string, string> = {
   'project_info.top_marked_nodes': '被关注最多的节点',
   'project_info.value_items': '已填字段值明细',
   'project_info.items': '项目信息完整度明细',
+  'user.dau_total': '日活用户总数',
+  'user.avg_dau': '日均活跃用户数',
+  'user.dau_by_day': '日活趋势',
+  'user.by_source': '活跃来源分布',
 };
 
 /** 指标 key 转中文标签；未注册的 key 直接返回原值 */

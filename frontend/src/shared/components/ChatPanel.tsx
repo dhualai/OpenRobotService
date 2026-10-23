@@ -3316,7 +3316,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             priority: 'medium',
             project_name: '摇人吧服务号提单',
             project_id: projectIdVal || '',
-            assigned_to: owner.id || owner.username,
+            // ORS-11xx：新项目审核闭环场景 assigned_to 改为 admin（与公司/部门审核对称，统一管理员审核）；
+            // 降级场景（pending 项目创建失败）仍指派给项目负责人，走原有人工处理流程
+            assigned_to: npInfo && pendingProjectId ? 'admin' : (owner.id || owner.username),
             deadline_at: overrides.curr_step_endtime || undefined,
             // 工单2 同步透传远程方式（写入 metadata_info）+ 远程截图（与工单1 共用 object_path）。
             // metadata_info 是 json 列，createTicket 透传；attachments 同 TasksView 新建路径。

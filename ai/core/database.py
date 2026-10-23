@@ -7,7 +7,7 @@
 """
 import os
 from pathlib import Path
-from sqlalchemy import Boolean, create_engine, Column, String, Integer, BigInteger, Text, DateTime, JSON, Index, UniqueConstraint, Enum as SQLEnum
+from sqlalchemy import Boolean, create_engine, Column, String, Integer, BigInteger, Text, Date, DateTime, JSON, Index, UniqueConstraint, Enum as SQLEnum
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
 
@@ -413,3 +413,24 @@ class ArchiveReport(Base):
     reviewed_at = Column(DateTime, nullable=True)
     review_comment = Column(Text, nullable=True)
     revision = Column(Integer, nullable=False, server_default="1", default=1, comment="乐观锁")
+
+
+class WechatUserActivity(Base):
+    """微信公众号用户日活表（仅查询，字段对齐 backend/app/models/wechat_activity.py WechatUserActivity）。
+
+    每行 = 某用户某天活跃一次：UNIQUE(ref_date, openid)，重复活跃刷新
+    last_active_at 与 source。source 口径为「当日最后活跃来源」
+    （message/menu/event/h5/backfill）。表由 backend 侧埋点与回算脚本维护，
+    AI 侧只读——不建表、不写入；查询前需容忍表尚不存在（埋点上线前）。
+    """
+    __tablename__ = "wechat_user_activity"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="主键")
+    ref_date = Column(Date, nullable=False, index=True, comment="活跃日期（仅年月日）")
+    openid = Column(String(128), nullable=False, index=True, comment="微信用户openid")
+    source = Column(String(32), nullable=False, default="message", comment="当日最后活跃来源")
+    last_active_at = Column(DateTime, nullable=False, comment="当日最后活跃时间")
+
+    __table_args__ = (
+        UniqueConstraint("ref_date", "openid", name="uq_wua_ref_date_openid"),
+    )

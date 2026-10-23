@@ -367,17 +367,17 @@ export default function TicketDetailPage() {
 
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
 
-  // 获取项目成员用于 @ 提及（与系统任务详情页同款逻辑）
+  // 获取项目成员用于 @ 提及（与系统任务详情页同款：关键角色置顶）
   useEffect(() => {
     const tid = ticket?.ticket_id;
     if (!tid) { setProjectMembers([]); setAllUsers([]); return; }
     getProjectMembers(tid)
       .then((members) => {
-        const reporterUsername = ticket?.created_by || '';
+        const pinRoles = ['提单人', '处理人', '代提单人', '项目对接人'];
         const sorted = [...members].sort((a, b) => {
-          if (a.username === reporterUsername) return -1;
-          if (b.username === reporterUsername) return 1;
-          return 0;
+          const ai = pinRoles.indexOf(a.role_name || '');
+          const bi = pinRoles.indexOf(b.role_name || '');
+          return (ai === -1 ? pinRoles.length : ai) - (bi === -1 ? pinRoles.length : bi);
         });
         setProjectMembers(sorted);
       })
@@ -386,7 +386,7 @@ export default function TicketDetailPage() {
     getProjectMembers(tid, true)
       .then((u) => setAllUsers(u))
       .catch(() => setAllUsers([]));
-  }, [ticket?.ticket_id, ticket?.created_by]);
+  }, [ticket?.ticket_id]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
   useEffect(() => {

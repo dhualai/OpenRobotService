@@ -40,16 +40,12 @@ async def run_knowledge_worker(stop_event: asyncio.Event):
 
     while not stop_event.is_set():
         try:
-            # 两条路：closed 路（提炼评论 → pending 卡 → 人工放行）＋
-            # 归档路（归档审核通过 → 归档报告直接写 approved 卡）
+            # 只负责 closed 路（提炼评论 → pending 卡 → 人工放行）。
+            # 归档路（归档审核通过 → 归档报告直接放行/补建）由 archive_flow 的
+            # 入库 worker 驱动（默认开），处理内核同样是 solution_sink，此处不重复扫。
             jobs = [
                 (row, solution_sink.process_ticket)
                 for row in solution_sink.load_candidates(limit=20)
-                if fail_counts.get(row["id"], 0) < _FAIL_RETRY_LIMIT
-            ]
-            jobs += [
-                (row, solution_sink.process_archived_ticket)
-                for row in solution_sink.load_archived_candidates(limit=20)
                 if fail_counts.get(row["id"], 0) < _FAIL_RETRY_LIMIT
             ]
             if jobs:

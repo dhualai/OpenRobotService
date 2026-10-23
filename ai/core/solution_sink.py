@@ -325,17 +325,17 @@ def _fmt_reviewed_at(value) -> str:
 
 
 _REPORT_HEADER_CLASSES = [
-    # (类别, 标题关键词任意命中即归此类) —— 顺序即映射优先级
+    # (类别, 标题关键词任意命中即归此类) —— 顺序即映射优先级；「问题」仅等值
+    # 匹配（避免误吃「问题场景」）
     ("problem", ("问题概述", "问题描述", "现象")),
     ("scene", ("问题场景", "场景", "环境")),
     ("reproduce", ("复现",)),
     ("cause", ("原因",)),
-    ("solution", ("解决方案", "解决方法", "处理方式")),
+    ("solution", ("解决方案", "解决方法", "处理方式", "回答")),
     ("verify", ("验证",)),
     ("scope", ("适用",)),
     ("leftover", ("遗留",)),
 ]
-_STD_MIN_CLASSES = 5  # 8 类认出 ≥5 即视作标准 MD（容忍删 1-3 节或改措辞）
 
 
 def _card_from_standard_report(archive_content: str) -> Optional[dict]:
@@ -354,7 +354,8 @@ def _card_from_standard_report(archive_content: str) -> Optional[dict]:
         if m:
             header = m.group(1).strip()
             cur_classes = [name for name, keys in _REPORT_HEADER_CLASSES
-                           if any(k in header for k in keys)]
+                           if any(k == header or (k != "问题" and k in header)
+                                  for k in keys)]
             for name in cur_classes:
                 class_texts.setdefault(name, [])
             continue
@@ -366,13 +367,12 @@ def _card_from_standard_report(archive_content: str) -> Optional[dict]:
         txt = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", txt)  # 剥图片语法
         return re.sub(r"\n{3,}", "\n\n", txt).strip()
 
-    present = sum(1 for name, _k in _REPORT_HEADER_CLASSES if class_texts.get(name))
-    if present < _STD_MIN_CLASSES:
+    # 双锚点判据：问题类 + 解决/回答类齐全即标准 MD（ORS-1035 两节制——问答
+    # 变体只有两节，≥N 类的多数决会误杀它）
+    if not class_texts.get("problem") or not class_texts.get("solution"):
         return None
     problem = _sec("problem")
     solution = _sec("solution")
-    if not problem or not solution:
-        return None
     cause = _sec("cause")
     verify = _sec("verify")
     solution_steps = solution + (f"\n验证情况：{verify}" if verify else "")
@@ -452,6 +452,9 @@ async def process_ticket(row: dict, retriever, dry_run: bool = False,
 # 已归档、报告审核通过、且尚未按归档报告入库的单；取该单最高版本的 approved 报告。
 # 标记用独立的 archive_sink_status 而非 solution_indexed：归档单通常早在 closed
 # 阶段就被标过 solution_indexed，共用同一标记会让它永远进不了这条队列。
+# 兼容旧标记：archive_flow 早期版本（2026-10-14 那版）处理过的单打的是
+# archive_knowledge_indexed，语义同样是「已按归档报告入库」，一起排除，
+# 免得收口后把它们再跑一遍（已有卡的单那是白跑一趟提炼）。
 _ARCHIVED_CANDIDATES_SQL = (
     "SELECT t.id, t.title, t.description, t.assigned_to, t.metadata_info, "
     "       t.project_name, t.task_type, "
@@ -464,6 +467,7 @@ _ARCHIVED_CANDIDATES_SQL = (
     "                  WHERE r2.task_id = t.id AND r2.submit_status = 'approved') "
     "WHERE t.status = 'archived' "
     "  AND JSON_EXTRACT(t.metadata_info, '$.archive_sink_status') IS NULL "
+    "  AND JSON_EXTRACT(t.metadata_info, '$.archive_knowledge_indexed') IS NOT TRUE "
     "ORDER BY t.updated_at DESC "
     "LIMIT :lim OFFSET :off"
 )

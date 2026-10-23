@@ -27,6 +27,8 @@ FRONTEND_STATUS_MAP: Dict[str, TaskStatus] = {
     "in_progress": TaskStatus.IN_PROGRESS,
     "pending_requested": TaskStatus.PENDING_REQUESTED,
     "paused": TaskStatus.PENDING,
+    "unsolvable_requested": TaskStatus.UNSOLVABLE_REQUESTED,
+    "unsolvable": TaskStatus.UNSOLVABLE,
     "resolved": TaskStatus.RESOLVED,
     "closed": TaskStatus.CLOSED,
     "cancelled": TaskStatus.CANCELED,
@@ -36,9 +38,13 @@ FRONTEND_STATUS_MAP: Dict[str, TaskStatus] = {
 
 # 仪表盘「工单状态监测」监控的状态（含 new：待处理工单计入工单总数与解决率分母，
 # 与前端 TICKET_STATUS_LIST 保持一致；超时/待处理口径不含 new）
-MONITORED_STATUS_KEYS = ["new", "in_progress", "pending_requested", "paused", "resolved", "closed", "cancelled", "archiving", "archived"]
+MONITORED_STATUS_KEYS = list(FRONTEND_STATUS_MAP)
 MONITORED_STATUSES = [FRONTEND_STATUS_MAP[key] for key in MONITORED_STATUS_KEYS]
 PENDING_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
+GROUPED_STATUS_MAP = {
+    "unsolvable": [TaskStatus.UNSOLVABLE_REQUESTED, TaskStatus.UNSOLVABLE],
+    "archive": [TaskStatus.ARCHIVING, TaskStatus.ARCHIVED],
+}
 
 
 def _overdue_filters() -> List[Any]:
@@ -113,7 +119,7 @@ class TaskDashboardService:
     ) -> Dict[str, int]:
         """按项目批量统计工单数（项目进度管理页项目卡右上角展示用）。
 
-        口径与 get_ticket_summary 的 total 一致：监控中的六种状态之和。
+        口径与 get_ticket_summary 的 total 一致：监控中的全部状态之和。
         一条 GROUP BY 取全部项目，返回 {project_id: 工单数}；
         没有工单的项目不出现在结果里（调用方按 0 兜底）。
         """
@@ -152,6 +158,8 @@ class TaskDashboardService:
             filters = [Task.status.in_(PENDING_STATUSES)]
         elif status_key == "overdue":
             filters = _overdue_filters()
+        elif status_key in GROUPED_STATUS_MAP:
+            filters = [Task.status.in_(GROUPED_STATUS_MAP[status_key])]
         else:
             status_enum = FRONTEND_STATUS_MAP.get(status_key)
             if status_enum is None:

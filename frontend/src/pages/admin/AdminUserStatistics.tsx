@@ -5,8 +5,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loading } from 'tdesign-mobile-react';
 import ReactECharts from '@/shared/components/ReactECharts';
-import { fetchBatchUserInfo, fetchUserSummary, USER_SOURCE_LABELS } from '@/api/wechat';
-import type { UserSummaryItem } from '@/api/wechat';
+import { fetchBatchUserInfo, fetchUserSummary, fetchUserDau, USER_SOURCE_LABELS } from '@/api/wechat';
+import type { UserSummaryItem, UserDauItem } from '@/api/wechat';
 
 /** yyyy-MM-dd 格式化（本地时区） */
 function fmtDate(d: Date): string {
@@ -72,6 +72,11 @@ export default function AdminUserStatistics() {
   const [list, setList] = useState<UserSummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // 微信用户日活（wechat_user_activity 表实时埋点）：折线图随筛选框，今日 DAU 单独取
+  const [dauList, setDauList] = useState<UserDauItem[]>([]);
+  const [dauLoading, setDauLoading] = useState(true);
+  const [dauError, setDauError] = useState('');
+  const [todayDau, setTodayDau] = useState<number | null>(null);
   // 当前用户构成（batch-user-info）：total 显示在环形图中心，real/virtual 为两扇区
   const [userStats, setUserStats] = useState<{ total: number; real: number; virtual: number } | null>(null);
   const [userLoading, setUserLoading] = useState(true);
@@ -121,6 +126,28 @@ export default function AdminUserStatistics() {
       .finally(() => { if (mountedRef.current && !silent) setLoading(false); });
   }, [beginDate, endDate]);
 
+  // 日活折线图随筛选框加载（后端接口日活实时落库，end_date 可为今天；
+  // 但筛选框受增减数据 T+1 钳制到昨天，今日 DAU 另由 loadTodayDau 单独取）
+  const loadDau = useCallback((silent: boolean) => {
+    if (!silent) { setDauLoading(true); setDauError(''); }
+    fetchUserDau(beginDate, endDate)
+      .then((r) => { if (mountedRef.current) { setDauList(r.list || []); setDauError(''); } })
+      .catch((e: Error) => {
+        if (!mountedRef.current || silent) return;
+        setDauList([]);
+        setDauError(e?.message || '加载微信用户日活失败');
+      })
+      .finally(() => { if (mountedRef.current && !silent) setDauLoading(false); });
+  }, [beginDate, endDate]);
+
+  // 今日 DAU：只拉当天（埋点上线前无数据时静默显示为不展示）
+  useEffect(() => {
+    const today = fmtDate(new Date());
+    fetchUserDau(today, today)
+      .then((r) => { if (mountedRef.current) setTodayDau(r.list?.[0]?.dau ?? 0); })
+      .catch(() => { /* 今日数据拉取失败静默，不打扰主卡片 */ });
+  }, []);
+
   const loadUsers = useCallback((silent: boolean) => {
     if (!silent) { setUserLoading(true); setUserError(''); }
     fetchBatchUserInfo()
@@ -160,9 +187,10 @@ export default function AdminUserStatistics() {
       return;
     }
     loadSummary(false);
+    loadDau(false);
     // const id = window.setInterval(() => { loadSummary(true); loadUsers(true); }, POLL_INTERVAL);
     // return () => window.clearInterval(id);
-  }, [beginDate, endDate, loadSummary, loadUsers]);
+  }, [beginDate, endDate, loadSummary, loadDau, loadUsers]);
 
   useEffect(() => { loadUsers(false); }, [loadUsers]);
 
@@ -208,6 +236,38 @@ export default function AdminUserStatistics() {
     };
     return { barOption, pieOption, hasData: list.length > 0 };
   }, [list]);
+
+  // 微信用户日活折线图：实时埋点数据，按日期升序展示 DAU 趋势
+  const dauOption = useMemo(() => {
+    const sorted = [...dauList].sort((a, b) => a.ref_date.localeCompare(b.ref_date));
+    const dates = sorted.map((i) => i.ref_date);
+    const values = sorted.map((i) => i.dau);
+    const axisLabel = { color: '#888d8f', fontSize: 10 };
+    return {
+      color: [BAR_COLOR_NEW],
+      tooltip: { trigger: 'axis' },
+      grid: { left: 8, right: 16, top: 24, bottom: 0, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        boundaryGap: false,
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: '#e8eaea' } },
+        axisLabel: { ...axisLabel, formatter: (v: string) => v.slice(5) },
+      },
+      yAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#f1f4f4' } }, axisLabel },
+      series: [{
+        name: '日活',
+        type: 'line',
+        data: values,
+        smooth: true,
+        symbolSize: 6,
+        itemStyle: { color: BAR_COLOR_NEW },
+        lineStyle: { width: 2 },
+        areaStyle: { color: 'rgba(54, 151, 195, 0.12)' },
+      }],
+    };
+  }, [dauList]);
 
   // 环形图：真实/虚拟用户构成，中心数字显示用户总数
   // 0 值扇区无角度，ECharts 会把其标签定位在起始角（正上方）环带中间，与弧形重叠遮挡，
@@ -308,6 +368,20 @@ export default function AdminUserStatistics() {
                     <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
                   ) : (
                     <ReactECharts option={pieOption} style={{ height: 240 }} notMerge />
+                  )}
+                </div>
+                <div className="admin-entries-stats__chart admin-entries-stats__chart--wide">
+                  <span className="admin-entries-stats__sub">
+                    微信用户日活{todayDau !== null ? `（今日 ${todayDau} 人）` : ''}
+                  </span>
+                  {dauLoading ? (
+                    <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+                  ) : dauError ? (
+                    <div className="admin-entries-stats__empty">{dauError}</div>
+                  ) : dauList.length === 0 ? (
+                    <div className="admin-entries-stats__empty">该时间段暂无日活数据</div>
+                  ) : (
+                    <ReactECharts option={dauOption} style={{ height: 220 }} notMerge />
                   )}
                 </div>
               </div>

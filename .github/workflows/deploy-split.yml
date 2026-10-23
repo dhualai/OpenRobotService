@@ -127,6 +127,7 @@ jobs:
       health_urls: ${{ steps.resolve.outputs.health_urls }}
       backup_keep: ${{ steps.resolve.outputs.backup_keep }}
       artifact_name: ${{ steps.resolve.outputs.artifact_name }}
+      pr_artifact_name: ${{ steps.resolve.outputs.pr_artifact_name }}
       backup_id: ${{ steps.resolve.outputs.backup_id }}
     steps:
       - uses: actions/checkout@v4
@@ -253,6 +254,7 @@ jobs:
             echo "health_urls=$health"
             echo "backup_keep=${BACKUP_KEEP:-10}"
             echo "artifact_name=split-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "pr_artifact_name=release-prs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             echo "backup_id=$backup_id"
           } >> "$GITHUB_OUTPUT"
 
@@ -271,6 +273,36 @@ jobs:
             echo "| 测试门禁 | $gate_label |"
             if [ "$action" = "rollback" ]; then echo "| 回滚目标 | \`$backup_id\` |"; fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # 自动发行说明的输入：最近 200 条已合并 PR，由 build 里的脚本按 mergedAt
+      # 精确过滤「当前时间往前推 7 天」。不用 --search 的 merged:>= 语法——它与
+      # --base 组合依赖 search API，语法/限流都多一个失败点；多拉的那点 JSON 无所谓。
+      - name: Collect merged PRs for release notes
+        if: ${{ inputs.action != 'rollback' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_REF: ${{ steps.resolve.outputs.git_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p release_prs
+          if gh pr list --repo "$GITHUB_REPOSITORY" --base "$GIT_REF" --state merged \
+               --limit 200 --json number,title,mergedAt,labels > release_prs/release_prs.json; then
+            count=$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))))' \
+              release_prs/release_prs.json 2>/dev/null || echo 0)
+            echo "已抓取 $count 条已合并 PR（脚本内按最近 7 天过滤）"
+          else
+            echo "::warning::抓取 PR 列表失败，自动发行说明将退回人工维护版本"
+            echo '[]' > release_prs/release_prs.json
+          fi
+
+      - name: Upload PR list
+        if: ${{ inputs.action != 'rollback' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.resolve.outputs.pr_artifact_name }}
+          path: release_prs/release_prs.json
+          if-no-files-found: warn
+          retention-days: 1
 
   # ---------------- 测试门禁（托管 runner） ----------------
   gate:
@@ -372,6 +404,15 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # plan 抓的 PR 列表；artifact 缺失/下载失败不阻断构建，
+      # 后续 Generate 步骤因文件不存在而失败并回退人工版本。
+      - name: Download PR list
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: ${{ needs.plan.outputs.pr_artifact_name }}
+          path: _release_prs
+
       - name: Install frontend deps
         if: ${{ needs.plan.outputs.components == 'all' || needs.plan.outputs.components == 'frontend' }}
         run: npm ci --prefix frontend
@@ -402,6 +443,29 @@ jobs:
             cp docs/RELEASE_NOTES.md _artifacts/deploy/
           fi
           ls -lh _artifacts/deploy
+
+      # 自动发行说明：最近 7 天已合并 PR → LLM 归纳去重，成功才覆盖上一步铺底的人工版本。
+      # 未配置 RELEASE_LLM_API_KEY / 无 PR / LLM 失败时静默回退 docs/RELEASE_NOTES.md，
+      # 绝不阻断构建（脚本仅在成功时写文件，退出码 1/2 时不留半成品）。
+      - name: Generate release notes (auto)
+        env:
+          RELEASE_LLM_API_KEY: ${{ secrets.RELEASE_LLM_API_KEY }}
+          RELEASE_LLM_BASE_URL: ${{ vars.RELEASE_LLM_BASE_URL }}
+          RELEASE_LLM_MODEL: ${{ vars.RELEASE_LLM_MODEL }}
+          RELEASE_LLM_TIMEOUT: ${{ vars.RELEASE_LLM_TIMEOUT }}
+        run: |
+          set -uo pipefail
+          rm -f _artifacts/deploy/RELEASE_NOTES.auto.md
+          if python deploy/gen_release_notes.py \
+               --prs _release_prs/release_prs.json \
+               --out _artifacts/deploy/RELEASE_NOTES.auto.md; then
+            mv _artifacts/deploy/RELEASE_NOTES.auto.md _artifacts/deploy/RELEASE_NOTES.md
+            echo "已用自动生成的发行说明覆盖 docs/RELEASE_NOTES.md"
+          else
+            echo "::warning::自动发行说明不可用（未配置 / 无内容 / 调用失败），使用 docs/RELEASE_NOTES.md"
+            rm -f _artifacts/deploy/RELEASE_NOTES.auto.md
+          fi
+          ls -lh _artifacts/deploy/RELEASE_NOTES.md 2>/dev/null || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

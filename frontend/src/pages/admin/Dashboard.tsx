@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Navbar, Toast, Popup } from 'tdesign-mobile-react';
 import { UserCircleIcon } from 'tdesign-icons-react';
 import { Link, useNavigate } from 'react-router-dom';
-import { TICKET_STATUS_LIST, URGENCY_LIST } from '@/shared/constants/dashboard';
+import { getTicketStatusCount, TICKET_STATUS_LIST, URGENCY_LIST } from '@/shared/constants/dashboard';
 import {
   fetchDashboardSummaryAll, syncWecomProjects,
   type TicketSummary, type ProjectMonthlySummary, type UrgencySummary, type ProjectBriefItem,
@@ -101,16 +101,9 @@ const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
   { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
 ];
 
-// 工单状态环图/图例按色阶由深到浅排列，颜色按处理流程分配：
-// 待处理(最深) → 处理中 → 暂停/挂起 → 已解决 → 已关闭 → 已取消(最浅)
-const STATUS_TONE_ORDER = ['status-1', 'status-2', 'status-3', 'status-4', 'status-5', 'status-6'];
-const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
-  (a, b) => STATUS_TONE_ORDER.indexOf(a.tone) - STATUS_TONE_ORDER.indexOf(b.tone),
-);
-
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { hasPermission, projectIds, username, name, avatarResourceId, canViewKnowledgeContribution } = useAuthStore();
+  const { hasPermission, projectIds, username, name, avatarResourceId } = useAuthStore();
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
@@ -264,12 +257,10 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {canViewKnowledgeContribution && <>
-          <SectionTitle title="知识贡献榜"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge">详细榜单 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
-          <KnowledgeContributionCard key={username} />
-          <SectionTitle title="高价值问题榜单"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge/challenges">所有问题 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
-          <HighValueQuestionCard key={`challenges:${username}`} />
-        </>}
+        <SectionTitle title="知识贡献榜"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge">详细榜单 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
+        <KnowledgeContributionCard key={username} />
+        <SectionTitle title="高价值问题榜单"><Link className="mac-section-title__more" style={{ textDecoration: 'none' }} to="/admin/knowledge/challenges">所有问题 <MacChevronRight size={14} aria-hidden /></Link></SectionTitle>
+        <HighValueQuestionCard key={`challenges:${username}`} />
 
         {/* ============ 上：工单数据看板 ============ */}
         {/* 状态环图 + 图例（点图例下钻工单明细）+ 四指标卡；
@@ -278,16 +269,16 @@ export default function Dashboard() {
         <section className="mac-card mac-card--pad">
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <MacDonut
-              segments={SORTED_TICKET_STATUS_LIST.map((s) => ({
-                value: ticketSummary?.by_status[s.key] ?? 0,
+              segments={TICKET_STATUS_LIST.map((s) => ({
+                value: getTicketStatusCount(ticketSummary?.by_status, s),
                 tone: s.tone,
               }))}
               centerValue={ticketSummary?.total ?? 0}
               centerLabel="工单总数"
             />
             <MacLegend
-              items={SORTED_TICKET_STATUS_LIST.map((s) => {
-                const value = ticketSummary?.by_status[s.key] ?? 0;
+              items={TICKET_STATUS_LIST.map((s) => {
+                const value = getTicketStatusCount(ticketSummary?.by_status, s);
                 const total = ticketSummary?.total ?? 0;
                 return {
                   key: s.key,

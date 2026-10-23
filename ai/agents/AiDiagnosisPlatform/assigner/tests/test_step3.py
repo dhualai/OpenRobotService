@@ -169,6 +169,10 @@ class TestL1PromptHasName:
         assert "【仅需求单·产品/研发分流】" in prompt
         assert "待产品澄清" in prompt
         assert "产品已对齐" in prompt
+        assert "【咨询/支持/类型不清·项目对接人优先】" in prompt
+        assert "项目对接人也逾越不过去" in prompt
+        assert "不必一定派给对应功能工程师" in prompt
+        assert "配置类咨询尤其不要按部门/责任模块乱派" in prompt
         assert "分批打分时也必须遵守同一刻度" in prompt
         assert "几个人都能独立解决" in prompt
         assert "最高不要到 0.90" in prompt
@@ -179,6 +183,28 @@ class TestL1PromptHasName:
         assert "Agent假设仅供参考" in prompt
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import ticket_fields_block
         assert ticket_fields_block(_ticket()).rstrip() in prompt
+
+    def test_support_prefers_project_contact_wording(self):
+        """正常流程：咨询单尺子指向对接人优先，不必硬派功能工程师。"""
+        prompt = LlmRecall(_cfg())._build_prompt(
+            _ticket(ticket_type="support"),
+            [_eng("u-a", "甲")],
+            top_k=1,
+        )
+        assert "【咨询/支持/类型不清·项目对接人优先】" in prompt
+        assert "有对接人则优先对接人" in prompt
+        assert "对照产品负责人或功能负责人" not in prompt
+
+    def test_other_unclear_prefers_project_contact_wording(self):
+        """正常流程：其它/未填类型也指向对接人优先。"""
+        prompt = LlmRecall(_cfg())._build_prompt(
+            _ticket(ticket_type="other"),
+            [_eng("u-a", "甲")],
+            top_k=1,
+        )
+        assert "【咨询/支持/类型不清·项目对接人优先】" in prompt
+        assert "类型模糊看不清" in prompt or "看不清" in prompt
+        assert "有对接人则优先对接人" in prompt
 
     def test_feature_stage_assists_product_or_dev(self):
         """正常流程：需求单当前阶段写进分流，开发辅助偏向研发，正文仍优先。"""
@@ -202,6 +228,10 @@ class TestL1PromptHasName:
         assert "【调度USP】" in usp
         assert "规划路径中" in usp
         assert "任务分配挑车" in usp
+        assert "【任务相关·三档分流】" in usp
+        assert "禁止因此一律选「任务分配」" in usp
+        assert "调度中" in usp
+        assert "已下发" in usp
         assert '"station"' in usp
         assert "不要写「调度问题」" in usp
         assert "【调度USP】" not in other

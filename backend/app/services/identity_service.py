@@ -77,6 +77,11 @@ class IdentityService:
             "supervisor_id": getattr(db_user, "supervisor_id", None),
             "phone": getattr(db_user, "phone", None),
             "wechat_openid": getattr(db_user, "wechat_openid", None),
+            # 接收人时区：工单提醒按此人本地工作时间排程（见 working_time_service）
+            "timezone": getattr(db_user, "timezone", None),
+            "timezone_locked": bool(getattr(db_user, "timezone_locked", 0)),
+            "timezone_source": getattr(db_user, "timezone_source", None),
+            "timezone_updated_at": getattr(db_user, "timezone_updated_at", None),
         }
 
     @staticmethod

@@ -40,7 +40,9 @@
   RELEASE_NOTES_FILE  发布说明文件路径（Markdown，取「## 未发布」区内容）。
                       生产发布成功时渲染成「更新日志」卡片内容；文件缺失/无条目时
                       退回默认版面。部署时该文件随部署脚本一起打包到 runner
-                      （见 .github/workflows/deploy-split.yml 的 Build components 步骤）。
+                      （见 .github/workflows/deploy-split.yml）：先铺人工维护的
+                      docs/RELEASE_NOTES.md，再由 build job 的 gen_release_notes.py
+                      （最近 7 天已合并 PR + LLM 归纳）成功时覆盖。
   NOTIFY_STATUS    success | failure | cancelled（用于判定成功与否）
   NOTIFY_TITLE     动作名，如「部署」「回滚」
   ENV_NAME         目标环境 test|prod

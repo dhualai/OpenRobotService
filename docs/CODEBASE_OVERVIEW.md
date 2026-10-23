@@ -14,6 +14,12 @@
 
 ## 一、项目定位
 
+### 2026-10-21 增量：提问榜与解答榜独立排名
+
+- 最佳提问人按有效沉淀工单的提问数量排名，最佳解答人按解答数量排名；各榜仅收录对应角色贡献者，同数量按本角色工单有效获赞数排序。继续使用有效知识发布、报告通过及财务闭环后的工单归档状态，不增加必须提现的条件，不修改财务、奖励入账或支付流程。
+- `GET /api/admin/knowledge/rankings` 新增 `role=all/questioner/answerer`，默认仍为综合榜；`overview` 保留综合 `top_three`，新增 `top_questioners` 和 `top_answerers`。独立角色榜不复用或改写综合冻结快照，不产生分类奖金，不新增表、字段或迁移。
+- `KnowledgeCenter` 的角色前三预览和前十列表使用独立榜单，只展示本榜名次及数量，不再展示综合名次或另一角色数量；缓存键包含月份及角色，切换角色重新取数。首页综合卡片、原卡片样式和人员工单详情保持不变。
+
 ### 2026-10-20 增量：知识榜数量展示与实际已获奖励
 
 - `KnowledgeRankCard` 的综合/提问/解答预览改为对应数量，不显示金额；`KnowledgeCenter` 完整人员榜与 `KnowledgeContributorPage` 展示提问、解答及实际已获金额。标语更新为“让每一次问题的解决，都沉淀为知识。”，问题榜单更名为知识榜单。
@@ -33,12 +39,12 @@
 - 原“后台管理 → 运营与数据 → 奖励管理 → 待财务审核”中可查看工单、报告、审核意见和价值点；详情接口 `GET /api/wxpay/admin/archive-finance/{task_id}` 复用财务审核权限，匿名评审入口和原卡片样式不变。
 - 存量归档和资金记录不自动回填或重发；未启用或未正确设置三方 `task_archive` 奖励配置时，内容审核提交返回明确错误，不落入无奖励的半闭环。
 
-### 2026-10-16 增量：知识贡献榜首页卡片可见权限
+### 2026-10-22 增量：两个知识榜单向全部登录用户可见
 
-- 权限管理列表注册“显示知识贡献榜”开关，权限码 `frontend:admin:knowledge:show`；通过既有角色管理勾选/取消，可配置任意系统或项目角色。不再写死角色名称，未显式授权的角色默认隐藏，admin用户名和通配权限不绕过该独立配置；权限关闭时所有已授权角色也隐藏。
-- `PermissionService.get_user_with_roles` 按实际角色关联的该权限及其 `enabled` 状态计算 `can_view_knowledge_contribution`。原全局角色派生权限保持不变；角色权限授予/撤销、权限更新/删除后清除当前进程的用户角色缓存，多进程其余实例沿用现有60秒TTL。
-- `GET /api/admin/users/{username}/detail` 返回该布尔标记，`AuthState.canViewKnowledgeContribution` 默认false且不持久化；登录/恢复会话先隐藏，当前用户详情明确返回true才显示，失败/退出清除，旧账号的迟到响应不恢复新账号的卡片。
-- `Dashboard` 同时隐藏标题、标题右侧入口和完整卡片；`KnowledgeContributionCard` 自身也受控，未获可见标记时不挂载取数组件。2026-10-21增加知识贡献榜标题右侧“详细榜单”及高价值问题榜单标题右侧“所有问题”，通过 `SectionTitle` 的操作区及原样式链接到已有二级路由，保留整卡导航。只调整首页入口展示，不修改知识中心、公开问题或匿名审核接口权限；复用现有权限表及角色权限关联表，不新增数据库结构或自动给角色授权。
+- `Dashboard` 直接展示知识贡献榜及高价值问题榜单的标题、卡片和“详细榜单 / 所有问题”入口，`KnowledgeContributionCard` 移除独立角色标记门槛；无角色、未配置展示权限或角色加载失败均不再隐藏公开入口。原卡片结构、样式、位置和导航保持不变。
+- `PermissionService.get_user_with_roles` 对存在的用户返回 `can_view_knowledge_contribution: true`，用户详情响应也默认true，兼容仍读取该字段的客户端；前端认证状态仍保留该字段，但两张卡片不再以其作为展示条件。旧 `frontend:admin:knowledge:show` 权限记录及角色关联保留兼容，设置变化不再影响公开榜单，不自动修改或补授权。
+- 入口继续位于 `AuthGuard` 登录保护之内，知识与高价值问题接口仍要求有效登录。`can_manage_knowledge_challenges`、高价值问题发布/状态/结果管理、匿名评审、财务审核及支付权限不变；普通用户可浏览和按原规则点赞、讨论、解答，不因此获得管理权限。
+- 无数据库表、字段或迁移变更，不重写既有奖励、结算或角色权限数据。
 
 ### 2026-10-16 增量：知识榜单每日点赞限额
 
@@ -54,7 +60,7 @@
 
 ### 2026-10-15 增量：知识贡献榜与匿名审核
 
-- 前端：`frontend/src/pages/admin/KnowledgeContributionCard.tsx` 位于后台首页用户头像/名字下方、工单数据看板之前；“知识贡献榜”标题复用看板的 `SectionTitle`。`KnowledgeRankCard` 统一横向榜单卡片：左侧榜单标识、右侧前三行。`KnowledgeCenter` 默认展示问题榜、最佳提单人榜、最佳接单人榜三个预览模块，点击进入完整列表；两个用户模块沿用同一综合月榜，月份及问题排序保留在URL中。`KnowledgeQuestionDetail`、`KnowledgeReviewPage` 负责公开问题与匿名审核。实际路由注册在 `frontend/src/main.tsx`，样式复用 `mac-card` 与现有颜色变量。
+- 前端：`frontend/src/pages/admin/KnowledgeContributionCard.tsx` 位于后台首页用户头像/名字下方、工单数据看板之前；“知识贡献榜”标题复用看板的 `SectionTitle`。`KnowledgeRankCard` 统一横向榜单卡片：左侧榜单标识、右侧前三行。`KnowledgeCenter` 默认展示知识榜单、最佳提问人榜、最佳解答人榜三个预览模块，点击进入完整列表；两个用户模块按各自角色独立展示前三和前十，首页保留综合月榜，月份及问题排序保留在URL中。`KnowledgeQuestionDetail`、`KnowledgeReviewPage` 负责公开问题与匿名审核。实际路由注册在 `frontend/src/main.tsx`，样式复用 `mac-card` 与现有颜色变量。
 - 后端：`modules/admin/api/knowledge.py` 提供登录用户开放的读/点赞接口和受限的风险/结算接口；`knowledge_service.py` 负责活动资格、发布投影、综合月榜与点赞截止口径；`knowledge_settlement.py` 负责修订快照、核验与现有奖励服务入账。
 - 审核复用 `Task` / `ArchiveReport`；`modules/tasks/services/knowledge_review.py` 提供匿名投影、本人意见及原始任务读取限制。报告审批要求意见、价值点、revision及当前指定审核人身份校验；前置派审成功后不因提单人、接单人或报告作者同人而再次拦截，派审失败仍不允许提交，原候选回避优先策略与财务流程不变。AI初稿与手写模板同步为八章节。
 - 新模型集中在 `backend/app/models/knowledge.py`：`knowledge_publications`、`knowledge_question_likes`、`knowledge_like_events`、`archive_review_decisions`、`knowledge_settlements`、`knowledge_discussions`；扩展 `archive_reports.value_point`。迁移链为 `b8c1d4e7f203 → c9d2e5f8a104 → d0e3f6a9b215`；2026-10-15 已对本机 dev 的 `127.0.0.1:3306/helpdesk` 执行增量迁移，生产及其他环境仍需独立执行。

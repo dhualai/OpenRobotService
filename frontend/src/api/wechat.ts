@@ -53,6 +53,34 @@ export function fetchUserSummary(beginDate: string, endDate: string): Promise<Us
   });
 }
 
+export interface UserDauItem {
+  /** 数据日期 yyyy-MM-dd */
+  ref_date: string;
+  /** 当日去重活跃用户数 */
+  dau: number;
+  /** 当日各「最后活跃来源」的用户数（同一用户一天只按最后一次活跃来源归组） */
+  sources: Record<string, number>;
+}
+
+export interface UserDauResp {
+  success: boolean;
+  list: UserDauItem[];
+  total: number;
+}
+
+/**
+ * 获取微信用户日活（读 wechat_user_activity 表：公众号消息回调与 H5 登录
+ * 实时埋点落库，end_date 可为今天；历史数据由回算脚本按 tasks 表近似回填）。
+ */
+export function fetchUserDau(beginDate: string, endDate: string): Promise<UserDauResp> {
+  return request<UserDauResp>('/user-dau-db', {
+    method: 'POST',
+    headers: { 'X-API-Key': SYNC_API_KEY },
+    body: JSON.stringify({ begin_date: beginDate, end_date: endDate }),
+    skipCache: true,
+  });
+}
+
 export interface WechatUserInfo {
   /** 1=已关注（真实用户），非 1（0/缺失）=已取关（虚拟用户） */
   subscribe: number;

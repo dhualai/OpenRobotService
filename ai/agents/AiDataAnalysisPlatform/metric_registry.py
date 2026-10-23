@@ -52,6 +52,7 @@ class MetricDimension(str, Enum):
     RISK = "risk"
     COLLECTION = "collection"  # collection_data 采集数据表（搬运效率等）
     PROJECT_INFO = "project_info"  # 项目信息管理（project_info_node/value/history/mark 四张表）
+    USER = "user"  # 微信公众号用户日活（wechat_user_activity 埋点表）
 
 
 # ── 输出形态 ──────────────────────────────────────────────────
@@ -501,6 +502,44 @@ _PROJECT_INFO_METRICS: list[MetricDef] = [
     ),
 ]
 
+# 微信公众号用户日活（wechat_user_activity 表）。每行 = 某用户某天活跃一次
+# （UNIQUE(ref_date, openid)），日活口径即按天去重用户数；source 为「当日最后
+# 活跃来源」（message/menu/event/h5/backfill）。埋点实时落库 + 回算脚本补历史。
+_USER_METRICS: list[MetricDef] = [
+    MetricDef(
+        key="user.dau_total",
+        dimension=MetricDimension.USER,
+        label="日活用户总数",
+        desc="指定时间范围内每日活跃用户数之和（同一用户跨天重复计数）",
+        output_type=MetricOutputType.SCALAR,
+        collect_fn="_user_dau_total_metric",
+    ),
+    MetricDef(
+        key="user.avg_dau",
+        dimension=MetricDimension.USER,
+        label="日均活跃用户数",
+        desc="指定时间范围内日活用户总数的日均值（总数除以日历天数）",
+        output_type=MetricOutputType.SCALAR,
+        collect_fn="_user_avg_dau_metric",
+    ),
+    MetricDef(
+        key="user.dau_by_day",
+        dimension=MetricDimension.USER,
+        label="日活趋势",
+        desc="指定时间范围内每日活跃用户数（按天去重）的趋势",
+        output_type=MetricOutputType.TREND,
+        collect_fn="_user_dau_by_day_metric",
+    ),
+    MetricDef(
+        key="user.by_source",
+        dimension=MetricDimension.USER,
+        label="活跃来源分布",
+        desc="按活跃来源（公众号消息/菜单点击/事件交互/H5登录/历史回算）统计的活跃记录分布，口径为当日最后活跃来源",
+        output_type=MetricOutputType.DISTRIBUTION,
+        collect_fn="_user_by_source_metric",
+    ),
+]
+
 # ── 维度分组 ──────────────────────────────────────────────────
 
 DIMENSION_GROUPS: dict[str, _DimensionGroup] = {
@@ -528,6 +567,11 @@ DIMENSION_GROUPS: dict[str, _DimensionGroup] = {
         label="项目信息",
         table_name="project_info_node/project_info_value/project_info_value_history/project_info_node_mark",
         metrics=_PROJECT_INFO_METRICS,
+    ),
+    "user": _DimensionGroup(
+        label="用户日活",
+        table_name="wechat_user_activity",
+        metrics=_USER_METRICS,
     ),
 }
 

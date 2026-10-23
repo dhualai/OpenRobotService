@@ -3895,6 +3895,39 @@ html, body, #root {
   color: var(--muted-foreground);
 }
 /* 排序：胶囊按钮 */
+/* 普通列表 / 关系列表：选中浅蓝底+蓝字，未选中深色字（与原先 inherit/--text 观感一致） */
+.tasks-view__view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  margin-bottom: 4px;
+  padding: 0 4px;
+}
+.tasks-view__view-toggle-track {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--border);
+}
+.tasks-view__view-toggle-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  background: transparent;
+  color: var(--foreground);
+  transition: background 0.15s, color 0.15s;
+}
+.tasks-view__view-toggle-btn.is-active {
+  background: var(--blue-soft);
+  color: var(--blue-2);
+}
 .tasks-view__sort-row {
   display: flex;
   align-items: center;
@@ -5460,6 +5493,8 @@ html, body, #root {
 /* 每个分组内两张图：平板及以上并排两列，移动端单列 */
 @media (min-width: 768px) { .admin-entries-stats__charts { grid-template-columns: repeat(2, 1fr); } }
 @media (min-width: 1280px) { .admin-entries-stats__groups { grid-template-columns: repeat(2, 1fr); } }
+/* 跨满两列的宽图卡（如微信用户日活折线图） */
+.admin-entries-stats__chart--wide { grid-column: 1 / -1; }
 .admin-entries-stats__sub { display: block; font-size: 12px; color: var(--mac-muted-fg); margin-bottom: 4px; }
 .admin-entries-stats__empty {
   padding: 32px 0;

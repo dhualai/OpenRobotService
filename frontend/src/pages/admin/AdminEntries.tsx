@@ -4,7 +4,7 @@ import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import { Loading, Navbar } from 'tdesign-mobile-react';
 import {
   MacUsers, MacTags, MacKeyRound, MacUserCog, MacShuffle, MacScrollText, MacClipboardList,
-  MacTable2, MacWallet, MacFileText,
+  MacTable2, MacWallet, MacFileText, MacCalendarDays,
 } from '@/shared/components/macaronIcons';
 import { useAuthStore } from '@/stores/auth';
 import { PERM_DISPATCH_DEV } from '@/shared/constants/dispatchDev';
@@ -12,6 +12,7 @@ import { PERM_TASK_POLICY } from '@/pages/admin/TaskPolicyPage';
 import { PERM_WECOM_SHEETS } from '@/api/wecomSheets';
 import { PERM_WXPAY_ADMIN } from '@/api/wxpay';
 import { PERM_ANNOUNCEMENT } from '@/api/announcement';
+import { PERM_WORK_CALENDAR } from '@/api/workCalendar';
 
 const AdminUserStatistics = lazy(() => import('./AdminUserStatistics'));
 
@@ -64,6 +65,7 @@ const entryGroups: EntryGroup[] = [
     entries: [
       { path: '/admin/qrcode-manage', label: '二维码管理', desc: '带参数二维码批量创建、发布、状态流转', icon: <MacScrollText />, tone: 'blue-3' },
       { path: '/admin/wecom-sheets', label: '企微表格', desc: '企微智能表格接入、测试连接、定时同步', icon: <MacTable2 />, tone: 'blue-2' },
+      { path: '/admin/work-calendar', label: '工作日历', desc: '公司工作时间、法定节假日与调休（工单提醒按此推送）', icon: <MacCalendarDays />, tone: 'blue-3' },
       { path: '/admin/announcements', label: '公告管理', desc: '活动中心公告发布、上下线、置顶', icon: <MacFileText />, tone: 'blue-2' },
       { path: '/admin/wxpay-rewards', label: '奖励管理', desc: '转账测试、转账单查单与撤销、奖励记录', icon: <MacWallet />, tone: 'blue-1' },
       { path: '/admin/knowledge/challenges?view=manage', label: '高价值问题管理', desc: '发布问题与悬赏、处理状态及最佳解答', icon: <MacFileText />, tone: 'blue-2' },
@@ -89,6 +91,7 @@ export default function AdminEntries() {
   const canShowWecomSheets = useAuthStore((state) => state.hasPermission(PERM_WECOM_SHEETS));
   const canShowWxpayRewards = useAuthStore((state) => state.hasPermission(PERM_WXPAY_ADMIN));
   const canShowAnnouncement = useAuthStore((state) => state.hasPermission(PERM_ANNOUNCEMENT));
+  const canShowWorkCalendar = useAuthStore((state) => state.hasPermission(PERM_WORK_CALENDAR));
   const canManageChallenges = useAuthStore((state) => state.canManageKnowledgeChallenges);
   const visibleGroups = entryGroups.map((group) => ({
     ...group,
@@ -98,6 +101,7 @@ export default function AdminEntries() {
       (entry.path !== '/admin/wecom-sheets' || canShowWecomSheets) &&
       (entry.path !== '/admin/wxpay-rewards' || canShowWxpayRewards) &&
       (entry.path !== '/admin/knowledge/challenges?view=manage' || canManageChallenges) &&
+      (entry.path !== '/admin/work-calendar' || canShowWorkCalendar) &&
       (entry.path !== '/admin/announcements' || canShowAnnouncement),
     ),
   })).filter((group) => group.entries.length > 0);

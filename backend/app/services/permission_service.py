@@ -301,7 +301,6 @@ class PermissionService:
             all_role_ids = {role_id for role_ids in user_roles.values() for role_id in role_ids}
             role_names_by_id = dict(db.query(Role.id, Role.name).filter(Role.id.in_(all_role_ids)).all()) if all_role_ids else {}
             global_role_names = {role_names_by_id.get(role_id) for role_id in user_roles.get('global', [])}
-            can_view_knowledge_contribution = False
 
             # 全局角色（project_id 为空，get_user_roles_all_projects 归到 'global' 键）
             # 按角色名派生权限码，见文件头 _GLOBAL_ROLE_DERIVED_PERMISSIONS。
@@ -333,10 +332,8 @@ class PermissionService:
                     permissions_results = db.query(Permission).filter(Permission.id.in_(all_permission_ids)).all()
                     
                     for perm in permissions_results:
-                        if perm.code == PERM_KNOWLEDGE_CONTRIBUTION:
-                            if perm.enabled != "true":
-                                continue
-                            can_view_knowledge_contribution = True
+                        if perm.code == PERM_KNOWLEDGE_CONTRIBUTION and perm.enabled != "true":
+                            continue
                         permission_details_map[perm.id] = {
                             'id': perm.id,
                             'code': perm.code,
@@ -392,7 +389,7 @@ class PermissionService:
                 'password_hash': db_user.password_hash,
                 'permissions': list(all_permissions),
                 'roles': user_roles,
-                'can_view_knowledge_contribution': can_view_knowledge_contribution,
+                'can_view_knowledge_contribution': True,
                 'can_manage_knowledge_challenges': "admin" in all_permissions or bool(
                     global_role_names & {"超级管理员", "管理员"}),
                 'projectPermissions': project_permissions_dict,

@@ -1,9 +1,8 @@
 import { fetchKnowledgeOverview } from '@/api/knowledge';
-import { useAuthStore } from '@/stores/auth';
 import { useKnowledgeResource } from './knowledgeShared';
 import KnowledgeRankCard, { contributorPreviewEntries } from './KnowledgeRankCard';
 
-function VisibleKnowledgeContributionCard() {
+export default function KnowledgeContributionCard() {
   const resource = useKnowledgeResource('overview', () => fetchKnowledgeOverview());
   const overview = resource.data;
   return <KnowledgeRankCard title="知识贡献榜" hideTitle showMore={false} kind="combined" className="knowledge-home-card"
@@ -11,9 +10,4 @@ function VisibleKnowledgeContributionCard() {
     entries={contributorPreviewEntries(overview?.top_three || [], 'combined')} to="/admin/knowledge"
     error={resource.error} loading={resource.loading && !overview} retry={resource.reload}
     footer={overview && <span>{overview.campaign_status === 'ended' ? '本期统计已结束 · 查看贡献记录' : '按月统计 · 以有效归档贡献排名'}</span>} />;
-}
-
-export default function KnowledgeContributionCard() {
-  const canView = useAuthStore((state) => state.canViewKnowledgeContribution);
-  return canView ? <VisibleKnowledgeContributionCard /> : null;
 }

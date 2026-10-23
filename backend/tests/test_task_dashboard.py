@@ -99,6 +99,47 @@ class TestTaskDashboard(IsolatedAsyncioTestCase):
         self.assertEqual(result['total'], 27)
         self.assertEqual({item['status'] for item in result['items']}, {'in_progress'})
 
+    async def test_summary_includes_every_status_without_double_counting(self):
+        summary = await TaskDashboardService.get_ticket_summary(self.db, ['P2'])
+        self.assertEqual(summary['total'], len(TaskStatus))
+        self.assertEqual(sum(summary['by_status'].values()), summary['total'])
+        for status_key in ['pending_requested', 'paused', 'unsolvable_requested', 'unsolvable', 'archiving', 'archived']:
+            with self.subTest(status_key=status_key):
+                self.assertEqual(summary['by_status'][status_key], 1)
+        self.assertEqual(summary['resolved_rate'], round(3 / len(TaskStatus), 4))
+        counts = await TaskDashboardService.get_ticket_counts_by_project(self.db, ['P2'])
+        self.assertEqual(counts, {'P2': summary['total']})
+
+    async def test_grouped_status_drilldown_matches_summary_and_project_scope(self):
+        for project_ids in [None, ['P1'], ['P2'], [], ['missing']]:
+            summary = await TaskDashboardService.get_ticket_summary(self.db, project_ids)
+            for scope, status_keys, statuses in [
+                ('unsolvable', ['unsolvable_requested', 'unsolvable'], {'unsolvable_requested', 'unsolvable'}),
+                ('archive', ['archiving', 'archived'], {'archiving', 'archived'}),
+                ('paused', ['paused'], {'pending'}),
+            ]:
+                with self.subTest(project_ids=project_ids, scope=scope):
+                    result = await TaskDashboardService.get_tickets_by_status(
+                        self.db, scope, limit=100, project_ids=project_ids,
+                    )
+                    expected = sum(summary['by_status'].get(key, 0) for key in status_keys)
+                    self.assertEqual(result['total'], expected)
+                    self.assertEqual(len(result['items']), expected)
+                    self.assertEqual({item['status'] for item in result['items']}, statuses if expected else set())
+
+    async def test_grouped_status_pagination_has_no_duplicates(self):
+        for scope in ['unsolvable', 'archive']:
+            with self.subTest(scope=scope):
+                expected = await TaskDashboardService.get_tickets_by_status(self.db, scope, limit=100)
+                self.assertEqual(expected['total'], 4)
+                items = []
+                for skip in range(expected['total']):
+                    page = await TaskDashboardService.get_tickets_by_status(self.db, scope, skip=skip, limit=1)
+                    self.assertEqual(page['total'], expected['total'])
+                    items.extend(page['items'])
+                self.assertEqual(items, expected['items'])
+                self.assertEqual(len({item['id'] for item in items}), expected['total'])
+
     async def test_overdue_uses_current_stage_deadline_without_legacy_fallback(self):
         rows = [
             self.make_task(

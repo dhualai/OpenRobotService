@@ -98,10 +98,27 @@ from app.models.organization import (
     Department,
 )
 
+# 公司工作日历（法定节假日 / 调休补班）
+from app.models.work_calendar import CompanyHoliday
+
+# 通知排程（Outbox）
+from app.models.notification import NotificationOutbox
+
 # 「产品→界面→功能」责任模块树（DB 主数据，导出到 config 供 AI Assigner）
 from app.models.module_tree import ModuleTree
 from app.models.module_tree_edit import ModuleTreeEdit
 from app.models.module_tree_node import ModuleTreeNode
+
+# 责任双树（组织树 + 技能树 + 人挂载）：双树试做页的唯一真相源
+from app.models.resp_tree import (
+    RespTree,
+    RespNode,
+    RespNodeLink,
+    NODE_KINDS,
+    LINK_TYPES,
+    LINK_ROLES,
+    LINK_SOURCES,
+)
 
 # 界面图鉴（标准截图 + 难懂区域标注）
 from app.models.ui_atlas import UiAtlasCard
@@ -111,6 +128,9 @@ from app.models.user_info import UserInfo
 
 # 用户统计（按日期 + 来源）
 from app.models.user_statistics import UserStatistics
+
+# 微信用户日活（按日期 + openid 去重）
+from app.models.wechat_activity import WechatUserActivity
 
 # 微信公众号带参数二维码
 from app.models.wechat_qrcode import WechatQrcode, QrcodeStatus, QrcodeType
@@ -176,14 +196,23 @@ __all__ = [
     "Resource", "ResourceFolder", "ResourceType", "ResourceStatus", "StorageType",
     # organization
     "Company", "Department",
+    # work calendar
+    "CompanyHoliday",
+    # notification outbox
+    "NotificationOutbox",
     # module tree
     "ModuleTree", "ModuleTreeEdit", "ModuleTreeNode",
+    # 责任双树
+    "RespTree", "RespNode", "RespNodeLink",
+    "NODE_KINDS", "LINK_TYPES", "LINK_ROLES", "LINK_SOURCES",
     # ui atlas
     "UiAtlasCard",
     # user info
     "UserInfo",
     # user statistics
     "UserStatistics",
+    # wechat user activity (DAU)
+    "WechatUserActivity",
     # wechat qrcode
     "WechatQrcode", "QrcodeStatus", "QrcodeType",
     # usp env

@@ -97,7 +97,7 @@ describe('AdminEntries', () => {
   it.each([
     ['用户与权限', 'users', ['用户管理', '角色管理', '权限管理', '分配角色', '设置用户']],
     ['工单与派单', 'dispatch', ['责任模块树', '双树试做', '工单关联规则']],
-    ['运营与数据', 'operations', ['二维码管理', '企微表格', '公告管理', '奖励管理']],
+    ['运营与数据', 'operations', ['二维码管理', '企微表格', '工作日历', '公告管理', '奖励管理']],
     ['系统工具', 'system', ['操作记录', '开发者模式']],
   ])('opens the %s category with only its related tools', async (label, category, entries) => {
     renderView();
@@ -124,6 +124,7 @@ describe('AdminEntries', () => {
     ['dispatch', '工单关联规则', '/admin/task-policy'],
     ['operations', '二维码管理', '/admin/qrcode-manage'],
     ['operations', '企微表格', '/admin/wecom-sheets'],
+    ['operations', '工作日历', '/admin/work-calendar'],
     ['operations', '公告管理', '/admin/announcements'],
     ['operations', '奖励管理', '/admin/wxpay-rewards'],
     ['system', '操作记录', '/admin/operation-logs'],

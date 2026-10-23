@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
@@ -64,6 +64,8 @@ from app.modules.tasks.api.ws import (
 )
 from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils, _format_shanghai
+from app.services.working_time_service import WorkingTimeService
+from app.services.notification_outbox_service import NotificationOutboxService
 from app.integrations.api import verify_sync_api_key, verify_robot_alarm_api_key
 from app.services.identity_service import IdentityService
 from app.core.config import settings
@@ -1742,9 +1744,9 @@ async def get_task_project_members(
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。
+    """获取任务关联项目的成员列表 + 工单关键人（用于讨论区 @ 提及）。
 
-    all=false：仅返回处理人/提单人/代提单人 + 项目成员（默认候选池）。
+    all=false：仅返回处理人/提单人/代提单人/项目对接人 + 项目成员（默认候选池）。
     all=true：在前者基础上再追加全部 active 在职用户（已去重），
              使讨论区输入 @关键字 时可过滤到项目外的人。
     """
@@ -1761,7 +1763,7 @@ async def get_task_project_members(
 
         project_id = getattr(ticket, "project_id", None)
 
-        # ── 1. 处理人 / 提单人 / 代提单人始终排在最前面 ──
+        # ── 1. 处理人 / 提单人 / 代提单人 / 项目对接人始终排在最前面 ──
         key_users = []
         assigned_to = getattr(ticket, "assigned_to", None)
         created_by = getattr(ticket, "created_by", None)
@@ -1782,6 +1784,11 @@ async def get_task_project_members(
             ).strip()
             if principal_key and not any(same_identity(principal_key, existing) for existing, _ in key_users):
                 key_users.append((principal_key, "代提单人"))
+
+        # 项目对接人：有则置顶（与重派选人同一来源）；已是处理人/提单人/代提单人则不重复
+        contact_id, _contact_name = _resolve_project_contact(ticket)
+        if contact_id and not any(same_identity(contact_id, existing) for existing, _ in key_users):
+            key_users.append((contact_id, "项目对接人"))
 
         if key_users:
             from app.core.db import SessionLocal
@@ -1805,8 +1812,8 @@ async def get_task_project_members(
             finally:
                 sync_db.close()
 
-        # ── 2. 处理人/提单人/代提单人 + 项目成员 ──
-        # 即使没有项目也能 @ 处理人、提单人和代提单人
+        # ── 2. 关键置顶人 + 项目成员 ──
+        # 即使没有项目也能 @ 处理人、提单人、代提单人和项目对接人
         if project_id:
             members = db_manager.get_project_members(project_id, include_usp=False)
             for m in members:
@@ -2219,9 +2226,11 @@ def _maybe_notify_mentions(
                               else str(ticket.status or "")).lower()
                 status_text = status_text_map.get(raw_status, raw_status)
 
-                deadline_str = (ticket.deadline_at.strftime('%Y-%m-%d %H:%M:%S')
-                                if ticket.deadline_at
-                                else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S'))
+                # 截止时间统一走 _format_shanghai：DB 的 deadline_at 是 naive UTC，
+                # 直接 strftime 会把 UTC 当本地时间展示，比真实截止时间早 8 小时
+                deadline_str = _format_shanghai(
+                    ticket.deadline_at or (datetime.now(timezone.utc) + timedelta(days=7))
+                )
                 payload = NotificationUtils.instantiate_template(
                     NotificationUtils.MENTION_TICKET,
                     ticket_title[:20] or f"工单#{task_id}",
@@ -3838,6 +3847,9 @@ async def re_dispatch_task(
 
     await db.commit()
 
+    # 重置派单清空了处理人 → 旧处理人的待发提醒作废
+    NotificationOutboxService.cancel_task_notifications(ticket.id)
+
     # 触发派单 Worker：向 Redis 发布 usp:new_ticket（与 AI 服务 publish_new_ticket 同通道）
     try:
         import redis.asyncio as aioredis
@@ -4083,11 +4095,41 @@ async def send_cuiban_notification(
             if notification_data.to_admin:
                 user_names.extend(['wechat_oM1WF6jUTn', 'wechat_oM1WF6hHVK'])
 
+            # ── 工作时间排程分流 ──────────────────────────────
+            # 逾期/临期等「系统自动提醒」不即时推送，改按各接收人所在时区的工作时间排程；
+            # 人工催办、@提醒、状态变更等实时性强的类型，以及管理员 force 的紧急通知，仍立即发。
+            force = bool(notification_data.force)
+            if force and "admin" not in (current_user.get('permissions') or []):
+                raise HTTPException(status_code=403, detail="仅管理员可强制立即发送")
+
+            if not force and WorkingTimeService.should_schedule(notify_type):
+                scheduled = []
+                seen = set()
+                for recipient in user_names:
+                    if not recipient or recipient in seen:
+                        continue
+                    seen.add(recipient)
+                    scheduled.append(
+                        NotificationOutboxService.schedule(
+                            notify_type=notify_type,
+                            recipient_id=recipient,
+                            task_id=ticket_id,
+                            deadline_at=ticket.deadline_at,
+                            occurrence=notification_data.occurrence,
+                        )
+                    )
+                return {
+                    "code": 200,
+                    "message": "通知已按接收人工作时间排程",
+                    "scheduled": scheduled,
+                }
+
             yuqi_day = ""
             if ticket.deadline_at:
-                current_time = datetime.now()
-                if current_time > ticket.deadline_at:
-                    yuqi_seconds = (current_time - ticket.deadline_at).total_seconds()
+                # 统一按 UTC 比较：deadline_at 存的是 UTC，本地 naive now 会差一个时区
+                deadline_utc = WorkingTimeService.to_utc(ticket.deadline_at)
+                if WorkingTimeService.now_utc() > deadline_utc:
+                    yuqi_seconds = (WorkingTimeService.now_utc() - deadline_utc).total_seconds()
                     yuqi_days = yuqi_seconds / (24 * 3600)
                     yuqi_day = f"{yuqi_days:.0f}"
 
@@ -4105,18 +4147,15 @@ async def send_cuiban_notification(
                 create_at=ticket.created_at,
                 user_names=user_names,
                 token=token,
-                yuqi_day=yuqi_day
+                yuqi_day=yuqi_day,
+                # 模板时间按目标接收人时区渲染（多接收人共用目标用户的时区）
+                tz_name=(WorkingTimeService.get_user_context(target_user) or {}).get("timezone"),
             )
 
         else:
-            extr = await TicketService.get_user_ticket_stats(db, assigned_to)
-            token = current_user.get('token')
-            result = await NotificationUtils.send_ticket_cuiban_notification(
-                notify_type=notify_type,
-                user_names=[assigned_to],
-                extr=extr,
-                token=token
-            )
+            # 无 ticket_id 的分支原本按「每日统计」用模板 2，但该模板实为「工单处理结果通知」，
+            # 字段语义不符，且当前无调用方。这里直接拒绝，避免发出空模板或错配内容。
+            raise HTTPException(status_code=400, detail="缺少 ticket_id：统计类通知暂不支持")
 
         return result
     except HTTPException:
@@ -4600,6 +4639,11 @@ async def _sync_duplicate_status(
 
     if synced_count > 0:
         await db.commit()
+
+        # 同步到的状态可能是终态 → 取消被同步工单尚未发出的提醒
+        if new_status in (TaskStatus.RESOLVED, TaskStatus.CLOSED, TaskStatus.ARCHIVED, TaskStatus.CANCELED):
+            for tid in list(targets.keys()):
+                NotificationOutboxService.cancel_task_notifications(tid)
 
         # 广播 WS
         for tid in list(targets.keys()):

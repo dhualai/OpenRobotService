@@ -162,6 +162,23 @@ class TestStandardReportMechanicalCard:
         assert "货叉" in card["problem_summary"]
         assert "XP1152" in card["solution_steps"]
 
+    def test_qa_variant_two_sections(self):
+        """咨询问答两节制：问题描述 + 回答 —— 机械映射照常出卡（1020 用户定）。"""
+        from ai.core.solution_sink import _card_from_standard_report
+        qa = """# 标题
+
+## 问题描述
+在什么条件下出现了这个问题，涉及车型 XP1152。
+
+## 回答
+这个问题的原因是货叉防掉落由车端实现；解决方式是按车型确认归属。
+"""
+        card = _card_from_standard_report(qa)
+        assert card is not None
+        assert "XP1152" in card["problem_summary"]
+        assert "车端" in card["root_cause"] or "车端" in card["solution_steps"]
+        assert "原因" in card["solution_steps"] or "原因" in card["root_cause"]
+
     def test_too_few_sections_returns_none(self):
         """只剩 3 类（<5）→ 不算标准 MD，走 LLM。"""
         from ai.core.solution_sink import _card_from_standard_report

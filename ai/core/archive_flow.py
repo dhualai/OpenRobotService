@@ -15,13 +15,19 @@ backend 归档流（closed → 处理人开始归档 → 写报告 → 提交审
    - 半截内容不进库，只有 done 时的完整全文一次写回。
 
 ② 知识入库（run_archive_ingest_worker）
-   轮询 submit_status='approved' 且未打标的归档报告 → 报告全文作为知识源
-   走 process_ticket（distiller 八条闸门照旧：测试单/无解法/敷衍跳过）→
+   轮询 submit_status='approved' 且未打标的归档报告（队列见 solution_sink.
+   load_archived_candidates）→ 处理内核 solution_sink.process_archived_ticket：
+   已有卡的单**只改 payload、向量不动**（与人工审核路逐字一致），没有卡的单
+   用同一个提炼器补建（distiller 八条闸门照旧：测试单/无解法/敷衍跳过）→
    入库 company/ticket_resolutions（归档人审已前置，直接 approved 可检索）
-   → 打 archive_knowledge_indexed 标记；失败不打标下轮重试。
+   → 打 archive_sink_status 标记；失败不打标下轮重试。
+   （2026-10-16 收口：此前这里自己拼 SQL + 调 process_ticket + 打
+   archive_knowledge_indexed，与 knowledge_worker 的归档分支是两套并行实现，
+   现在统一走 solution_sink，只留这一条驱动。）
 """
 import asyncio
 import json
+import re
 import time
 
 from ai.core.logging import get_logger
@@ -42,40 +48,24 @@ _SYSTEM_PROMPT = (
     "参数名等关键实体。"
 )
 
-_REPORT_PROMPT = """请根据以下工单素材撰写归档报告，格式要求：
+_REPORT_PROMPT = """请根据以下工单素材撰写归档报告。报告只有两个小节，用 `## ` 二级标题，各节都须有正文：
 
 第一行：`# 一句话标题（含现象与关键对象）`
 
-然后依次八个小节，用 `## ` 二级标题，各节都须有正文：
-
-## 问题概述
-（问题现象、关键对象、故障码或日志关键字；不写人员姓名或联系方式）
-
-## 问题场景
-（设备型号、版本、运行环境与发生异常的业务环节；不写客户、项目或人员身份）
-
-## 复现条件
-（触发条件、复现步骤与必要参数）
-
-## 原因分析
-（排查依据、原因链与排除项，区分已验证事实和推测）
+## 问题描述
+问题及背景：现象是什么、在什么条件下/什么环节出现，涉及的关键对象、
+车型、故障码或日志关键字；咨询/责任归属类写清谁在什么场景下问了什么。
+背景与条件要总结进来，不要只罗列一句话。
 
 ## 解决方案
-（按顺序的可操作动作；素材中有多条线索时归纳成清晰的步骤序列）
+办法及原因：这个问题的**原因是什么**（已知则写，含推测要标注），**怎么
+解决**——按顺序的可操作动作；咨询类本节标题改用 `## 回答`，内容为结论
+与依据。没有证据的部分明确提示处理人补充，不编造。
 
-## 验证结果
-（验证方法、样本、结果与风险；没有证据时明确提示处理人补充）
-
-## 适用范围
-（适用车型、部件、版本、参数约束及后续注意事项）
-
-## 遗留问题
-（未解决事项与后续动作；素材明确没有时写「无」）
-
-（素材提供了"现场图片"markdown 时：按图片内容与描述判断它最能佐证哪一节，
-把 markdown **原样嵌入**该节正文之后的独立一行——如报错截图配「问题概述」、
-现场照片配「复现条件」、部件照片配「原因分析」；无法判断时放「问题概述」
-末尾。路径与文件名一字不改、不得虚构图片；每张全篇恰好出现一次）
+（素材提供了"现场图片"占位标记【现场图片N】时：按图片内容与描述判断它
+最能佐证哪一节，把**占位标记原样**放到该节正文之后的独立一行——如报错
+截图配「问题描述」、现场照片配「解决方案/回答」。只挪动标记本身，标记
+文字一字不改；每张全篇恰好出现一次）
 
 ----------
 
@@ -88,7 +78,7 @@ _REPORT_PROMPT = """请根据以下工单素材撰写归档报告，格式要求
 - 项目：{project_name}
 - 现场处理记录（评论，按时间）：
 {comments}
-- 现场图片（markdown 引用可原样嵌入报告，前端渲染时带登录态加载）：
+- 现场图片（嵌入时只写【现场图片N】占位标记，真实链接由系统回填）：
 {image_refs}
 """
 
@@ -175,9 +165,12 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
         # 前端 MarkdownRenderer/AuthImage 渲染时带登录态加载）
         from ai.core.solution_sink import load_comment_image_refs
         img_refs = load_comment_image_refs(task_id)
+        # 素材只给【现场图片N】序号占位——LLM 抄长 UUID 必抄错（918 实锤：
+        # a4702001 被抄成 a2004701），生成完成后由代码机械替换真实链接
         image_refs_text = "\n".join(
-            f"- {r['markdown']}" + (f"（描述：{r['desc']}）" if r["desc"] else "")
-            for r in img_refs) or "（评论区无图片）"
+            f"- 【现场图片{i}】{r['filename']}"
+            + (f" — {r['desc']}" if r['desc'] else "")
+            for i, r in enumerate(img_refs, 1)) or "（评论区无图片）"
         prompt = _REPORT_PROMPT.format(
             title=ctx.get("title") or "", description=(ctx.get("description") or "")[:1500],
             resolution_summary=(ctx.get("resolution_summary") or "")[:800],
@@ -212,14 +205,24 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
         if not report:
             await q({"type": "error", "msg": "生成结果为空，可直接手写报告"})
             return
-        # ORS-1035 兜底：素材有现场图片但 LLM 没嵌任何一张（内联指引偶尔失守）
-        # → 自动补「## 现场图片」小节，保证图片不因模型失守而整体丢失
-        if img_refs and "attachments/download" not in report:
+        # ORS-1035：把【现场图片N】占位标记机械替换为真实 markdown 链接
+        # （LLM 只负责放位置，链接由代码回填——抄错路径的事故不再可能）；
+        # 没用掉的标记剥掉。素材有图但报告一张没嵌 → 兜底补「## 现场图片」节
+        embedded = 0
+        for i, r in enumerate(img_refs, 1):
+            tag = f"【现场图片{i}】"
+            if tag in report:
+                report = report.replace(tag, r['markdown'])
+                embedded += 1
+        report = re.sub(r"【现场图片\d+】\s*", "", report)
+        if img_refs and embedded == 0 and "attachments/download" not in report:
             fallback = "\n\n## 现场图片\n\n" + "\n".join(
                 f"- {r['markdown']}" + (f"（{r['desc']}）" if r["desc"] else "")
                 for r in img_refs)
             report = report.rstrip() + fallback
             await q({"type": "delta", "text": fallback})
+        logger.info(f"[archive] #918图片内嵌 {embedded}/{len(img_refs)}" if img_refs
+                    else f"[archive] #{task_id} 无现场图片")
 
         await q({"type": "status", "msg": "正在保存初稿…"})
         # 写回前再查一次：生成期间处理人可能已开始手写
@@ -253,10 +256,14 @@ def spawn_generation(task_id: int, queue: asyncio.Queue, username: str) -> bool:
 
 
 async def run_archive_ingest_worker(stop_event: asyncio.Event):
-    """入库 worker：approved 归档报告 → 提炼知识卡 → 入库 → 打标。
+    """入库 worker：approved 归档报告 → 放行 / 补建知识卡 → 打标。
 
-    人审（归档报告 approve）已前置，通过闸门的卡直接 approved 可检索；
-    失败不打标下轮重试；闸门跳过（empty）也打标防重复扫描。
+    队列与处理统一走 ai.core.solution_sink（load_archived_candidates /
+    process_archived_ticket），不再自己拼 SQL、不再调 process_ticket ——
+    否则会和 knowledge_worker 的归档分支各跑一遍、各打一个标记。
+    人审（归档报告 approve）已前置：**已有卡的单只改 payload、向量一个字不动**
+    （与人工审核路逐字一致），没有卡的单才用同一提炼器补建；标记统一写
+    archive_sink_status，失败不打标下轮重试，闸门跳过（empty）也打标防重复扫描。
     """
     from ai.core import get_retrieval_service, solution_sink
 
@@ -264,26 +271,7 @@ async def run_archive_ingest_worker(stop_event: asyncio.Event):
     retriever = None
     while not stop_event.is_set():
         try:
-            from ai.core.database import SessionLocal
-            from sqlalchemy import text
-            db = SessionLocal()
-            try:
-                rows = db.execute(text(
-                    "SELECT r.task_id, r.task_id AS id, r.content, r.version, "
-                    "       t.title, t.description, t.assigned_to, t.metadata_info, "
-                    "       t.project_name, t.task_type "
-                    "FROM archive_reports r JOIN tasks t ON t.id = r.task_id "
-                    "WHERE r.submit_status = 'approved' AND r.content <> '' "
-                    "  AND t.status = 'archived' "
-                    "  AND JSON_EXTRACT(t.metadata_info, "
-                    "      '$.archive_knowledge_indexed') IS NOT TRUE "
-                    "  AND r.version = (SELECT MAX(r2.version) FROM archive_reports r2 "
-                    "                   WHERE r2.task_id = r.task_id "
-                    "                     AND r2.submit_status = 'approved') "
-                    "ORDER BY r.task_id DESC LIMIT 10"
-                )).mappings().all()
-            finally:
-                db.close()
+            rows = solution_sink.load_archived_candidates(limit=10)
             if rows:
                 logger.info(f"[archive] 待入库归档报告 {len(rows)} 篇")
                 if retriever is None:
@@ -291,28 +279,11 @@ async def run_archive_ingest_worker(stop_event: asyncio.Event):
             for row in rows:
                 if stop_event.is_set():
                     break
-                tid = row["task_id"]
+                tid = row["id"]
                 try:
-                    status = await solution_sink.process_ticket(
-                        dict(row), retriever, archive_content=row["content"])
-                    # process_ticket 已写 solution_indexed 系标记；补归档专属标记
-                    # （failed 时不写——process_ticket failed 路径不打标，此处同样跳过）
-                    if status in ("indexed", "empty"):
-                        from ai.core.database import SessionLocal
-                        from sqlalchemy import text
-                        db2 = SessionLocal()
-                        try:
-                            db2.execute(text(
-                                "UPDATE tasks SET metadata_info = JSON_MERGE_PATCH("
-                                "  COALESCE(metadata_info, JSON_OBJECT()), "
-                                "  JSON_OBJECT('archive_knowledge_indexed', TRUE, "
-                                "              'archive_knowledge_indexed_at', :at)) "
-                                "WHERE id = :tid"),
-                                {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "tid": tid})
-                            db2.commit()
-                        finally:
-                            db2.close()
-                    logger.info(f"[archive] #{tid} v{row['version']}: {status}")
+                    # 打标在 process_archived_ticket 里（archive_sink_status）
+                    status = await solution_sink.process_archived_ticket(row, retriever)
+                    logger.info(f"[archive] #{tid} v{row.get('report_version')}: {status}")
                 except Exception as e:
                     logger.exception(f"[archive] #{tid} 入库失败（下轮重试）: {e}")
         except Exception:

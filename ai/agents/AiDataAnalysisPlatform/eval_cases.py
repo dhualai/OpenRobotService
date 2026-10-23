@@ -386,6 +386,50 @@ FAST_PATH_CASES: list[dict] = [
         "action": "summary",
         "scope_type": "global",
     },
+    # 用户日活维度（wechat_user_activity 埋点表）
+    {
+        "question": "最近7天的用户日活是多少？",
+        "metric_keys": ["user.dau_total", "user.dau_by_day", "user.avg_dau"],
+        "time_type": "recent_days",
+        "time_explicit": True,
+        "action": "summary",
+        "scope_type": "global",
+    },
+    {
+        "question": "今天的DAU是多少",
+        "metric_keys": ["user.dau_total", "user.dau_by_day", "user.avg_dau"],
+        "time_type": "today",
+        "time_explicit": True,
+        "action": "summary",
+        "scope_type": "global",
+    },
+    {
+        # 「平均/日均」子规则优先命中
+        "question": "本月日均活跃用户数",
+        "metric_keys": ["user.avg_dau", "user.dau_by_day"],
+        "time_type": "this_month",
+        "time_explicit": True,
+        "action": "summary",
+        "scope_type": "global",
+    },
+    {
+        # 「趋势」子规则优先命中；trend 补丁不重复追加
+        "question": "近30天日活趋势",
+        "metric_keys": ["user.dau_by_day", "user.avg_dau"],
+        "time_type": "recent_days",
+        "time_explicit": True,
+        "action": "trend",
+        "scope_type": "global",
+    },
+    {
+        # 「来源」子规则优先命中；distribution 补丁不重复追加
+        "question": "日活的活跃来源分布",
+        "metric_keys": ["user.by_source", "user.dau_by_day"],
+        "time_type": "recent_days",
+        "time_explicit": False,
+        "action": "distribution",
+        "scope_type": "global",
+    },
 ]
 
 # ── LLM 慢路径用例（真实 LLM）───────────────────────────────────

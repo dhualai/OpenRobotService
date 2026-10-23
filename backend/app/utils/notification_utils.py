@@ -32,6 +32,26 @@ def _format_shanghai(dt: Optional[datetime]) -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
 
+
+def _format_local(dt: Optional[datetime], tz_name: Optional[str] = None) -> str:
+    """按**接收人时区**格式化时间；未指定或非法时区回退东八区。
+
+    多时区场景下模板里的「截止 17:00」必须是收件人自己的本地时间，
+    否则海外用户会误读。使用 zoneinfo 而非固定 +8，夏令时自动处理。
+    """
+    if dt is None:
+        return ""
+    tz = TZ_SHANGHAI
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = TZ_SHANGHAI
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
+
 class NotificationUtils:
     _mqtt_client = None
     _mqtt_connected = False
@@ -63,8 +83,9 @@ class NotificationUtils:
     STATUS_CHANGE = 3
     NEW_TICKET = 5
     CUIBAN_TICKET = 1
-    DAYILY_TICKET = 2
-    YUQU_TICKET = 4
+    # 模板 2 = 工单处理结果通知 [工单编号, 工单名称, 受理时间, 处理人, 处理结果]
+    # 注意：语义是「处理结果」，不是每日统计；当前无调用方，接入时需按上面 5 个字段传参
+    TICKET_RESULT = 2
     YUQU_TICKET_STATUS_CHANGE = 6
     REASSIGN_TICKET = 7
     MENTION_TICKET = 8
@@ -699,19 +720,23 @@ class NotificationUtils:
         token: Optional[str] = None,
         ticket_name: Optional[str] = None,
         extr: dict = None,
-        yuqi_day: str = ""
+        yuqi_day: str = "",
+        wait: bool = False,
+        tz_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        def _send():
+        """发送工单催办/逾期/预警通知。
+
+        wait=False（默认，兼容既有调用）：提交线程池后立即返回，不阻塞业务请求。
+        wait=True：等待微信返回，返回体即 ``send_notification_core`` 的原始结果
+        （``data.recipients[].status`` 为 delivered/failed），供通知 Outbox 回写真实送达状态。
+        """
+        def _send() -> Dict[str, Any]:
             try:
                 payload = {}
-                if notify_type == 2:
-                    payload = NotificationUtils.instantiate_template(NotificationUtils.DAYILY_TICKET,
-                                                                     extr.get('pending_count', 0), extr.get('near_overdue_count', 0),
-                                                                     extr.get('overdue_count', 0), user_names=user_names)
-                elif notify_type == 6:
+                if notify_type == 6:
                     # 工单逾期提醒, [工单名称, 项目名称, 逾期天数, 派单时间, 逾期时间]
-                    deadline_str = _format_shanghai(deadline_at)
-                    create_str = _format_shanghai(create_at)
+                    deadline_str = _format_local(deadline_at, tz_name)
+                    create_str = _format_local(create_at, tz_name)
 
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
@@ -730,8 +755,8 @@ class NotificationUtils:
                                                                      user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 elif notify_type == 9:
                     # 工单超时预警提醒, [工单名称, 项目名称, 处理人, 提交时间, 截止时间]
-                    deadline_str = _format_shanghai(deadline_at)
-                    create_str = _format_shanghai(create_at)
+                    deadline_str = _format_local(deadline_at, tz_name)
+                    create_str = _format_local(create_at, tz_name)
 
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
@@ -749,42 +774,55 @@ class NotificationUtils:
                                                                      processed_ticket_name, processed_project_name, assigned_name, create_str, deadline_str,
                                                                      user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 else:
+                    # 兜底分支只处理人工催办（notify_type=1）。notify_type=3 用的模板 4 已从
+                    # template.yaml 移除，其余类型没有对应模板，一律跳过，避免把空 payload 发给微信
+                    if notify_type != 1:
+                        logger.warning(
+                            f"跳过无对应模板的通知 notify_type={notify_type} ticket={ticket_id}"
+                        )
+                        return {"code": 400, "message": f"不支持的通知类型: {notify_type}",
+                                "data": {"recipients": []}}
+
                     reason = "工单长时间未更新"
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
-                        processed_project_name = loop.run_until_complete(
-                            NotificationUtils.simplify_title(project_name)
-                        )
                         processed_ticket_name = loop.run_until_complete(
                             NotificationUtils.simplify_title(ticket_name)
                         )
                     finally:
                         loop.close()
                     
-                    deadline_str = _format_shanghai(deadline_at)
-                    create_str = _format_shanghai(create_at)
+                    deadline_str = _format_local(deadline_at, tz_name)
+                    create_str = _format_local(create_at, tz_name)
 
-                    if notify_type == 1:
-                        payload = NotificationUtils.instantiate_template(NotificationUtils.CUIBAN_TICKET,
-                                                                         ticket_id, processed_project_name, assigned_name, reason, deadline_str,
-                                                                         user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
-                    elif notify_type == 3:
-                        payload = NotificationUtils.instantiate_template(NotificationUtils.YUQU_TICKET, ticket_id,
-                                                                         processed_project_name, processed_ticket_name, create_str, deadline_str,
-                                                                         user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
+                    # 模板 1 字段顺序固定（见 template.yaml 注释）：
+                    # [工单名称, 提报时间, 催办原因, 催办方, 截止时间]
+                    # const13 是枚举字段，只能取「工单长时间未更新」/「紧急工单」，
+                    # 此前把处理人姓名填进去会被微信判为非法数据，整条消息发送失败
+                    payload = NotificationUtils.instantiate_template(NotificationUtils.CUIBAN_TICKET,
+                                                                     processed_ticket_name, create_str, reason, assigned_name, deadline_str,
+                                                                     user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 
                 loop2 = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop2)
                 try:
-                    loop2.run_until_complete(NotificationUtils.send_notification(payload, token))
+                    return loop2.run_until_complete(
+                        NotificationUtils.send_notification(payload, token)
+                    ) or {}
                 finally:
                     loop2.close()
             except Exception as e:
                 logger.error(f"发送通知失败：{str(e)}")
-        
+                return {"code": 500, "message": str(e), "data": {"recipients": []}}
+
+        if wait:
+            # 同步等待微信返回：Outbox 需要真实送达结果来决定 sent / 重试 / failed
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(_executor, _send)
+
         asyncio.get_event_loop().run_in_executor(_executor, _send)
-        return {"code": 200, "message": "通知已发送"}
+        return {"code": 200, "message": "通知已提交发送"}
 
     @staticmethod
     async def send_step_notification(

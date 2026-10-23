@@ -1,5 +1,5 @@
 // 工单数据看板 —— 工单相关的四张数据看板（2026-10-07 用户口径，从后台管理首页拆出）：
-//   ① 工单监测     —— 六种状态环图 + 图例（图例可点，下钻 /admin/dashboard/tickets/:key）
+//   ① 工单监测     —— 状态分组环图 + 图例（图例可点，下钻 /admin/dashboard/tickets/:key）
 //   ② 工单类型分布 —— 类型环图（百分比标在扇区上）+ 各类型平均完单耗时条形图 + 颜色图例
 //   ③ 接单人响应时间 —— 响应时间分桶环图（处理人第一次点开工单耗时 - 新建时间）
 //   ④ 提单人公司/部门分布 —— 按提单人公司/部门归组的工单数量环图（公司下拉：不选=按公司，选=按该公司部门）
@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navbar } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
-import { TICKET_STATUS_LIST } from '@/shared/constants/dashboard';
+import { getTicketStatusCount, TICKET_STATUS_LIST } from '@/shared/constants/dashboard';
 import {
   fetchDashboardSummaryAll, fetchDarLatest, fetchTicketCreatorOrgAnalysis,
   type TicketSummary, type TicketSourceAnalysis, type TicketResponseTime, type TicketAvgCloseTime,
@@ -23,13 +23,6 @@ import QuestionModuleCard from './QuestionModuleCard';
 import {
   buildDashboardFilterKey, loadDashboardCache, saveDashboardCache,
 } from '@/stores/dashboardCache';
-
-// 工单状态环图/图例按色阶由深到浅排列，颜色按处理流程分配：
-// 待处理(最深) → 处理中 → 暂停/挂起 → 已解决 → 已关闭 → 已取消(最浅)
-const STATUS_TONE_ORDER = ['status-1', 'status-2', 'status-3', 'status-4', 'status-5', 'status-6'];
-const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
-  (a, b) => STATUS_TONE_ORDER.indexOf(a.tone) - STATUS_TONE_ORDER.indexOf(b.tone),
-);
 
 // 工单分布类卡片：类型分布按固定色阶（同类颜色稳定），响应时间按 快到慢 递进取色
 const SOURCE_TONES = ['blue-1', 'blue-2', 'blue-3', 'blue-4', 'blue-5'];
@@ -227,16 +220,16 @@ export default function TicketDashboard() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <MacDonut
-              segments={SORTED_TICKET_STATUS_LIST.map((s) => ({
-                value: ticketSummary?.by_status[s.key] ?? 0,
+              segments={TICKET_STATUS_LIST.map((s) => ({
+                value: getTicketStatusCount(ticketSummary?.by_status, s),
                 tone: s.tone,
               }))}
               centerValue={ticketSummary?.total ?? 0}
               centerLabel="工单总数"
             />
             <MacLegend
-              items={SORTED_TICKET_STATUS_LIST.map((s) => {
-                const value = ticketSummary?.by_status[s.key] ?? 0;
+              items={TICKET_STATUS_LIST.map((s) => {
+                const value = getTicketStatusCount(ticketSummary?.by_status, s);
                 const total = ticketSummary?.total ?? 0;
                 return {
                   key: s.key,

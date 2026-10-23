@@ -21,6 +21,8 @@ from app.modules.admin.api.dar_report import dar_report_router
 from app.modules.admin.api.module_tree import router as module_tree_router
 from app.modules.admin.api.module_tree_ws import router as module_tree_ws_router
 from app.modules.admin.api.dispatch_dev import router as dispatch_dev_router
+from app.modules.admin.api.dual_tree_trial import router as dual_tree_trial_router
+from app.modules.admin.api.resp_tree import router as resp_tree_router
 from app.modules.admin.api.ui_atlas import router as ui_atlas_router
 from app.modules.admin.api.usp_envs import admin_router as usp_envs_admin_router
 from app.modules.admin.api.info_nodes import info_node_router
@@ -29,6 +31,7 @@ from app.modules.admin.api.task_policy import router as task_policy_router
 from app.modules.admin.api.qrcode import router as qrcode_router
 from app.modules.admin.api.wecom_sheets import admin_router as wecom_sheets_router
 from app.modules.admin.api.announcement import router as announcement_router
+from app.modules.admin.api.work_calendar import router as work_calendar_router
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 admin_router.include_router(knowledge_router)
@@ -50,6 +53,8 @@ admin_router.include_router(dar_report_router)
 admin_router.include_router(module_tree_router)
 admin_router.include_router(module_tree_ws_router)
 admin_router.include_router(dispatch_dev_router)
+admin_router.include_router(dual_tree_trial_router)
+admin_router.include_router(resp_tree_router)
 admin_router.include_router(ui_atlas_router)
 admin_router.include_router(usp_envs_admin_router)
 admin_router.include_router(info_node_router)
@@ -58,3 +63,4 @@ admin_router.include_router(task_policy_router)
 admin_router.include_router(qrcode_router)
 admin_router.include_router(wecom_sheets_router)
 admin_router.include_router(announcement_router)
+admin_router.include_router(work_calendar_router)
