@@ -207,11 +207,48 @@ export default function StepNegotiationCard({
   // 等待前置工单 +添加 弹窗
   const [showAddPredecessorPopup, setShowAddPredecessorPopup] = useState(false);
   const [predecessorIdInput, setPredecessorIdInput] = useState('');
+  // 前置工单 ID 兜底缓存：详情接口如果漏返回 predecessor_ids，就自己调 relations 反推。
+  // 以 detail.id 为 key 缓存，避免每次弹窗打开都重复请求。
+  const [fallbackPredecessorIds, setFallbackPredecessorIds] = useState<Record<string, number[]>>({});
 
   const openAddPredecessorPopup = () => {
     setPredecessorIdInput('');
     setShowAddPredecessorPopup(true);
   };
+
+  /** 统一取当前工单的前置工单 ID 列表：优先用详情接口字段，缺失时从 relations 接口兜底。 */
+  const currentPredecessorIds = useMemo(() => {
+    const direct = detail?.predecessor_ids;
+    if (direct && direct.length > 0) return direct;
+    if (detail?.id) return fallbackPredecessorIds[String(detail.id)] ?? [];
+    return [];
+  }, [detail?.id, detail?.predecessor_ids, fallbackPredecessorIds]);
+
+  /** 当详情接口漏返回 predecessor_ids 时，自动调 relations 兜底（只拉一次，缓存结果）。 */
+  useEffect(() => {
+    const taskId = detail?.id;
+    if (!taskId) return;
+    const direct = detail?.predecessor_ids;
+    if (direct && direct.length > 0) return;          // 详情接口有就不用兜底
+    const key = String(taskId);
+    if (fallbackPredecessorIds[key]) return;          // 已兜底过就不重复拉
+    let cancelled = false;
+    (async () => {
+      try {
+        const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+        const rels: Array<{ source_task_id: number; target_task_id: number; relation_type: string }> =
+          await request(`/${taskId}/relations`);
+        if (cancelled) return;
+        const preds = rels
+          .filter((r) => r.relation_type === 'predecessor' && r.source_task_id === Number(taskId))
+          .map((r) => r.target_task_id);
+        setFallbackPredecessorIds((prev) => ({ ...prev, [key]: preds }));
+      } catch {
+        // 兜底拉失败就静默，不影响主流程
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [detail?.id, detail?.predecessor_ids?.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAddPredecessor = async () => {
     const raw = predecessorIdInput.trim().replace(/^#/, '');
@@ -687,7 +724,7 @@ export default function StepNegotiationCard({
                   step={selectedNegotiateStep}
                   reason={negotiateReason}
                   onReasonChange={setNegotiateReason}
-                  predecessorIds={detail?.predecessor_ids}
+                  predecessorIds={currentPredecessorIds}
                   onAddPredecessor={openAddPredecessorPopup}
                   testIdPrefix="negotiate-step"
                 />
@@ -792,7 +829,7 @@ export default function StepNegotiationCard({
                 step={isCompleteSpecial ? selectedStep : null}
                 reason={completeReasonDraft}
                 onReasonChange={setCompleteReasonDraft}
-                predecessorIds={detail?.predecessor_ids}
+                predecessorIds={currentPredecessorIds}
                 onAddPredecessor={openAddPredecessorPopup}
                 testIdPrefix="task-step-complete"
               />

@@ -1349,14 +1349,18 @@ class TicketService:
                 ticket.current_archive_report = None
 
         # ── 父子工单 / 前置依赖关系字段（详情接口之前缺失，导致前端弹窗无法拿到 predecessor_ids）──
+        # 注意：此处不吞异常，让问题显式暴露（raise），避免静默失败导致前端数据不一致。
         if ticket:
-            try:
-                user_map = user_map or await TicketService._get_user_map(token)
-                await TicketService._attach_relation_fields(
-                    db, [ticket], with_relations=False, user_map=user_map, token=token,
-                )
-            except Exception as _rel_err:
-                logger.warning(f"填充 relation fields 失败 task_id={ticket_id}: {_rel_err}")
+            user_map = user_map or await TicketService._get_user_map(token)
+            await TicketService._attach_relation_fields(
+                db, [ticket], with_relations=False, user_map=user_map, token=token,
+            )
+            logger.info(
+                f"relation fields 填充 task_id={ticket_id}: predecessor_ids="
+                f"{getattr(ticket, 'predecessor_ids', [])}, "
+                f"parent_id={getattr(ticket, 'parent_id', None)}, "
+                f"child_count={getattr(ticket, 'child_count', 0)}"
+            )
 
         return ticket
 
