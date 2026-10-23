@@ -29,6 +29,7 @@ FIELD_LABEL_MAP: dict[str, str] = {
     "risk": "风险",
     "collection": "搬运效率",
     "project_info": "项目信息",
+    "user": "用户日活",
     "total": "总数",
     "new_count": "新增数",
     "resolved_count": "已解决数",
@@ -100,6 +101,12 @@ FIELD_LABEL_MAP: dict[str, str] = {
     "change_by_type": "变更类型分布",
     "top_marked_nodes": "关注排行",
     "value_items": "已填字段值明细",
+    # 用户日活（wechat_user_activity 埋点表）
+    "dau_total": "日活总数",
+    "avg_dau": "日均日活",
+    "dau_by_day": "每日日活",
+    "dau_total_by_day": "每日日活数",
+    "by_source": "活跃来源分布",
 }
 
 # 百分比类指标字段（value 为 0~100 的数值，卡片展示时带 % 单位）
@@ -114,6 +121,7 @@ _DECIMAL_FIELDS: frozenset[str] = frozenset({
     "avg_fault_duration_minutes",
     "avg_carry_duration_minutes",
     "avg_manual_switch_count",
+    "avg_dau",
 })
 
 # sanitize 兜底替换白名单：仅替换含下划线的字段名（如 new_count），

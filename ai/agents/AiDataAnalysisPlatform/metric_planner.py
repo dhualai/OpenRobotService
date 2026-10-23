@@ -275,6 +275,18 @@ _DIMENSION_RULES: list[tuple[re.Pattern, str, list[tuple[re.Pattern | None, list
             (None, ["project.total", "project.active_count", "project.by_status"]),
         ],
     ),
+    (
+        # 用户日活维度（wechat_user_activity 埋点表）：「日活/DAU/活跃用户」
+        # 等问法归此维度。放在最后，不与现有维度词冲突。
+        re.compile(r"(日活|DAU|dau|活跃用户|活跃人数|用户活跃)"),
+        "user",
+        [
+            (re.compile(r"(来源|渠道)"), ["user.by_source", "user.dau_by_day"]),
+            (re.compile(r"(平均|日均)"), ["user.avg_dau", "user.dau_by_day"]),
+            (re.compile(r"(趋势|变化|走势)"), ["user.dau_by_day", "user.avg_dau"]),
+            (None, ["user.dau_total", "user.dau_by_day", "user.avg_dau"]),
+        ],
+    ),
 ]
 
 
@@ -393,6 +405,15 @@ def _fast_path_parse(
             and "project_info.change_by_type" not in metric_keys:
         metric_keys.extend(["project_info.by_value_type", "project_info.change_by_type"])
 
+    # 用户日活维度动作补丁：趋势问法缺 by_day 时补趋势序列，
+    # 分布问法缺来源分布时补来源分布。
+    if metric_keys and action == "trend" and matched_dim == "user" \
+            and "user.dau_by_day" not in metric_keys:
+        metric_keys.append("user.dau_by_day")
+    if metric_keys and action == "distribution" and matched_dim == "user" \
+            and "user.by_source" not in metric_keys:
+        metric_keys.append("user.by_source")
+
     # 完全无命中（无维度、无时间、无动作）→ None 交给 LLM
     # 项目补充回答（supplement）即使无指标/时间也须保留：否则澄清轮回复
     # 「XX项目」会被误判为无命中而走 LLM 慢路径，导致反复要求确认项目
@@ -499,8 +520,8 @@ def _plan_from_llm_json(obj: dict, question: str) -> AnalysisPlan:
 
 _CLARIFY_TEMPLATES: dict[str, tuple[str, list[str]]] = {
     "metric_keys": (
-        "您想了解哪方面的数据指标？我目前支持工单、风险、项目、搬运效率、项目信息五个维度的统计。",
-        ["工单解决率", "逾期工单", "风险等级分布", "项目进展", "搬运效率", "项目信息填写率"],
+        "您想了解哪方面的数据指标？我目前支持工单、风险、项目、搬运效率、项目信息、用户日活六个维度的统计。",
+        ["工单解决率", "逾期工单", "风险等级分布", "项目进展", "搬运效率", "项目信息填写率", "用户日活"],
     ),
     "time_range": (
         "请补充统计的时间范围。",
