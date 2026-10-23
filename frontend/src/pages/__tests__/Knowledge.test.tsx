@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Toast } from 'tdesign-mobile-react';
 import * as api from '@/api/knowledge';
 import { fetchRewardStats } from '@/api/wxpay';
+import { POLL_INTERVAL_MS } from '@/config/poll';
 import { ApiError } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
 import KnowledgeContributionCard from '../admin/KnowledgeContributionCard';
@@ -87,6 +88,76 @@ describe('知识贡献榜UI', () => {
     expect(within(rewardsEntry).getByText('¥34.56')).toHaveStyle({ color: '#2ba471' });
     fireEvent.click(rewardsEntry);
     expect(await screen.findByText('奖励详情入口')).toBeInTheDocument();
+  });
+
+  it('奖励发生变化后定时更新全量待提现合计，卸载后停止刷新', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchRewardStats)
+        .mockResolvedValueOnce({ pending_amount: 1250, pending_count: 1, withdrawn_amount: 0 })
+        .mockResolvedValue({ pending_amount: 1250 + 2350 + 99, pending_count: 3, withdrawn_amount: 7000 });
+      const view = render(<MemoryRouter><Dashboard /></MemoryRouter>);
+      await act(async () => {});
+      const card = screen.getByRole('button', { name: /待提现（元）/ });
+      expect(within(card).getByText('¥12.50')).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
+      expect(within(card).getByText('¥36.99')).toBeInTheDocument();
+      expect(within(card).getByText('3 笔可提')).toBeInTheDocument();
+      expect(within(card).getByText('¥70.00')).toBeInTheDocument();
+      view.unmount();
+      const calls = vi.mocked(fetchRewardStats).mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
+      fireEvent.focus(window);
+      fireEvent(document, new Event('visibilitychange'));
+      expect(fetchRewardStats).toHaveBeenCalledTimes(calls);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('回到前台时重新汇总，临时失败保留金额并可再次刷新', async () => {
+    vi.mocked(fetchRewardStats).mockResolvedValueOnce({ pending_amount: 3699, pending_count: 3, withdrawn_amount: 0 });
+    render(<MemoryRouter><Dashboard /></MemoryRouter>);
+    const card = await screen.findByRole('button', { name: /3 笔可提.*¥36\.99/ });
+    vi.mocked(fetchRewardStats).mockRejectedValueOnce(new Error('temporary failure'));
+    await act(async () => { fireEvent.focus(window); });
+    expect(fetchRewardStats).toHaveBeenCalledTimes(2);
+    expect(within(card).getByText('¥36.99')).toBeInTheDocument();
+    vi.mocked(fetchRewardStats).mockResolvedValue({ pending_amount: 2449, pending_count: 2, withdrawn_amount: 1250 });
+    await act(async () => { fireEvent(document, new Event('visibilitychange')); });
+    expect(within(card).getByText('¥24.49')).toBeInTheDocument();
+    expect(within(card).getByText('2 笔可提')).toBeInTheDocument();
+    expect(within(card).getByText('¥12.50')).toBeInTheDocument();
+  });
+
+  it('首次统计失败后自动重试，不一直将待提现合计显示为零', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchRewardStats)
+        .mockRejectedValueOnce(new Error('temporary failure'))
+        .mockResolvedValue({ pending_amount: 3699, pending_count: 3, withdrawn_amount: 0 });
+      const view = render(<MemoryRouter><Dashboard /></MemoryRouter>);
+      await act(async () => {});
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
+      expect(screen.getByRole('button', { name: /3 笔可提.*¥36\.99/ })).toBeInTheDocument();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('账号变化后刷新本人奖励，不被上一账号的迟到响应覆盖', async () => {
+    let finishPrevious!: (stats: Awaited<ReturnType<typeof fetchRewardStats>>) => void;
+    vi.mocked(fetchRewardStats)
+      .mockReturnValueOnce(new Promise((resolve) => { finishPrevious = resolve; }))
+      .mockResolvedValue({ pending_amount: 2350, pending_count: 1, withdrawn_amount: 0 });
+    render(<MemoryRouter><Dashboard /></MemoryRouter>);
+    await act(async () => { useAuthStore.setState({ username: 'another-user' }); });
+    const card = screen.getByRole('button', { name: /待提现（元）/ });
+    expect(within(card).getByText('¥23.50')).toBeInTheDocument();
+    await act(async () => { finishPrevious({ pending_amount: 9900, pending_count: 9, withdrawn_amount: 0 }); });
+    expect(within(card).getByText('¥23.50')).toBeInTheDocument();
+    expect(within(card).queryByText('¥99.00')).not.toBeInTheDocument();
   });
 
   it('普通用户奖励统计失败时仍可查看榜单并进入奖励入口', async () => {
