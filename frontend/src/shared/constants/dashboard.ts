@@ -4,12 +4,16 @@
 // ============================================================
 // 一、工单状态（系统任务模块 TaskStatus）
 // 数据源：GET /api/admin/dashboard/tickets/summary（backend/app/modules/admin/api/dashboard.py）
-// 后端 backend/app/models/task.py TaskStatus 枚举：new/in_progress/pending/resolved/canceled/closed。
-// 「暂停/挂起」「已取消」在后端分别复用 pending/canceled 语义，映射见
+// 后端 backend/app/models/task.py TaskStatus 枚举包含挂起确认、无法解决及归档状态。
+// 「已挂起」「已取消」在后端分别复用 pending/canceled 语义，映射见
 // backend/app/modules/admin/services/task_dashboard_service.py FRONTEND_STATUS_MAP。
 // ============================================================
 export type TicketStatusKey =
-  | 'new' | 'in_progress' | 'paused' | 'resolved' | 'closed' | 'cancelled';
+  | 'new' | 'in_progress' | 'pending_requested' | 'paused' | 'unsolvable'
+  | 'resolved' | 'closed' | 'cancelled' | 'archive';
+
+export type TicketStatusCountKey = Exclude<TicketStatusKey, 'archive'>
+  | 'unsolvable_requested' | 'archiving' | 'archived';
 
 export interface StatusMeta {
   key: TicketStatusKey;
@@ -18,21 +22,29 @@ export interface StatusMeta {
   /** 马卡龙蓝色阶（blue-1 深 → blue-5 浅），工单状态监测环图/图例用 */
   tone: string;
   backendReady: boolean;
+  statusKeys?: TicketStatusCountKey[];
 }
 
 export const TICKET_STATUS_LIST: StatusMeta[] = [
-  // 六种状态全部参与工单状态监测统计（后端 get_ticket_summary 含 new，与「工单总数」同口径）；
-  // tone 按处理流程由深到浅分配：待处理(最深) → 处理中 → 暂停/挂起 → 已解决 → 已关闭 → 已取消(最浅)；
-  // status-1..5 沿用原蓝阶亮度序列，已取消取最浅一档 status-6（#155979 → #d9eef8 共六档）；
-  // 图例/环图顺序由使用页面的 STATUS_TONE_ORDER 控制（首页 Dashboard.tsx 与工单数据看板页 TicketDashboard.tsx 各一份）
-  // （即上文的流程顺序，「待处理」在第一行）。
+  // 按处理流程排列；无法解决、归档分别合并两个原始状态，全部状态恰好统计一次。
   { key: 'new', label: '待处理', color: '#51bfee', tone: 'status-1', backendReady: true },
-  { key: 'in_progress', label: '处理中', color: '#2ba471', tone: 'status-2', backendReady: true },
-  { key: 'paused', label: '暂停/挂起', color: '#e37318', tone: 'status-3', backendReady: true },
+  { key: 'in_progress', label: '进行中', color: '#2ba471', tone: 'status-2', backendReady: true },
+  { key: 'pending_requested', label: '挂起确认中', color: '#369bcb', tone: 'blue-2', backendReady: true },
+  { key: 'paused', label: '已挂起', color: '#e37318', tone: 'status-3', backendReady: true },
+  { key: 'unsolvable', label: '无法解决', color: '#6cbfe2', tone: 'blue-3', backendReady: true, statusKeys: ['unsolvable_requested', 'unsolvable'] },
   { key: 'resolved', label: '已解决', color: '#00a870', tone: 'status-4', backendReady: true },
   { key: 'closed', label: '已关闭', color: '#999999', tone: 'status-5', backendReady: true },
+  { key: 'archive', label: '归档', color: '#cfeaf6', tone: 'blue-5', backendReady: true, statusKeys: ['archiving', 'archived'] },
   { key: 'cancelled', label: '已取消', color: '#d54941', tone: 'status-6', backendReady: true },
 ];
+
+export function getTicketStatusCount(
+  byStatus: Partial<Record<TicketStatusCountKey, number>> | undefined,
+  status: StatusMeta,
+): number {
+  const statusKeys = status.statusKeys ?? [status.key as TicketStatusCountKey];
+  return statusKeys.reduce((total, key) => total + (byStatus?.[key] ?? 0), 0);
+}
 
 export const TICKET_STATUS_MAP: Record<string, StatusMeta> =
   Object.fromEntries(TICKET_STATUS_LIST.map((s) => [s.key, s]));
