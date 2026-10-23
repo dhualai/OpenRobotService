@@ -1348,6 +1348,16 @@ class TicketService:
                 logger.warning(f"填充 current_archive_report 失败 task_id={ticket_id}: {_archive_err}")
                 ticket.current_archive_report = None
 
+        # ── 父子工单 / 前置依赖关系字段（详情接口之前缺失，导致前端弹窗无法拿到 predecessor_ids）──
+        if ticket:
+            try:
+                user_map = user_map or await TicketService._get_user_map(token)
+                await TicketService._attach_relation_fields(
+                    db, [ticket], with_relations=False, user_map=user_map, token=token,
+                )
+            except Exception as _rel_err:
+                logger.warning(f"填充 relation fields 失败 task_id={ticket_id}: {_rel_err}")
+
         return ticket
 
     @staticmethod
