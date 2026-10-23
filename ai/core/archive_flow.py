@@ -48,9 +48,18 @@ _SYSTEM_PROMPT = (
     "参数名等关键实体。"
 )
 
+_TITLE_PREFIX_RE = re.compile(r"^一句话标题(?:（[^）]*）)?[:：]?\s*")
+
+
+def clean_report_title_line(line: str) -> str:
+    """剥掉标题行里模型照抄的指令前缀（一句话标题（…）： 等），保留实际标题。"""
+    return _TITLE_PREFIX_RE.sub("", line.lstrip("# ").strip(), count=1)
+
+
 _REPORT_PROMPT = """请根据以下工单素材撰写归档报告。报告只有两个小节，用 `## ` 二级标题，各节都须有正文：
 
-第一行：`# 一句话标题（含现象与关键对象）`
+第一行：`# 标题`——直接写标题本身（现象+关键对象），不要出现「一句话标题」
+等指令字样
 
 ## 问题描述
 问题及背景：现象是什么、在什么条件下/什么环节出现，涉及的关键对象、
@@ -190,10 +199,11 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
             buf.append(token)
             full = "".join(buf)
             if not title_sent:
-                # 首行 `# 标题` 完整（出现换行）后单独发 title 事件
+                # 首行 `# 标题` 完整（出现换行）后单独发 title 事件；
+                # 防御性剥掉模型偶尔照抄的指令前缀（一句话标题（…）： 等）
                 nl = full.find("\n")
                 if nl >= 0:
-                    first = full[:nl].lstrip("# ").strip()
+                    first = clean_report_title_line(full[:nl])
                     if first:
                         await q({"type": "title", "text": first})
                     title_sent = True
@@ -205,6 +215,15 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
         if not report:
             await q({"type": "error", "msg": "生成结果为空，可直接手写报告"})
             return
+        # 防御：剥掉标题行里模型照抄的指令前缀
+        first_nl = report.find("\n")
+        report = (clean_report_title_line(report[:first_nl])
+                  + report[first_nl:]) if first_nl >= 0 else clean_report_title_line(report)
+        # 防御：剥掉标题行里模型照抄的指令前缀（「一句话标题（…）：」等），
+        # 只保留实际标题文本
+        report = re.sub(
+            r"^#\s*一句话标题（[^）]*）?[:：]?\s*", "# ", report, count=1,
+            flags=re.M)
         # ORS-1035：把【现场图片N】占位标记机械替换为真实 markdown 链接
         # （LLM 只负责放位置，链接由代码回填——抄错路径的事故不再可能）；
         # 没用掉的标记剥掉。素材有图但报告一张没嵌 → 兜底补「## 现场图片」节

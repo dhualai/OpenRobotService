@@ -22,7 +22,7 @@ class TicketSource(Protocol):
 
 
 class TicketScanner:
-    """Filter tickets by project, status, type, tag, and excluded creators."""
+    """Filter tickets by project, status, type, tag, creator and source."""
 
     def __init__(
         self,
@@ -31,15 +31,17 @@ class TicketScanner:
         project_id: str = "Leo_test",
         statuses: Iterable[str] = ("new",),
         task_types: Iterable[str] = ("feature", "bug"),
-        tag: str = "auto_case",
+        tag: str = "",
         exclude_creators: Iterable[str] = (),
+        exclude_sources: Iterable[str] = ("ai",),
     ) -> None:
         self.source = source
         self.project_id = project_id
         self.statuses = {item.lower() for item in statuses}
         self.task_types = {item.lower() for item in task_types}
-        self.tag = tag.lower()
+        self.tag = tag.lower() if tag else ""
         self.exclude_creators = {item.lower() for item in exclude_creators}
+        self.exclude_sources = {item.lower() for item in exclude_sources if item}
 
     def scan(self, limit: int = 100) -> list[TicketCandidate]:
         result = []
@@ -50,9 +52,11 @@ class TicketScanner:
                 continue
             if ticket.task_type.lower() not in self.task_types:
                 continue
-            if self.tag not in {tag.lower() for tag in ticket.tags}:
+            if self.tag and self.tag not in {tag.lower() for tag in ticket.tags}:
                 continue
             if ticket.created_by.lower() in self.exclude_creators:
+                continue
+            if (ticket.source or "").lower() in self.exclude_sources:
                 continue
             result.append(ticket)
         return result
@@ -97,6 +101,11 @@ class SSHMySQLTicketSource:
         db_password: str = "",
         db_name: str = "helpdesk_724",
         connect_timeout: int = 10,
+        project_id: str = "Leo_test",
+        statuses: Iterable[str] = ("new",),
+        task_types: Iterable[str] = ("feature", "bug"),
+        tag: str = "",
+        exclude_sources: Iterable[str] = ("ai",),
     ) -> None:
         if not db_password:
             raise ValueError("PROD_TICKET_DB_PASSWORD is required")
@@ -110,6 +119,13 @@ class SSHMySQLTicketSource:
         self.db_password = db_password
         self.db_name = db_name
         self.connect_timeout = connect_timeout
+        self.project_id = project_id
+        self.statuses = tuple(item.strip().lower() for item in statuses if item.strip())
+        self.task_types = tuple(item.strip().lower() for item in task_types if item.strip())
+        self.tag = (tag or "").strip().lower()
+        self.exclude_sources = tuple(
+            item.strip().lower() for item in exclude_sources if item and item.strip()
+        )
 
     @classmethod
     def from_env(cls) -> "SSHMySQLTicketSource":
@@ -124,6 +140,23 @@ class SSHMySQLTicketSource:
             db_password=os.getenv("PROD_TICKET_DB_PASSWORD", ""),
             db_name=os.getenv("PROD_TICKET_DB_NAME", "helpdesk_724"),
             connect_timeout=int(os.getenv("PROD_TICKET_CONNECT_TIMEOUT", "10")),
+            project_id=os.getenv("PROD_TICKET_PROJECT_ID", "Leo_test"),
+            statuses=tuple(
+                item
+                for item in os.getenv("PROD_TICKET_STATUSES", "new").split(",")
+                if item.strip()
+            ),
+            task_types=tuple(
+                item
+                for item in os.getenv("PROD_TICKET_TASK_TYPES", "feature,bug").split(",")
+                if item.strip()
+            ),
+            tag=os.getenv("PROD_TICKET_TAG", ""),
+            exclude_sources=tuple(
+                item
+                for item in os.getenv("PROD_TICKET_EXCLUDE_SOURCES", "ai").split(",")
+                if item.strip()
+            ),
         )
 
     def _start_tunnel(self, local_port: int) -> subprocess.Popen:
@@ -172,59 +205,57 @@ class SSHMySQLTicketSource:
                 time.sleep(0.5)
         raise RuntimeError(f"Could not connect to production MySQL through tunnel: {last_error}")
 
-    def fetch(self, limit: int) -> list[TicketCandidate]:
+    _COLUMNS = (
+        "id, title, description, task_type, status, project_id, project_name, "
+        "tags, metadata_info, created_by, source, created_at, updated_at, resolved_at"
+    )
+
+    def _scan_clause(self) -> tuple[str, list]:
+        """Build the WHERE clause for a scan query with bound parameters."""
+        clauses = ["project_id = %s"]
+        params: list = [self.project_id]
+        if self.statuses:
+            clauses.append("status IN (" + ", ".join(["%s"] * len(self.statuses)) + ")")
+            params.extend(item.upper() for item in self.statuses)
+        if self.task_types:
+            clauses.append("task_type IN (" + ", ".join(["%s"] * len(self.task_types)) + ")")
+            params.extend(item.upper() for item in self.task_types)
+        if self.tag:
+            clauses.append("JSON_CONTAINS(COALESCE(tags, JSON_ARRAY()), JSON_QUOTE(%s))")
+            params.append(self.tag)
+        if self.exclude_sources:
+            clauses.append(
+                "COALESCE(source, 'manual') NOT IN ("
+                + ", ".join(["%s"] * len(self.exclude_sources))
+                + ")"
+            )
+            params.extend(self.exclude_sources)
+        return " AND ".join(clauses), params
+
+    def _rows_to_candidates(self, rows) -> list[TicketCandidate]:
+        return [
+            TicketCandidate(
+                **{
+                    **row,
+                    "task_type": row["task_type"].lower(),
+                    "status": row["status"].lower(),
+                    "tags": _load_json(row.get("tags")) or [],
+                    "metadata_info": _load_json(row.get("metadata_info")) or {},
+                }
+            )
+            for row in rows
+        ]
+
+    def _query(self, sql: str, params: tuple) -> list[TicketCandidate]:
         local_port = _free_port()
         tunnel = self._start_tunnel(local_port)
         conn = None
         try:
             conn = self._connect(local_port)
-            sql = """
-                SELECT
-                    id,
-                    title,
-                    description,
-                    task_type,
-                    status,
-                    project_id,
-                    project_name,
-                    tags,
-                    metadata_info,
-                    created_by,
-                    source,
-                    created_at
-                FROM tasks
-                WHERE project_id = %s
-                  AND status = %s
-                  AND task_type IN (%s, %s)
-                  AND JSON_CONTAINS(COALESCE(tags, JSON_ARRAY()), JSON_QUOTE(%s))
-                ORDER BY created_at DESC
-                LIMIT %s
-            """
             with conn.cursor() as cursor:
-                cursor.execute(
-                    sql,
-                    (
-                        "Leo_test",
-                        "NEW",
-                        "FEATURE",
-                        "BUG",
-                        "auto_case",
-                        int(limit),
-                    ),
-                )
+                cursor.execute(sql, params)
                 rows = cursor.fetchall()
-            return [
-                TicketCandidate(
-                    **{
-                        **row,
-                        "task_type": row["task_type"].lower(),
-                        "status": row["status"].lower(),
-                        "tags": _load_json(row.get("tags")) or [],
-                        "metadata_info": _load_json(row.get("metadata_info")) or {},
-                    }
-                )
-                for row in rows
-            ]
+            return self._rows_to_candidates(rows)
         finally:
             if conn is not None:
                 conn.close()
@@ -233,3 +264,26 @@ class SSHMySQLTicketSource:
                 tunnel.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 tunnel.kill()
+
+    def fetch(self, limit: int) -> list[TicketCandidate]:
+        where, params = self._scan_clause()
+        sql = f"""
+            SELECT {self._COLUMNS}
+            FROM tasks
+            WHERE {where}
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+        return self._query(sql, (*params, int(limit)))
+
+    def fetch_by_ids(self, ticket_ids: Iterable[int]) -> list[TicketCandidate]:
+        """Fetch specific tickets by id, regardless of scan filters."""
+        ids = [int(item) for item in ticket_ids]
+        if not ids:
+            return []
+        sql = f"""
+            SELECT {self._COLUMNS}
+            FROM tasks
+            WHERE id IN ({", ".join(["%s"] * len(ids))})
+        """
+        return self._query(sql, tuple(ids))

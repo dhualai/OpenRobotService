@@ -96,7 +96,8 @@ python scripts/cli-ticket-pipeline.py run --limit 20
 python scripts/cli-ticket-pipeline.py select --text "fix ORS-837" --regression tests/business_chain
 ```
 
-细节见 `automation/docs/AI_EXTERNAL_EVAL.md` 和 `automation/docs/TICKET_PIPELINE.md`。
+完整闭环见 `automation/docs/TICKET_LOOP.md`；门禁规则见
+`automation/docs/TICKET_GATE.md`；流水线细节见 `automation/docs/TICKET_PIPELINE.md`。
 
 ### 契约测试与 UI Smoke
 
