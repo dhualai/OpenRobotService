@@ -59,8 +59,12 @@ class NotificationOutboxService:
             key = f"nt{notify_type}:t{task_id}:u{recipient_id}:o{occurrence}"
         else:
             key = f"nt{notify_type}:t{task_id}:u{recipient_id}"
+        # occurrence 需透传给排程：warn24h 要按「提前量 ≥24h」选点，
+        # 与无提前量下限的 warn1h 走不同分支（见 working_time_service.plan_send_time）
         user = WorkingTimeService.get_user_context(recipient_id)
-        planned = WorkingTimeService.plan_send_time(user, notify_type, deadline_at)
+        planned = WorkingTimeService.plan_send_time(
+            user, notify_type, deadline_at, occurrence=occurrence
+        )
         if planned is None:
             return {
                 "status": "skipped",

@@ -4,12 +4,12 @@
 交给后端 **按接收人所在时区的工作时间** 排程发送（Outbox），DAG 本身不再直接推送。
 
 规则 1 — 临期预警（未逾期，不区分优先级，每单预警两次）：
-  - 第一次预警：距离截止时间 24~25 小时 → notify_type=9（occurrence=warn24h）
+  - 第一次预警：距离截止时间 31~32 小时 → notify_type=9（occurrence=warn24h）
   - 第二次预警：距离截止时间 60~120 分钟 → notify_type=9（occurrence=warn1h）
   - 每个窗口宽 1 小时，DAG 每小时执行 1 次，天然每窗口最多命中 1 次
-  - 若触发时已错过「截止前最后一个工作时段末尾」，后端不再补发（status=skipped），
-    交由截止后的逾期提醒接管——例：周五 23:00 截止，warn24h 排到周五 17:30 发出，
-    warn1h 在周五 22:00 触发时该时刻已过，跳过
+  - 第一次预警提前到 31h 触发，是为了给后端留缓冲：排程要求「提前量 ≥24h 且落在
+    工作时间」，若「截止 -24h」落在下班后/凌晨，需有时间把通知提前到前一个工作
+    时段末尾（17:30）发出——例：23:59 截止，前一日 16:00 命中，排到前一日 17:30 发
 
 规则 2 — 逾期（now >= deadline_at）：
   - 逾期天数 N = floor(逾期小时数 / 24)
@@ -43,9 +43,12 @@ ADMIN_PASSWORD = os.getenv("ORS_ADMIN_PASSWORD", "usp2026@EP")
 TZ_SHANGHAI = timezone(timedelta(hours=8))
 
 # ── 临期预警窗口（不区分优先级，所有工单两次预警） ──
-# 第一次预警：距截止 24~25 小时
-NORMAL_MIN_HOURS = 24
-NORMAL_MAX_HOURS = 25
+# 第一次预警：距截止 31~32 小时
+# 比 24h 多留 7h 缓冲：后端排程要保证提前量 ≥24h 且落在工作时间，
+# 若「截止 -24h」正好落在下班后/凌晨，得有时间提前到前一个工作时段末尾（17:30）发出。
+# 例：23:59 截止 → 前一日 16:00~17:00 命中 → 排到前一日 17:30 发（提前 30.5h）
+NORMAL_MIN_HOURS = 31
+NORMAL_MAX_HOURS = 32
 # 第二次预警：距截止 60~120 分钟
 URGENT_MIN_MINUTES = 60
 URGENT_MAX_MINUTES = 120
@@ -242,7 +245,7 @@ def ticket_deadline_notification_dag():
             # 窗口宽 1 小时，DAG 每小时执行 1 次，每窗口天然最多命中 1 次
             if minutes_to_deadline > 0:
                 hours_to_deadline = minutes_to_deadline / 60
-                # 两个窗口：24~25h（第一次）、60~120min（第二次）
+                # 两个窗口：31~32h（第一次）、60~120min（第二次）
                 windows = [
                     ("warn24h", NORMAL_MIN_HOURS <= hours_to_deadline < NORMAL_MAX_HOURS),
                     ("warn1h", URGENT_MIN_MINUTES <= minutes_to_deadline < URGENT_MAX_MINUTES),
