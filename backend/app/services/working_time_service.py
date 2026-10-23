@@ -6,8 +6,17 @@
 - 时区：用户上报 > 系统默认 `Asia/Shanghai`（公司/部门级覆盖暂不实现）
 - 工作时段：公司级可配置，单段（不支持午休分段），无夜班
 - 工作日：公司可配置（默认周一至周五）+ 法定节假日排除 + 调休补班
-- 临期预警（notify_type=9）：截止在非工作时间 → 提前到**截止前最后一个工作时段末尾 -30min**
-  （若该时刻已过 → 不再补发，交由逾期提醒接管）
+- 临期预警（notify_type=9）：
+  - 带「提前量下限」的一轮（warn24h，DAG 在距截止 31~32h 命中）：
+    保证发送时刻落在工作时间且**不晚于「截止 -24h」**，即提前量恒 ≥24h
+    - 24h 点本身在工作时间 → 就排在 24h 点
+    - 24h 点已下班/未上班 → **提前**到「不晚于 24h 点的最后一个工作时段末尾 -30min」
+      例：次日 23:59 截止 → 排在当日 17:30（提前 30.5h），而不是拖到次日 17:30 只剩 1.5h
+    - 该时刻若已在命中之前（凌晨到期、命中时当日已下班）→ 顺延到命中后的第一个上班时刻
+      例：次日 01:00 截止，命中在再前一日 18:00 → 顺延到前一日 09:00 发
+  - 无提前量下限的一轮（warn1h）：命中在工作时间 → **立即发**；否则提前到不晚于
+    截止的最后一个工作时段末尾 -30min
+  - 排程时刻已越过截止 → 不再补发，交由逾期提醒接管
 - 逾期提醒（notify_type=6）：截止后 → 顺延到**截止后第一个工作时段开始**
 - 节假日：命中即顺延到节后首个工作日
 
@@ -48,6 +57,11 @@ NOTIFY_TYPE_WARNING = 9          # 临期预警
 NOTIFY_TYPE_OVERDUE = 6          # 逾期提醒
 IMMEDIATE_NOTIFY_TYPES = {1, 5, 7, 8, 10}   # 立即发：催办/新工单/转派/@提醒/机器人告警
 SCHEDULED_NOTIFY_TYPES = {6, 9}             # 排程发：逾期/临期预警
+
+# 临期预警各轮的「提前量下限」（小时），按 DAG 传入的 occurrence 区分。
+# warn24h 由 DAG 在距截止 31~32h 命中，多出的 7h 缓冲正是为了让后端有机会把
+# 「24h 点落在下班后」的通知提前到前一个工作时段末尾发出，从而保证提前量 ≥24h。
+WARNING_LEAD_HOURS: Dict[str, float] = {"warn24h": 24}
 
 # 公司日历进程内缓存（公司数量少、变更低频，避免逐条通知查库）
 _CALENDAR_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -250,27 +264,77 @@ class WorkingTimeService:
         return target
 
     @classmethod
+    def _plan_lead_warning(
+        cls,
+        user: Optional[Dict[str, Any]],
+        deadline_utc: datetime,
+        now_utc: datetime,
+        lead: timedelta,
+    ) -> Optional[datetime]:
+        """带「提前量下限」的临期预警排程（warn24h）。
+
+        目标：发送时刻落在工作时间，且**不晚于「截止 - lead」**，因此提前量恒 ≥ lead。
+
+        - 理想点 `strict = 截止 - lead` 本身在工作时间 → 就排在 strict（恰好提前 lead）
+        - strict 落在非工作时间 → **提前**到「不晚于 strict 的最后一个工作时段末尾 -30min」
+          例：次日 23:59 截止 → strict 是当晚 23:59（已下班）→ 提前到当日 17:30 发，
+          实际提前 30.5h；若拖到次日 17:30 发就只剩 1.5h 提前量，等于没预警
+        - 上一步得到的时刻若已在命中之前（凌晨到期、或命中时当日已下班）→ 顺延到
+          命中之后的第一个工作时段开始，宁可牺牲提前量也不能漏发
+          例：次日 01:00 截止，命中在再前一日 18:00 → strict 是前一日 01:00，
+          其 tail 已过 → 顺延到前一日 09:00 上班发
+        - 排程时刻已越过截止 → 临期预警失去意义，返回 None 交由逾期提醒接管
+        """
+        strict = deadline_utc - lead
+        if cls.is_working_time(user, strict):
+            planned = strict
+        else:
+            planned = cls.previous_working_tail(user, strict)
+
+        if planned < now_utc:
+            planned = cls.next_working_start(user, now_utc)
+
+        if planned >= deadline_utc:
+            return None
+        return planned
+
+    @classmethod
     def plan_send_time(
         cls,
         user: Optional[Dict[str, Any]],
         notify_type: int,
         deadline_at: Optional[datetime] = None,
         now: Optional[datetime] = None,
+        occurrence: Optional[str] = None,
     ) -> Optional[datetime]:
         """计算某条通知对该接收人的计划发送时刻（UTC aware）。
 
         返回 None 表示**无需再发**（当前已错过该提醒的有效时点，由后续提醒接管）：
-        仅临期预警会出现——「截止前最后一个工作时段末尾」已过，此时补发「即将逾期」
-        既落在非工作时间、又已失去提前量，故直接放弃，交由截止后的逾期提醒负责。
+        仅临期预警会出现——排程时刻已越过截止，此时补发「即将逾期」已失去意义，
+        交由截止后的逾期提醒负责。
 
         其余情形：计划时刻若已过期一律收敛为「立即发」——宁可稍晚，也不能漏发。
         """
         now_utc = cls.to_utc(now) or cls.now_utc()
 
         if notify_type == NOTIFY_TYPE_WARNING and deadline_at:
-            planned = cls.previous_working_tail(user, deadline_at)
+            # 带提前量下限的一轮（warn24h）→ 保证提前量 ≥ lead 且落在工作时间
+            lead_hours = WARNING_LEAD_HOURS.get(occurrence or "")
+            if lead_hours is not None:
+                return cls._plan_lead_warning(
+                    user, cls.to_utc(deadline_at), now_utc, timedelta(hours=lead_hours)
+                )
+
+            # 无提前量下限的一轮（warn1h）：
+            # 命中时刻本身就在工作时间 → 立即发，保住本轮触发自带的提前量
+            # （例：19:00 截止，17:00 命中第二轮预警，此刻仍在上班 → 17:00 就发）
+            if cls.is_working_time(user, now_utc):
+                return now_utc
+
+            # 命中在非工作时间 → 提前到不晚于截止的最后一个工作时段末尾 -30min
             # 例：周五 23:00 截止 → 目标是周五 17:30；若第二轮预警在周五 22:00 才触发，
-            # 目标时刻已过 → 不再发，等待截止后的逾期提醒（会顺延到周一 09:00）
+            # 目标时刻已过 → 不再发，等待截止后的逾期提醒（会顺延到周一上班时间）
+            planned = cls.previous_working_tail(user, deadline_at)
             if planned < now_utc:
                 return None
             return planned
