@@ -27,6 +27,7 @@ backend 归档流（closed → 处理人开始归档 → 写报告 → 提交审
 """
 import asyncio
 import json
+import re
 import time
 
 from ai.core.logging import get_logger
@@ -61,10 +62,10 @@ _REPORT_PROMPT = """请根据以下工单素材撰写归档报告。报告只有
 解决**——按顺序的可操作动作；咨询类本节标题改用 `## 回答`，内容为结论
 与依据。没有证据的部分明确提示处理人补充，不编造。
 
-（素材提供了"现场图片"markdown 时：按图片内容与描述判断它最能佐证哪一节，
-把 markdown **原样嵌入**该节正文之后的独立一行——如报错截图配「问题描述」、
-现场照片配「解决方案/回答」；路径与文件名一字不改、不得虚构图片；每张
-全篇恰好出现一次）
+（素材提供了"现场图片"占位标记【现场图片N】时：按图片内容与描述判断它
+最能佐证哪一节，把**占位标记原样**放到该节正文之后的独立一行——如报错
+截图配「问题描述」、现场照片配「解决方案/回答」。只挪动标记本身，标记
+文字一字不改；每张全篇恰好出现一次）
 
 ----------
 
@@ -77,7 +78,7 @@ _REPORT_PROMPT = """请根据以下工单素材撰写归档报告。报告只有
 - 项目：{project_name}
 - 现场处理记录（评论，按时间）：
 {comments}
-- 现场图片（markdown 引用可原样嵌入报告，前端渲染时带登录态加载）：
+- 现场图片（嵌入时只写【现场图片N】占位标记，真实链接由系统回填）：
 {image_refs}
 """
 
@@ -164,9 +165,12 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
         # 前端 MarkdownRenderer/AuthImage 渲染时带登录态加载）
         from ai.core.solution_sink import load_comment_image_refs
         img_refs = load_comment_image_refs(task_id)
+        # 素材只给【现场图片N】序号占位——LLM 抄长 UUID 必抄错（918 实锤：
+        # a4702001 被抄成 a2004701），生成完成后由代码机械替换真实链接
         image_refs_text = "\n".join(
-            f"- {r['markdown']}" + (f"（描述：{r['desc']}）" if r["desc"] else "")
-            for r in img_refs) or "（评论区无图片）"
+            f"- 【现场图片{i}】{r['filename']}"
+            + (f" — {r['desc']}" if r['desc'] else "")
+            for i, r in enumerate(img_refs, 1)) or "（评论区无图片）"
         prompt = _REPORT_PROMPT.format(
             title=ctx.get("title") or "", description=(ctx.get("description") or "")[:1500],
             resolution_summary=(ctx.get("resolution_summary") or "")[:800],
@@ -201,14 +205,24 @@ async def generate_stream_task(task_id: int, queue: asyncio.Queue, username: str
         if not report:
             await q({"type": "error", "msg": "生成结果为空，可直接手写报告"})
             return
-        # ORS-1035 兜底：素材有现场图片但 LLM 没嵌任何一张（内联指引偶尔失守）
-        # → 自动补「## 现场图片」小节，保证图片不因模型失守而整体丢失
-        if img_refs and "attachments/download" not in report:
+        # ORS-1035：把【现场图片N】占位标记机械替换为真实 markdown 链接
+        # （LLM 只负责放位置，链接由代码回填——抄错路径的事故不再可能）；
+        # 没用掉的标记剥掉。素材有图但报告一张没嵌 → 兜底补「## 现场图片」节
+        embedded = 0
+        for i, r in enumerate(img_refs, 1):
+            tag = f"【现场图片{i}】"
+            if tag in report:
+                report = report.replace(tag, r['markdown'])
+                embedded += 1
+        report = re.sub(r"【现场图片\d+】\s*", "", report)
+        if img_refs and embedded == 0 and "attachments/download" not in report:
             fallback = "\n\n## 现场图片\n\n" + "\n".join(
                 f"- {r['markdown']}" + (f"（{r['desc']}）" if r["desc"] else "")
                 for r in img_refs)
             report = report.rstrip() + fallback
             await q({"type": "delta", "text": fallback})
+        logger.info(f"[archive] #918图片内嵌 {embedded}/{len(img_refs)}" if img_refs
+                    else f"[archive] #{task_id} 无现场图片")
 
         await q({"type": "status", "msg": "正在保存初稿…"})
         # 写回前再查一次：生成期间处理人可能已开始手写

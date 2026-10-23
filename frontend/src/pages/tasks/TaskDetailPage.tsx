@@ -2903,7 +2903,7 @@ export default function TaskDetailPage() {
         {/* ORS-1010：编辑器+相似工单块易超 88vh，ticket-edit-form 类本身不滚动
             （滚动在其 __body 子层，本弹窗未用）——底部内容曾被硬裁（1010 用户
             iOS 实测提示语只剩半句）。内联开启滚动。 */}
-        <div className="ticket-edit-form" style={{ overflowY: 'auto' }}>
+        <div className="ticket-edit-form" style={{ display: 'flex', flexDirection: 'column', maxHeight: '88vh', overflow: 'hidden' }}>
           <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '归档报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改归档报告' : '编写归档报告')}
@@ -2917,14 +2917,16 @@ export default function TaskDetailPage() {
           {archiveEditorMode === 'edit' ? (
             <>
               {/* ORS-1010 精简：章节要求压成一行 + 常用操作（补齐章节/上传图片），
-                  原格式工具栏整排删除——报告写作用不上，还把正文挤出首屏 */}
+                  原格式工具栏整排删除——报告写作用不上，还把正文挤出首屏。
+                  只有报告填写区滚动（flex 中段），相似块与按钮行固定 */}
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
           {/* ORS-1010 相似工单提示：归档人对照已沉淀的相似工单（与 AI 初稿并行
               拉取）。不展示相似度分值——score 是 RRF 融合分非余弦，展示数字会
               误导。verified=rejected 已被推翻，不出示。0 条且检索正常时也提示
               （功能存在感 + 讲清沉淀机制）；检索挂了保持静默。 */}
           {(archiveSimilar.length > 0 || archiveSimilarLoading || archiveSimilarReady) && (
             <div style={{
-              paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)',
+              paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)', flexShrink: 0,
               maxHeight: '40vh', overflowY: 'auto', overscrollBehavior: 'contain',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
@@ -3017,14 +3019,6 @@ export default function TaskDetailPage() {
                   />
                 </div>
               </div>
-              {!archiveGenerating && !archiveReportContent.trim() && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 10, background: 'var(--muted, #f6f8fa)', borderRadius: 8 }}>
-                  <span style={{ flex: 1, fontSize: 12, color: 'var(--muted-foreground)' }}>
-                    💡 不想手写？让 AI 基于本单讨论先出一份标准结构初稿
-                  </span>
-                  <Button size="small" theme="primary" onClick={handleAiGenerateReport}>✨ AI 生成初稿</Button>
-                </div>
-              )}
               {archiveGenerating ? (
                 /* AI 生成中：只读直播（渲染版——报告内嵌图片随流式内容出现），
                     防止处理人同时手写（服务端 content='' 条件写回兜底） */
@@ -3064,7 +3058,8 @@ export default function TaskDetailPage() {
                   </span>
                 </div>
               )}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 16 }}>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingTop: 12 }}>
                 <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>提交后系统自动指定审核人</span>
