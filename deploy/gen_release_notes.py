@@ -24,7 +24,7 @@ docs/RELEASE_NOTES.md（见 workflow 的 Generate release notes 步骤）。
 环境变量：
     RELEASE_LLM_API_KEY   必填；缺失 = 跳过（退出码 2）
     RELEASE_LLM_BASE_URL  OpenAI 兼容 API 根地址（默认 https://api.deepseek.com）
-    RELEASE_LLM_MODEL     模型名（默认 deepseek-v4-flash）
+    RELEASE_LLM_MODEL     模型名（默认 deepseek-chat；配推理模型时预算耗尽会自动放大重试）
     RELEASE_LLM_TIMEOUT   单次请求超时秒（默认 60，限制在 5~180）
 """
 import argparse
@@ -41,17 +41,24 @@ from urllib.parse import urlparse
 
 RELEASE_GROUPS = ("新增功能", "体验优化", "BUG 修复")
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash"
+# 默认选非推理模型。deepseek-v4-flash 这类推理模型会先把 reasoning_tokens 花在
+# 输出预算上：实测 72 条 PR 时 max_tokens=4000 仍被 reasoning 吃光
+# （finish_reason=length 且 content 为空），整批回退人工版；deepseek-chat
+# 用 2000 token 就能稳定产出三组 JSON，也更快更省。
+# 管理员仍可用 RELEASE_LLM_MODEL 覆盖成推理模型（此时见下方预算放大逻辑）。
+DEFAULT_MODEL = "deepseek-chat"
 WINDOW_DAYS = 7
 # 通知图高度/体积有限：实测「每组 6 条 × 每条 60 字」渲染可达 2.7MB，
 # 超过 notify_image 的 2MB 上限会降级成模板卡片（丢掉图片样式）。
 # 收紧到 4×40 后最坏情况约 1.2MB，稳定留在图片样式内。
 MAX_ITEMS_PER_GROUP = 4
 MAX_ITEM_CHARS = 40
-# 输出 token 预算：deepseek 系列带推理，reasoning_tokens 会先吃掉预算。
-# 实测 86 条 PR 时 max_tokens=1500 全被 reasoning 耗尽（finish_reason=length 且 content 为空），
-# 4000 才有稳定正文余量（reasoning≈3500 + 正文≈500）。
-MAX_TOKENS = 4000
+# 输出 token 预算。默认的非推理模型 2000 就够，这里留足裕量；
+# 若被覆盖成推理模型，reasoning_tokens 会先吃掉预算——实测 72 条 PR 时 4000
+# 仍被吃光（finish_reason=length 且 content 为空），故预算耗尽时自动放大重试。
+MAX_TOKENS = 8000
+# 预算放大重试的上限：每次翻 4 倍，最多到这里再次放弃。
+MAX_TOKENS_CAP = 32000
 
 # 这些 conventional-commit 前缀对用户不可感知，直接不进 LLM（省 token、减噪音）。
 # 只按前缀判断；标题没有前缀（中文直写）一律保留，交给 LLM 判断。
@@ -273,14 +280,30 @@ def validate_endpoint(url):
         raise ValueError(f"LLM 地址不允许内网 IP（{host}）")
 
 
+_SNIPPET_CHARS = 400
+
+
+def _snippet(raw, api_key=""):
+    """把响应体裁成一行日志片段：压掉空白、剔除密钥原文、截断到固定长度。"""
+    if not raw:
+        return ""
+    text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+    if api_key:
+        text = text.replace(api_key, "***")
+    return _SPACE_RE.sub(" ", text).strip()[:_SNIPPET_CHARS]
+
+
 def call_llm(prompt, api_key, base_url="", model="", timeout=60.0, retries=1):
     """调 OpenAI 兼容 chat/completions，返回正文；失败返回空串。
 
     日志只打主机名与错误类型，绝不回显 API Key（Key 只在 Authorization 头里）。
+    失败时附带响应体片段：只报「响应格式异常」等于没有线索，线上曾连查两轮
+    都只能靠猜（到底是 4xx、HTML 拦截页、还是流被截断）。
     """
     url = chat_endpoint(base_url)
     validate_endpoint(url)
-    body = json.dumps({
+    host = urlparse(url).netloc
+    request_body = {
         "model": model or DEFAULT_MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -289,36 +312,64 @@ def call_llm(prompt, api_key, base_url="", model="", timeout=60.0, retries=1):
         "temperature": 0.2,
         "max_tokens": MAX_TOKENS,
         "stream": False,
-    }, ensure_ascii=False).encode("utf-8")
-    host = urlparse(url).netloc
+    }
+    budget = MAX_TOKENS
 
     for attempt in range(retries + 1):
-        req = urllib.request.Request(url, data=body, method="POST", headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        })
+        request_body["max_tokens"] = budget
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            })
+        detail = ""
+        grow_budget = False
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8", "replace"))
+                raw = resp.read()
+                headers = getattr(resp, "headers", None)
+                content_type = (headers.get("Content-Type") or "") if headers is not None else ""
         except urllib.error.HTTPError as exc:
             reason = f"HTTP {exc.code}"
+            detail = _snippet(exc.read(), api_key)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             reason = f"{type(exc).__name__}"
-        except (ValueError, TypeError):
-            reason = "响应格式异常"
+            detail = str(exc)
+        except (ValueError, TypeError) as exc:
+            # 读流中断（http.client.IncompleteRead 也是 ValueError 子类）、非法响应等
+            reason = f"{type(exc).__name__}"
+            detail = str(exc)
         else:
             try:
-                choice = payload["choices"][0]
-                content = choice["message"]["content"]
-            except (KeyError, IndexError, TypeError):
-                reason = "响应格式异常"
+                payload = json.loads(raw.decode("utf-8", "replace"))
+            except (ValueError, TypeError):
+                reason = f"响应不是 JSON（Content-Type={content_type or '空'}，{len(raw)} 字节）"
+                detail = _snippet(raw, api_key)
             else:
-                if isinstance(content, str) and content.strip():
-                    return content
-                # 推理模型会先把预算花在 reasoning_tokens 上，预算不足时
-                # finish_reason=length 且 content 为空——必须留痕，否则表现为「静默回退人工版」。
-                reason = f"content 为空（finish_reason={choice.get('finish_reason')}）"
-        print(f"[release-notes] LLM 请求失败（{host}，第 {attempt + 1} 次）：{reason}")
+                try:
+                    choice = payload["choices"][0]
+                    content = choice["message"]["content"]
+                except (KeyError, IndexError, TypeError):
+                    reason = "响应缺少 choices/message/content"
+                    detail = _snippet(raw, api_key)
+                else:
+                    if isinstance(content, str) and content.strip():
+                        return content
+                    # 推理模型会先把预算花在 reasoning_tokens 上，预算不足时
+                    # finish_reason=length 且 content 为空——必须留痕，否则表现为「静默回退人工版」。
+                    reason = f"content 为空（finish_reason={choice.get('finish_reason')}）"
+                    # 同一份请求重发一遍毫无意义：预算没变、结果必然一样。
+                    # 只有确认是预算耗尽，才把 max_tokens 放大后再试。
+                    grow_budget = choice.get("finish_reason") == "length" and budget < MAX_TOKENS_CAP
+                    detail = _snippet(raw, api_key)
+        print(f"[release-notes] LLM 请求失败（{host}，第 {attempt + 1} 次）：{reason}"
+              + (f"｜{detail}" if detail else ""))
+        if grow_budget:
+            budget = min(budget * 4, MAX_TOKENS_CAP)
+            print(f"[release-notes] 输出预算被推理耗尽，下次请求放大 max_tokens 到 {budget}")
     return ""
 
 
