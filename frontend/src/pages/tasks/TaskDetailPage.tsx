@@ -193,6 +193,9 @@ interface Ticket {
   curr_step_agreed?: boolean;
   // 升级上报次数：>0 表示已升级，协商回合重置为1且不再受限
   escalate_count?: number;
+  // ── 父子工单 / 前置依赖关系 ──
+  predecessor_ids?: number[];
+  parent_id?: number | null;
   // ── 代他人提单（代理提单）：后端下发的关系与视角标记（非参与人为空/False）──
   proxy_relation_status?: 'pending' | 'acknowledged' | 'declined' | null;
   proxy_agent_name?: string | null;
