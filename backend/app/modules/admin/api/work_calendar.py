@@ -98,7 +98,7 @@ async def get_work_calendar(
 async def update_work_calendar(
     company_id: str,
     data: WorkCalendarUpdate,
-    current_user: Dict[str, Any] = require_permission(PERM_CODE),
+    current_user: Dict[str, Any] = Depends(require_permission(PERM_CODE)),
 ):
     ensure_work_calendar_permission()
 
@@ -168,7 +168,7 @@ async def list_holidays(
 async def create_holiday(
     company_id: str,
     data: HolidayItem,
-    current_user: Dict[str, Any] = require_permission(PERM_CODE),
+    current_user: Dict[str, Any] = Depends(require_permission(PERM_CODE)),
 ):
     ensure_work_calendar_permission()
     if data.type not in VALID_HOLIDAY_TYPES:
@@ -214,7 +214,7 @@ async def create_holiday(
 async def batch_upsert_holidays(
     company_id: str,
     payload: Dict[str, Any] = Body(...),
-    current_user: Dict[str, Any] = require_permission(PERM_CODE),
+    current_user: Dict[str, Any] = Depends(require_permission(PERM_CODE)),
 ):
     ensure_work_calendar_permission()
     items: List[Dict[str, Any]] = payload.get("items") or []
@@ -270,7 +270,7 @@ async def batch_upsert_holidays(
 async def delete_holiday(
     company_id: str,
     holiday_id: str,
-    current_user: Dict[str, Any] = require_permission(PERM_CODE),
+    current_user: Dict[str, Any] = Depends(require_permission(PERM_CODE)),
 ):
     ensure_work_calendar_permission()
     db = db_manager.get_db()
