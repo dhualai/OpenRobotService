@@ -351,6 +351,7 @@ class LlmDecision:
     def _build_prompt(self, ticket, engineers, recall_result, ranked_scores, extra_hints=None, product: str = ""):
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import (
             feature_role_routing_guidance,
+            support_contact_routing_guidance,
         )
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.step6 import (
             IRON_RULES,
@@ -360,13 +361,19 @@ class LlmDecision:
         lines = [
             "你是本工单派单的『最终拍板决策者』。",
             "系统已通过召回与精排准备好带依据的候选排名。精排是最强参考，最终选谁由你决定。"
-            "若判定为需求单，还须按【仅需求单·产品/研发分流】决定先产品还是研发。",
+            "若判定为需求单，还须按【仅需求单·产品/研发分流】决定先产品还是研发。"
+            "若判定为咨询/支持，或类型其它/未填/看不清，还须按"
+            "【咨询/支持/类型不清·项目对接人优先】："
+            "有倾向人先派倾向人（对接人逾越不过去）；"
+            "无倾向人且有对接人再优先对接人，不必硬派功能工程师。",
             "",
             IRON_RULES,
             "",
             JUDGE_HINTS,
             "",
             feature_role_routing_guidance(ticket),
+            "",
+            support_contact_routing_guidance(ticket),
             "",
             "【候选人排名（已含职级折扣；#1 为总分最高）】",
         ]
