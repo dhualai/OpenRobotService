@@ -226,14 +226,17 @@ class TestTicketLifecycleReal:
                 assert_task_status(mysql_client, ticket_id, "closed")
         finally:
             if ticket_id is not None:
-                with allure.step("清理测试工单"):
-                    response = await real_lifecycle_client.delete(
-                        f"/api/tasks/{ticket_id}",
+                # 不用 DELETE：后端删除会把 task_operation_logs.task_id 置空，
+                # 而该列 NOT NULL → IntegrityError 1048 → 500。已关闭工单保留作审计。
+                with allure.step("收尾：尝试作废工单（已关闭则保留）"):
+                    response = await real_lifecycle_client.patch(
+                        f"/api/tasks/{ticket_id}/status",
                         headers=u1_headers,
+                        json={"status": "canceled"},
                     )
-                    if response.status_code not in (200, 204, 404):
+                    if response.status_code not in (200, 400, 403):
                         allure.attach(
-                            response.text,
-                            name="工单清理失败",
+                            f"PATCH canceled 返回 {response.status_code}",
+                            name="收尾告警",
                             attachment_type=allure.attachment_type.TEXT,
                         )

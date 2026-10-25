@@ -125,10 +125,24 @@ python automation/scripts/cli-ticket-gate.py --text "feature（ORS-999）：本�
 
 影响：真实链路用例要么失败要么跳过。已修正用例断言；本地需手工补 `task_steps`。
 
-### P3：`DELETE /api/tasks/{id}` 返回 500
+### P3：`DELETE /api/tasks/{id}` 必然返回 500（已定位根因）
 
-生命周期用例清理阶段删除工单失败（500），但不影响用例结论（清理非阻断）。
-需开发确认是否为数据关联导致的删除失败。
+现象：任何工单删除接口都返回 500。
+
+根因（实测错误体）：
+
+```
+(asyncmy.errors.IntegrityError) (1048, "Column 'task_id' cannot be null")
+[SQL: UPDATE task_operation_logs SET task_id=%s WHERE task_operation_logs.id = %s]
+```
+
+删除逻辑试图把 `task_operation_logs.task_id` 置空来实现"孤儿化"，但该列是 NOT NULL，
+于是对所有产生过操作日志的工单（建单即产生）都会失败。
+
+影响：前端删除工单功能实际不可用；自动化用 DELETE 做清理会污染报告（到处 500）。
+
+处置：自动化侧清理方式改为「撤回（PATCH status=canceled）」，不再调用 DELETE。
+后端删除逻辑需开发修复（改级联删除或允许 task_id 为空并保留审计）。
 
 ## 风险
 
