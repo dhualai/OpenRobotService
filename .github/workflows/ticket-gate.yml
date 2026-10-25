@@ -68,9 +68,15 @@ jobs:
           pip install -r backend/requirements.txt
           pip install -e automation/
 
-      - name: Run database migrations
+      - name: Init test DB schema
+        # 与 test.yml 保持一致：mysql service 只建了空库，先用 backend ORM 建齐全部表。
+        # 不能改用 alembic upgrade head：迁移链无法从空库重放（baseline 是空实现，
+        # 且导入 app 会触发 app/core/database.py 模块级 create_all，导致后续 ALTER 撞车）。
+        env:
+          DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/openrobot
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: |
-          cd backend && alembic upgrade head
+          python -c "from app.core.db import engine; from app.models import Base; Base.metadata.create_all(engine)"
 
       - name: Seed automation environment
         run: |

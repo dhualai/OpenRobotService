@@ -45,6 +45,14 @@ async def _login(client: ApiClient, username: str, password: str) -> dict:
         return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+async def _user_id(client: ApiClient, headers: dict) -> str:
+    """读取当前登录用户的 users.id（任务表的 created_by / assigned_to 存的都是 id，不是 username）。"""
+    with allure.step("读取当前登录用户 ID"):
+        response = await client.get("/api/auth/me", headers=headers)
+        assert_status_code(response, 200)
+        return response.json()["id"]
+
+
 async def _call(
     client: ApiClient,
     role: str,
@@ -80,6 +88,8 @@ class TestTicketLifecycleReal:
         )
         u1_headers = await _login(real_lifecycle_client, *_U1)
         u2_headers = await _login(real_lifecycle_client, *_U2)
+        u1_id = await _user_id(real_lifecycle_client, u1_headers)
+        u2_id = await _user_id(real_lifecycle_client, u2_headers)
         ticket_id = None
 
         try:
@@ -101,7 +111,7 @@ class TestTicketLifecycleReal:
             )
             ticket_id = created.json()["id"]
             created_json = created.json()
-            assert created_json.get("created_by") == _U1[0] or created_json.get("created_by_name") == "自动化提单用户"
+            assert created_json.get("created_by") == u1_id
             if mysql_client is not None:
                 assert_task_row(
                     mysql_client,
@@ -116,7 +126,7 @@ class TestTicketLifecycleReal:
                 "put",
                 f"/api/tasks/{ticket_id}",
                 headers=u1_headers,
-                json={"assigned_to": _U2[0]},
+                json={"assigned_to": u2_id},
             )
 
             detail = await _call(
@@ -129,7 +139,7 @@ class TestTicketLifecycleReal:
                 expected_fields={"id": ticket_id, "status": "new"},
             )
             detail_json = detail.json()
-            assert detail_json.get("assigned_to") == _U2[0] or detail_json.get("assigned_to_name") == "自动化处理人"
+            assert detail_json.get("assigned_to") == u2_id
 
             steps_response = await _call(
                 real_lifecycle_client,
