@@ -271,12 +271,16 @@ async def detail(db, actor, challenge_id):
         KnowledgeChallengeAnswer.challenge_id == challenge.id,
         KnowledgeChallengeAnswer.submitted_at.is_not(None), KnowledgeChallengeAnswer.hidden.is_(False)
     ).order_by(KnowledgeChallengeAnswer.id))).scalars().all()
+    author_ids = {answer.author_id for answer in answers}
+    authors = {user.id: user for user in (await db.execute(
+        select(UserDB).where(UserDB.id.in_(author_ids)))).scalars().all()}
     frozen = {entry["id"]: entry for entry in (challenge.snapshot or {}).get("answers", [])}
     items = []
-    for position, answer in enumerate(answers):
+    for answer in answers:
+        author = authors.get(answer.author_id)
         entry = frozen.get(answer.id)
         liked = await db.get(KnowledgeChallengeLike, ("answer", answer.id, user_id))
-        items.append({"id": answer.id, "author": f"匿名解答者{position + 1}",
+        items.append({"id": answer.id, "author": (author.name or author.username) if author else "未知用户",
             "content": entry["content"] if entry else answer.content,
             "like_count": entry["likes"] if entry else await answer_votes(db, answer.id),
             "submitted_at": knowledge.iso(answer.submitted_at), "is_mine": answer.author_id == user_id,

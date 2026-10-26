@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, inspect, select
 
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
+from app.models.identity import UserDB
 from app.models.knowledge_challenge import (
     KnowledgeChallenge, KnowledgeChallengeAnswer, KnowledgeChallengeAudit, KnowledgeChallengeLike,
 )
@@ -269,14 +270,62 @@ async def test_pause_still_settles_and_ordinary_users_cannot_manage(db, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_public_payloads_redact_identity_and_do_not_leak_drafts(db):
+async def test_public_payloads_show_author_but_redact_sensitive_content_and_do_not_leak_drafts(db):
     challenge = await published(db)
     await submitted(db, challenge["id"], content="提单甲 alice-account 联系13800138000 https://private.example/a")
+    await service.write_answer(db, actor("bob"), challenge["id"], "未发布的私人草稿", 0)
     result = await service.detail(db, actor("voter"), challenge["id"])
+    assert len(result["answers"]) == 1
+    assert result["answers"][0]["author"] == "提单甲"
+    for secret in ("提单甲", "alice-account", "13800138000", "private.example"):
+        assert secret not in result["answers"][0]["content"]
     serialized = json.dumps(result, ensure_ascii=False)
-    for secret in ("提单甲", "alice-account", "13800138000", "private.example", "author_id", "publisher_id", "questioner_id"):
+    for secret in ("未发布的私人草稿", "author_id", "publisher_id", "questioner_id"):
         assert secret not in serialized
     assert result["can_manage_state"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", [None, 1])
+@pytest.mark.parametrize("completed", [False, True])
+async def test_answer_author_is_visible_for_all_readers_and_community_results(db, monkeypatch, task_id, completed):
+    if task_id is not None:
+        seed(db, task_id)
+    challenge = await published(db, task_id=task_id)
+    await submitted(db, challenge["id"], user_id="bob")
+    if completed:
+        after_deadline(monkeypatch)
+        await service.settle(db, challenge["id"])
+    for reader in (actor("bob"), actor("voter"), admin()):
+        result = await service.detail(db, reader, challenge["id"])
+        assert result["answers"][0]["author"] == "接单乙"
+        assert result["questioner"] == ("匿名提问人" if task_id else "平台发布")
+        if completed:
+            assert result["best_answer"]["author"] == "接单乙"
+            community = await service.community_result(db, reader, challenge["id"])
+            assert community["best_answer"]["author"] == "接单乙"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, ""])
+async def test_answer_author_falls_back_to_username_when_name_is_empty(db, name):
+    challenge = await published(db)
+    await submitted(db, challenge["id"])
+    user = await db.get(UserDB, "alice")
+    user.name = name
+    await db.commit()
+    result = await service.detail(db, actor("voter"), challenge["id"])
+    assert result["answers"][0]["author"] == "alice-account"
+
+
+@pytest.mark.asyncio
+async def test_answer_stays_readable_when_author_account_is_missing(db):
+    challenge = await published(db)
+    await submitted(db, challenge["id"])
+    db.session.delete(await db.get(UserDB, "alice"))
+    await db.commit()
+    result = await service.detail(db, actor("voter"), challenge["id"])
+    assert result["answers"][0]["author"] == "未知用户"
 
 
 def test_migration_is_idempotent_and_supports_multiple_independent_questions():
