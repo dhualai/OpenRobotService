@@ -62,8 +62,9 @@ async def test_task_create_and_get(real_api_client):
     assert_status_code(login, 200)
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     title = "real-smoke-task"
+    # 真实后端路由带尾斜杠（/api/tasks/），不带斜杠会 307 重定向
     created = await real_api_client.post(
-        "/api/tasks",
+        "/api/tasks/",
         headers=headers,
         json={"title": title, "description": "real backend smoke"},
     )
