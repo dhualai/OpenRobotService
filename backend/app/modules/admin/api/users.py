@@ -116,7 +116,7 @@ async def get_users(
             external_credentials = {}
             if hasattr(user_record, 'external_credentials') and user_record.external_credentials:
                 try:
-                    external_credentials = json.loads(user_record.external_credentials)
+                    external_credentials = _normalize_external_credentials(json.loads(user_record.external_credentials))
                 except:
                     external_credentials = {}
 
@@ -812,6 +812,8 @@ async def create_user(
         usp = external_credentials.get("usp") or {}
         if usp.get("password"):
             external_credentials["usp"]["password"] = get_password_hash(usp["password"])
+    # 写入前清洗 None 值
+    external_credentials = _normalize_external_credentials(external_credentials)
     success = db_manager.add_user(
         user_id=user_id,
         username=user_data.username,
@@ -859,17 +861,37 @@ async def create_user(
         supervisor_id=created_user.get('supervisor_id'),
     )
 
+def _normalize_external_credentials(ec: Any) -> Dict[str, Dict[str, Any]]:
+    """清洗 external_credentials 中嵌套的 None 值。
+
+    历史存量数据可能包含 {"usp": {"username": null}} 之类的脏值；
+    schema 已放宽为 Any 不再触发 Pydantic 校验，但前端期望字符串字段为 str，
+    此处统一 pop 掉 None 值避免透传。
+    """
+    if not isinstance(ec, dict):
+        return {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for provider, creds in ec.items():
+        if not isinstance(creds, dict):
+            continue
+        normalized[provider] = {
+            k: v for k, v in creds.items() if v is not None
+        }
+    return normalized
+
+
 def _mask_usp_password(external_credentials: Dict) -> Dict:
     """屏蔽 USP 密码哈希：已设置密码时返回 "-" 作为哨兵，未设置时保持为空"""
-    if not external_credentials:
-        return external_credentials
-    usp = external_credentials.get('usp', {})
+    ec = _normalize_external_credentials(external_credentials)
+    if not ec:
+        return ec
+    usp = ec.get('usp', {})
     if usp and usp.get('password'):
         import copy
-        masked = copy.deepcopy(external_credentials)
+        masked = copy.deepcopy(ec)
         masked['usp']['password'] = '-'
         return masked
-    return external_credentials
+    return ec
 
 
 @router.get("/{username}/detail", response_model=UserDetail, summary="获取用户详细信息")
@@ -945,13 +967,16 @@ async def update_user(
             existing_ec = user.get('external_credentials', {}) or {}
             existing_usp = existing_ec.get('usp', {}) or {}
             if not external_creds["usp"].get("username"):
-                external_creds["usp"]["username"] = existing_usp.get("username")
+                existing_username = existing_usp.get("username")
+                if existing_username is not None:
+                    external_creds["usp"]["username"] = existing_username
             new_password = external_creds["usp"].get("password")
             if new_password:  # 提供新明文密码 → 哈希后存储
                 external_creds["usp"]["password"] = get_password_hash(new_password)
             elif "password" in existing_usp:  # 未提供新密码 → 保留旧密码哈希
                 external_creds["usp"]["password"] = existing_usp["password"]
-        update_data["external_credentials"] = external_creds
+        # 写入前清洗 None 值，避免脏数据循环污染
+        update_data["external_credentials"] = _normalize_external_credentials(external_creds)
     if user_data.avatar_resource_id is not None:
         update_data["avatar_resource_id"] = user_data.avatar_resource_id
     if user_data.company_id is not None:
@@ -1177,6 +1202,7 @@ async def update_user_uspinfo(
     external_credentials = updated_user.get('external_credentials', {})
     if 'usp' in external_credentials and usp_password:
         external_credentials['usp']['password'] = usp_password
+    external_credentials = _normalize_external_credentials(external_credentials)
     return User(
         id=updated_user['id'],
         username=updated_user['username'],

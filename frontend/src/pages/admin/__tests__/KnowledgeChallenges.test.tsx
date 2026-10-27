@@ -28,7 +28,7 @@ function challenge(id = 1): ChallengeDetail {
 function wrapped(element: React.ReactNode) { return render(<MemoryRouter>{element}</MemoryRouter>); }
 
 function publishedAnswer(overrides: Partial<ChallengeAnswer> = {}): ChallengeAnswer {
-  return { id: 9, author: '匿名解答者1', content: '已发布的解答', like_count: 2,
+  return { id: 9, author: '张三', content: '已发布的解答', like_count: 2,
     submitted_at: new Date().toISOString(), is_mine: true, is_best: false, liked_by_me: false,
     can_like: false, can_edit: true, remaining_edits: 1, ...overrides };
 }
@@ -42,6 +42,22 @@ function detailPage() {
 describe('高价值问题交互', () => {
   beforeEach(() => { vi.resetAllMocks(); });
   afterEach(cleanup);
+  it.each([false, true])('解答列表及最佳解答显示回答用户名，最佳状态：%s', async (isBest) => {
+    const answer = publishedAnswer({ is_mine: false, is_best: isBest, can_edit: false });
+    api.fetchChallenge.mockResolvedValue({ ...challenge(), answers: [answer], best_answer: isBest ? answer : null });
+    detailPage();
+    const card = await screen.findByRole('article');
+    expect(card).toHaveTextContent(isBest ? '张三 · 最佳解答' : '张三');
+    expect(screen.getByRole('heading', { name: `${isBest ? '社区优选解答' : '解答'} · 1` })).toBeVisible();
+    expect(screen.queryByText(/匿名解答/)).toBeNull();
+  });
+  it('发布答案前提示展示用户名，不再提示匿名展示', async () => {
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    await screen.findByLabelText('答案内容');
+    expect(screen.getByText(/回答将展示你的用户名/)).toBeVisible();
+    expect(screen.queryByText(/匿名展示/)).toBeNull();
+  });
   it.each(['高价值问题1', '按问题点赞排序 · 到期按答案有效赞选出最佳解答'])('首页最多展示三题及奖金，点击%s进入完整榜单', async (content) => {
     api.fetchChallengePreview.mockResolvedValue({ items: [1, 2, 3, 4].map(challenge), total: 4, can_manage: false });
     const rendered = render(<MemoryRouter><Routes>
