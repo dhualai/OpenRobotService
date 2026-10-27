@@ -17,6 +17,24 @@ logger = logging.getLogger(__name__)
 _ROLE_NAME_ID_CACHE: Dict[str, str] = {}
 
 
+def normalize_external_credentials(ec: Any) -> Dict[str, Dict[str, Any]]:
+    """清洗 external_credentials 中嵌套的 None 值（service 层单一拦截点）。
+
+    历史存量数据可能包含 {"usp": {"username": null}} 之类的脏值；
+    所有从 DB 读/写 external_credentials 的路径都应经过此函数。
+    """
+    if not isinstance(ec, dict):
+        return {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for provider, creds in ec.items():
+        if not isinstance(creds, dict):
+            continue
+        normalized[provider] = {
+            k: v for k, v in creds.items() if v is not None
+        }
+    return normalized
+
+
 class IdentityService:
     @staticmethod
     def _get_db() -> Session:
@@ -50,7 +68,7 @@ class IdentityService:
         ec = {}
         if hasattr(db_user, "external_credentials") and db_user.external_credentials:
             try:
-                ec = json.loads(db_user.external_credentials)
+                ec = normalize_external_credentials(json.loads(db_user.external_credentials))
             except Exception:
                 ec = {}
         rm = getattr(db_user, "responsibility_modules", None)
@@ -88,7 +106,7 @@ class IdentityService:
     def add_user(
         user_id: str, username: str, hashed_password: str, permissions: List[str],
         name: Optional[str] = None, status: str = "inactive",
-        external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
+        external_credentials: Optional[Dict[str, Dict[str, Any]]] = None,
         company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, Dict[str, List[str]]]] = None,
         job_level: Optional[int] = 1, duty_text: Optional[str] = None,
         supervisor_id: Optional[str] = None,
@@ -160,7 +178,7 @@ class IdentityService:
                 return False
             for key, value in kwargs.items():
                 if key == 'external_credentials' and value is not None:
-                    setattr(db_user, key, json.dumps(value))
+                    setattr(db_user, key, json.dumps(normalize_external_credentials(value)))
                 elif hasattr(db_user, key):
                     setattr(db_user, key, value)
             db.commit()
