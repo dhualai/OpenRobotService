@@ -68,6 +68,11 @@ ai/agents/AiTaskPlatform/memory/data/
 # ===== CodeBuddy 本地规则（个人纪律/项目约定，仅本地，不入库；用户规则在用户目录本就不跟踪）=====
 .codebuddy/rules/
 
+# ===== CodeBuddy 本地过程产物（方案草稿/设计预览图/临时排查脚本，仅本地，不入库）=====
+.codebuddy/plans/
+.codebuddy/preview/
+.codebuddy/tmp/
+
 # ===== WorkBuddy 本地记忆/配置（跨会话记忆与自动化配置，仅本地，不入库）=====
 .workbuddy/
 
@@ -174,6 +179,7 @@ ai/kb/kb_structure_cache.json
 
 # ===== Playwright MCP 浏览器工具产物（每次工具调用自动落盘，不入库）=====
 .playwright-mcp/
+.playwright-cli/
 
 # ===== 本地临时排查脚本（不入库）=====
 _tmp_*.sql
