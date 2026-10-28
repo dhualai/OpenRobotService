@@ -1,14 +1,14 @@
 // 二维码管理 —— 列表、筛选、批量创建、状态流转、图片预览
 // 入口：后台管理 → 其他（AdminEntries）→ 二维码管理
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Navbar, Popup, Toast } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
 import {
-  fetchQrcodes, fetchQrcodeStats, createQrcode, batchCreateQrcodes,
+  fetchQrcodes, fetchAllQrcodes, fetchQrcodeStats, createQrcode, batchCreateQrcodes,
   generateQrcodeTicket, batchGenerateTickets, updateQrcode,
   qrcodeTransition, deleteQrcode, QRCODE_STATUS_LABELS,
-  type QrcodeItem, type QrcodeStats, type QrcodeType, type QrcodeStatus,
+  type QrcodeItem, type QrcodeStats, type QrcodeType, type QrcodeStatus, type QrcodeDateFilters,
 } from '@/api/qrcode';
 import { MacChevronRight, MacPlus, MacDownload, MacCheck, MacTrash2, MacRefreshCw, MacTags } from '@/shared/components/macaronIcons';
 import QrcodeDownloadPopup from './components/QrcodeDownloadPopup';
@@ -41,38 +41,55 @@ export default function QrcodeManage() {
   const [total, setTotal] = useState(0);
   const [stats, setStats] = useState<QrcodeStats | null>(null);
   const [skip, setSkip] = useState(0);
+  const [showAll, setShowAll] = useState(false);
+  const loadSequence = useRef(0);
 
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('');
   const [filterType, setFilterType] = useState<FilterType>('');
   const [keyword, setKeyword] = useState('');
+  const [showDateFilter, setShowDateFilter] = useState(false);
+  const [dateField, setDateField] = useState<NonNullable<QrcodeDateFilters['date_field']>>('created_at');
+  const [dateStart, setDateStart] = useState('');
+  const [dateEnd, setDateEnd] = useState('');
+  const [dateFilters, setDateFilters] = useState<QrcodeDateFilters>({});
+  const filters = useMemo(() => ({
+    status: filterStatus || undefined,
+    qrcode_type: filterType || undefined,
+    keyword: keyword.trim() || undefined,
+    ...dateFilters,
+  }), [filterStatus, filterType, keyword, dateFilters]);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [popup, setPopup] = useState<null | 'batch-create' | 'batch-generate' | 'batch-download' | { qr: QrcodeItem }>(null);
 
   // ── 加载 ──
   const loadList = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     setLoading(true);
     try {
       const [listRes, statsRes] = await Promise.all([
-        fetchQrcodes({
-          status: filterStatus || undefined,
-          qrcode_type: filterType || undefined,
-          keyword: keyword.trim() || undefined,
-          skip, limit: PAGE_SIZE,
-        }),
+        showAll ? fetchAllQrcodes(filters, () => sequence === loadSequence.current)
+          : fetchQrcodes({ ...filters, skip, limit: PAGE_SIZE }),
         fetchQrcodeStats(),
       ]);
+      if (sequence !== loadSequence.current) return;
       setItems(listRes.items);
       setTotal(listRes.total);
       setStats(statsRes);
     } catch (e: any) {
+      if (sequence !== loadSequence.current) return;
+      setItems([]);
+      setTotal(0);
       Toast({ message: e?.message || '加载失败' });
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [filterStatus, filterType, keyword, skip]);
+  }, [filters, skip, showAll]);
 
-  useEffect(() => { loadList(); }, [loadList]);
+  useEffect(() => {
+    loadList();
+    return () => { loadSequence.current += 1; };
+  }, [loadList]);
 
   const showToast = (msg: string) => {
     Toast({ message: msg });
@@ -117,6 +134,37 @@ export default function QrcodeManage() {
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
+  };
+
+  const allVisibleSelected = items.length > 0 && items.every((item) => selected.has(item.id));
+  const toggleSelectAll = () => {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      items.forEach((item) => {
+        if (allVisibleSelected) next.delete(item.id);
+        else next.add(item.id);
+      });
+      return next;
+    });
+  };
+
+  const applyDateFilter = () => {
+    if (dateStart && dateEnd && dateStart > dateEnd) {
+      showToast('开始日期不能晚于结束日期');
+      return;
+    }
+    setDateFilters(dateStart || dateEnd ? {
+      date_field: dateField, date_start: dateStart || undefined, date_end: dateEnd || undefined,
+    } : {});
+    setSkip(0);
+  };
+
+  const clearDateFilter = () => {
+    setDateStart('');
+    setDateEnd('');
+    setDateField('created_at');
+    setDateFilters({});
+    setSkip(0);
   };
 
   const selectedInitIds = useMemo(
@@ -342,6 +390,42 @@ export default function QrcodeManage() {
         />
       </div>
 
+      <div className="qr-toolbar">
+        <button className="qr-btn qr-btn--ghost" aria-expanded={showDateFilter}
+          onClick={() => setShowDateFilter((visible) => !visible)}>
+          日期筛选{dateFilters.date_start || dateFilters.date_end ? '（已启用）' : ''}
+        </button>
+        <button className="qr-btn qr-btn--ghost" disabled={loading} onClick={() => { setShowAll((value) => !value); setSkip(0); }}>
+          {showAll ? '恢复分页（每页 20 条）' : `一页显示全部（${total} 条）`}
+        </button>
+      </div>
+      {showDateFilter && (
+        <div className="qr-date-filter">
+          <label className="qr-field" htmlFor="qr-date-field">日期类型（北京时间）</label>
+          <select id="qr-date-field" className="qr-input" value={dateField}
+            onChange={(event) => setDateField(event.target.value as typeof dateField)}>
+            <option value="created_at">创建日期</option>
+            <option value="ticket_created_at">ticket 生成日期</option>
+          </select>
+          <div className="qr-row">
+            <div className="qr-field-group">
+              <label className="qr-field" htmlFor="qr-date-start">开始日期（包含）</label>
+              <input id="qr-date-start" className="qr-input" type="date" value={dateStart}
+                onChange={(event) => setDateStart(event.target.value)} />
+            </div>
+            <div className="qr-field-group">
+              <label className="qr-field" htmlFor="qr-date-end">结束日期（包含）</label>
+              <input id="qr-date-end" className="qr-input" type="date" value={dateEnd}
+                onChange={(event) => setDateEnd(event.target.value)} />
+            </div>
+          </div>
+          <div className="qr-popup-actions">
+            <button className="qr-btn qr-btn--ghost" onClick={clearDateFilter}>清除日期</button>
+            <button className="qr-btn qr-btn--primary" onClick={applyDateFilter}>按日期筛选</button>
+          </div>
+        </div>
+      )}
+
       {/* 批量操作 */}
       <div className="qr-toolbar">
         <button className="qr-btn qr-btn--primary" onClick={() => setPopup('batch-create')}>
@@ -356,9 +440,17 @@ export default function QrcodeManage() {
         <button className="qr-btn qr-btn--ghost" onClick={loadList}>刷新</button>
       </div>
 
+      <div className="qr-selection-bar">
+        <button className="qr-btn qr-btn--ghost" disabled={loading || items.length === 0} onClick={toggleSelectAll}>
+          {allVisibleSelected ? (showAll ? '取消全选' : '取消本页全选') : (showAll ? '一键全选全部' : '一键全选本页')}
+        </button>
+        <span>显示 {items.length} / {total} 条 · 已选 {selected.size} 条</span>
+        {selected.size > 0 && <button className="qr-action-btn" onClick={() => setSelected(new Set())}>清空已选</button>}
+      </div>
+
       {/* 列表 */}
       {loading ? (
-        <Loading />
+        <Loading text={showAll ? '正在加载全部二维码…' : '加载中…'} />
       ) : items.length === 0 ? (
         <div className="qr-empty">暂无二维码记录</div>
       ) : (
@@ -369,7 +461,7 @@ export default function QrcodeManage() {
             return (
               <div key={q.id} className="qr-item">
                 <div className="qr-item-top">
-                  <input type="checkbox" checked={checked} onChange={() => handleToggleSelect(q.id)} />
+                  <input type="checkbox" aria-label={`选择二维码 ${q.id}`} checked={checked} onChange={() => handleToggleSelect(q.id)} />
                   <div className="qr-item-main" onClick={() => setPopup({ qr: q })}>
                     <div className="qr-item-scene">
                       <MacTags size={14} />
@@ -416,7 +508,7 @@ export default function QrcodeManage() {
       )}
 
       {/* 分页 */}
-      {total > PAGE_SIZE && (
+      {!showAll && total > PAGE_SIZE && (
         <div className="qr-pager">
           <button className="qr-btn qr-btn--ghost" disabled={skip === 0} onClick={() => setSkip((s) => Math.max(0, s - PAGE_SIZE))}>上一页</button>
           <span>{skip + 1}–{Math.min(skip + PAGE_SIZE, total)} / {total}</span>
@@ -431,7 +523,7 @@ export default function QrcodeManage() {
           selectedIds={[...selected]}
           pageIds={items.map((item) => item.id)}
           filteredTotal={total}
-          filters={{ status: filterStatus || undefined, qrcode_type: filterType || undefined, keyword: keyword.trim() || undefined }}
+          filters={filters}
           onClose={() => setPopup(null)}
         />
       )}
