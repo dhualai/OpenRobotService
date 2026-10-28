@@ -13,6 +13,7 @@ from app.schemas.token import Token, RefreshToken
 from app.schemas.user import User, UserLogin, UserCreate
 from app.schemas.response import SuccessResponse
 from app.services.working_time_service import WorkingTimeService
+from app.services.identity_service import build_upr_id
 
 router = APIRouter()
 
@@ -128,14 +129,18 @@ def register(user_data: UserCreate):
         )
     
     default_role_id = "role_e9351224"
-    user_project_role_id = f"upr_{user_id}_global_{default_role_id}"
+    user_project_role_id = build_upr_id(user_id, None, default_role_id)
     
-    db_manager.add_user_project_role(
-        user_project_role_id,
-        user_id,
-        None,
-        default_role_id
-    )
+    # 默认角色分配失败不应该阻塞注册流程 —— 用户创建成功是核心目标
+    try:
+        db_manager.add_user_project_role(
+            user_project_role_id,
+            user_id,
+            None,
+            default_role_id
+        )
+    except Exception as role_err:
+        logger.error(f"[auth_routes] ⚠️ 新用户默认角色分配失败（不阻塞注册）: user_id={user_id!r} err={role_err}", exc_info=True)
     
     user = get_user_with_roles(user_data.username)
     if not user:

@@ -806,18 +806,21 @@ export default function ProjectProgress() {
         )}
       </Popup>
 
-      {/* 二次确认对话框：确认删除项目 */}
+      {/* 二次确认对话框：确认删除项目（硬删，project_code 可立即复用） */}
       <Dialog
         visible={!!deleteConfirmProject}
-        title="确认删除项目"
-        confirmBtn={deleting ? '删除中...' : '删除'}
+        title="确认永久删除项目"
+        confirmBtn={deleting ? '删除中...' : '确认永久删除'}
         cancelBtn="取消"
         onConfirm={confirmDelete}
         onCancel={() => setDeleteConfirmProject(null)}
         onClose={() => setDeleteConfirmProject(null)}
       >
         <p style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--mac-fg)' }}>
-          确定要删除项目「<strong>{deleteConfirmProject?.name}</strong>」吗？此操作不可恢复。
+          项目「<strong>{deleteConfirmProject?.name}</strong>」将被永久删除，数据<strong style={{ color: '#e34d59' }}>不可恢复</strong>。
+        </p>
+        <p style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--mac-muted-fg)', marginTop: 6 }}>
+          项目代码 <code style={{ background: 'var(--mac-bg-subtle)', padding: '1px 5px', borderRadius: 3 }}>{deleteConfirmProject?.project_code}</code> 将会立即释放，可被新项目复用。
         </p>
       </Dialog>
     </div>

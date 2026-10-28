@@ -8,6 +8,7 @@ from app.services.user_service import user_service
 from app.core.database import db_manager
 from app.core.security import get_password_hash
 from app.services.hmac_utils import chinese_to_pinyin, generate_password
+from app.services.identity_service import build_upr_id
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +51,17 @@ class AuthService:
                     success = db_manager.update_user(user_detail["id"], password_hash=hashed_password, status="active")
                     if success:
                         logger.info(f"成功更新用户密码: {username}")
-                        user_project_role_id = f"upr_{openid}_global_{default_role_id}"
-                        db_manager.add_user_project_role(
-                            user_project_role_id,
-                            openid,
-                            None,
-                            default_role_id
-                        )
+                        user_project_role_id = build_upr_id(openid, None, default_role_id)
+                        # 默认角色分配失败不阻塞"更新密码"主流程
+                        try:
+                            db_manager.add_user_project_role(
+                                user_project_role_id,
+                                openid,
+                                None,
+                                default_role_id
+                            )
+                        except Exception as role_err:
+                            logger.error(f"[wechat_auth] ⚠️ 更新密码后分配默认角色失败: openid={openid!r} err={role_err}")
                         return True
                     else:
                         logger.error(f"更新用户密码失败")
@@ -73,13 +78,17 @@ class AuthService:
 
             if success:
                 logger.info(f"成功注册微信用户: {username}, openid: {openid}")
-                user_project_role_id = f"upr_{openid}_global_{default_role_id}"
-                db_manager.add_user_project_role(
-                    user_project_role_id,
-                    openid,
-                    None,
-                    default_role_id
-                )
+                user_project_role_id = build_upr_id(openid, None, default_role_id)
+                # 默认角色分配失败不阻塞注册 —— 用户已落库，角色缺失可后续人工修复
+                try:
+                    db_manager.add_user_project_role(
+                        user_project_role_id,
+                        openid,
+                        None,
+                        default_role_id
+                    )
+                except Exception as role_err:
+                    logger.error(f"[wechat_auth] ⚠️ 新用户默认角色分配失败（不阻塞注册）: openid={openid!r} err={role_err}")
                 return True
             else:
                 logger.error(f"注册用户失败")
