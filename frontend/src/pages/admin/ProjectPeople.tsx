@@ -40,7 +40,9 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
   // === 按组织模式 ===
   const [orgCompanies, setOrgCompanies] = useState<{ id: string; name: string; status?: string }[]>([]);
   const [orgCompaniesLoading, setOrgCompaniesLoading] = useState(false);
-  const [orgDepartments, setOrgDepartments] = useState<{ id: string; name: string; status?: string }[]>([]);
+  const [orgDepartments, setOrgDepartments] = useState<
+    { id: string; name: string; status?: string; _companyName: string }[]
+  >([]);
   const [orgDepartmentsLoading, setOrgDepartmentsLoading] = useState(false);
   const [orgSelectedCompany, setOrgSelectedCompany] = useState<string | null>(null);
   const [orgSelectedDept, setOrgSelectedDept] = useState<string | null>(null);
@@ -75,23 +77,22 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     setOrgCompaniesLoading(true);
     setOrgDepartmentsLoading(true);
     try {
+      type _Comp = { id: string; name: string; status?: string };
+      type _Dept = { id: string; name: string; status?: string };
       const data = await request<{
-        companies: { id: string; name: string; status?: string }[];
-        departments_by_company: Record<string, { id: string; name: string; status?: string }[]>;
+        companies: _Comp[];
+        departments_by_company: Record<string, _Dept[]>;
       }>('/options');
-      const comps = normalizeList(data.companies).filter((c) => c.status !== 'rejected');
+      const comps = (normalizeList(data.companies) as _Comp[]).filter((c) => c.status !== 'rejected');
       setOrgCompanies(comps);
       // 扁平化 departments_by_company
-      const allDepts: { id: string; name: string; status?: string; _companyName: string }[] = [];
+      const allDepts: (_Dept & { _companyName: string })[] = [];
       Object.entries(data.departments_by_company || {}).forEach(([compName, depts]) => {
-        for (const d of normalizeList(depts)) {
+        for (const d of normalizeList(depts) as _Dept[]) {
           allDepts.push({ ...d, _companyName: compName });
         }
       });
-      const approvedDepts = allDepts.filter((d) => d.status !== 'rejected');
-      // 记录完整列表（含 _companyName），供公司切换时筛选
-      (approvedDepts as { _companyName: string }[]).forEach((d) => d);
-      setOrgDepartments(approvedDepts);
+      setOrgDepartments(allDepts.filter((d) => d.status !== 'rejected'));
     } catch (err) {
       Toast({ message: `加载组织选项失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -102,8 +103,9 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
 
   // 部门下拉 —— 当前选中公司下的部门
   const visibleDepartments = orgSelectedCompany
-    ? (orgDepartments as { id: string; name: string; status?: string; _companyName?: string }[])
-        .filter((d) => d._companyName === orgCompanies.find((c) => c.id === orgSelectedCompany)?.name)
+    ? orgDepartments.filter(
+        (d) => d._companyName === orgCompanies.find((c) => c.id === orgSelectedCompany)?.name,
+      )
     : orgDepartments;
 
   const fetchDeptMembers = async (deptId: string) => {
