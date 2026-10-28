@@ -499,3 +499,172 @@ async def delete_link(db: AsyncSession, node_id: int, user_id: str,
     revision = await _bump(db, node.tree_id)
     await db.commit()
     return {"node_id": node_id, "user_id": user_id, "revision": revision}
+
+
+# ── 试做页 JSON 整份灌库（与 migrate_dual_tree_snapshot 同映射）────────
+
+def _trial_order(by_id: Dict[str, dict], items: List[dict]) -> List[dict]:
+    depth: Dict[str, int] = {}
+
+    def depth_of(node: dict, guard: set) -> int:
+        nid = str(node.get("id"))
+        if nid in depth:
+            return depth[nid]
+        if nid in guard:
+            return 0
+        parent = by_id.get(str(node.get("parentId") or ""))
+        value = 0 if parent is None else depth_of(parent, guard | {nid}) + 1
+        depth[nid] = value
+        return value
+
+    return sorted(items, key=lambda n: depth_of(n, set()))
+
+
+def _trial_domain_of(by_id: Dict[str, dict], node: dict) -> str:
+    cur, guard = node, set()
+    while cur is not None and str(cur.get("id")) not in guard:
+        if cur.get("kind") == "domain":
+            return str(cur["id"])
+        guard.add(str(cur.get("id")))
+        cur = by_id.get(str(cur.get("parentId") or ""))
+    return ""
+
+
+async def import_trial_snapshot(
+    db: AsyncSession,
+    snapshot: Dict[str, Any],
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """把试做页混合树 JSON 拆成 org/skill 两棵灌库。
+
+    force=False 且库中已有节点 → ValueError（避免静默覆盖人工编辑）。
+    force=True → 先清空两棵树节点与挂载再灌。
+    """
+    nodes: List[dict] = list(snapshot.get("nodes") or [])
+    mounts: List[dict] = list(snapshot.get("mounts") or [])
+    if not nodes:
+        raise ValueError("快照没有 nodes")
+
+    by_id = {str(n["id"]): n for n in nodes if n.get("id") is not None}
+    domains = [n for n in nodes if n.get("kind") == "domain"]
+    skills = _trial_order(by_id, [n for n in nodes if n.get("kind") == "skill"])
+    orgs = _trial_order(by_id, [n for n in nodes if n.get("kind") == "org"])
+
+    trees = await ensure_trees(db)
+    tree_id = {t.kind: t.id for t in trees}
+    skill_tree, org_tree = tree_id["skill"], tree_id["org"]
+
+    existing = (await db.execute(
+        select(RespNode).where(
+            RespNode.tree_id.in_([skill_tree, org_tree]),
+            RespNode.is_deleted.is_(False),
+        )
+    )).scalars().all()
+    if existing and not force:
+        raise ValueError(
+            f"两棵树里已有 {len(existing)} 个节点；覆盖请传 force=true"
+        )
+
+    if existing:
+        ids = [n.id for n in existing]
+        await db.execute(delete(RespNodeLink).where(RespNodeLink.node_id.in_(ids)))
+        # 硬清：导入要重建整树，软删残留会挡自然键语义
+        await db.execute(delete(RespNode).where(RespNode.id.in_(ids)))
+        await db.flush()
+
+    skill_map: Dict[str, int] = {}
+    org_map: Dict[str, int] = {}
+
+    for item in domains:
+        node = RespNode(
+            tree_id=skill_tree, parent_id=None, name=str(item.get("name") or "未命名"),
+            description=str(item.get("description") or ""),
+            node_kind="umbrella", sort_order=1,
+            legacy_ref={"old_id": str(item["id"])},
+        )
+        db.add(node)
+        await db.flush()
+        skill_map[str(item["id"])] = node.id
+
+    for item in skills:
+        parent_old = str(item.get("parentId") or "")
+        node = RespNode(
+            tree_id=skill_tree, parent_id=skill_map.get(parent_old),
+            name=str(item.get("name") or "未命名"),
+            description=str(item.get("description") or ""),
+            node_kind="leaf",
+            legacy_ref={"old_id": str(item["id"])},
+        )
+        db.add(node)
+        await db.flush()
+        skill_map[str(item["id"])] = node.id
+
+    for item in domains:
+        node = RespNode(
+            tree_id=org_tree, parent_id=None, name=str(item.get("name") or "未命名"),
+            description=str(item.get("description") or ""),
+            node_kind="umbrella", sort_order=1,
+            linked_node_id=skill_map.get(str(item["id"])),
+            legacy_ref={"old_id": str(item["id"])},
+        )
+        db.add(node)
+        await db.flush()
+        org_map[str(item["id"])] = node.id
+
+    for item in orgs:
+        parent_old = str(item.get("parentId") or "")
+        parent = org_map.get(parent_old)
+        if parent is None:
+            parent = org_map.get(_trial_domain_of(by_id, item))
+        node = RespNode(
+            tree_id=org_tree, parent_id=parent,
+            name=str(item.get("name") or "未命名"),
+            description=str(item.get("description") or ""),
+            vehicle_models=str(item.get("vehicleModels") or ""),
+            node_kind="org",
+            org_kind=_norm(item.get("orgKind"), ORG_KINDS, "") or None,
+            legacy_ref={"old_id": str(item["id"])},
+        )
+        db.add(node)
+        await db.flush()
+        org_map[str(item["id"])] = node.id
+
+    role_rank = {"leader": 4, "owner": 3, "specialist": 2, "member": 1}
+    picked: Dict[tuple, str] = {}
+    skipped = 0
+    for item in mounts:
+        node_id = org_map.get(str(item.get("nodeId"))) or skill_map.get(str(item.get("nodeId")))
+        user_id = str(item.get("userId") or "").strip()
+        if not node_id or not user_id:
+            skipped += 1
+            continue
+        role = str(item.get("role") or "member")
+        if role not in role_rank:
+            role = "member"
+        key = (user_id, node_id)
+        prev = picked.get(key)
+        if prev is None or role_rank[role] > role_rank[prev]:
+            picked[key] = role
+        else:
+            skipped += 1
+    for (user_id, node_id), role in picked.items():
+        db.add(RespNodeLink(
+            user_id=user_id, node_id=node_id, link_type="solid",
+            role=role, source="migrated_from_engineers",
+        ))
+
+    skill_rev = await _bump(db, skill_tree)
+    org_rev = await _bump(db, org_tree)
+    await db.commit()
+    return {
+        "skill_tree_id": skill_tree,
+        "org_tree_id": org_tree,
+        "skill_revision": skill_rev,
+        "org_revision": org_rev,
+        "domains": len(domains),
+        "skills": len(skills),
+        "orgs": len(orgs),
+        "mounts": len(picked),
+        "skipped_mounts": skipped,
+    }

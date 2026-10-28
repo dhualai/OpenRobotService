@@ -1,6 +1,4 @@
-// 双树试做：问题领域为根，下面分组织树和技能树。
-// 人员只保存在本机浏览器。系统里的部门归属只作为加人时的可选项，点选后才激活。
-// 不写入 module_tree_nodes，不改派单。
+// 责任双树试做页：节点级 CRUD 直连 DB（resp_trees/nodes/links）+ revision 乐观锁。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast } from 'tdesign-mobile-react';
@@ -8,55 +6,40 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { getProfileOptions } from '@/api/profile';
 import type { ProfileFieldOptions } from '@/api/profile';
-import { DISPATCH_OBSOLETE_SHELL_NAMES, DISPATCH_SKILL_SEEDS, INTERFACE_DETAIL_NAMES, applyLeafSpecialists, dropInterfaceDetails, dropRolledSpecialists, ensureSkillSeeds, skillForFunction } from './dualTreeDispatchSkills';
-import type { LeafOwner } from './dualTreeDispatchSkills';
-import { DOMAIN_OBSOLETE_SKILL_NAMES, DOMAIN_SKILL_SEED_MAP } from './dualTreeDomainSkills';
-import { applyOrgSeed, needsOrgSeed } from './dualTreeOrgSeed';
 import {
-  buildSnapshot,
-  parseSnapshot,
-  snapshotBrief,
-  snapshotFileName,
-} from './dualTreeTrialSnapshot';
+  RespTreeConflictError,
+  createRespNode,
+  deleteRespLink,
+  deleteRespNode,
+  getRespTreeNodes,
+  importTrialSnapshot,
+  patchRespNode,
+  putRespLink,
+  seedRespTrees,
+} from '@/api/respTree';
+import { buildSnapshot, parseSnapshot, snapshotBrief, snapshotFileName } from './dualTreeTrialSnapshot';
 import type { TrialSnapshot } from './dualTreeTrialSnapshot';
+import { buildBootstrapSnapshot } from './dualTreeBootstrap';
+import {
+  payloadsToTrial,
+  resolveOrgParentId,
+  type TrialMount,
+  type TrialMountRole,
+  type TrialNode,
+  type TrialOrgKind,
+} from './dualTreeDbAdapter';
 
-// 固定用 v2：升 key 会读不到本机已有组织树/挂人。旧 key 只作候选合并回读。
-const STORAGE_KEY = 'dual-tree-trial-v2';
-const STORAGE_CANDIDATES = [
-  'dual-tree-trial-v2',
-  'dual-tree-trial-v3',
-  'dual-tree-trial-v1',
-  'dual-tree-trial',
-] as const;
+type MountRole = TrialMountRole;
+type OrgKind = TrialOrgKind;
+type NodeKind = TrialNode['kind'];
+type Mount = TrialMount;
 
-/** 历史域名 → 现行域名：组织树/挂人跟旧域名走时，并回现行域 */
-const DOMAIN_ALIASES: Record<string, string> = {
-  车端硬件: '车体硬件',
+const ROLE_LABEL: Record<MountRole, string> = {
+  member: '成员',
+  owner: '负责人',
+  specialist: '专人',
+  leader: '领导',
 };
-
-// 本机快照：另存一份到仓库 .local/责任双树/（已 gitignore），localStorage 丢了还能捞回来
-const SNAPSHOT_API = '/dual-tree-trial/snapshot';
-const SNAPSHOT_DEBOUNCE_MS = 2000;
-
-type NodeKind = 'domain' | 'org' | 'skill';
-type OrgKind = 'company' | 'department';
-type MountRole = 'member' | 'owner' | 'specialist' | 'leader';
-
-interface TrialNode {
-  id: string;
-  parentId: string | null;
-  kind: NodeKind;
-  orgKind?: OrgKind;
-  name: string;
-  description: string;
-  vehicleModels: string;
-}
-
-interface Mount {
-  nodeId: string;
-  userId: string;
-  role: MountRole;
-}
 
 interface Person {
   id: string;
@@ -66,293 +49,20 @@ interface Person {
   status?: string;
 }
 
-interface Saved {
-  nodes: TrialNode[];
-  mounts: Mount[];
+function firstLevelOpen(nodes: TrialNode[]) {
+  const open: Record<number, boolean> = {};
+  nodes.forEach((n) => { open[n.id] = true; });
+  return open;
 }
 
-const ROLE_LABEL: Record<MountRole, string> = {
-  member: '成员',
-  owner: '负责人',
-  specialist: '专人',
-  leader: '领导',
-};
-
-function uid(prefix: string) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function parseSaved(raw: string | null): Saved | null {
-  if (!raw) return null;
-  try {
-    const data = JSON.parse(raw) as Saved;
-    if (!Array.isArray(data.nodes) || !Array.isArray(data.mounts)) return null;
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-/** 后台接口外层是 {code, message, data}，取里面那层 */
-function unwrap<T>(raw: unknown): T {
-  if (raw && typeof raw === 'object' && 'data' in raw) {
-    return (raw as { data: T }).data;
-  }
-  return raw as T;
-}
-
-interface SnapshotInfo {
-  exists: boolean;
-  path: string;
-  saved_at: string | null;
-  nodes: number;
-  mounts: number;
-  snapshot?: unknown;
-}
-
-/** 页面上只显示仓库内的相对路径，绝对路径太长 */
-function shortSnapshotPath(path: string): string {
-  const idx = path.search(/[\\/]\.local[\\/]/);
-  return idx >= 0 ? path.slice(idx + 1).replace(/\\/g, '/') : path;
-}
-
-/** 优先用带组织节点/挂人的那份，避免升 key 后空种子盖掉旧数据 */
-function savedRichness(saved: Saved): number {
-  const orgs = saved.nodes.filter((n) => n.kind === 'org').length;
-  return orgs * 1000 + saved.mounts.length + saved.nodes.length;
-}
-
-/** 把各候选里的组织树并进来：同域名下缺的 org 从其它副本补回，避免某一版技能种子盖掉组织 */
-function mergeOrgTrees(base: Saved, extra: Saved): Saved {
-  const nodes = base.nodes.map((n) => ({ ...n }));
-  const mounts = [...base.mounts];
-  const domainIdByName = new Map(
-    nodes.filter((n) => n.kind === 'domain').map((n) => [n.name, n.id]),
-  );
-
-  const remap = new Map<string, string>();
-  extra.nodes.forEach((n) => {
-    if (n.kind !== 'domain') return;
-    const canonical = DOMAIN_ALIASES[n.name] || n.name;
-    const targetId = domainIdByName.get(canonical);
-    if (targetId) remap.set(n.id, targetId);
-  });
-
-  const existingOrgKey = new Set(
-    nodes
-      .filter((n) => n.kind === 'org')
-      .map((n) => `${n.parentId}::${n.orgKind || ''}::${n.name}`),
-  );
-
-  const addOrgDeep = (extraParentId: string, newParentId: string) => {
-    extra.nodes
-      .filter((n) => n.kind === 'org' && n.parentId === extraParentId)
-      .forEach((org) => {
-        const key = `${newParentId}::${org.orgKind || ''}::${org.name}`;
-        let id = org.id;
-        if (existingOrgKey.has(key)) {
-          const hit = nodes.find(
-            (n) => n.kind === 'org' && n.parentId === newParentId && n.name === org.name && (n.orgKind || '') === (org.orgKind || ''),
-          );
-          if (hit) {
-            remap.set(org.id, hit.id);
-            id = hit.id;
-          }
-        } else {
-          if (nodes.some((n) => n.id === org.id)) {
-            id = uid('org');
-          }
-          nodes.push({
-            ...org,
-            id,
-            parentId: newParentId,
-          });
-          existingOrgKey.add(key);
-          remap.set(org.id, id);
-        }
-        addOrgDeep(org.id, id);
-      });
-  };
-
-  extra.nodes.forEach((n) => {
-    if (n.kind !== 'domain') return;
-    const canonical = DOMAIN_ALIASES[n.name] || n.name;
-    const targetId = domainIdByName.get(canonical);
-    if (!targetId) return;
-    addOrgDeep(n.id, targetId);
-  });
-
-  // 补挂人：nodeId 经 remap 后并入
-  extra.mounts.forEach((m) => {
-    const nodeId = remap.get(m.nodeId) || m.nodeId;
-    if (!nodes.some((n) => n.id === nodeId)) return;
-    if (mounts.some((x) => x.nodeId === nodeId && x.userId === m.userId && x.role === m.role)) return;
-    mounts.push({ ...m, nodeId });
-  });
-
-  // 丢掉已并入的别名空域（无子组织且无其它子节点时）
-  const dropAlias = new Set(
-    nodes
-      .filter((n) => n.kind === 'domain' && DOMAIN_ALIASES[n.name])
-      .filter((n) => !nodes.some((c) => c.parentId === n.id))
-      .map((n) => n.id),
-  );
-  return {
-    nodes: nodes.filter((n) => !dropAlias.has(n.id)),
-    mounts: mounts.filter((m) => !dropAlias.has(m.nodeId)),
-  };
-}
-
-function loadSaved(extraCopies: Saved[] = []): Saved | null {
-  const copies: Saved[] = [...extraCopies];
-  for (const key of STORAGE_CANDIDATES) {
-    const data = parseSaved(localStorage.getItem(key));
-    if (data) copies.push(data);
-  }
-  if (copies.length === 0) return null;
-  copies.sort((a, b) => savedRichness(b) - savedRichness(a));
-  let merged = {
-    nodes: copies[0].nodes.map((n) => ({ ...n })),
-    mounts: [...copies[0].mounts],
-  };
-  for (let i = 1; i < copies.length; i += 1) {
-    merged = mergeOrgTrees(merged, copies[i]);
-  }
-  // 同副本内：别名域组织并到现行域名
-  merged = mergeOrgTrees(merged, merged);
-  return merged;
-}
-
-const STARTER_DOMAINS: { name: string; description: string }[] = [
-  { name: '调度系统', description: '调度、任务、地图、交通与车端适配。六域里的 DISP。' },
-  { name: '车体硬件', description: '机械、驱动、电气与安全件。六域里的 HW。' },
-  { name: '车端软件', description: '定位、感知、运动控制与车载协议栈。六域里的 SW。' },
-  { name: '网络通信', description: '现场无线、有线与链路质量。六域里的 NET。' },
-  { name: '上游对接', description: 'WMS/MES、PLC/产线信号、许可与部署。六域里的 IF。' },
-  { name: '现场环境', description: '地面、光照、障碍、温湿度粉尘。六域里的 ENV。' },
-  { name: '摇人吧', description: '服务号、工单与平台自身问题。' },
-  { name: '实施工具', description: '现场实施、部署和调试用的工具与流程。' },
-  { name: '售前', description: '方案、选型、报价，以及交付前的咨询。' },
-];
-
-function domainNode(name: string, description: string): TrialNode {
-  return {
-    id: uid('dom'),
-    parentId: null,
-    kind: 'domain',
-    name,
-    description,
-    vehicleModels: '',
-  };
-}
-
-function withStarterDomains(saved: Saved | null): Saved {
-  const nodes = saved?.nodes ? [...saved.nodes] : [];
-  const mounts = saved?.mounts ? [...saved.mounts] : [];
-  const starters = STARTER_DOMAINS.map((item) => {
-    const found = nodes.find((n) => n.kind === 'domain' && n.name === item.name);
-    return found || domainNode(item.name, item.description);
-  });
-  const starterNames = new Set(STARTER_DOMAINS.map((item) => item.name));
-  const extras = nodes.filter((n) => n.kind === 'domain' && !starterNames.has(n.name));
-  const rest = nodes.filter((n) => n.kind !== 'domain');
-  const makeSkill = (parentId: string, name: string, description: string): TrialNode => ({
-    id: uid('sk'),
-    parentId,
-    kind: 'skill' as const,
-    name,
-    description,
-    vehicleModels: '',
-  });
-  let seeded = ensureSkillSeeds(
-    [...starters, ...extras, ...rest],
-    '调度系统',
-    DISPATCH_SKILL_SEEDS,
-    makeSkill,
-  );
-  seeded = dropInterfaceDetails(seeded, '调度系统', DISPATCH_OBSOLETE_SHELL_NAMES);
-  Object.entries(DOMAIN_SKILL_SEED_MAP).forEach(([domainName, seeds]) => {
-    seeded = ensureSkillSeeds(seeded, domainName, seeds, makeSkill);
-    const obsolete = DOMAIN_OBSOLETE_SKILL_NAMES[domainName];
-    if (obsolete?.length) seeded = dropInterfaceDetails(seeded, domainName, obsolete);
-  });
-  seeded = dropInterfaceDetails(seeded, '调度系统', INTERFACE_DETAIL_NAMES);
-  const alive = new Set(seeded.map((node) => node.id));
-  let keptMounts = mounts.filter((mount) => alive.has(mount.nodeId));
-  // 本机那份组织树没了（清缓存 / 换浏览器 / 被别的 key 盖掉）时，用内置种子兜底
-  if (needsOrgSeed(seeded)) {
-    const applied = applyOrgSeed(
-      seeded,
-      keptMounts,
-      (draft) => ({
-        id: uid('org'),
-        parentId: draft.parentId,
-        kind: 'org' as const,
-        orgKind: draft.orgKind,
-        name: draft.name,
-        description: draft.description || '',
-        vehicleModels: draft.vehicleModels || '',
-      }),
-      (nodeId, userId, role) => ({ nodeId, userId, role }),
-    );
-    seeded = applied.nodes;
-    keptMounts = applied.mounts;
-  }
-  return { nodes: seeded, mounts: keptMounts };
-}
-
-function companiesFromPeople(domainId: string, people: Person[], existing: TrialNode[]): TrialNode[] {
-  const nodes = [...existing];
-  const companies = new Map<string, string>();
-  nodes.forEach((n) => {
-    if (n.parentId === domainId && n.orgKind === 'company') companies.set(n.name, n.id);
-  });
-  people.forEach((p) => {
-    const company = (p.company || '').trim();
-    if (!company) return;
-    if (!companies.has(company)) {
-      const id = uid('org');
-      companies.set(company, id);
-      nodes.push({
-        id,
-        parentId: domainId,
-        kind: 'org',
-        orgKind: 'company',
-        name: company,
-        description: '',
-        vehicleModels: '',
-      });
-    }
-    const dept = (p.department || '').trim();
-    if (!dept) return;
-    const companyId = companies.get(company)!;
-    const exists = nodes.some(
-      (n) => n.parentId === companyId && n.orgKind === 'department' && n.name === dept,
-    );
-    if (exists) return;
-    nodes.push({
-      id: uid('org'),
-      parentId: companyId,
-      kind: 'org',
-      orgKind: 'department',
-      name: dept,
-      description: '',
-      vehicleModels: '',
-    });
-  });
-  return nodes;
-}
-
-function nodePeople(mounts: Mount[], nodeId: string, role: MountRole, personName: (id: string) => string) {
+function nodePeople(mounts: Mount[], nodeId: number, role: MountRole, personName: (id: string) => string) {
   return mounts
     .filter((m) => m.nodeId === nodeId && m.role === role)
     .map((m) => ({ id: m.userId, name: personName(m.userId) }));
 }
 
 function NodeFacts({
-  node,
-  mounts,
-  personName,
+  node, mounts, personName,
 }: {
   node: TrialNode;
   mounts: Mount[];
@@ -408,136 +118,132 @@ function NodeFacts({
   );
 }
 
-function firstLevelOpen(nodes: TrialNode[]) {
-  const open: Record<string, boolean> = {};
-  nodes.forEach((n) => {
-    open[n.id] = true;
-  });
-  return open;
-}
-
 export default function DualTreeTrial() {
   const navigate = useNavigate();
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [statusLine, setStatusLine] = useState('落库编辑 · revision 乐观锁');
   const [people, setPeople] = useState<Person[]>([]);
   const [nodes, setNodes] = useState<TrialNode[]>([]);
   const [mounts, setMounts] = useState<Mount[]>([]);
-  const [selectedId, setSelectedId] = useState<string>('');
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [catalog, setCatalog] = useState<ProfileFieldOptions | null>(null);
-  const [orgPick, setOrgPick] = useState<null | { domainId: string; parentId: string }>(null);
+  const [orgPick, setOrgPick] = useState<null | { domainId: number; parentId: number }>(null);
   const [orgKeyword, setOrgKeyword] = useState('');
   const [pickerMode, setPickerMode] = useState<'off' | 'head' | 'people'>('off');
   const [keyword, setKeyword] = useState('');
   const [pickRole, setPickRole] = useState<MountRole>('member');
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  const [snapInfo, setSnapInfo] = useState<SnapshotInfo | null>(null);
-  const [snapBusy, setSnapBusy] = useState(false);
-  const [snapError, setSnapError] = useState('');
-  const dragOrgRef = useRef<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<number | null>(null);
+  const dragOrgRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const skillTreeIdRef = useRef(0);
+  const orgTreeIdRef = useRef(0);
+  const skillRevRef = useRef(0);
+  const orgRevRef = useRef(0);
+  const orgDomainMapRef = useRef<Record<number, number>>({});
+  const patchTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+
+  const applyView = useCallback((view: ReturnType<typeof payloadsToTrial>, keepSelected?: number | null) => {
+    skillTreeIdRef.current = view.skillTreeId;
+    orgTreeIdRef.current = view.orgTreeId;
+    skillRevRef.current = view.skillRevision;
+    orgRevRef.current = view.orgRevision;
+    orgDomainMapRef.current = view.orgDomainBySkillDomain;
+    setNodes(view.nodes);
+    setMounts(view.mounts);
+    setExpanded(firstLevelOpen(view.nodes));
+    setStatusLine(
+      `落库 · skill rev ${view.skillRevision} / org rev ${view.orgRevision}`
+      + ` · ${view.nodes.length} 节点 / ${view.mounts.length} 挂人`,
+    );
+    const prefer = keepSelected != null && view.nodes.some((n) => n.id === keepSelected)
+      ? keepSelected
+      : (view.nodes.find((n) => n.kind === 'domain')?.id ?? view.nodes[0]?.id ?? null);
+    setSelectedId(prefer);
+  }, []);
+
+  const reloadFromDb = useCallback(async (keepSelected?: number | null) => {
+    const seeded = await seedRespTrees();
+    const trees = seeded.trees || [];
+    const skillMeta = trees.find((t) => t.kind === 'skill');
+    const orgMeta = trees.find((t) => t.kind === 'org');
+    if (!skillMeta || !orgMeta) throw new Error('未初始化 org/skill 树');
+    let skill = await getRespTreeNodes(skillMeta.id);
+    let org = await getRespTreeNodes(orgMeta.id);
+    if (skill.nodes.length === 0 && org.nodes.length === 0) {
+      const boot = buildBootstrapSnapshot();
+      await importTrialSnapshot({ nodes: boot.nodes, mounts: boot.mounts, force: false });
+      skill = await getRespTreeNodes(skillMeta.id);
+      org = await getRespTreeNodes(orgMeta.id);
+    }
+    applyView(payloadsToTrial(skill, org), keepSelected);
+  }, [applyView]);
+
+  const onConflict = useCallback(async () => {
+    Toast({ message: '树已被他人修改，已重新加载', theme: 'warning' });
+    try {
+      await reloadFromDb(selectedId);
+    } catch {
+      Toast({ message: '重新加载失败', theme: 'error' });
+    }
+  }, [reloadFromDb, selectedId]);
+
+  const runWrite = useCallback(async (fn: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await fn();
+    } catch (e) {
+      if (e instanceof RespTreeConflictError) {
+        await onConflict();
+      } else {
+        Toast({ message: e instanceof Error ? e.message : '保存失败', theme: 'error' });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [onConflict]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      let list: Person[] = [];
       try {
         const raw = await request<Person[]>('/users/?skip=0&limit=1000');
-        list = (raw || [])
-          .filter((u) => u.id && (u.status === 'active' || !u.status))
-          .map((u) => ({
-            id: u.id,
-            name: u.name || u.id,
-            company: (u.company || '').trim(),
-            department: (u.department || '').trim(),
-            status: u.status,
-          }));
+        if (!cancelled) {
+          setPeople((raw || [])
+            .filter((u) => u.id && (u.status === 'active' || !u.status))
+            .map((u) => ({
+              id: u.id,
+              name: u.name || u.id,
+              company: (u.company || '').trim(),
+              department: (u.department || '').trim(),
+              status: u.status,
+            })));
+        }
       } catch {
-        Toast({ message: '人员名单没有加载到，可以先编辑树结构', theme: 'warning' });
+        if (!cancelled) Toast({ message: '人员名单没有加载到，可以先编辑树结构', theme: 'warning' });
       }
-      if (cancelled) return;
-      setPeople(list);
       try {
         const options = await getProfileOptions();
         if (!cancelled) setCatalog(options);
       } catch {
         if (!cancelled) Toast({ message: '公司部门名单没有加载到，仍可手写名称', theme: 'warning' });
       }
-      let savedFromServer: Saved | null = null;
       try {
-        const info = unwrap<SnapshotInfo>(await request(SNAPSHOT_API, { skipCache: true }));
-        if (info?.exists) {
-          setSnapInfo(info);
-          const parsed = parseSnapshot<TrialNode, Mount>(info.snapshot);
-          if (parsed) savedFromServer = { nodes: parsed.nodes, mounts: parsed.mounts };
+        await reloadFromDb();
+      } catch (e) {
+        if (!cancelled) {
+          Toast({ message: e instanceof Error ? e.message : '加载双树失败', theme: 'error' });
         }
-      } catch {
-        // 拿不到本机快照不影响用浏览器里的树
       }
-      if (cancelled) return;
-      const data = withStarterDomains(loadSaved(savedFromServer ? [savedFromServer] : []));
-      let owners: LeafOwner[] = [];
-      try {
-        const tree = await request<Record<string, { interfaces?: { functions?: { name?: string; engineers?: string[] }[] }[] }>>('/module-tree/');
-        const product = tree?.['调度USP'];
-        owners = (product?.interfaces || []).flatMap((iface) => (
-          (iface.functions || []).flatMap((fn) => (
-            (fn.engineers || []).filter(Boolean).map((userId) => ({
-              name: skillForFunction(fn.name || ''),
-              userId,
-            }))
-          ))
-        )).filter((owner) => owner.name);
-      } catch {
-        if (!cancelled) Toast({ message: '责任模块上的负责人没有带上，技能树结构仍在', theme: 'warning' });
-      }
-      if (cancelled) return;
-      const withOwners = applyLeafSpecialists(
-        data.nodes,
-        dropRolledSpecialists(data.nodes, data.mounts, owners.map((owner) => owner.userId), '调度系统'),
-        owners,
-        '调度系统',
-        (nodeId, userId) => ({ nodeId, userId, role: 'specialist' as const }),
-      );
-      setNodes(data.nodes);
-      setMounts(withOwners);
-      const root = data.nodes.find((n) => n.kind === 'domain');
-      setSelectedId(root?.id || data.nodes[0]?.id || '');
-      setExpanded(firstLevelOpen(data.nodes));
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [request]);
-
-  useEffect(() => {
-    if (loading) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ nodes, mounts }));
-  }, [nodes, mounts, loading]);
-
-  const pushSnapshot = useCallback(async (nextNodes: TrialNode[], nextMounts: Mount[]) => {
-    try {
-      const info = unwrap<SnapshotInfo>(await request(SNAPSHOT_API, {
-        method: 'PUT',
-        body: JSON.stringify({ snapshot: buildSnapshot(nextNodes, nextMounts) }),
-      }));
-      if (info) setSnapInfo(info);
-      setSnapError('');
-    } catch {
-      setSnapError('本机快照没写进去，可以点「导出 JSON」自己留一份');
-    }
-  }, [request]);
-
-  // 改动停手两秒后写一份服务端快照（首屏这轮写的是「本地 + 快照」合并后的完整树，不会盖掉旧数据）
-  useEffect(() => {
-    if (loading) return;
-    const timer = setTimeout(() => {
-      void pushSnapshot(nodes, mounts);
-    }, SNAPSHOT_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [nodes, mounts, loading, pushSnapshot]);
+    return () => { cancelled = true; };
+  }, [request, reloadFromDb]);
 
   const selected = nodes.find((n) => n.id === selectedId) || null;
   const personById = useMemo(() => {
@@ -546,9 +252,9 @@ export default function DualTreeTrial() {
     return map;
   }, [people]);
 
-  const domainIdOf = (nodeId: string) => {
+  const domainIdOf = (nodeId: number) => {
     let cur = nodes.find((n) => n.id === nodeId);
-    const guard = new Set<string>();
+    const guard = new Set<number>();
     while (cur && !guard.has(cur.id)) {
       if (cur.kind === 'domain') return cur.id;
       guard.add(cur.id);
@@ -557,134 +263,151 @@ export default function DualTreeTrial() {
     return nodeId;
   };
 
-  const applySaved = (saved: Saved) => {
-    const next = withStarterDomains(saved);
-    setNodes(next.nodes);
-    setMounts(next.mounts);
-    setSelectedId((prev) => (
-      next.nodes.some((n) => n.id === prev)
-        ? prev
-        : (next.nodes.find((n) => n.kind === 'domain')?.id || next.nodes[0]?.id || '')
-    ));
-    setExpanded(firstLevelOpen(next.nodes));
+  const bumpRev = (tree: 'skill' | 'org', revision: number) => {
+    if (tree === 'skill') skillRevRef.current = revision;
+    else orgRevRef.current = revision;
+    setStatusLine(
+      `落库 · skill rev ${skillRevRef.current} / org rev ${orgRevRef.current}`
+      + ` · ${nodesRef.current.length} 节点`,
+    );
   };
 
-  /** 导出成 JSON 文件：与 .local 快照同一份格式，可以互相顶替 */
-  const exportSnapshot = () => {
-    const snap = buildSnapshot(nodes, mounts);
-    const url = URL.createObjectURL(new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = snapshotFileName(snap.saved_at);
-    link.click();
-    URL.revokeObjectURL(url);
+  const schedulePatch = (nodeId: number, patch: Partial<TrialNode>) => {
+    setNodes((prev) => prev.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)));
+    clearTimeout(patchTimers.current[nodeId]);
+    patchTimers.current[nodeId] = setTimeout(() => {
+      void runWrite(async () => {
+        const node = nodesRef.current.find((n) => n.id === nodeId);
+        if (!node) return;
+        const tree = node.tree;
+        const expected = tree === 'skill' ? skillRevRef.current : orgRevRef.current;
+        const body: Record<string, unknown> = { expected_revision: expected };
+        if (patch.name != null) body.name = patch.name;
+        if (patch.description != null) body.description = patch.description;
+        if (patch.vehicleModels != null) body.vehicle_models = patch.vehicleModels;
+        const res = await patchRespNode(nodeId, body);
+        bumpRev(tree, res.revision);
+        if (node.kind === 'domain' && patch.name != null) {
+          const orgId = orgDomainMapRef.current[nodeId];
+          if (orgId) {
+            const orgRes = await patchRespNode(orgId, {
+              name: patch.name,
+              expected_revision: orgRevRef.current,
+            });
+            bumpRev('org', orgRes.revision);
+          }
+        }
+      });
+    }, 500);
   };
 
-  const importSnapshot = async (file: File) => {
-    let parsed: TrialSnapshot<TrialNode, Mount> | null = null;
-    try {
-      parsed = parseSnapshot<TrialNode, Mount>(await file.text());
-    } catch {
-      parsed = null;
-    }
-    if (!parsed) {
-      Toast({ message: '这个文件不是双树试做导出的 JSON，现有树没有动', theme: 'warning' });
-      return;
-    }
-    applySaved({ nodes: parsed.nodes, mounts: parsed.mounts });
-    Toast({ message: `已导入 ${snapshotBrief(parsed)}`, theme: 'success' });
+  const updateNode = (id: number, patch: Partial<TrialNode>) => {
+    schedulePatch(id, patch);
   };
 
-  const restoreFromServer = async () => {
-    setSnapBusy(true);
-    try {
-      const info = unwrap<SnapshotInfo>(await request(SNAPSHOT_API, { skipCache: true }));
-      const parsed = info?.exists ? parseSnapshot<TrialNode, Mount>(info.snapshot) : null;
-      if (!parsed) {
-        Toast({ message: '服务端还没有本机快照', theme: 'warning' });
-        return;
-      }
-      applySaved({ nodes: parsed.nodes, mounts: parsed.mounts });
-      Toast({ message: `已从本机快照恢复 ${snapshotBrief(parsed)}`, theme: 'success' });
-    } catch {
-      Toast({ message: '读本机快照失败，浏览器里的树没有动', theme: 'warning' });
-    } finally {
-      setSnapBusy(false);
-    }
-  };
-
-  const updateNode = (id: string, patch: Partial<TrialNode>) => {
-    setNodes((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)));
-  };
-
-  const addNamedOrg = (parentId: string, name: string, orgKind?: OrgKind) => {
+  const addNamedOrg = (parentId: number, name: string, orgKind?: OrgKind) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    setNodes((prev) => {
-      if (prev.some((n) => n.parentId === parentId && n.kind === 'org' && n.name === trimmed)) {
-        return prev;
-      }
-      return [...prev, {
-        id: uid('org'),
-        parentId,
-        kind: 'org' as const,
-        orgKind,
+    if (nodes.some((n) => n.parentId === parentId && n.kind === 'org' && n.name === trimmed)) return;
+    void runWrite(async () => {
+      const dbParent = resolveOrgParentId(parentId, orgDomainMapRef.current, nodesRef.current);
+      if (dbParent == null) throw new Error('找不到组织父节点');
+      const res = await createRespNode({
+        tree_id: orgTreeIdRef.current,
+        parent_id: dbParent,
         name: trimmed,
-        description: '',
-        vehicleModels: '',
-      }];
+        node_kind: 'org',
+        org_kind: orgKind || null,
+        expected_revision: orgRevRef.current,
+      });
+      bumpRev('org', res.revision);
+      await reloadFromDb(res.node.id);
+      setExpanded((prev) => ({ ...prev, [parentId]: true }));
+      setSelectedId(res.node.id);
     });
-    setExpanded((prev) => ({ ...prev, [parentId]: true }));
   };
 
-  const openOrgPick = (parentId: string) => {
+  const openOrgPick = (parentId: number) => {
     setSelectedId(parentId);
     setOrgPick({ domainId: domainIdOf(parentId), parentId });
     setOrgKeyword('');
     setPickerMode('off');
   };
 
-  const chooseOrg = (parentId: string, name: string, orgKind?: OrgKind) => {
+  const chooseOrg = (parentId: number, name: string, orgKind?: OrgKind) => {
     addNamedOrg(parentId, name, orgKind);
     setOrgPick(null);
   };
 
-  const addNode = (parentId: string, kind: NodeKind, orgKind?: OrgKind) => {
-    const name = kind === 'org'
-      ? '新组织'
-      : (kind === 'domain' ? '新问题领域' : '新技能');
-    const node: TrialNode = {
-      id: uid(kind === 'domain' ? 'dom' : kind === 'org' ? 'org' : 'sk'),
-      parentId: kind === 'domain' ? null : parentId,
-      kind,
-      orgKind,
-      name,
-      description: '',
-      vehicleModels: '',
-    };
-    setNodes((prev) => [...prev, node]);
-    setExpanded((prev) => ({ ...prev, [parentId]: true }));
-    setSelectedId(node.id);
+  const addNode = (parentId: number | null, kind: NodeKind, orgKind?: OrgKind) => {
+    const name = kind === 'org' ? '新组织' : (kind === 'domain' ? '新问题领域' : '新技能');
+    void runWrite(async () => {
+      if (kind === 'domain') {
+        const sk = await createRespNode({
+          tree_id: skillTreeIdRef.current,
+          name,
+          node_kind: 'umbrella',
+          expected_revision: skillRevRef.current,
+        });
+        bumpRev('skill', sk.revision);
+        const og = await createRespNode({
+          tree_id: orgTreeIdRef.current,
+          name,
+          node_kind: 'umbrella',
+          linked_node_id: sk.node.id,
+          expected_revision: orgRevRef.current,
+        });
+        bumpRev('org', og.revision);
+        orgDomainMapRef.current = { ...orgDomainMapRef.current, [sk.node.id]: og.node.id };
+        await reloadFromDb(sk.node.id);
+        return;
+      }
+      if (kind === 'skill') {
+        if (parentId == null) throw new Error('技能需要父节点');
+        const res = await createRespNode({
+          tree_id: skillTreeIdRef.current,
+          parent_id: parentId,
+          name,
+          node_kind: 'leaf',
+          expected_revision: skillRevRef.current,
+        });
+        bumpRev('skill', res.revision);
+        await reloadFromDb(res.node.id);
+        setExpanded((prev) => ({ ...prev, [parentId]: true }));
+        return;
+      }
+      if (parentId == null) throw new Error('组织需要父节点');
+      const dbParent = resolveOrgParentId(parentId, orgDomainMapRef.current, nodesRef.current);
+      if (dbParent == null) throw new Error('找不到组织父节点');
+      const res = await createRespNode({
+        tree_id: orgTreeIdRef.current,
+        parent_id: dbParent,
+        name,
+        node_kind: 'org',
+        org_kind: orgKind || null,
+        expected_revision: orgRevRef.current,
+      });
+      bumpRev('org', res.revision);
+      await reloadFromDb(res.node.id);
+      setExpanded((prev) => ({ ...prev, [parentId]: true }));
+    });
   };
 
-  const removeNode = (id: string) => {
-    const drop = new Set<string>();
-    const walk = (cur: string) => {
-      drop.add(cur);
-      nodes.filter((n) => n.parentId === cur).forEach((n) => walk(n.id));
-    };
-    walk(id);
-    setNodes((prev) => prev.filter((n) => !drop.has(n.id)));
-    setMounts((prev) => prev.filter((m) => !drop.has(m.nodeId)));
-    if (drop.has(selectedId)) {
-      const root = nodes.find((n) => n.kind === 'domain' && !drop.has(n.id));
-      setSelectedId(root?.id || '');
-    }
+  const removeNode = (id: number) => {
+    const node = nodes.find((n) => n.id === id);
+    if (!node || node.kind === 'domain') return;
+    void runWrite(async () => {
+      const tree = node.tree;
+      const expected = tree === 'skill' ? skillRevRef.current : orgRevRef.current;
+      const res = await deleteRespNode(id, expected);
+      bumpRev(tree, res.revision);
+      await reloadFromDb(null);
+    });
   };
 
-  const blockedDockIds = (orgId: string) => {
-    const blocked = new Set<string>([orgId]);
-    const walk = (cur: string) => {
+  const blockedDockIds = (orgId: number) => {
+    const blocked = new Set<number>([orgId]);
+    const walk = (cur: number) => {
       nodes.filter((n) => n.parentId === cur).forEach((n) => {
         blocked.add(n.id);
         walk(n.id);
@@ -694,7 +417,7 @@ export default function DualTreeTrial() {
     return blocked;
   };
 
-  const canDock = (orgId: string, parentId: string) => {
+  const canDock = (orgId: number, parentId: number) => {
     if (!orgId || orgId === parentId) return false;
     const org = nodes.find((n) => n.id === orgId);
     const parent = nodes.find((n) => n.id === parentId);
@@ -704,22 +427,31 @@ export default function DualTreeTrial() {
     return !blockedDockIds(orgId).has(parentId);
   };
 
-  const dockOrg = (orgId: string, parentId: string) => {
+  const dockOrg = (orgId: number, parentId: number) => {
+    if (!canDock(orgId, parentId)) return;
     const org = nodes.find((n) => n.id === orgId);
-    if (!org || !canDock(orgId, parentId)) return;
+    if (!org) return;
     const clash = nodes.some((n) => n.id !== orgId && n.parentId === parentId && n.kind === 'org' && n.name === org.name);
     if (clash) {
       Toast({ message: '这一层已经有同名组织', theme: 'warning' });
       setDropTargetId(null);
       return;
     }
-    setNodes((prev) => prev.map((n) => (n.id === orgId ? { ...n, parentId } : n)));
-    setExpanded((prev) => ({ ...prev, [parentId]: true }));
-    setDropTargetId(null);
+    void runWrite(async () => {
+      const dbParent = resolveOrgParentId(parentId, orgDomainMapRef.current, nodesRef.current);
+      if (dbParent == null) throw new Error('找不到目标父节点');
+      const res = await patchRespNode(orgId, {
+        parent_id: dbParent,
+        expected_revision: orgRevRef.current,
+      });
+      bumpRev('org', res.revision);
+      await reloadFromDb(orgId);
+      setExpanded((prev) => ({ ...prev, [parentId]: true }));
+      setDropTargetId(null);
+    });
   };
 
   const nodeMounts = selected ? mounts.filter((m) => m.nodeId === selected.id) : [];
-  // 组织/技能平台挂负责人(owner)；统筹可另挂领导(leader)；叶挂专人。
   const headRole: MountRole = 'owner';
   const headMounts = nodeMounts.filter((m) => m.role === headRole);
   const otherMounts = nodeMounts.filter((m) => m.role !== headRole);
@@ -740,20 +472,141 @@ export default function DualTreeTrial() {
 
   const toggleMount = (userId: string, role: MountRole) => {
     if (!selected) return;
-    setMounts((prev) => {
-      const hit = prev.find((m) => m.nodeId === selected.id && m.userId === userId && m.role === role);
-      if (hit) return prev.filter((m) => m !== hit);
-      return [...prev, { nodeId: selected.id, userId, role }];
+    const hit = mounts.find((m) => m.nodeId === selected.id && m.userId === userId && m.role === role);
+    const tree = selected.tree;
+    void runWrite(async () => {
+      const expected = tree === 'skill' ? skillRevRef.current : orgRevRef.current;
+      if (hit) {
+        // 同人同节点唯一：取消时删整行；若还有其它角色需再 put
+        const others = mounts.filter((m) => m.nodeId === selected.id && m.userId === userId && m.role !== role);
+        const res = await deleteRespLink(selected.id, userId, expected);
+        bumpRev(tree, res.revision);
+        let rev = res.revision;
+        for (const m of others) {
+          const put = await putRespLink({
+            node_id: selected.id,
+            user_id: userId,
+            role: m.role,
+            expected_revision: rev,
+          });
+          rev = put.revision;
+          bumpRev(tree, rev);
+        }
+      } else {
+        const res = await putRespLink({
+          node_id: selected.id,
+          user_id: userId,
+          role,
+          expected_revision: expected,
+        });
+        bumpRev(tree, res.revision);
+      }
+      await reloadFromDb(selected.id);
     });
   };
 
-  const importOrgFromSystem = (domainId: string) => {
-    setNodes((prev) => companiesFromPeople(domainId, people, prev));
-    setExpanded((prev) => ({ ...prev, [domainId]: true }));
-    Toast({ message: '已把系统里的公司部门加到这个领域的组织树。人员仍需点选激活。', theme: 'success' });
+  const importOrgFromSystem = (domainId: number) => {
+    void runWrite(async () => {
+      const companies = new Map<string, number>();
+      const deptKeys = new Set<string>();
+      nodesRef.current.forEach((n) => {
+        if (n.parentId === domainId && n.orgKind === 'company') companies.set(n.name, n.id);
+        if (n.orgKind === 'department' && n.parentId != null) {
+          deptKeys.add(`${n.parentId}::${n.name}`);
+        }
+      });
+      const dbDomain = resolveOrgParentId(domainId, orgDomainMapRef.current, nodesRef.current);
+      if (dbDomain == null) throw new Error('找不到领域对应的组织树域节点');
+      for (const p of people) {
+        const company = (p.company || '').trim();
+        if (!company) continue;
+        let companyId = companies.get(company);
+        if (!companyId) {
+          const res = await createRespNode({
+            tree_id: orgTreeIdRef.current,
+            parent_id: dbDomain,
+            name: company,
+            node_kind: 'org',
+            org_kind: 'company',
+            expected_revision: orgRevRef.current,
+          });
+          bumpRev('org', res.revision);
+          companyId = res.node.id;
+          companies.set(company, companyId);
+        }
+        const dept = (p.department || '').trim();
+        if (!dept) continue;
+        const dkey = `${companyId}::${dept}`;
+        if (deptKeys.has(dkey)) continue;
+        const res = await createRespNode({
+          tree_id: orgTreeIdRef.current,
+          parent_id: companyId,
+          name: dept,
+          node_kind: 'org',
+          org_kind: 'department',
+          expected_revision: orgRevRef.current,
+        });
+        bumpRev('org', res.revision);
+        deptKeys.add(dkey);
+      }
+      await reloadFromDb(domainId);
+      setExpanded((prev) => ({ ...prev, [domainId]: true }));
+      Toast({ message: '已把系统里的公司部门加到这个领域的组织树。人员仍需点选激活。', theme: 'success' });
+    });
   };
 
-  const renderNodes = (parentId: string, kind: 'org' | 'skill') => {
+  const exportSnapshot = () => {
+    // 导出试做格式：把 number id 转成 string，便于 migrate 脚本
+    const snap = buildSnapshot(
+      nodes.map((n) => ({
+        id: String(n.id),
+        parentId: n.parentId == null ? null : String(n.parentId),
+        kind: n.kind,
+        orgKind: n.orgKind,
+        name: n.name,
+        description: n.description,
+        vehicleModels: n.vehicleModels,
+      })),
+      mounts.map((m) => ({
+        nodeId: String(m.nodeId),
+        userId: m.userId,
+        role: m.role,
+      })),
+    );
+    const url = URL.createObjectURL(new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = snapshotFileName(snap.saved_at);
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importSnapshot = async (file: File) => {
+    let parsed: TrialSnapshot<{
+      id: string; parentId: string | null; kind: NodeKind; orgKind?: OrgKind;
+      name: string; description: string; vehicleModels: string;
+    }, { nodeId: string; userId: string; role: MountRole }> | null = null;
+    try {
+      parsed = parseSnapshot(await file.text());
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) {
+      Toast({ message: '这个文件不是双树试做导出的 JSON', theme: 'warning' });
+      return;
+    }
+    void runWrite(async () => {
+      await importTrialSnapshot({
+        nodes: parsed!.nodes,
+        mounts: parsed!.mounts,
+        force: true,
+      });
+      await reloadFromDb();
+      Toast({ message: `已导入并写入数据库：${snapshotBrief(parsed!)}`, theme: 'success' });
+    });
+  };
+
+  const renderNodes = (parentId: number, kind: 'org' | 'skill') => {
     const list = nodes.filter((n) => n.parentId === parentId && n.kind === kind);
     if (list.length === 0) {
       return <li className="dt-empty">这一支还是空的</li>;
@@ -777,7 +630,8 @@ export default function DualTreeTrial() {
             onDrop={n.kind === 'org' ? (e) => {
               e.preventDefault();
               e.stopPropagation();
-              const from = e.dataTransfer.getData('text/plain') || dragOrgRef.current || '';
+              const raw = e.dataTransfer.getData('text/plain');
+              const from = Number(raw || dragOrgRef.current || 0);
               dockOrg(from, n.id);
               dragOrgRef.current = null;
               setDropTargetId(null);
@@ -788,11 +642,11 @@ export default function DualTreeTrial() {
                 <span
                   className="dt-grip"
                   draggable
-                  title="拖到另一个组织上，成为它的下级；拖到组织树标题上，挂到这一层"
+                  title="拖到另一个组织上，成为它的下级"
                   onDragStart={(e) => {
                     e.stopPropagation();
                     dragOrgRef.current = n.id;
-                    e.dataTransfer.setData('text/plain', n.id);
+                    e.dataTransfer.setData('text/plain', String(n.id));
                     e.dataTransfer.effectAllowed = 'move';
                   }}
                   onDragEnd={() => {
@@ -878,7 +732,7 @@ export default function DualTreeTrial() {
                 onDrop={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const from = e.dataTransfer.getData('text/plain') || dragOrgRef.current || '';
+                  const from = Number(e.dataTransfer.getData('text/plain') || dragOrgRef.current || 0);
                   dockOrg(from, domain.id);
                   dragOrgRef.current = null;
                   setDropTargetId(null);
@@ -917,32 +771,15 @@ export default function DualTreeTrial() {
     if (!q) return true;
     return `${p.name} ${p.company} ${p.department}`.includes(q);
   });
-
-  const suggested = selected
-    ? filteredPeople.filter((p) => suggestKind(p, selected))
-    : [];
-  const others = selected
-    ? filteredPeople.filter((p) => !suggestKind(p, selected))
-    : filteredPeople;
+  const suggested = selected ? filteredPeople.filter((p) => suggestKind(p, selected)) : [];
+  const others = selected ? filteredPeople.filter((p) => !suggestKind(p, selected)) : filteredPeople;
 
   const selectAllSuggested = () => {
     if (!selected || suggested.length === 0) return;
-    const role = pickRole;
-    const nodeId = selected.id;
-    const ids = suggested.map((p) => p.id);
-    setMounts((prev) => {
-      const on = new Set(prev.filter((m) => m.nodeId === nodeId && m.role === role).map((m) => m.userId));
-      const allOn = ids.every((id) => on.has(id));
-      if (allOn) {
-        const drop = new Set(ids);
-        return prev.filter((m) => !(m.nodeId === nodeId && m.role === role && drop.has(m.userId)));
-      }
-      const add = ids.filter((id) => !on.has(id)).map((userId) => ({ nodeId, userId, role }));
-      return [...prev, ...add];
-    });
+    suggested.forEach((p) => toggleMount(p.id, pickRole));
   };
 
-  if (loading) return <Loading text="加载双树试做..." />;
+  if (loading) return <Loading text="加载责任双树..." />;
 
   const orgRoles: MountRole[] = ['member', 'owner'];
   const skillRoles: MountRole[] = ['specialist', 'owner', 'leader'];
@@ -955,9 +792,9 @@ export default function DualTreeTrial() {
           返回
         </button>
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 600 }}>双树试做</div>
+          <div style={{ fontWeight: 600 }}>责任双树{busy ? ' · 保存中…' : ''}</div>
           <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>
-            每个问题领域分成组织树和技能树。组织左侧的手柄可以拖去改上下级。浏览器里一份、仓库 .local 里再存一份，不改现网责任模块。
+            改动直接写入数据库（节点级 CRUD + revision 乐观锁）。不再写浏览器 localStorage。
           </div>
         </div>
       </div>
@@ -1111,8 +948,9 @@ export default function DualTreeTrial() {
           .dt-pane { max-height: none; }
         }
       `}</style>
+
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-        <button type="button" className="mac-btn mac-btn--outline" onClick={() => addNode('', 'domain')}>
+        <button type="button" className="mac-btn mac-btn--outline" onClick={() => addNode(null, 'domain')}>
           添加问题领域
         </button>
         {selected?.kind === 'domain' && (
@@ -1124,13 +962,11 @@ export default function DualTreeTrial() {
           导出 JSON
         </button>
         <button type="button" className="mac-btn mac-btn--outline" onClick={() => fileInputRef.current?.click()}>
-          导入 JSON
+          导入 JSON（覆盖入库）
         </button>
-        {snapInfo?.saved_at && (
-          <button type="button" className="mac-btn mac-btn--outline" disabled={snapBusy} onClick={() => void restoreFromServer()}>
-            从本机快照恢复
-          </button>
-        )}
+        <button type="button" className="mac-btn mac-btn--outline" disabled={busy} onClick={() => void reloadFromDb(selectedId)}>
+          刷新
+        </button>
         <input
           ref={fileInputRef}
           type="file"
@@ -1143,12 +979,7 @@ export default function DualTreeTrial() {
           }}
         />
       </div>
-      <div style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
-        {snapInfo?.saved_at
-          ? `本机快照 ${snapInfo.saved_at}（${snapInfo.nodes} 节点 / ${snapInfo.mounts} 挂人）：${shortSnapshotPath(snapInfo.path)}`
-          : '改动停手后会另存一份本机快照到仓库 .local/责任双树/，也可以随时「导出 JSON」自己留档。'}
-        {snapError ? ` ｜ ${snapError}` : ''}
-      </div>
+      <div style={{ fontSize: 12, color: '#888', marginTop: 6 }}>{statusLine}</div>
 
       <div className="dt-split">
         <div className="surface-card dt-pane" style={{ padding: '8px 8px 12px 4px' }}>
@@ -1162,9 +993,9 @@ export default function DualTreeTrial() {
           {selected && (
             <>
               <div style={{ fontSize: 12, color: '#3697c3', marginBottom: 8 }}>
-                {selected.kind === 'domain' && '这是问题领域。组织树里每一级都叫组织，公司、部门、小组都可以挂，也可以再往下加。'}
-                {selected.kind === 'org' && '这一级是组织。拖左侧手柄，或在下面改上级，就能换它挂在谁下面。名称和系统里的公司或部门一致时，会列出已经在里面的人。'}
-                {selected.kind === 'skill' && '调度统筹挂领导。下面是这项工作里要分开会的技能，不是把职责分成初级、中级、高级。进度长在具体技能上，不参加派单。'}
+                {selected.kind === 'domain' && '这是问题领域。组织树与技能树分挂两侧，改动即时落库。'}
+                {selected.kind === 'org' && '这一级是组织。拖左侧手柄或改上级，即可调整挂靠。'}
+                {selected.kind === 'skill' && '技能节点：挂专人 / 负责人 / 领导。'}
               </div>
               {orgPick && (
                 <OrgCatalog
@@ -1195,9 +1026,6 @@ export default function DualTreeTrial() {
                   value={selected.description}
                   onChange={(e) => updateNode(selected.id, { description: e.target.value })}
                   rows={4}
-                  placeholder={selected.kind === 'skill' && nodes.some((n) => n.parentId === selected.id)
-                    ? '写这一级综合下面哪些技能'
-                    : '写这一级负责什么样的故障、咨询或需求'}
                   style={{ width: '100%', marginTop: 6, padding: 8, borderRadius: 8, border: '1px solid #e4e8ea' }}
                 />
               </label>
@@ -1205,19 +1033,19 @@ export default function DualTreeTrial() {
                 <label style={{ display: 'block', marginTop: 10 }}>
                   <div className="mac-field__label">上级</div>
                   <select
-                    value={selected.parentId || ''}
-                    onChange={(e) => dockOrg(selected.id, e.target.value)}
+                    value={selected.parentId ?? ''}
+                    onChange={(e) => dockOrg(selected.id, Number(e.target.value))}
                     style={{ width: '100%', marginTop: 6, padding: 8, borderRadius: 8, border: '1px solid #e4e8ea', background: '#fff' }}
                   >
                     {(() => {
                       const domainId = domainIdOf(selected.id);
                       const domain = nodes.find((n) => n.id === domainId);
                       const blocked = blockedDockIds(selected.id);
-                      const rows: { id: string; label: string }[] = [];
+                      const rows: { id: number; label: string }[] = [];
                       if (domain) rows.push({ id: domain.id, label: `直接挂在「${domain.name}」下` });
-                      const walk = (parentId: string, depth: number) => {
+                      const walk = (pid: number, depth: number) => {
                         nodes
-                          .filter((n) => n.parentId === parentId && n.kind === 'org' && !blocked.has(n.id))
+                          .filter((n) => n.parentId === pid && n.kind === 'org' && !blocked.has(n.id))
                           .forEach((n) => {
                             rows.push({ id: n.id, label: `${'\u3000'.repeat(depth)}${n.name || '未命名'}` });
                             walk(n.id, depth + 1);
@@ -1235,7 +1063,6 @@ export default function DualTreeTrial() {
                   <input
                     value={selected.vehicleModels}
                     onChange={(e) => updateNode(selected.id, { vehicleModels: e.target.value })}
-                    placeholder="车体硬件需要时填写，其它组织可空"
                     style={{ width: '100%', marginTop: 6, padding: 8, borderRadius: 8, border: '1px solid #e4e8ea' }}
                   />
                 </label>
@@ -1300,7 +1127,7 @@ export default function DualTreeTrial() {
                     </button>
                   </div>
                   {otherMounts.length === 0 && (
-                    <div style={{ color: '#888', fontSize: 13, marginTop: 8 }}>还没有激活任何人。建议名单不会自动挂上。</div>
+                    <div style={{ color: '#888', fontSize: 13, marginTop: 8 }}>还没有激活任何人。</div>
                   )}
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                     {otherMounts.map((m) => {
@@ -1321,50 +1148,50 @@ export default function DualTreeTrial() {
               )}
 
               {pickerMode !== 'off' && (
-                    <div style={{ marginTop: 12, borderTop: '1px solid #eef1f2', paddingTop: 12 }}>
-                      {pickerMode === 'people' && (
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                        {roleChoices.map((role) => (
-                          <button
-                            key={role}
-                            type="button"
-                            className={pickRole === role ? 'mac-btn mac-btn--primary' : 'mac-btn mac-btn--outline'}
-                            onClick={() => setPickRole(role)}
-                          >
-                            激活为{ROLE_LABEL[role]}
-                          </button>
-                        ))}
-                      </div>
-                      )}
-                      <input
-                        value={keyword}
-                        onChange={(e) => setKeyword(e.target.value)}
-                        placeholder="搜索姓名、公司、部门"
-                        style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #e4e8ea' }}
-                      />
-                      {selected.kind === 'org' && (
-                        <PersonBlock
-                          title={
-                            suggested.some((p) => suggestKind(p, selected) === 'dept')
-                              ? '系统里已在此部门'
-                              : '系统里已在此公司、还没有部门'
-                          }
-                          people={suggested}
-                          mounts={nodeMounts}
-                          role={pickRole}
-                          badgeOf={(p) => (suggestKind(p, selected) === 'company' ? '已在此公司' : '已在此部门')}
-                          onToggle={toggleMount}
-                          onSelectAll={pickerMode === 'people' ? selectAllSuggested : undefined}
-                        />
-                      )}
-                      <PersonBlock
-                        title={selected.kind === 'org' ? '其他人（含兼职）' : '选择人员'}
-                        people={selected.kind === 'org' ? others : filteredPeople}
-                        mounts={nodeMounts}
-                        role={pickRole}
-                        onToggle={toggleMount}
-                      />
+                <div style={{ marginTop: 12, borderTop: '1px solid #eef1f2', paddingTop: 12 }}>
+                  {pickerMode === 'people' && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                      {roleChoices.map((role) => (
+                        <button
+                          key={role}
+                          type="button"
+                          className={pickRole === role ? 'mac-btn mac-btn--primary' : 'mac-btn mac-btn--outline'}
+                          onClick={() => setPickRole(role)}
+                        >
+                          激活为{ROLE_LABEL[role]}
+                        </button>
+                      ))}
                     </div>
+                  )}
+                  <input
+                    value={keyword}
+                    onChange={(e) => setKeyword(e.target.value)}
+                    placeholder="搜索姓名、公司、部门"
+                    style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #e4e8ea' }}
+                  />
+                  {selected.kind === 'org' && (
+                    <PersonBlock
+                      title={
+                        suggested.some((p) => suggestKind(p, selected) === 'dept')
+                          ? '系统里已在此部门'
+                          : '系统里已在此公司、还没有部门'
+                      }
+                      people={suggested}
+                      mounts={nodeMounts}
+                      role={pickRole}
+                      badgeOf={(p) => (suggestKind(p, selected) === 'company' ? '已在此公司' : '已在此部门')}
+                      onToggle={toggleMount}
+                      onSelectAll={pickerMode === 'people' ? selectAllSuggested : undefined}
+                    />
+                  )}
+                  <PersonBlock
+                    title={selected.kind === 'org' ? '其他人（含兼职）' : '选择人员'}
+                    people={selected.kind === 'org' ? others : filteredPeople}
+                    mounts={nodeMounts}
+                    role={pickRole}
+                    onToggle={toggleMount}
+                  />
+                </div>
               )}
             </>
           )}
@@ -1377,7 +1204,7 @@ export default function DualTreeTrial() {
 function OrgCatalog({
   pick, catalog, keyword, nodes, onKeyword, onClose, onPick, onManual,
 }: {
-  pick: { domainId: string; parentId: string };
+  pick: { domainId: number; parentId: number };
   catalog: ProfileFieldOptions | null;
   keyword: string;
   nodes: TrialNode[];
@@ -1398,7 +1225,6 @@ function OrgCatalog({
         <strong>新增组织</strong>
         <button type="button" className="mac-btn mac-btn--outline" onClick={onClose}>关闭</button>
       </div>
-      <div style={{ marginTop: 6, fontSize: 12, color: '#5c6b73' }}>从已有公司或部门里选。小组这类名单里没有的，用下面的新建。</div>
       <input
         value={keyword}
         onChange={(e) => onKeyword(e.target.value)}
@@ -1428,14 +1254,7 @@ function OrgCatalog({
 }
 
 function PersonBlock({
-  title,
-  people,
-  mounts,
-  role,
-  badge,
-  badgeOf,
-  onToggle,
-  onSelectAll,
+  title, people, mounts, role, badge, badgeOf, onToggle, onSelectAll,
 }: {
   title: string;
   people: Person[];
@@ -1466,15 +1285,9 @@ function PersonBlock({
               type="button"
               onClick={() => onToggle(p.id, role)}
               style={{
-                display: 'flex',
-                width: '100%',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '8px 0',
-                border: 'none',
-                borderBottom: '1px solid #f0f2f3',
-                background: 'transparent',
-                textAlign: 'left',
+                display: 'flex', width: '100%', justifyContent: 'space-between', gap: 8,
+                padding: '8px 0', border: 'none', borderBottom: '1px solid #f0f2f3',
+                background: 'transparent', textAlign: 'left',
               }}
             >
               <span>
@@ -1496,7 +1309,6 @@ function PersonBlock({
           );
         })}
         {people.length === 0 && <div style={{ color: '#aaa', fontSize: 13 }}>没有匹配的人</div>}
-        {people.length > 80 && <div style={{ color: '#888', fontSize: 12, marginTop: 6 }}>只显示前 80 人，请用搜索收窄。</div>}
       </div>
     </div>
   );

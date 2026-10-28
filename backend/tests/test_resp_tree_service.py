@@ -108,3 +108,36 @@ async def test_删节点软删_挂载硬删可再挂回(db):
         expected_revision=fresh["revision"],
     )
     assert again["link"]["role"] == "member"
+
+
+@pytest.mark.asyncio
+async def test_import_trial_snapshot_splits_trees_and_force_overwrite(db):
+    snap = {
+        "nodes": [
+            {"id": "d1", "parentId": None, "kind": "domain", "name": "调度系统",
+             "description": "DISP", "vehicleModels": ""},
+            {"id": "s1", "parentId": "d1", "kind": "skill", "name": "任务调度",
+             "description": "", "vehicleModels": ""},
+            {"id": "o1", "parentId": "d1", "kind": "org", "orgKind": "company",
+             "name": "中力", "description": "", "vehicleModels": "XQE"},
+        ],
+        "mounts": [
+            {"nodeId": "s1", "userId": "u1", "role": "specialist"},
+            {"nodeId": "o1", "userId": "u2", "role": "owner"},
+        ],
+    }
+    first = await svc.import_trial_snapshot(db, snap, force=False)
+    assert first["domains"] == 1 and first["skills"] == 1 and first["orgs"] == 1
+    assert first["mounts"] == 2
+
+    skill_payload = await svc.get_tree_payload(db, first["skill_tree_id"])
+    org_payload = await svc.get_tree_payload(db, first["org_tree_id"])
+    assert any(n["name"] == "调度系统" and n["node_kind"] == "umbrella" for n in skill_payload["nodes"])
+    assert any(n["name"] == "中力" and n["org_kind"] == "company" for n in org_payload["nodes"])
+
+    with pytest.raises(ValueError):
+        await svc.import_trial_snapshot(db, snap, force=False)
+
+    again = await svc.import_trial_snapshot(db, snap, force=True)
+    assert again["domains"] == 1
+    assert again["skill_revision"] >= first["skill_revision"]
