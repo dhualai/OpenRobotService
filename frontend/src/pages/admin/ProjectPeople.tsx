@@ -82,7 +82,7 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
       const data = await request<{
         companies: _Comp[];
         departments_by_company: Record<string, _Dept[]>;
-      }>('/options');
+      }>('/users/options');
       const comps = (normalizeList(data.companies) as _Comp[]).filter((c) => c.status !== 'rejected');
       setOrgCompanies(comps);
       // 扁平化 departments_by_company
