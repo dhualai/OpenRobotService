@@ -103,7 +103,12 @@ def rank_similar_tickets(
     exclude_task_id: str = "",
     top_k: int = 8,
 ) -> List[Dict[str, Any]]:
-    """把 ticket_resolutions 检索结果压成 @# 相似工单列表（去重、排除自身）。"""
+    """把 ticket_resolutions 检索结果压成 @# 相似工单列表（去重、排除自身）。
+
+    入参顺序由检索侧决定（RRF + verified 权重）；出参 ``score`` 是 dense **余弦**
+    （``vector_score``，约 0~1），供调用方当相似度解读 / 做百分比映射。
+    ``rrf_score`` 仅调试用，前端阈值请对齐 ``SIMILAR_TICKET_MIN_COSINE``。
+    """
     exclude = str(exclude_task_id or "").strip()
     out: List[Dict[str, Any]] = []
     seen = set()
@@ -120,10 +125,13 @@ def rank_similar_tickets(
         # 弹层的 summary 是纯文本对照——剥掉图片语法，保留其余文字
         summary = (getattr(r, "content", "") or "")[:600]
         summary = re.sub(r"!\[[^\]]*\]\([^)]*attachments/download[^)]*\)", "", summary)
+        cosine = float(getattr(r, "vector_score", 0) or 0)
+        rrf = float(getattr(r, "score", 0) or 0)
         out.append({
             "task_id": task_id_out,
             "title": (r.title or "")[:80] or f"工单#{tid}",
-            "score": round(float(r.score or 0), 4),
+            "score": round(cosine, 4),
+            "rrf_score": round(rrf, 4),
             "verified": getattr(r, "verified", "") or "unknown",
             "summary": summary,
         })

@@ -7,7 +7,7 @@ import { KnowledgeMarkdown } from './KnowledgeQuestionDetail';
 
 function SimilarReports({ taskId }: { taskId: number }) {
   const resource = useKnowledgeResource(`similar:${taskId}`, () => fetchReviewSimilar(taskId));
-  return <section className="mac-card mac-card--pad"><h3>相似工单参考</h3><p className="knowledge-muted">仅用于人工判断重复；检索分数不是相似百分比。</p>
+  return <section className="mac-card mac-card--pad"><h3>相似工单参考</h3><p className="knowledge-muted">仅用于人工判断重复；score 为余弦相似度（0~1），默认阈值 0.55。</p>
     <KnowledgeState error={resource.error || (resource.data?.retrieval_status === 'unavailable' ? '相似工单检索暂不可用，不能据此判断没有重复问题' : undefined)} loading={resource.loading && !resource.data} retry={resource.reload} />
     {resource.data?.retrieval_status !== 'unavailable' && resource.data?.similar.length === 0 && <KnowledgeEmpty>暂无达到阈值的相似工单。</KnowledgeEmpty>}
     {resource.data?.similar.map((item) => <details className="knowledge-similar" key={item.task_id}><summary>{item.title}</summary>{item.report ? <KnowledgeMarkdown text={item.report.content} /> : <p className="knowledge-muted">暂无已通过知识沉淀报告</p>}</details>)}

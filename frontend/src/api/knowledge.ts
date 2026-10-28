@@ -118,7 +118,7 @@ export const toggleKnowledgeLike = (question: KnowledgeQuestion) => admin<Knowle
 export const fetchPendingReviews = () => tasks<{ items: KnowledgeReview[]; total: number }>('/archive-report/reviews', fresh);
 export const fetchKnowledgeReview = (reportId: string) => tasks<KnowledgeReview>(`/archive-report/reviews/${encodeURIComponent(reportId)}`, fresh);
 export const fetchMyReviewHistory = () => tasks<{ items: ReviewHistory[]; total: number }>('/archive-report/my-review-history', fresh);
-export const fetchReviewSimilar = (taskId: number) => tasks<{ similar: SimilarQuestion[]; retrieval_status: 'ok' | 'unavailable' }>(`/${taskId}/similar?limit=8&min_score=0.02&scope=review`, fresh);
+export const fetchReviewSimilar = (taskId: number) => tasks<{ similar: SimilarQuestion[]; retrieval_status: 'ok' | 'unavailable' }>(`/${taskId}/similar?limit=8&min_score=0.55&scope=review`, fresh);
 export const submitKnowledgeReview = (report: KnowledgeReview, outcome: 'approve' | 'reject', reviewComment: string, valuePoint: string) => tasks(`/archive-report/archive-reports/${report.report_id}/${outcome}`, {
   method: 'POST', body: JSON.stringify({ review_comment: reviewComment, value_point: valuePoint, revision: report.revision }),
 });
