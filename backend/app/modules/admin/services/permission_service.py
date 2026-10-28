@@ -1,7 +1,7 @@
 from fastapi import Request, HTTPException
 from typing import Dict, Any, List, Optional
 from app.core.database import db_manager
-from app.services.identity_service import IdentityService
+from app.services.identity_service import IdentityService, build_upr_id
 from app.services.user_service import user_service
 
 class PermissionService:
@@ -63,18 +63,29 @@ class PermissionService:
             project_id = role_data.get("project_id")
             role_ids = role_data.get("role_ids", [])
             
-            for role_id in role_ids:
-                user_project_role_id = f"upr_{user['id']}_{project_id}_{role_id}"
-                IdentityService.add_user_project_role(
-                    user_project_role_id,
-                    user['id'],
-                    project_id,
-                    role_id
-                )
-
-            # 项目人员变更 → 授权包版本 +1
-            from app.modules.admin.services.project_service import project_service
-            project_service.bump_export_version(project_id)
+            _had_partial_success = False
+            _any_success = False
+            try:
+                for role_id in role_ids:
+                    user_project_role_id = build_upr_id(user['id'], project_id, role_id)
+                    IdentityService.add_user_project_role(
+                        user_project_role_id,
+                        user['id'],
+                        project_id,
+                        role_id
+                    )
+                    _any_success = True
+            except RuntimeError as insert_err:
+                # 单行插入失败（如 id 超长），但前面的行可能已经成功落库
+                _had_partial_success = _any_success
+                # 继续抛出去，让外层返回 500，但 finally 里会确保 bump 版本号
+                raise HTTPException(status_code=500, detail=f"分配角色失败: {insert_err}") from insert_err
+            finally:
+                # 每行独立事务，只要至少一行成功就需要 bump 授权包版本
+                if _any_success or _had_partial_success:
+                    from app.modules.admin.services.project_service import project_service
+                    project_service.bump_export_version(project_id)
+                    project_service.bump_export_version_for_user(user['id'])
             
             return {"success": True}
         except HTTPException:

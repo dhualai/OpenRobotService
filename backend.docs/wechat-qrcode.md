@@ -13,6 +13,28 @@
 
 ## 接口
 
+### 后台管理：批量下载
+
+后台管理 → 二维码管理 → **批量下载**，选择下载范围后获取一个 ZIP 压缩包：
+
+- **已勾选记录**：包含跨页勾选的记录。
+- **当前页**：下载当前页展示的记录。
+- **当前筛选结果**：沿用状态、类型及名称 / ID 搜索条件，覆盖所有分页。
+- **指定 ID 区间**：包含起止 ID，不受页面筛选影响。
+- **全部记录**：忽略页面筛选。
+
+接口：`POST /api/admin/qrcodes/batch-download`，需要 `frontend:admin:other:show` 权限。
+请求体的 `scope` 必填，可选 `selected` / `page` / `filtered` / `range` / `all`；
+`selected`、`page` 传非空 `qid_list`，`range` 传正整数 `id_start`、`id_end`，
+`filtered` 可传 `status`、`qrcode_type`、`keyword`、`batch_id`。
+例如：`{"scope":"range","id_start":100,"id_end":200}`。
+
+单次范围最多 500 条，超过上限会提示缩小范围，不会静默截断。
+图片从固定的微信换图接口按已有 ticket 获取，不会生成新 ticket 或变更二维码状态。
+图片按 `ID_名称.png` / `ID_名称.jpg` 命名，非法文件名字符自动替换；
+未生成 ticket 或取图失败的记录写入包内的 `下载说明.txt`，其他成功图片仍可下载。
+范围为空、全部未生成或全部取图失败时直接返回错误，不产生空压缩包。
+
 ### 1. 生成二维码
 
 ```

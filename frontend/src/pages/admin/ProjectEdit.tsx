@@ -27,10 +27,23 @@ export default function ProjectEdit() {
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
+      // 防御：strip 掉 project_code / name 两端空白，避免尾随空格导致
+      // GET /projects/{id}/members 查询永远匹配不上 INSERT 进去的行
+      const trimmed = {
+        ...form,
+        project_code: (form.project_code || '').trim(),
+        name: (form.name || '').trim(),
+        description: (form.description || '').trim(),
+      };
+      if (!trimmed.name) {
+        Toast({ message: '项目名称不能为空', theme: 'warning' });
+        setSubmitting(false);
+        return;
+      }
       if (id) {
-        await request(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(form) });
+        await request(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(trimmed) });
       } else {
-        await request('/projects/', { method: 'POST', body: JSON.stringify(form) });
+        await request('/projects/', { method: 'POST', body: JSON.stringify(trimmed) });
       }
       Toast({ message: '保存成功', theme: 'success' });
       clearCache(); // 清除请求缓存，确保返回项目管理页时能拉取到最新数据
@@ -47,7 +60,7 @@ export default function ProjectEdit() {
       <h4 style={{ marginBottom: 16 }}>{id ? '编辑项目' : '新建项目'}</h4>
       <Form onSubmit={handleSubmit}>
         <FormItem label="项目编码" name="project_code">
-          <ClearableInput value={form.project_code} onChange={(v) => setForm((p) => ({ ...p, project_code: String(v) }))} placeholder="输入项目编码" />
+          <ClearableInput value={form.project_code} onChange={(v) => setForm((p) => ({ ...p, project_code: String(v) }))} placeholder="选填，留空自动生成" />
         </FormItem>
         <FormItem label="项目名称" name="name">
           <ClearableInput value={form.name} onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))} placeholder="输入项目名称" />

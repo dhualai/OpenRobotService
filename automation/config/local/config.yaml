@@ -7,8 +7,9 @@ database:
   host: "localhost"
   port: 3306
   user: "root"
-  password: "root"
-  database: "openrobot"
+  # 与 backend/.env.example 的默认 DATABASE_URL 对齐（root:123456@127.0.0.1:3306/helpdesk_724）
+  password: "123456"
+  database: "helpdesk_724"
 
 redis:
   host: "localhost"

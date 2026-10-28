@@ -17,7 +17,7 @@ from app.models.base import Base
 role_permissions = Table(
     'role_permissions',
     Base.metadata,
-    Column('id', String(64), primary_key=True),
+    Column('id', String(255), primary_key=True),
     Column('role_id', String(64), ForeignKey('roles.id')),
     Column('permission_id', String(64), ForeignKey('permissions.id'))
 )
@@ -25,7 +25,7 @@ role_permissions = Table(
 user_project_roles = Table(
     'user_project_roles',
     Base.metadata,
-    Column('id', String(64), primary_key=True),
+    Column('id', String(255), primary_key=True),
     Column('user_id', String(64), ForeignKey('users.id')),
     Column('project_id', String(64), ForeignKey('project.id'), nullable=True),
     Column('role_id', String(64), ForeignKey('roles.id')),

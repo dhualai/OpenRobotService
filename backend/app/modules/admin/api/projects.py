@@ -433,8 +433,16 @@ async def get_project_members(
     report_to_name（include_usp=True 时额外返回 external_credentials）。
     一个用户在该项目下绑定多个角色时会出现多行。
     """
+    # URL 解码后的 project_id 可能带尾随空格（如前端拼 "10.20.40.9:10901 "），必须 strip
+    raw_project_id = project_id
+    project_id = project_id.strip() if project_id else project_id
+    if raw_project_id != project_id:
+        logger.warning(f"[members] project_id 含空白字符，已 strip: raw={raw_project_id!r} → cleaned={project_id!r}")
+    logger.info(f"[members] GET project_id={project_id!r} include_usp={include_usp}")
+
     try:
         members = db_manager.get_project_members(project_id, include_usp=include_usp)
+        logger.info(f"[members] 返回 {len(members)} 行（project_id={project_id!r}）")
         # get_project_members 的 report_to_name 子查询用 username 匹配 user_id 存在 bug 返回 null，
         # 此处直接查 user_project_roles.report_to_id 列覆盖，前端用 user_id == report_to_id 建树。
         report_to_map = db_manager.get_report_to_map(project_id)
@@ -443,7 +451,7 @@ async def get_project_members(
             m.pop('report_to_name', None)
         return members
     except Exception as e:
-        logger.error(f"获取项目已关联人员失败: project_id={project_id}, error={str(e)}", exc_info=True)
+        logger.error(f"获取项目已关联人员失败: project_id={project_id!r}, error={str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取项目已关联人员失败: {str(e)}")
 
 
@@ -453,6 +461,16 @@ async def create_project(
     project_data: ProjectCreate,
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> ProjectResponse:
+    # project_code 可选：先 strip，空则自动生成
+    from app.modules.admin.services.project_service import project_service, gen_project_code
+    raw_code = project_data.project_code
+    project_data.project_code = (project_data.project_code or "").strip()
+    if raw_code != project_data.project_code:
+        logger.warning(f"[create_project] project_code 含空白字符，已 strip: raw={raw_code!r} → cleaned={project_data.project_code!r}")
+    if not project_data.project_code:
+        project_data.project_code = gen_project_code()
+        logger.info(f"[create_project] project_code 未填写，已自动生成: {project_data.project_code}")
+
     token = request.headers.get("Authorization", "")
     token = token[7:]
 
@@ -555,9 +573,22 @@ async def update_project(
     update_data: ProjectUpdate,
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> ProjectResponse:
+    # 防御：project_id 可能带尾随空格（URL 编码或前端拼串残留）
+    raw_pid = project_id
+    project_id = (project_id or "").strip()
+    if raw_pid != project_id:
+        logger.warning(f"[update_project] project_id 含空白字符，已 strip: raw={raw_pid!r} → cleaned={project_id!r}")
+
     existing_project = project_service.get_project(project_id)
     if not existing_project:
         raise HTTPException(status_code=404, detail="项目不存在")
+    
+    # update_data 里的 project_code 若被显式传入，同样 strip
+    if update_data.project_code:
+        raw_code = update_data.project_code
+        update_data.project_code = update_data.project_code.strip()
+        if raw_code != update_data.project_code:
+            logger.warning(f"[update_project] update_data.project_code 含空白字符，已 strip: raw={raw_code!r} → cleaned={update_data.project_code!r}")
     
     if update_data.contact_person_id and update_data.contact_person_id != existing_project["contact_person_id"]:
         token = request.headers.get("Authorization", "")
@@ -641,6 +672,12 @@ async def delete_project(
     project_id: str,
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> Dict[str, bool]:
+    # 防御：project_id 可能带尾随空格（URL 编码或前端拼串残留）
+    raw_pid = project_id
+    project_id = (project_id or "").strip()
+    if raw_pid != project_id:
+        logger.warning(f"[delete_project] project_id 含空白字符，已 strip: raw={raw_pid!r} → cleaned={project_id!r}")
+
     try:
         success = project_service.delete_project(project_id)
     except IntegrityError as e:

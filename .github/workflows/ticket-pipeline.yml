@@ -66,6 +66,7 @@ jobs:
           PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
           PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
           PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
+          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
           PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
           PROD_TICKET_EXCLUDE_SOURCES: "ai"
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
