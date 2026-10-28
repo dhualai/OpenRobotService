@@ -8,14 +8,30 @@ from pathlib import Path
 from datetime import datetime
 import yaml
 import requests
+import sqlalchemy as sa
 from sqlalchemy import text, inspect, bindparam
 from sqlalchemy.exc import IntegrityError
 from app.core.db import SessionLocal, engine  # 共享引擎（pool_pre_ping/pool_recycle），见 app/core/db.py
 from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
-from app.models.identity import user_project_roles
-from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate
-from app.modules.admin.models_das.models import Project
-from app.modules.admin.utils_das.config import AUTH_SERVICE_BASE_URL
+
+
+def gen_project_code() -> str:
+    """生成一个唯一的项目编号（自动兜底用）。
+
+    格式：proj_{yyMMddHHmmss}_{8位hex}
+    - 时间戳保证粗略有序，便于人工辨认创建时间
+    - 8 位 hex 提供 16^8 ≈ 43 亿碰撞空间，与 timestamp 组合后可视为唯一
+    - 长度约 25，远小于 project_code 实际可用上限
+    """
+    ts = datetime.now().strftime("%y%m%d%H%M%S")
+    suffix = uuid.uuid4().hex[:8]
+    return f"proj_{ts}_{suffix}"
+
+
+from app.models.identity import user_project_roles  # noqa: E402
+from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate  # noqa: E402
+from app.modules.admin.models_das.models import Project  # noqa: E402
+from app.modules.admin.utils_das.config import AUTH_SERVICE_BASE_URL  # noqa: E402
 
 # ext_info 默认模板目录：backend/app/config/project_templates/
 # 按 project_type 选 {type}.yaml，找不到回退 default.yaml；增加模板只需加文件
@@ -488,6 +504,14 @@ class ProjectService:
         try:
             project_data = project_data.copy()
             
+            # project_code 可选：None / 空字符串时自动生成（兜底，API 层已先生成一遍）
+            code_in = project_data.get("project_code") or project_data.get("code")
+            if not code_in or not str(code_in).strip():
+                auto_code = gen_project_code()
+                logger.info(f"[create_project] project_code 未提供，service 层自动生成: {auto_code}")
+                project_data["project_code"] = auto_code
+                code_in = auto_code
+            
             if "project_code" in project_data:
                 project_data["code"] = project_data.pop("project_code")
                 project_data["id"] = project_data["code"]
@@ -595,31 +619,84 @@ class ProjectService:
             db.close()
     
     def delete_project(self, project_id: str) -> bool:
+        """物理删除项目（硬删）。
+
+        清理链路：
+        1. user_project_roles 里引用本项目的关联记录（有 FK 约束，必须先清）
+           同时用 TRIM() 去匹配，防止历史脏数据 project_id 带尾随空格导致漏清
+        2. project_pin 置顶标注（孤儿记录，一并清）
+        3. DELETE 项目行本身
+
+        说明：项目相关的业务数据表（Risk / ProjectDailyReport / ProjectLicense /
+        RealtimeData / HistoryData / CollectionData 等）用 project_code 字符串引用，
+        非 FK 约束，不会阻止 DELETE，保留作历史审计数据，后续新项目复用 code 后不会
+        被这些孤儿行误伤（业务查询都先过 Project 表）。
+
+        硬删的直接好处：project_code / code 唯一约束立即释放，
+        check_project_duplicate 不再命中已删记录，编号可立即复用。
+        """
         db = SessionLocal()
         try:
+            project_id = (project_id or "").strip()
             project = db.query(Project).filter(Project.id == project_id).first()
-            if not project or project.status == PROJECT_DELETED:
+            if not project:
+                logger.warning(f"[delete_project] 项目不存在: project_id={project_id!r}")
                 return False
 
-            # 先清理 user_project_roles 中引用本项目的关联记录，否则外键约束
-            # user_project_roles_ibfk_2（project_id → project.id）会阻止删除
-            db.execute(user_project_roles.delete().where(
-                user_project_roles.c.project_id == str(project.id)))
+            # 无论旧状态是什么（'active' / '已删除' / ...），都物理删
+            if project.status == PROJECT_DELETED:
+                logger.info(f"[delete_project] 目标是历史软删行，升级为硬删: project_id={project_id!r}")
 
-            # 各人的置顶标注一并清掉：软删的项目不再进任何列表，
-            # 留着的置顶是点不开的孤儿记录（与节点关注随项目删除清理同口径）
+            pid = str(project.id).strip()
+            pcode = (project.code or "").strip()
+
+            # 1) 清理 user_project_roles —— 双保险：
+            #    a) 精确匹配正常 project_id
+            #    b) TRIM(project_id) == pid —— 把带尾随空格的脏行也清掉
+            deleted_upr_exact = db.execute(user_project_roles.delete().where(
+                user_project_roles.c.project_id == pid)).rowcount or 0
+            deleted_upr_trim = db.execute(user_project_roles.delete().where(
+                sa.func.TRIM(user_project_roles.c.project_id) == pid)).rowcount or 0
+            deleted_upr = deleted_upr_exact + deleted_upr_trim
+            if deleted_upr_trim > 0:
+                logger.warning(f"[delete_project] 通过 TRIM 匹配额外清掉 {deleted_upr_trim} 行（历史脏数据 project_id 带空白）")
+            logger.info(f"[delete_project] 清理 user_project_roles 共 {deleted_upr} 行 (project_id={pid!r})")
+
+            # 额外兜底：任何 project_id == pcode（误存了 code 而非 id）的行也清
+            if pcode and pcode != pid:
+                deleted_upr_wrong = db.execute(user_project_roles.delete().where(
+                    sa.func.TRIM(user_project_roles.c.project_id) == pcode)).rowcount or 0
+                if deleted_upr_wrong > 0:
+                    logger.warning(f"[delete_project] 兜底清掉 project_id 误存为 code={pcode!r} 的 {deleted_upr_wrong} 行")
+                    deleted_upr += deleted_upr_wrong
+
+            # 2) 清理各人置顶标注（project_pin 表）
             from app.modules.admin.services.project_pin_service import remove_pins_for_project
-            remove_pins_for_project(db, str(project.id))
+            remove_pins_for_project(db, pid)
+            logger.info(f"[delete_project] 清理置顶标注 (project_id={pid!r})")
 
-            # 软删除：保留 project 记录，仅标记为已删除。
-            # 后续创建新项目时 check_project_duplicate 仍会命中本记录（按编号/名称），
-            # 从而阻止编号/名称被复用，达到去重目的。
-            project.status = PROJECT_DELETED
-            db.commit()
+            # 3) 物理删除项目行
+            try:
+                db.delete(project)
+                db.commit()
+            except IntegrityError as ie:
+                db.rollback()
+                # 还有其他 FK 没清干净——把残留行查出来打完整日志，方便运维定位
+                remaining = db.execute(user_project_roles.select().where(
+                    sa.func.TRIM(user_project_roles.c.project_id) == pid)).fetchall()
+                logger.error(
+                    f"[delete_project] ❌ FK 约束仍阻止 DELETE！"
+                    f" IntegrityError={ie}; user_project_roles 残留 {len(remaining)} 行: "
+                    f"{[dict(r._mapping) for r in remaining[:5]]}",
+                    exc_info=True
+                )
+                raise
+
+            # 项目行硬删后 export_version 字段本身已不存在，不需要 bump；
+            # 下游通过 code 查 export 接口会直接返回 404，老包自然失效。
+
+            logger.info(f"[delete_project] ✅ 硬删完成: id={pid!r} code={pcode!r} name={project.name!r}")
             return True
-        except IntegrityError:
-            db.rollback()
-            raise
         finally:
             db.close()
     

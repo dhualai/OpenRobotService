@@ -23,7 +23,7 @@ from app.models.delivery import Project
 from app.models.user_info import UserInfo
 from app.modules.tasks.schemas.ticket import TicketCreate
 from app.modules.tasks.services.ticket_service import TicketService
-from app.services.identity_service import _notify_ai_personnel_reload
+from app.services.identity_service import _notify_ai_personnel_reload, build_upr_id
 
 router = APIRouter(prefix="/users", tags=["admin-users"])
 
@@ -837,7 +837,7 @@ async def create_user(
         )
     
     default_role_id = "user"
-    user_project_role_id = f"upr_{user_id}_global_{default_role_id}"
+    user_project_role_id = build_upr_id(user_id, None, default_role_id)
     db_manager.add_user_project_role(
         user_project_role_id,
         user_id,
@@ -1063,11 +1063,18 @@ async def assign_role(
     role_data: RoleAssignment,
     current_user: Dict[str, Any] = require_permission("backend:user:role_project:write")
 ):
+    # 防御：strip 掉 project_id 两端空白，避免 URL 编码残留 / 前端拼串错误
+    project_id = role_data.project_id.strip() if role_data.project_id else role_data.project_id
+    if project_id != role_data.project_id:
+        logger.warning(f"[assign_role] project_id 含空白字符，已 strip: raw={role_data.project_id!r} → cleaned={project_id!r}")
+
+    logger.info(f"[assign_role] 开始: username={username!r} project_id={project_id!r} role_ids={role_data.role_ids!r} report_to_id={role_data.report_to_id!r}")
+
     user = db_manager.get_user(username)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
     
-    if not db_manager.get_project(role_data.project_id):
+    if not db_manager.get_project(project_id):
         raise HTTPException(status_code=404, detail="项目不存在")
     
     if not role_data.role_ids:
@@ -1076,22 +1083,33 @@ async def assign_role(
     try:
         assigned_count = 0
         for role_id in role_data.role_ids:
+            role_id = role_id.strip()
             role = db_manager.get_role(role_id)
             if not role:
                 raise HTTPException(status_code=404, detail=f"角色 {role_id} 不存在")
             
-            user_project_role_id = f"upr_{user['id']}_{role_data.project_id}_{role_id}"
+            # build_upr_id 内部已做 strip + 长度兜底裁剪
+            user_project_role_id = build_upr_id(user['id'], project_id, role_id)
             
             success = db_manager.add_user_project_role(
                 user_project_role_id, 
                 user['id'], 
-                role_data.project_id, 
+                project_id, 
                 role_id,
                 report_to_id=role_data.report_to_id
             )
             if success:
                 assigned_count += 1
         
+        # 只要有角色被成功分配，就需要 bump 授权包版本（用 strip 后的 project_id）
+        if assigned_count > 0:
+            from app.modules.admin.services.project_service import project_service
+            project_service.bump_export_version_for_user(user['id'])
+            project_service.bump_export_version(project_id)
+            logger.info(f"[assign_role] ✅ 分配完成: username={username!r} project_id={project_id!r} 新增 {assigned_count} 个角色，已 bump 版本")
+        else:
+            logger.info(f"[assign_role] 完成但无新增: username={username!r} project_id={project_id!r} (可能全部已存在)")
+
         return SuccessResponse(message=f"成功分配 {assigned_count} 个角色")
     except HTTPException:
         raise
@@ -1219,7 +1237,12 @@ async def batch_assign_project_roles(
     role_data: ProjectUserRoleAssignment,
     current_user: Dict[str, Any] = require_permission("backend:user:role_project:write")
 ):
+    raw_project_id = role_data.project_id
     project_id = role_data.project_id.strip() if role_data.project_id else None
+    if raw_project_id and raw_project_id != project_id:
+        logger.warning(f"[batch_assign] project_id 含空白字符，已 strip: raw={raw_project_id!r} → cleaned={project_id!r}")
+
+    logger.info(f"[batch_assign] 开始: project_id={project_id!r} 共 {len(role_data.organization_ids or [])} 条")
     
     if project_id and not db_manager.get_project(project_id):
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -1229,22 +1252,25 @@ async def batch_assign_project_roles(
     
     try:
         roles_data = []
+        affected_user_ids: set = set()
         for item in role_data.organization_ids:
             if "user_name" not in item or "role_id" not in item:
                 raise HTTPException(status_code=400, detail="用户列表项必须包含 user_name 和 role_id")
             
-            user = db_manager.get_user(item["user_name"])
+            user = db_manager.get_user(item["user_name"].strip())
             if not user:
                 raise HTTPException(status_code=404, detail=f"用户 {item['user_name']} 不存在")
             
-            role = db_manager.get_role(item["role_id"])
+            role_id = item["role_id"].strip()
+            role = db_manager.get_role(role_id)
             if not role:
-                raise HTTPException(status_code=404, detail=f"角色 {item['role_id']} 不存在")
+                raise HTTPException(status_code=404, detail=f"角色 {role_id} 不存在")
             
-            user_project_role_id = f"upr_{user['id']}_{project_id or 'global'}_{item['role_id']}"
+            # build_upr_id 内部已做 strip + None → "global" 处理 + 长度兜底
+            user_project_role_id = build_upr_id(user['id'], project_id, role_id)
 
             # report_to_id 前端传的是 username，需解析为 user_id 以满足外键约束 ForeignKey('users.id')
-            report_to_username = item.get("report_to_id")
+            report_to_username = (item.get("report_to_id") or "").strip()
             report_to_id = None
             if report_to_username:
                 superior = db_manager.get_user(report_to_username)
@@ -1256,11 +1282,39 @@ async def batch_assign_project_roles(
                 "id": user_project_role_id,
                 "user_id": user['id'],
                 "project_id": project_id,
-                "role_id": item["role_id"],
+                "role_id": role_id,
                 "report_to_id": report_to_id,
             })
-        
-        assigned_count = db_manager.batch_add_user_project_roles(roles_data)
+            affected_user_ids.add(user['id'])
+
+        # 每行独立事务：要么全部成功，要么部分成功 + RuntimeError（附带 success_count）
+        try:
+            assigned_count = db_manager.batch_add_user_project_roles(roles_data)
+        except RuntimeError as batch_err:
+            # 部分成功 → 也需要 bump 版本号
+            assigned_count = getattr(batch_err, 'success_count', 0)
+            logger.warning(f"[batch_assign] ⚠️ 部分成功: project_id={project_id!r} 成功={assigned_count} 错误详情={batch_err}")
+            if assigned_count > 0 and project_id:
+                from app.modules.admin.services.project_service import project_service
+                project_service.bump_export_version(project_id)
+                for uid in affected_user_ids:
+                    project_service.bump_export_version_for_user(uid)
+            # 返回混合状态：前端可看到成功数和失败详情
+            raise HTTPException(
+                status_code=207,  # Multi-Status
+                detail=f"批量分配部分完成: {batch_err}"
+            ) from batch_err
+
+        # 全部成功 → bump 授权包版本
+        if assigned_count > 0:
+            from app.modules.admin.services.project_service import project_service
+            if project_id:
+                project_service.bump_export_version(project_id)
+            for uid in affected_user_ids:
+                project_service.bump_export_version_for_user(uid)
+            logger.info(f"[batch_assign] ✅ 全部成功: project_id={project_id!r} 新增 {assigned_count} 个角色，已 bump 版本")
+        else:
+            logger.info(f"[batch_assign] 完成但无新增: project_id={project_id!r} (可能全部已存在)")
 
         scope = f"项目 {project_id}" if project_id else "全局"
         return SuccessResponse(message=f"成功为{scope}分配 {assigned_count} 个用户角色")

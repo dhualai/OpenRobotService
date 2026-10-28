@@ -47,7 +47,7 @@ jobs:
           --health-timeout=5s
           --health-retries=10
       qdrant:
-        image: qdrant/qdrant:v1.10
+        image: qdrant/qdrant:v1.18.3
         ports:
           - "6333:6333"
           - "6334:6334"
@@ -103,6 +103,7 @@ jobs:
           PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
           PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
           PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
+          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
           PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
         run: |
           if [ -z "$PROD_TICKET_SSH_PRIVATE_KEY" ] \
@@ -147,6 +148,7 @@ jobs:
           PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
           PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
           PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
+          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
           PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
         run: |
           python automation/scripts/cli-ticket-gate.py \

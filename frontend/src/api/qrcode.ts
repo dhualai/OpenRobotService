@@ -84,6 +84,26 @@ export async function fetchQrcodeStats(): Promise<QrcodeStats> {
   return request('/qrcodes/stats/summary');
 }
 
+export interface QrcodeDownloadParams {
+  scope: 'selected' | 'page' | 'filtered' | 'range' | 'all';
+  qid_list?: number[];
+  status?: QrcodeStatus;
+  qrcode_type?: QrcodeType;
+  keyword?: string;
+  id_start?: number;
+  id_end?: number;
+}
+
+export async function downloadQrcodes(params: QrcodeDownloadParams): Promise<Blob> {
+  const data = await request<ArrayBuffer>('/qrcodes/batch-download', {
+    method: 'POST',
+    body: JSON.stringify(params),
+    responseType: 'arrayBuffer',
+    timeout: 120_000,
+  });
+  return new Blob([data], { type: 'application/zip' });
+}
+
 /**
  * 按场景值精确查一条二维码（摇人页「扫码进入」链路，登录即可访问）。
  *
