@@ -10198,8 +10198,8 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 .qr-filter-select, .qr-filter-input { flex: 1; min-width: 0; height: 34px; border-radius: 8px; border: 1px solid #e0e0e0; padding: 0 8px; font-size: 13px; background: #fff; }
 
 /* 工具栏 */
-.qr-toolbar { display: flex; gap: 8px; padding: 0 16px 12px; }
-.qr-toolbar .qr-btn { flex: 1; min-width: 0; justify-content: center; }
+.qr-toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; }
+.qr-toolbar .qr-btn { flex: 1 1 120px; min-width: 0; justify-content: center; }
 
 /* 按钮 */
 .qr-btn { display: inline-flex; align-items: center; gap: 4px; height: 34px; padding: 0 12px; border-radius: 8px; border: 1px solid transparent; font-size: 13px; cursor: pointer; transition: all .15s; }

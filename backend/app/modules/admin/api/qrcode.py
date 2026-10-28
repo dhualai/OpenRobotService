@@ -27,13 +27,20 @@ frontend:admin:other:show。
 
 永久码上限 10 万，批量生成有速率限制。
 """
+import asyncio
+import io
+import re
 import time
 import uuid
 import logging
+import zipfile
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi.responses import Response
+from pydantic import BaseModel, Field, PositiveInt
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -84,6 +91,22 @@ def _to_dict(q: WechatQrcode) -> dict:
 
 # ── 列表 ──
 
+def _filter_qrcodes(query, status=None, qrcode_type=None, keyword=None, batch_id=None):
+    if status:
+        query = query.filter(WechatQrcode.status == status)
+    if qrcode_type:
+        query = query.filter(WechatQrcode.type == qrcode_type)
+    if batch_id:
+        query = query.filter(WechatQrcode.batch_id == batch_id)
+    if keyword:
+        name_match = WechatQrcode.name.like(f"%{keyword}%")
+        try:
+            query = query.filter(or_(name_match, WechatQrcode.id == int(keyword.strip())))
+        except (ValueError, TypeError):
+            query = query.filter(name_match)
+    return query
+
+
 @router.get("", summary="获取二维码列表")
 async def list_qrcodes(
     status: Optional[str] = Query(None, description="按状态过滤"),
@@ -96,30 +119,118 @@ async def list_qrcodes(
 ):
     db: Session = db_manager.get_db()
     try:
-        query = db.query(WechatQrcode)
-        if status:
-            query = query.filter(WechatQrcode.status == status)
-        if qrcode_type:
-            query = query.filter(WechatQrcode.type == qrcode_type)
-        if batch_id:
-            query = query.filter(WechatQrcode.batch_id == batch_id)
-        if keyword:
-            kw = f"%{keyword}%"
-            # scene_str 已改为 str(id)，不可再 like 查询；keyword 同时匹配 name 与 id（精确）
-            try:
-                kw_id = int(keyword.strip())
-                query = query.filter(or_(
-                    WechatQrcode.name.like(kw),
-                    WechatQrcode.id == kw_id,
-                ))
-            except (ValueError, TypeError):
-                query = query.filter(WechatQrcode.name.like(kw))
+        query = _filter_qrcodes(db.query(WechatQrcode), status, qrcode_type, keyword, batch_id)
 
         total = query.count()
         items = query.order_by(WechatQrcode.created_at.desc()).offset(skip).limit(limit).all()
         return {"total": total, "items": [_to_dict(q) for q in items]}
     finally:
         db.close()
+
+
+class QrcodeDownloadRequest(BaseModel):
+    scope: Literal["selected", "page", "filtered", "range", "all"]
+    qid_list: Optional[List[PositiveInt]] = Field(None, max_length=500)
+    status: Optional[Literal["init", "entering", "published", "deprecated"]] = None
+    qrcode_type: Optional[Literal["temporary", "permanent"]] = None
+    keyword: Optional[str] = None
+    batch_id: Optional[str] = None
+    id_start: Optional[PositiveInt] = None
+    id_end: Optional[PositiveInt] = None
+
+
+async def _fetch_qrcode_image(client: httpx.AsyncClient, ticket: str):
+    async with client.stream(
+        "GET", "https://mp.weixin.qq.com/cgi-bin/showqrcode", params={"ticket": ticket},
+    ) as response:
+        response.raise_for_status()
+        image = bytearray()
+        async for chunk in response.aiter_bytes():
+            image.extend(chunk)
+            if len(image) > 2 * 1024 * 1024:
+                raise ValueError("二维码图片超过 2 MB")
+    content = bytes(image)
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return content, "png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return content, "jpg"
+    raise ValueError("微信未返回有效二维码图片，ticket 可能已失效")
+
+
+@router.post("/batch-download", summary="按范围批量下载二维码 ZIP")
+async def batch_download_qrcodes(
+    data: QrcodeDownloadRequest,
+    current_user=require_permission("frontend:admin:other:show"),
+):
+    if data.scope in ("selected", "page") and not data.qid_list:
+        raise HTTPException(status_code=400, detail="请选择要下载的二维码")
+    if data.scope == "range" and (
+        data.id_start is None or data.id_end is None or data.id_start > data.id_end
+    ):
+        raise HTTPException(status_code=400, detail="请填写有效的起止 ID，起始 ID 不能大于结束 ID")
+
+    db: Session = db_manager.get_db()
+    try:
+        query = db.query(WechatQrcode)
+        if data.scope in ("selected", "page"):
+            query = query.filter(WechatQrcode.id.in_(data.qid_list))
+        elif data.scope == "filtered":
+            query = _filter_qrcodes(query, data.status, data.qrcode_type, data.keyword, data.batch_id)
+        elif data.scope == "range":
+            query = query.filter(WechatQrcode.id.between(data.id_start, data.id_end))
+        rows = query.order_by(WechatQrcode.id).limit(501).all()
+        records = [(row.id, row.name, row.ticket) for row in rows]
+    finally:
+        db.close()
+
+    if not records:
+        raise HTTPException(status_code=404, detail="所选范围内没有二维码")
+    if len(records) > 500:
+        raise HTTPException(status_code=400, detail="单次最多下载 500 条，请缩小下载范围")
+    if not any(ticket for _, _, ticket in records):
+        raise HTTPException(status_code=400, detail="所选范围内尚未生成 ticket，请先批量生成")
+
+    semaphore = asyncio.Semaphore(10)
+
+    async def download(record, client):
+        qid, name, ticket = record
+        if not ticket:
+            return qid, name, None, "未生成 ticket，已跳过"
+        async with semaphore:
+            try:
+                image, extension = await _fetch_qrcode_image(client, ticket)
+                return qid, name, (image, extension), None
+            except (httpx.HTTPError, ValueError):
+                logger.warning("二维码图片下载失败: id=%s", qid)
+                return qid, name, None, "图片下载失败，ticket 可能已失效，请重试"
+
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(download(record, client) for record in records)), timeout=90,
+            )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="下载超时，请缩小范围后重试")
+    success_count = sum(image is not None for _, _, image, _ in results)
+    if not success_count:
+        raise HTTPException(status_code=502, detail="二维码图片全部下载失败，请检查 ticket 是否有效后重试")
+
+    archive = io.BytesIO()
+    summary = [f"范围内共 {len(records)} 条，成功 {success_count} 条，跳过或失败 {len(records) - success_count} 条。"]
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+        for qid, name, image, error in results:
+            if error:
+                summary.append(f"ID {qid}：{error}")
+                continue
+            content, extension = image
+            safe_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name or "二维码")[:80].rstrip(" .")
+            output.writestr(f"{qid}_{safe_name or '二维码'}.{extension}", content)
+        output.writestr("下载说明.txt", "\n".join(summary).encode("utf-8-sig"))
+    filename = f"qrcodes_{datetime.now():%Y%m%d_%H%M%S}.zip"
+    return Response(
+        archive.getvalue(), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+    )
 
 
 # ── 按场景值查单条（扫码落地页用） ──
