@@ -22,6 +22,8 @@ vi.mock('@/shared/components/ReactECharts', () => ({
 vi.mock('@/api/wechat', () => ({
   fetchUserSummary: vi.fn(),
   fetchBatchUserInfo: vi.fn(),
+  // 日活统计页会在挂载时拉取 DAU，缺省 mock 会让 promise 链抛错
+  fetchUserDau: vi.fn(() => Promise.resolve({ success: true, list: [] })),
   USER_SOURCE_LABELS: { 0: '其他合计' },
 }));
 
