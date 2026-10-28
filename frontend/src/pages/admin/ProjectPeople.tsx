@@ -575,64 +575,68 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
             {/* ===== 按组织模式 ===== */}
             {associateMode === 'dept' && (
               <>
-                {/* 公司选择 */}
-                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>选择公司</div>
-                <div style={{ marginBottom: 16 }}>
-                  {orgCompaniesLoading ? (
-                    <Loading text="加载公司..." />
-                  ) : orgCompanies.length === 0 ? (
-                    <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>暂无已审核公司</div>
-                  ) : (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {orgCompanies.map((c) => (
-                        <button
-                          key={c.id}
-                          type="button"
-                          onClick={() => {
-                            setOrgSelectedCompany(c.id);
-                            setOrgSelectedDept(null);
-                            setOrgDeptMembers([]);
-                          }}
-                          style={{
-                            padding: '5px 12px', fontSize: 12.5,
-                            background: orgSelectedCompany === c.id ? 'var(--mac-blue, #3a7afe)' : '#f2f3f5',
-                            color: orgSelectedCompany === c.id ? '#fff' : 'var(--mac-fg)',
-                            borderRadius: 16, border: 'none', cursor: 'pointer', fontWeight: 500,
-                          }}
-                        >
-                          {c.name}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* 部门选择 */}
-                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>选择部门</div>
-                <div style={{ marginBottom: 16 }}>
-                  {orgDepartmentsLoading ? (
-                    <Loading text="加载部门..." />
-                  ) : visibleDepartments.length === 0 ? (
-                    <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>
-                      {orgSelectedCompany ? '该公司暂无已审核部门' : '请先选择公司'}
-                    </div>
-                  ) : (
-                    visibleDepartments.map((d) => (
-                      <div
-                        key={d.id}
-                        className={`mac-radio ${orgSelectedDept === d.id ? 'is-active' : ''}`}
-                        onClick={() => {
-                          setOrgSelectedDept(d.id);
-                          fetchDeptMembers(d.id);
+                {/* 公司 + 部门 联动下拉 */}
+                <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', marginBottom: 4 }}>选择公司</div>
+                    {orgCompaniesLoading ? (
+                      <Loading text="加载中..." />
+                    ) : orgCompanies.length === 0 ? (
+                      <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', padding: '8px 0' }}>暂无已审核公司</div>
+                    ) : (
+                      <select
+                        value={orgSelectedCompany ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value || null;
+                          setOrgSelectedCompany(v);
+                          setOrgSelectedDept(null);
+                          setOrgDeptMembers([]);
+                        }}
+                        style={{
+                          width: '100%', padding: '8px 10px', fontSize: 13,
+                          border: '1px solid var(--mac-border, #e8eaea)', borderRadius: 8,
+                          background: '#fff', color: 'var(--mac-fg)',
+                          height: 36, boxSizing: 'border-box',
                         }}
                       >
-                        <span className="mac-radio__dot">
-                          {orgSelectedDept === d.id && <span className="mac-radio__inner" />}
-                        </span>
-                        <span className="mac-radio__label">{d.name}</span>
-                      </div>
-                    ))
-                  )}
+                        <option value="">请选择公司</option>
+                        {orgCompanies.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', marginBottom: 4 }}>选择部门</div>
+                    {orgDepartmentsLoading ? (
+                      <Loading text="加载中..." />
+                    ) : !orgSelectedCompany ? (
+                      <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', padding: '8px 0' }}>请先选公司</div>
+                    ) : visibleDepartments.length === 0 ? (
+                      <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', padding: '8px 0' }}>该公司暂无已审核部门</div>
+                    ) : (
+                      <select
+                        value={orgSelectedDept ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value || null;
+                          setOrgSelectedDept(v);
+                          if (v) fetchDeptMembers(v);
+                          else setOrgDeptMembers([]);
+                        }}
+                        style={{
+                          width: '100%', padding: '8px 10px', fontSize: 13,
+                          border: '1px solid var(--mac-border, #e8eaea)', borderRadius: 8,
+                          background: '#fff', color: 'var(--mac-fg)',
+                          height: 36, boxSizing: 'border-box',
+                        }}
+                      >
+                        <option value="">请选择部门</option>
+                        {visibleDepartments.map((d) => (
+                          <option key={d.id} value={d.id}>{d.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
                 </div>
 
                 {/* 部门成员预览 */}
