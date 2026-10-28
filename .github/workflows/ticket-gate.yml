@@ -47,7 +47,7 @@ jobs:
           --health-timeout=5s
           --health-retries=10
       qdrant:
-        image: qdrant/qdrant:v1.10
+        image: qdrant/qdrant:v1.18.3
         ports:
           - "6333:6333"
           - "6334:6334"
