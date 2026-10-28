@@ -1,4 +1,5 @@
 from typing import Dict, List, Optional, Any
+import hashlib
 import json
 import logging
 import uuid
@@ -15,6 +16,71 @@ logger = logging.getLogger(__name__)
 
 # 角色名 -> role.id 的进程内缓存（仅缓存命中结果，未命中不缓存以便后续重试）
 _ROLE_NAME_ID_CACHE: Dict[str, str] = {}
+
+# ---- 拼接 ID 的安全上限 ----
+# 列宽已扩到 VARCHAR(255)，拼接 ID 整体预留 250 字符（留 5 字符余量）
+# 单段（user_id / project_id / role_id / permission_id）上限 60，已远超真实值
+_UPR_MAX_TOTAL = 250
+_SEG_MAX = 60
+
+
+def _seg(s: Any, name: str) -> str:
+    """对拼接 ID 中的一个业务段做 strip + 长度兜底裁剪 + 唯一性 hash 后缀。
+
+    - 短段（≤ _SEG_MAX）原样返回
+    - 长段（> _SEG_MAX）：保留前 50 + 后 4 + 中间 __ + 8 位 md5 指纹，
+      既保留可读性前缀，又保证裁剪后的结果全局唯一
+    """
+    s = str(s or "").strip()
+    if len(s) <= _SEG_MAX:
+        return s
+    digest = hashlib.md5(s.encode()).hexdigest()[:8]
+    trimmed = f"{s[:50]}__{s[-4:]}__{digest}"
+    logger.warning(
+        f"[id_builder] 段超长已裁剪: name={name} len={len(s)} raw={s!r} → {trimmed!r}"
+    )
+    return trimmed
+
+
+def build_upr_id(user_id: str, project_id: str, role_id: str) -> str:
+    """拼接 user_project_roles 主键 id，各段 strip + 兜底裁剪 + 整体长度限制。
+
+    原模式：f"upr_{user_id}_{project_id}_{role_id}"
+    各调用点必须统一使用本函数，否则会出现"INSERT 进新格式但已有老格式记录"
+    导致按字段查询时行为不一致（但不影响查询本身，因为查询都是按 (user_id,
+    project_id, role_id) 三字段 join，不重拼 id）。
+    """
+    uid = _seg(user_id, "user_id")
+    pid = _seg(project_id if project_id else "global", "project_id")
+    rid = _seg(role_id, "role_id")
+    raw = f"upr_{uid}_{pid}_{rid}"
+    if len(raw) <= _UPR_MAX_TOTAL:
+        return raw
+    digest = hashlib.md5(raw.encode()).hexdigest()[:12]
+    fallback = f"upr_{digest}"
+    logger.warning(
+        f"[id_builder] upr_id 整体超长已兜底: len={len(raw)} raw={raw!r} → {fallback!r}"
+    )
+    return fallback
+
+
+def build_rp_id(role_id: str, perm_id: str, extra_suffix: str = "") -> str:
+    """拼接 role_permissions 主键 id，同理。
+
+    原模式：f"rp_{role_id}_{perm_id}_{uuid4hex[:4]}"
+    """
+    rid = _seg(role_id, "role_id")
+    pid = _seg(perm_id, "permission_id")
+    suffix = extra_suffix.strip() if extra_suffix else uuid.uuid4().hex[:4]
+    raw = f"rp_{rid}_{pid}_{suffix}"
+    if len(raw) <= _UPR_MAX_TOTAL:
+        return raw
+    digest = hashlib.md5(raw.encode()).hexdigest()[:12]
+    fallback = f"rp_{digest}"
+    logger.warning(
+        f"[id_builder] rp_id 整体超长已兜底: len={len(raw)} raw={raw!r} → {fallback!r}"
+    )
+    return fallback
 
 
 def normalize_external_credentials(ec: Any) -> Dict[str, Dict[str, Any]]:
@@ -382,22 +448,36 @@ class IdentityService:
 
     @staticmethod
     def add_user_project_role(upid, uid, pid, rid, report_to_id=None) -> bool:
+        """为单个 user_project_role 执行 INSERT。
+
+        - 已存在（id 命中）→ 返回 False（幂等，不是错误）
+        - INSERT 执行异常 → rollback + 抛出 RuntimeError，不静默吞
+        - 插入成功 → 返回 True
+        """
+        # 防御：strip 掉 project_id / user_id / role_id 两端空白，避免 URL 编码残留或前端拼串错误
+        pid = (pid.strip() if isinstance(pid, str) else pid) or pid
+        uid = (uid.strip() if isinstance(uid, str) else uid) or uid
+        rid = (rid.strip() if isinstance(rid, str) else rid) or rid
+
         db = IdentityService._get_db()
         try:
+            logger.info(f"[upr_insert] 准备插入 upid={upid!r} uid={uid!r} pid={pid!r} rid={rid!r} report_to={report_to_id!r}")
             existing = db.execute(user_project_roles.select().where(
                 (user_project_roles.c.id == upid))).first()
             if existing:
+                logger.info(f"[upr_insert] 已存在，跳过: upid={upid!r}")
                 return False
             vals = {"id": upid, "user_id": uid, "project_id": pid, "role_id": rid}
             if report_to_id:
                 vals["report_to_id"] = report_to_id
             db.execute(user_project_roles.insert().values(**vals))
             db.commit()
+            logger.info(f"[upr_insert] ✅ 插入成功: upid={upid!r}")
             return True
         except Exception as e:
             db.rollback()
-            logger.error(f"添加用户项目角色失败 (upid={upid}, uid={uid}, pid={pid}, rid={rid}): {e}", exc_info=True)
-            return False
+            logger.error(f"[upr_insert] ❌ 插入失败: upid={upid!r} uid={uid!r} pid={pid!r} rid={rid!r} → {e}", exc_info=True)
+            raise RuntimeError(f"添加用户项目角色失败: {e}") from e
         finally:
             db.close()
 
@@ -431,29 +511,61 @@ class IdentityService:
         if not role_id:
             logger.warning(f"未找到角色，跳过授权: role_name={role_name!r}")
             return False
-        upr_id = f"upr_{user_id}_{project_id}_{role_id}"
+        upr_id = build_upr_id(user_id, project_id, role_id)
         return IdentityService.add_user_project_role(upr_id, user_id, project_id, role_id)
 
     @staticmethod
     def batch_add_user_project_roles(roles_data: List[dict]) -> int:
-        db = IdentityService._get_db()
-        try:
-            count = 0
-            for rd in roles_data:
+        """为 user_project_roles 批量 INSERT。
+
+        每行独立事务：已存在则跳过，失败不阻塞其他行。
+        全部成功返回 int 计数；存在任意失败行时，除返回成功数外还抛出 RuntimeError
+        供上层决定是否回滚（已落库的行不会因这个异常被自动撤销，调用方如需整体
+        原子性应自行组织业务回滚）。
+        """
+        # 防御：对每条记录里的 project_id / user_id / role_id 做 strip
+        cleaned: List[dict] = []
+        for rd in roles_data:
+            item = dict(rd)
+            for k in ('project_id', 'user_id', 'role_id'):
+                v = item.get(k)
+                if isinstance(v, str):
+                    item[k] = v.strip()
+            cleaned.append(item)
+
+        logger.info(f"[upr_batch] 开始批量插入，共 {len(cleaned)} 条: {cleaned!r}")
+
+        success_count = 0
+        failures: List[str] = []
+        for rd in cleaned:
+            db = IdentityService._get_db()
+            try:
                 existing = db.execute(user_project_roles.select().where(
                     user_project_roles.c.id == rd["id"])).first()
                 if existing:
+                    logger.info(f"[upr_batch] 已存在，跳过 id={rd['id']!r}")
                     continue
                 db.execute(user_project_roles.insert().values(**rd))
-                count += 1
-            db.commit()
-            return count
-        except Exception as e:
-            db.rollback()
-            logger.error(f"批量添加用户项目角色失败 (roles_data={roles_data}): {e}", exc_info=True)
-            return 0
-        finally:
-            db.close()
+                db.commit()
+                logger.info(f"[upr_batch] ✅ 插入成功 id={rd['id']!r}")
+                success_count += 1
+            except Exception as e:
+                db.rollback()
+                err_msg = f"id={rd.get('id')} user={rd.get('user_id')} project={rd.get('project_id')} role={rd.get('role_id')}: {e}"
+                logger.error(f"[upr_batch] ❌ 单行失败 ({err_msg})", exc_info=True)
+                failures.append(err_msg)
+            finally:
+                db.close()
+
+        logger.info(f"[upr_batch] 批量插入结束: 成功 {success_count}, 失败 {len(failures)}")
+        if failures:
+            err = RuntimeError(
+                f"批量添加用户项目角色部分失败 (成功 {success_count}, 失败 {len(failures)}): "
+                + "; ".join(failures)
+            )
+            err.success_count = success_count  # type: ignore[attr-defined]
+            raise err
+        return success_count
 
     @staticmethod
     def remove_user_project_role(user_id, project_id, role_id) -> bool:
@@ -700,6 +812,12 @@ class IdentityService:
 
     @staticmethod
     def get_project_members(project_id: str, include_usp: bool = False) -> List[Dict[str, Any]]:
+        # 防御：strip 掉 project_id 两端空白，避免 URL 编码残留 / 前端拼串错误
+        raw_pid = project_id
+        project_id = project_id.strip() if isinstance(project_id, str) else project_id
+        if raw_pid != project_id:
+            logger.warning(f"[get_members] project_id 含空白字符，已 strip: raw={raw_pid!r} → cleaned={project_id!r}")
+
         db = IdentityService._get_db()
         try:
             report_to_subquery = select(UserDB.username).where(
@@ -740,8 +858,10 @@ class IdentityService:
                 results = db.execute(stmt).fetchall()
             except Exception as e:
                 import traceback
-                print(f"查询项目成员失败: {traceback.format_exc()}")
+                logger.error(f"[get_members] SELECT 执行失败: project_id={project_id!r}\n{traceback.format_exc()}")
                 return []
+
+            logger.info(f"[get_members] project_id={project_id!r} include_usp={include_usp} → 命中 {len(results)} 行")
 
             members = []
             for result in results:
