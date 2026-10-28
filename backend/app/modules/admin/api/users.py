@@ -4,8 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 import traceback
 import time
+import logging
 from sqlalchemy import text
 from datetime import datetime
+
+logger = logging.getLogger("admin")
 
 from typing import Dict, Any
 from app.core.database import db_manager, get_user_with_roles, UserDB, get_async_db
@@ -1231,6 +1234,48 @@ async def update_user_uspinfo(
         external_credentials=external_credentials,
         avatar_resource_id=updated_user.get('avatar_resource_id')
     )
+
+
+@router.get("/by-department", summary="按部门拉取用户列表（供「按组织批量分配项目角色」使用）")
+async def get_users_by_department(
+    department_id: str = Query(..., description="部门 ID"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """返回指定部门下所有用户的轻量信息：id / username / name / company_id / department_id / USP 是否已配置。
+    不做权限过滤（部门主数据是全局共享主数据），仅做登录拦截。"""
+    dept_id = (department_id or '').strip()
+    if not dept_id:
+        raise HTTPException(status_code=400, detail="department_id 不能为空")
+
+    db = db_manager.get_db()
+    try:
+        from sqlalchemy import text as sa_text
+        # 同时抓 USP 配置状态（JSON_EXTRACT 返回字符串或 NULL）
+        sql = sa_text("""
+            SELECT id, username, name, company_id, department_id,
+                   JSON_UNQUOTE(JSON_EXTRACT(external_credentials, '$.usp.username')) AS usp_username,
+                   JSON_UNQUOTE(JSON_EXTRACT(external_credentials, '$.usp.password')) AS usp_password
+            FROM users
+            WHERE department_id = :dept_id
+        """)
+        rows = db.execute(sql, {"dept_id": dept_id}).mappings().all()
+        result = []
+        for r in rows:
+            usp_username = (r["usp_username"] or "").strip() if r["usp_username"] else ""
+            usp_password = r["usp_password"] or ""
+            result.append({
+                "id": r["id"],
+                "username": r["username"],
+                "name": r["name"] or r["username"],
+                "company_id": r["company_id"],
+                "department_id": r["department_id"],
+                "usp_configured": bool(usp_username and usp_password),
+            })
+        logger.info(f"[by-department] dept_id={dept_id!r} 返回 {len(result)} 个用户")
+        return result
+    finally:
+        db.close()
+
 
 @router.post("/project/assign-roles", response_model=SuccessResponse, summary="为项目批量分配用户角色和汇报人")
 async def batch_assign_project_roles(
