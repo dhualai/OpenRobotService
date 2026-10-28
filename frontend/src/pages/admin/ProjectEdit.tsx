@@ -17,7 +17,7 @@ export default function ProjectEdit() {
   useEffect(() => {
     if (id) {
       setLoading(true);
-      request<{ project_code: string; name: string; description: string; status: string }>(`/projects/${id}`)
+      request<{ project_code: string; name: string; description: string; status: string }>(`/projects/${encodeURIComponent(id)}`)
         .then((data) => setForm({ project_code: data.project_code, name: data.name, description: data.description, status: data.status }))
         .catch((err) => Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
         .finally(() => setLoading(false));
@@ -41,7 +41,7 @@ export default function ProjectEdit() {
         return;
       }
       if (id) {
-        await request(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(trimmed) });
+        await request(`/projects/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(trimmed) });
       } else {
         await request('/projects/', { method: 'POST', body: JSON.stringify(trimmed) });
       }

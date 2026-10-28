@@ -65,7 +65,7 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
         role_id: string; role_name: string; report_to_id?: string | null;
         external_credentials?: { usp?: { username?: string; password?: string } } | unknown[] | null;
       };
-      const rows = await request<MemberRow[]>(`/projects/${project.id}/members?include_usp=true`);
+      const rows = await request<MemberRow[]>(`/projects/${encodeURIComponent(project.id)}/members?include_usp=true`);
       const list = normalizeList<MemberRow>(rows);
       const byUsername = new Map<string, ExistingProjectUser>();
       for (const r of list) {
