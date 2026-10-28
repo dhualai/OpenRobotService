@@ -11,6 +11,7 @@ import {
   type QrcodeItem, type QrcodeStats, type QrcodeType, type QrcodeStatus,
 } from '@/api/qrcode';
 import { MacChevronRight, MacPlus, MacDownload, MacCheck, MacTrash2, MacRefreshCw, MacTags } from '@/shared/components/macaronIcons';
+import QrcodeDownloadPopup from './components/QrcodeDownloadPopup';
 
 type FilterStatus = '' | QrcodeStatus;
 type FilterType = '' | QrcodeType;
@@ -46,7 +47,7 @@ export default function QrcodeManage() {
   const [keyword, setKeyword] = useState('');
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [popup, setPopup] = useState<null | 'batch-create' | 'batch-generate' | { qr: QrcodeItem }>(null);
+  const [popup, setPopup] = useState<null | 'batch-create' | 'batch-generate' | 'batch-download' | { qr: QrcodeItem }>(null);
 
   // ── 加载 ──
   const loadList = useCallback(async () => {
@@ -349,6 +350,9 @@ export default function QrcodeManage() {
         <button className="qr-btn qr-btn--secondary" disabled={selected.size === 0} onClick={() => setPopup('batch-generate')}>
           <MacRefreshCw /> 批量生成 ({selected.size})
         </button>
+        <button className="qr-btn qr-btn--secondary" disabled={loading} onClick={() => setPopup('batch-download')}>
+          <MacDownload /> 批量下载
+        </button>
         <button className="qr-btn qr-btn--ghost" onClick={loadList}>刷新</button>
       </div>
 
@@ -422,6 +426,15 @@ export default function QrcodeManage() {
 
       <BatchCreatePopup />
       <BatchGeneratePopup />
+      {popup === 'batch-download' && (
+        <QrcodeDownloadPopup
+          selectedIds={[...selected]}
+          pageIds={items.map((item) => item.id)}
+          filteredTotal={total}
+          filters={{ status: filterStatus || undefined, qrcode_type: filterType || undefined, keyword: keyword.trim() || undefined }}
+          onClose={() => setPopup(null)}
+        />
+      )}
       <ImagePreview />
     </div>
   );
