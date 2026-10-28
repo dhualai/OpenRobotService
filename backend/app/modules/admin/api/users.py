@@ -4,8 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 import traceback
 import time
+import logging
 from sqlalchemy import text
 from datetime import datetime
+
+logger = logging.getLogger("admin")
 
 from typing import Dict, Any
 from app.core.database import db_manager, get_user_with_roles, UserDB, get_async_db
