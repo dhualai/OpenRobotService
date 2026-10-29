@@ -95,7 +95,7 @@ describe('MyRewards', () => {
     vi.clearAllMocks();
     mockFetchRewards.mockResolvedValue({ total: 2, page: 1, size: 20, items: REWARDS });
     // 汇总金额刻意与列表金额不同，便于断言时区分「汇总卡」与「奖励卡」
-    mockFetchStats.mockResolvedValue({ pending_amount: 5000, pending_count: 1, withdrawn_amount: 7000 });
+    mockFetchStats.mockResolvedValue({ pending_amount: 9900, pending_count: 9, withdrawing_amount: 5000, withdrawing_count: 1, withdrawn_amount: 7000 });
   });
 
   it('渲染奖励列表金额与汇总（分 → 元）', async () => {
@@ -107,6 +107,8 @@ describe('MyRewards', () => {
     expect(screen.getByText('¥50.00')).toBeInTheDocument();
     expect(screen.getByText('¥70.00')).toBeInTheDocument();
     expect(screen.getByText('1 笔可提')).toBeInTheDocument();
+    expect(screen.queryByText('¥99.00')).not.toBeInTheDocument();
+    expect(screen.queryByText('9 笔可提')).not.toBeInTheDocument();
     expect(screen.getByText(/有效期至 2026-11-05/)).toBeInTheDocument();
   });
 
@@ -222,13 +224,54 @@ describe('MyRewards', () => {
   });
 
   it('切换状态筛选时按 status 重新拉取', async () => {
+    mockFetchRewards.mockImplementation(({ status }) => Promise.resolve({
+      total: status === 'withdrawing' ? 1 : REWARDS.length,
+      page: 1, size: 20,
+      items: status === 'withdrawing'
+        ? [{ ...REWARDS[0], id: 'r3', scene_name: '待确认奖励', status: 'withdrawing' }]
+        : REWARDS,
+    }));
     renderView();
-    await waitFor(() => expect(screen.getByTestId('reward-tab-pending')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('reward-tab-pending'));
+    await waitFor(() => expect(screen.getByTestId('reward-tab-withdrawing')).toBeInTheDocument());
+    expect(screen.queryByTestId('reward-tab-pending')).not.toBeInTheDocument();
+    expect(screen.getByTestId('reward-tab-withdrawing')).toHaveTextContent('待提现');
+    expect(screen.queryByRole('button', { name: '提现中' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('reward-tab-withdrawing'));
 
     await waitFor(() =>
-      expect(mockFetchRewards).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending' })),
+      expect(mockFetchRewards).toHaveBeenCalledWith(expect.objectContaining({ status: 'withdrawing' })),
     );
+    expect(await screen.findByText('待确认奖励')).toBeInTheDocument();
+    expect(screen.queryByText('邀新活动')).not.toBeInTheDocument();
+    expect(screen.queryByText('签到奖励')).not.toBeInTheDocument();
+  });
+
+  it('没有原提现中奖励时不把其他待领取金额计入汇总', async () => {
+    mockFetchStats.mockResolvedValue({
+      pending_amount: 9900, pending_count: 9,
+      withdrawing_amount: 0, withdrawing_count: 0, withdrawn_amount: 7000,
+    });
+    renderView();
+    await screen.findByText('邀新活动');
+    expect(screen.getByText('¥0.00')).toBeInTheDocument();
+    expect(screen.getByText('0 笔可提')).toBeInTheDocument();
+    expect(screen.queryByText('¥99.00')).not.toBeInTheDocument();
+  });
+
+  it('原提现中奖励显示为待提现，继续确认仍使用原提现流程', async () => {
+    mockFetchRewards.mockResolvedValue({
+      total: 1, page: 1, size: 20,
+      items: [{ ...REWARDS[0], status: 'withdrawing' }],
+    });
+    mockWithdraw.mockResolvedValue({ action: 'processing', message: '请稍后查看' });
+    renderView();
+    const action = await screen.findByTestId('reward-action-r1');
+    expect(screen.getAllByText('待提现')).toHaveLength(2);
+    expect(screen.queryByText('提现中')).not.toBeInTheDocument();
+    expect(action).toHaveTextContent('继续确认');
+    fireEvent.click(action);
+    await waitFor(() => expect(mockWithdraw).toHaveBeenCalledWith('r1', undefined));
+    expect(mockTransfer).not.toHaveBeenCalled();
   });
 
   it('提现接口失败时给出错误提示', async () => {
