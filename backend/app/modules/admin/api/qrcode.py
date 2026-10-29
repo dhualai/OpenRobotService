@@ -34,7 +34,7 @@ import time
 import uuid
 import logging
 import zipfile
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import List, Literal, Optional
 
 import httpx
@@ -91,7 +91,20 @@ def _to_dict(q: WechatQrcode) -> dict:
 
 # ── 列表 ──
 
-def _filter_qrcodes(query, status=None, qrcode_type=None, keyword=None, batch_id=None):
+def _filter_qrcodes(
+    query, status=None, qrcode_type=None, keyword=None, batch_id=None,
+    date_start=None, date_end=None, date_field="created_at",
+):
+    if date_start and date_end and date_start > date_end:
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+    date_column = WechatQrcode.ticket_created_at if date_field == "ticket_created_at" else WechatQrcode.created_at
+    try:
+        if date_start:
+            query = query.filter(date_column >= datetime.combine(date_start, datetime.min.time()) - timedelta(hours=8))
+        if date_end:
+            query = query.filter(date_column <= datetime.combine(date_end, datetime.max.time()) - timedelta(hours=8))
+    except OverflowError:
+        raise HTTPException(status_code=400, detail="日期超出支持范围")
     if status:
         query = query.filter(WechatQrcode.status == status)
     if qrcode_type:
@@ -113,16 +126,21 @@ async def list_qrcodes(
     qrcode_type: Optional[str] = Query(None, description="按类型过滤: temporary/permanent"),
     keyword: Optional[str] = Query(None, description="按 name 模糊 / id 精确搜索"),
     batch_id: Optional[str] = Query(None, description="按批次过滤"),
+    date_start: Optional[date] = Query(None, description="开始日期（北京时间，包含当天）"),
+    date_end: Optional[date] = Query(None, description="结束日期（北京时间，包含当天）"),
+    date_field: Literal["created_at", "ticket_created_at"] = Query("created_at", description="日期字段"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     current_user=require_permission("frontend:admin:other:show"),
 ):
     db: Session = db_manager.get_db()
     try:
-        query = _filter_qrcodes(db.query(WechatQrcode), status, qrcode_type, keyword, batch_id)
+        query = _filter_qrcodes(
+            db.query(WechatQrcode), status, qrcode_type, keyword, batch_id, date_start, date_end, date_field,
+        )
 
         total = query.count()
-        items = query.order_by(WechatQrcode.created_at.desc()).offset(skip).limit(limit).all()
+        items = query.order_by(WechatQrcode.created_at.desc(), WechatQrcode.id.desc()).offset(skip).limit(limit).all()
         return {"total": total, "items": [_to_dict(q) for q in items]}
     finally:
         db.close()
@@ -135,6 +153,9 @@ class QrcodeDownloadRequest(BaseModel):
     qrcode_type: Optional[Literal["temporary", "permanent"]] = None
     keyword: Optional[str] = None
     batch_id: Optional[str] = None
+    date_start: Optional[date] = None
+    date_end: Optional[date] = None
+    date_field: Literal["created_at", "ticket_created_at"] = "created_at"
     id_start: Optional[PositiveInt] = None
     id_end: Optional[PositiveInt] = None
 
@@ -175,7 +196,10 @@ async def batch_download_qrcodes(
         if data.scope in ("selected", "page"):
             query = query.filter(WechatQrcode.id.in_(data.qid_list))
         elif data.scope == "filtered":
-            query = _filter_qrcodes(query, data.status, data.qrcode_type, data.keyword, data.batch_id)
+            query = _filter_qrcodes(
+                query, data.status, data.qrcode_type, data.keyword, data.batch_id,
+                data.date_start, data.date_end, data.date_field,
+            )
         elif data.scope == "range":
             query = query.filter(WechatQrcode.id.between(data.id_start, data.id_end))
         rows = query.order_by(WechatQrcode.id).limit(501).all()

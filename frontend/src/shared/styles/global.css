@@ -10196,6 +10196,9 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 /* 筛选栏 */
 .qr-filter { display: flex; gap: 6px; padding: 0 16px 8px; }
 .qr-filter-select, .qr-filter-input { flex: 1; min-width: 0; height: 34px; border-radius: 8px; border: 1px solid #e0e0e0; padding: 0 8px; font-size: 13px; background: #fff; }
+.qr-date-filter { margin: 0 16px 12px; padding: 12px; border: 1px solid #e0e0e0; border-radius: 10px; background: #fff; }
+.qr-date-filter .qr-field-group { min-width: 0; }
+.qr-selection-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 12px; font-size: 12px; color: #555; }
 
 /* 工具栏 */
 .qr-toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 12px; }
