@@ -85,7 +85,7 @@ export default function ProjectEdit() {
         <FormItem
           label="项目编码"
           name="project_code"
-          help={projectCodeTouched && codeError ? { content: codeError, type: 'error' } : { content: '字母/数字/下划线，最多 64 字符；留空自动生成', type: 'default' }}
+          help={projectCodeTouched && codeError ? <span style={{ color: '#e34d59' }}>{codeError}</span> : '字母/数字/下划线，最多 64 字符；留空自动生成'}
         >
           <ClearableInput
             value={form.project_code}
@@ -95,7 +95,7 @@ export default function ProjectEdit() {
               setProjectCodeTouched(true);
             }}
             placeholder="选填，留空自动生成"
-            maxLength={PROJECT_CODE_MAX_LEN}
+            maxlength={PROJECT_CODE_MAX_LEN}
           />
         </FormItem>
         <FormItem label="项目名称" name="name">
