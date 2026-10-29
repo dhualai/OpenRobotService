@@ -537,14 +537,13 @@ class DiscussFlow:
         # - 关键词表**故意保留**作为兜底：分类失败/低置信时 _llm_challenge 是 None，
         #   而「用户在质疑就必须真重跑」是产品承诺，不能因为一次分类抖动就失守。
         #
-        # ⚠️ 初始化必须在**这里**（用到它的地方之上）：Router 那段在下面 3.2b。
-        #    放后面会 UnboundLocalError —— 每一次 @U老师 都会炸（2026-10-15 生产踩过）。
+        # ⚠️ _llm_challenge 初始化必须在**这里**（Router 在下面 3.2b 赋值）。
+        #    _ask_reanalyze_log 在 Router 之后计算，确保语义判断生效。
         _llm_challenge: bool | None = None
         _kw_reanalyze = bool(
             query
             and any(kw in query for kw in ("重新分析", "再分析", "重新看", "再看一下", "分析是错的", "分析错了", "不对吧", "之前分析", "重新查"))
         )
-        _ask_reanalyze_log = bool(_llm_challenge) or _kw_reanalyze
 
         # 3.1 构造给调度 LLM 看的能力描述清单（只把"当前可用的、有意义的"交给它）
         #   - 确定性程序护栏：能力所需资源缺失时直接从可用清单剔除，避免 LLM 派发必然失败的能力
@@ -656,55 +655,12 @@ class DiscussFlow:
                 disc = f"{state_block}\n## 最近讨论（原文）\n{disc}"
             return desc, disc
 
-        description_for_prompt, discussion_history = await _fit_history(for_plan=True)
-
-        task_ctx_for_plan = (
-            f"工单: {ctx.title or ''}\n"
-            f"描述: {description_for_prompt}\n"
-            f"假设: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}\n"
-            f"用户问题: {query or '（本轮用户仅@U老师未附加文字，请基于下方讨论历史延续解答）'}\n"
-            f"{quoted_comment}"
-            f"{memory_block}"
-            f"本工单讨论历史（按时间，前文结论和追问都要接着用）:\n{discussion_history}\n"
-            f"{att_inventory}\n"
-            f"本次新增/未解读附件（需重点分析）:\n{new_txt}\n"
-            f"历史已解读附件摘要（**仅作历史参考**：图片结论稳定可复述；"
-            f"日志/文档摘要不代表已分析完成，若需分析请派 log_analyze 真实重读）:\n{known_txt}\n"
-            f"可用能力: {cap_hint}\n"
-            f"{project_roles}\n"
-            f"本项目现场信息目录（补充档案，只有组名，没有字段值）:\n{project_catalog}\n\n"
-            "根据用户问题（或讨论历史中未解决的疑问）和附件情况，决定派哪些能力分析"
-            "（知识库检索/图片/日志/历史/代码）。\n"
-            "规则：新增附件必分析；历史图片一般用其摘要即可（除非用户明确要重看）；\n"
-            "历史日志/文档摘要**不能替代真实分析**：用户可能说\"之前的分析是错的\"，"
-            "只要本问题需要从日志取证，就应派 log_analyze 真实分析日志（内部复用缓存索引，快）。\n"
-            "若附件只有「对话记录」md 且本轮**尚未**拉取到服务器算法日志：派 attachment_parse 读取聊天内容，"
-            "**不要说工单没有任何附件**，但要说清楚这不是车端日志、没法逐行分析 log。"
-            "一旦已从 USP 拉到算法日志，**禁止**再说「只有对话记录/没有车端日志」。\n"
-            "若问题属于知识问答（怎么操作/错误码含义/协议标准/产品介绍/排查方法）→ 派 retrieve_kb 查知识库。\n"
-            "问「项目对接人 / 项目经理 / 销售是谁」→ 直接用上方「项目主数据角色」回答，"
-            "complexity=simple，**不要**派 project_info（现场档案是补充，对接人权威在 project 表）。\n"
-            "若用户要看现场信息，或问题依赖车型、软件版本、外设、业务系统、档案人员、风险"
-            " → 派 project_info，目标里保留用户原话。"
-            "用户明确要「项目信息」时可以展开已填字段；只是闲聊就不要派。\n"
-            "若当前轮仅@U老师无新问题，但讨论历史有未决疑问或刚提到需要分析的内容 → 仍应继续深化分析。\n"
-            "若确无实质内容可派、只需总结/寒暄，则 complexity=simple 不派生任何能力。"
-        )
-
-        # 3.2 是否值得走 Supervisor 调度？
-        #    无条件进入：query 非空，**或** 有讨论历史（支持用户上一条说了内容但忘记@U老师、
-        #    本条只发 @U老师「补召唤」的场景——此时 query 为空也要基于讨论历史解答）。
-        #    由 Supervisor「大脑」自行判断要不要派发能力（知识库 retrieve_kb / 历史 / 日志 /
-        #    图片 / 代码）还是 complexity=simple 直接回复。纯闲聊由 3.2b 的 Router
-        #    （is_pure_chat）把关，不进 Supervisor。
-        has_discussion = bool(discussion_lines)
-        need_supervisor = bool(query) or has_discussion or bool(quoted_comment)
-
-        # 3.2b LLM 意图路由（改造点 A / G1）：识别纯闲聊 → 走短 prompt 快路径，
-        #      不派生任何工具/子 Agent，省一次 Supervisor 调度 + token。
+        # 3.2b LLM 意图路由（提前到 _fit_history 之前）：
+        #      先做意图分类，pure_chat 直接跳过 _fit_history(for_plan=True) 的 LLM 压缩调用，
+        #      省一次 LLM round-trip + token。同时修复：Router 的 challenge 判定现在能被
+        #      _ask_reanalyze_log 正确使用（此前 _ask_reanalyze_log 在 Router 之前计算，
+        #      _llm_challenge 恒为 None，语义判断实际未生效）。
         is_pure_chat = False
-        # 意图分类顺带判「用户是否在质疑此前的结论」—— 不再单靠关键词表。
-        # _llm_challenge 在上面 3.0（_ask_reanalyze_log 之前）已初始化，这里只赋值。
         if query:
             try:
                 from ai.agents.AiTaskPlatform.capabilities import Router
@@ -727,10 +683,62 @@ class DiscussFlow:
             except Exception:
                 is_pure_chat = False
 
+        # 现在 _llm_challenge 已由 Router 填充（或 fallback 保持 None），再计算 _ask_reanalyze_log
+        _ask_reanalyze_log = bool(_llm_challenge) or _kw_reanalyze
+
         if _role_q:
             # 角色问句已有主数据，不再进 Supervisor，避免派档案能力冲掉答案
-            need_supervisor = False
             is_pure_chat = False
+
+        # 3.3 构造 Supervisor 规划上下文（pure_chat / 角色问句短路时跳过，省一次 LLM 压缩）
+        if not is_pure_chat:
+            description_for_prompt, discussion_history = await _fit_history(for_plan=True)
+
+            task_ctx_for_plan = (
+                f"工单: {ctx.title or ''}\n"
+                f"描述: {description_for_prompt}\n"
+                f"假设: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}\n"
+                f"用户问题: {query or '（本轮用户仅@U老师未附加文字，请基于下方讨论历史延续解答）'}\n"
+                f"{quoted_comment}"
+                f"{memory_block}"
+                f"本工单讨论历史（按时间，前文结论和追问都要接着用）:\n{discussion_history}\n"
+                f"{att_inventory}\n"
+                f"本次新增/未解读附件（需重点分析）:\n{new_txt}\n"
+                f"历史已解读附件摘要（**仅作历史参考**：图片结论稳定可复述；"
+                f"日志/文档摘要不代表已分析完成，若需分析请派 log_analyze 真实重读）:\n{known_txt}\n"
+                f"可用能力: {cap_hint}\n"
+                f"{project_roles}\n"
+                f"本项目现场信息目录（补充档案，只有组名，没有字段值）:\n{project_catalog}\n\n"
+                "根据用户问题（或讨论历史中未解决的疑问）和附件情况，决定派哪些能力分析"
+                "（知识库检索/图片/日志/历史/代码）。\n"
+                "规则：新增附件必分析；历史图片一般用其摘要即可（除非用户明确要重看）；\n"
+                "历史日志/文档摘要**不能替代真实分析**：用户可能说\"之前的分析是错的\"，"
+                "只要本问题需要从日志取证，就应派 log_analyze 真实分析日志（内部复用缓存索引，快）。\n"
+                "若附件只有「对话记录」md 且本轮**尚未**拉取到服务器算法日志：派 attachment_parse 读取聊天内容，"
+                "**不要说工单没有任何附件**，但要说清楚这不是车端日志、没法逐行分析 log。"
+                "一旦已从 USP 拉到算法日志，**禁止**再说「只有对话记录/没有车端日志」。\n"
+                "若问题属于知识问答（怎么操作/错误码含义/协议标准/产品介绍/排查方法）→ 派 retrieve_kb 查知识库。\n"
+                "问「项目对接人 / 项目经理 / 销售是谁」→ 直接用上方「项目主数据角色」回答，"
+                "complexity=simple，**不要**派 project_info（现场档案是补充，对接人权威在 project 表）。\n"
+                "若用户要看现场信息，或问题依赖车型、软件版本、外设、业务系统、档案人员、风险"
+                " → 派 project_info，目标里保留用户原话。"
+                "用户明确要「项目信息」时可以展开已填字段；只是闲聊就不要派。\n"
+                "若当前轮仅@U老师无新问题，但讨论历史有未决疑问或刚提到需要分析的内容 → 仍应继续深化分析。\n"
+                "若确无实质内容可派、只需总结/寒暄，则 complexity=simple 不派生任何能力。"
+            )
+
+        # 3.2 是否值得走 Supervisor 调度？
+        #    无条件进入：query 非空，**或** 有讨论历史（支持用户上一条说了内容但忘记@U老师、
+        #    本条只发 @U老师「补召唤」的场景——此时 query 为空也要基于讨论历史解答）。
+        #    由 Supervisor「大脑」自行判断要不要派发能力（知识库 retrieve_kb / 历史 / 日志 /
+        #    图片 / 代码）还是 complexity=simple 直接回复。纯闲聊由上面 3.2b 的 Router
+        #    （is_pure_chat）把关，不进 Supervisor。
+        has_discussion = bool(discussion_lines)
+        need_supervisor = bool(query) or has_discussion or bool(quoted_comment)
+
+        # 角色问句已有主数据，不再进 Supervisor（_role_q 在上面 3.0 已判定）
+        if _role_q:
+            need_supervisor = False
 
         if need_supervisor and available_caps and not is_pure_chat:
             supervisor = Supervisor(llm_client=self._llm_client)
@@ -1373,6 +1381,10 @@ class DiscussFlow:
                         facultative = "当前工单没有日志、图片或任何可解析的附件。请如实告知工程师，不要编造。"
 
             diag_summary = f"推测: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}"
+            # 如果有诊断报告摘要，追加"上次诊断结论"（根因一句话 + 置信度），供讨论参考
+            _ds = ctx.diag_summary
+            if _ds and _ds.get("root_cause"):
+                diag_summary += f"\n上次诊断结论: {_ds['root_cause']}（置信度{_ds.get('confidence', 0)}）"
             description_for_prompt, discussion_history = await _fit_history(facultative or "")
             prompt = DISCUSS_USER_TEMPLATE.format(
                 title=ctx.title or "",
