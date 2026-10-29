@@ -295,12 +295,18 @@ class RewardService:
         success_amt = case(
             (RewardRecord.status == RewardStatus.SUCCESS, RewardRecord.amount), else_=0
         )
+        withdrawing_amt = case(
+            (RewardRecord.status == RewardStatus.WITHDRAWING, RewardRecord.amount), else_=0
+        )
+        withdrawing_cnt = case((RewardRecord.status == RewardStatus.WITHDRAWING, 1), else_=0)
         row = (
             await db.execute(
                 select(
                     func.coalesce(func.sum(pending_amt), 0),
                     func.coalesce(func.sum(pending_cnt), 0),
                     func.coalesce(func.sum(success_amt), 0),
+                    func.coalesce(func.sum(withdrawing_amt), 0),
+                    func.coalesce(func.sum(withdrawing_cnt), 0),
                 ).where(RewardRecord.user_id == user_id)
             )
         ).one()
@@ -308,6 +314,8 @@ class RewardService:
             pending_amount=int(row[0] or 0),
             pending_count=int(row[1] or 0),
             withdrawn_amount=int(row[2] or 0),
+            withdrawing_amount=int(row[3] or 0),
+            withdrawing_count=int(row[4] or 0),
         )
 
     @staticmethod

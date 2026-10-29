@@ -20,10 +20,14 @@ class TestRewardStats(IsolatedAsyncioTestCase):
         self.pending_amounts = [101 + index for index in range(25)]
         for index, amount in enumerate(self.pending_amounts):
             self.add_reward(f'pending-{index}', RewardStatus.PENDING, amount)
-        for status in [RewardStatus.PENDING_AUDIT, RewardStatus.REJECTED, RewardStatus.WITHDRAWING, RewardStatus.EXPIRED]:
+        self.withdrawing_amounts = [1100 + index for index in range(25)]
+        for index, amount in enumerate(self.withdrawing_amounts):
+            self.add_reward(f'withdrawing-{index}', RewardStatus.WITHDRAWING, amount)
+        for status in [RewardStatus.PENDING_AUDIT, RewardStatus.REJECTED, RewardStatus.EXPIRED]:
             self.add_reward(status, status, 5000)
         self.add_reward('success', RewardStatus.SUCCESS, 7000)
         self.add_reward('other-pending', RewardStatus.PENDING, 99000, 'other-user')
+        self.add_reward('other-withdrawing', RewardStatus.WITHDRAWING, 77000, 'other-user')
         self.add_reward('other-success', RewardStatus.SUCCESS, 88000, 'other-user')
         self.session.commit()
 
@@ -69,3 +73,33 @@ class TestRewardStats(IsolatedAsyncioTestCase):
         self.assertEqual(stats.pending_amount, 0)
         self.assertEqual(stats.pending_count, 0)
         self.assertEqual(stats.withdrawn_amount, 0)
+        self.assertEqual(stats.withdrawing_amount, 0)
+        self.assertEqual(stats.withdrawing_count, 0)
+
+    async def test_withdrawing_total_matches_all_detail_pages_and_only_current_user(self):
+        stats = await RewardService.stats(self.db, 'current-user')
+        self.assertEqual(stats.withdrawing_amount, sum(self.withdrawing_amounts))
+        self.assertEqual(stats.withdrawing_count, 25)
+        items = []
+        for page in [1, 2]:
+            rows, total = await RewardService.list_rewards(self.db, 'current-user', RewardStatus.WITHDRAWING, page, 20)
+            self.assertEqual(total, stats.withdrawing_count)
+            items.extend(rows)
+        self.assertEqual(len(items), 25)
+        self.assertEqual(sum(reward.amount for reward in items), stats.withdrawing_amount)
+
+    async def test_withdrawing_total_tracks_confirmation_and_return_to_pending(self):
+        reward = self.session.get(RewardRecord, 'withdrawing-0')
+        reward.status = RewardStatus.SUCCESS
+        self.session.commit()
+        stats = await RewardService.stats(self.db, 'current-user')
+        self.assertEqual(stats.withdrawing_amount, sum(self.withdrawing_amounts[1:]))
+        self.assertEqual(stats.withdrawing_count, 24)
+        self.assertEqual(stats.withdrawn_amount, 7000 + self.withdrawing_amounts[0])
+        reward = self.session.get(RewardRecord, 'withdrawing-1')
+        reward.status = RewardStatus.PENDING
+        self.session.commit()
+        stats = await RewardService.stats(self.db, 'current-user')
+        self.assertEqual(stats.withdrawing_amount, sum(self.withdrawing_amounts[2:]))
+        self.assertEqual(stats.withdrawing_count, 23)
+        self.assertEqual(stats.pending_amount, sum(self.pending_amounts) + self.withdrawing_amounts[1])
