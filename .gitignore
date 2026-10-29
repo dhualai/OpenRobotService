@@ -76,6 +76,7 @@ ai/agents/AiTaskPlatform/memory/data/
 
 # ===== WorkBuddy 本地记忆/配置（跨会话记忆与自动化配置，仅本地，不入库）=====
 .workbuddy/
+.workbuddy-ai/
 
 # ===== topo-pack 临时工件 / 授权包（含敏感 token，禁止入库）=====
 .tmp_*/
