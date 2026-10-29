@@ -57,6 +57,7 @@ logs/
 
 # ===== Claude Code 本地设置 =====
 .claude/settings.local.json
+.claude/settings.json
 codebuddy.md
 
 # ===== CodeBuddy 本地记忆（跨会话记忆文件，仅本地，不入库）=====
@@ -75,6 +76,7 @@ ai/agents/AiTaskPlatform/memory/data/
 
 # ===== WorkBuddy 本地记忆/配置（跨会话记忆与自动化配置，仅本地，不入库）=====
 .workbuddy/
+.workbuddy-ai/
 
 # ===== topo-pack 临时工件 / 授权包（含敏感 token，禁止入库）=====
 .tmp_*/
@@ -188,6 +190,7 @@ _tmp_diag*.py
 /_probe_automation.py
 /_tmp_topo_agent_zip/
 .agents/skills/smart-dispatch-git/scripts/daily-sync-test.ps1
+.agents/skills/smart-dispatch-git/scripts/sync.ps1
 
 # ===== AiTaskPlatform 回归用例：含真实人名与工单正文，本地生成、不入库 =====
 ai/agents/AiTaskPlatform/regression/datasets/

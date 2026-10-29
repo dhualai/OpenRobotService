@@ -1352,11 +1352,11 @@ async def _hydrate_similar_from_db(
 ) -> list:
     """按向量检索顺序把 task_id 回表，补 status/project_name，并带上相似度分数。
 
-    分数来自 AI 侧 ticket_resolutions 检索（RRF 融合分，见
-    ai/core/retrieval.py:rank_similar_tickets），用于排序与阈值过滤；
-    **不是 0~1 的余弦相似度**，别当余弦读。
+    分数来自 AI 侧 ticket_resolutions 检索出参 ``score``（dense **余弦** 0~1，见
+    ai/core/retrieval.py:rank_similar_tickets），用于阈值过滤与调用方映射。
+    列表顺序仍由 AI 侧 RRF+verified 权重决定；勿把 score 再当 RRF 小分读。
     向量召回本身已闸在 review_status=approved，故这里不再按工单状态过滤。
-    min_score 给定时先过滤再截断。
+    min_score 给定时先过滤再截断（与 SIMILAR_TICKET_MIN_COSINE≈0.55 同量级）。
     """
     from app.modules.tasks.models.ticket import Task
     ids = []
@@ -1430,14 +1430,14 @@ async def get_similar_tasks(
     limit: int = Query(10, description="返回相似工单条数上限（按数量取前 N 条）"),
     min_score: float = Query(
         0.0, ge=0.0,
-        description="相似度阈值：低于该分的相似工单不返回（0=不过滤）。作用于 score（RRF 融合分）"),
+        description="相似度阈值：低于该分的相似工单不返回（0=不过滤）。作用于 score（dense 余弦 0~1）"),
     scope: str = Query("remind", description="返回深度：remind=轻量列表；review=附带知识沉淀报告与审核人/时间"),
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
     """相似工单（供审核页 / 讨论区 @# 用）：单一出口 —— Qdrant 已沉淀卡的向量召回。
 
-    出参 `similar` 按相似度降序，每项：
+    出参 `similar` 按检索侧排序（RRF+verified），每项：
 
     ```
     {
@@ -1446,7 +1446,7 @@ async def get_similar_tasks(
       "status": "archived",      // 工单当前状态
       "project_name": "XX项目",
       "archived": true,          // status == archived 的便捷位
-      "score": 0.0328,           // 相似度（RRF 融合分，仅排序/阈值用，非余弦 0~1）
+      "score": 0.72,             // dense 余弦相似度（0~1，可当百分比映射）
       "verified": "confirmed",   // confirmed / rejected / recurred / unknown
       "report": {                // 仅 scope=review 且该单有 approved 知识沉淀报告时存在
         "content": "## 问题…", "version": 2,
@@ -1457,7 +1457,8 @@ async def get_similar_tasks(
     ```
 
     - `limit`：按数量取前 N 条（默认 10，上限 30）。
-    - `min_score`：按阈值过滤（先过滤再截断）；0 表示不过滤。
+    - `min_score`：按余弦阈值过滤（先过滤再截断）；0 表示不过滤。
+      AI 侧另有 SIMILAR_TICKET_MIN_COSINE（默认 0.55）；前端常用同值再滤一道。
     - `scope=remind`（默认）不带 `report`；`scope=review` 带上。
     - 已沉淀 = Qdrant 里 review_status=approved 的卡（人工放行 + 知识沉淀审核通过）；
       Qdrant 不可用即返回空列表，不用 MySQL 兜底。排除自身、跨项目可分享。

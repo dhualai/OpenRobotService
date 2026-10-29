@@ -93,7 +93,7 @@ const isImageFile = (filename?: string): boolean => {
 };
 
 // ORS-1010 归档相似工单提示：归档编辑器打开时后台拉取，供归档人对照已沉淀的
-// 相似工单。score 是 RRF 融合分非余弦（后端文档明确警告），前端不展示分值。
+// 相似工单。score 是 dense 余弦（0~1）；前端仍不展示分值，只作阈值过滤。
 interface ArchiveSimilarItem {
   task_id: number;
   title: string;
@@ -362,8 +362,8 @@ export default function TaskDetailPage() {
   const [archiveGenStatus, setArchiveGenStatus] = useState('');
   const [showArchiveRejectPopup, setShowArchiveRejectPopup] = useState(false);
   // ORS-1010 归档相似工单提示：归档编辑器打开时后台拉取（与 AI 初稿生成并行），
-  // 展示已沉淀的相似工单供归档人对照；不展示相似度分值（RRF 融合分非余弦，
-  // 展示百分比会误导），只有"有没有、是哪几张"。
+  // 展示已沉淀的相似工单供归档人对照；不展示相似度分值（产品决定：只作对照参考），
+  // 只有「有没有、是哪几张」。score 为 dense 余弦，仅用于请求侧 min_score。
   const [archiveSimilar, setArchiveSimilar] = useState<ArchiveSimilarItem[]>([]);
   const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
   // ORS-1010：报告预览/编辑切换（生成完默认预览——用户先看到渲染结果含图片）
@@ -745,8 +745,7 @@ export default function TaskDetailPage() {
   };
 
   // ── ORS-1010：归档相似工单拉取（后台并行，不阻塞 AI 初稿生成）──
-  // min_score=0.015（RRF k=60 语义：至少一路检索排进前 6；rejected ×0.7 加权后
-  // 天然过不了线，被推翻的结论自动出局——生产实测有效匹配落在 0.0156~0.033）。
+  // min_score=0.55：与 AI 侧 SIMILAR_TICKET_MIN_COSINE 对齐（dense 余弦 0~1）。
   // 用默认 remind scope：review scope 要求该单正在审核中且有审核权限（会 403），
   // 归档人写报告阶段用不到 report 内容，remind 字段（score/verified/status）已够。
   // verified=rejected 再前端兜底过滤。
@@ -756,7 +755,7 @@ export default function TaskDetailPage() {
     setExpandedSimilar(new Set()); // 重新拉取即收起所有展开（弹窗重开也从收起态开始）
     try {
       const res = await request<{ task_id: number; retrieval_status?: string; similar: ArchiveSimilarItem[] }>(
-        `/${taskId}/similar?limit=5&min_score=0.015`,
+        `/${taskId}/similar?limit=5&min_score=0.55`,
       );
       const list = (res?.similar || []).filter((s) => s.verified !== 'rejected');
       setArchiveSimilar(list.slice(0, 5));
@@ -2977,9 +2976,9 @@ export default function TaskDetailPage() {
                   只有报告填写区滚动（flex 中段），相似块与按钮行固定 */}
               <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
           {/* ORS-1010 相似工单提示：知识沉淀人对照已沉淀的相似工单（与 AI 初稿并行
-              拉取）。不展示相似度分值——score 是 RRF 融合分非余弦，展示数字会
-              误导。verified=rejected 已被推翻，不出示。0 条且检索正常时也提示
-              （功能存在感 + 讲清沉淀机制）；检索挂了保持静默。 */}
+              拉取）。不展示相似度分值（产品决定）。verified=rejected 已被推翻，
+              不出示。0 条且检索正常时也提示（功能存在感 + 讲清沉淀机制）；
+              检索挂了保持静默。 */}
           {(archiveSimilar.length > 0 || archiveSimilarLoading || archiveSimilarReady) && (
             <div style={{
               paddingTop: 12, borderTop: '1px solid var(--border, #e8eaee)', flexShrink: 0,

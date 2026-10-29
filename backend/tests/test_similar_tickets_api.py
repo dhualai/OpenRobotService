@@ -69,17 +69,19 @@ async def test_hydrate_carries_score_and_verified_in_vector_order():
         SimpleNamespace(id=202, title="B", status=TaskStatus.CLOSED, project_name=""),
     ]
     items = [
-        {"task_id": 101, "score": 0.42, "verified": "confirmed"},
-        {"task_id": 202, "score": 0.01},
+        {"task_id": 101, "score": 0.72, "verified": "confirmed"},
+        {"task_id": 202, "score": 0.56},
     ]
 
     out = await task_api._hydrate_similar_from_db(_db_tasks(rows), items, 1, 10)
 
     assert [it["task_id"] for it in out] == [101, 202]   # 保持向量顺序
-    assert out[0]["score"] == 0.42
+    assert out[0]["score"] == 0.72
     assert out[0]["verified"] == "confirmed"
-    assert out[1]["score"] == 0.01
+    assert out[1]["score"] == 0.56
     assert out[1]["verified"] == "unknown"               # 缺省兜底
+    # 余弦量级：≥0.5，不是旧 RRF（≪0.1）
+    assert out[0]["score"] >= 0.5
 
 
 @pytest.mark.asyncio
@@ -88,10 +90,10 @@ async def test_hydrate_min_score_filters_then_truncates():
         SimpleNamespace(id=101, title="A", status=TaskStatus.CLOSED, project_name=""),
         SimpleNamespace(id=202, title="B", status=TaskStatus.CLOSED, project_name=""),
     ]
-    items = [{"task_id": 101, "score": 0.42}, {"task_id": 202, "score": 0.01}]
+    items = [{"task_id": 101, "score": 0.72}, {"task_id": 202, "score": 0.40}]
 
     out = await task_api._hydrate_similar_from_db(
-        _db_tasks(rows), items, 1, 10, min_score=0.1)
+        _db_tasks(rows), items, 1, 10, min_score=0.55)
 
     assert [it["task_id"] for it in out] == [101]
 
@@ -162,7 +164,7 @@ def _wire(monkeypatch, calls):
 
     async def fake_hydrate(db, items, exclude_id, limit, min_score=None):
         return [{"task_id": 101, "title": "旧相似", "status": "closed",
-                 "project_name": "", "archived": False, "score": 0.42,
+                 "project_name": "", "archived": False, "score": 0.72,
                  "verified": "confirmed"}]
 
     async def fake_attach(db, items):

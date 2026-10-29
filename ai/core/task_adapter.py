@@ -584,6 +584,8 @@ def load_task_context_dict(task_id) -> dict:
         meta = task.metadata_info or {}
         base["resolution_summary"] = meta.get("resolution_summary", "")
         base["ai_summary"] = meta.get("ai_summary", "")
+        # 诊断报告结构化摘要（diagnose_flow 写入，discuss 引用）
+        base["diag_summary"] = meta.get("diag_summary") or None
 
         # 合并最近评论（task_comments）上传的附件，复用 _dedup_attachments 去重
         comment_atts = _collect_comment_attachments(db, int(task_id))
@@ -739,6 +741,44 @@ def update_attachment_analysis(task_id, updates: dict) -> bool:
         import logging
         logging.getLogger(__name__).warning(
             f"[task_adapter] 更新附件记忆失败 task={task_id}: {e}"
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        db.close()
+
+
+def save_diag_summary(task_id, summary: dict) -> bool:
+    """把诊断报告的结构化摘要写入 metadata_info.diag_summary。
+
+    与 report_cache（进程内快照）互补：report_cache 存完整报告供同进程 @# 引用，
+    diag_summary 落库供跨进程 / 重启后 discuss 引用"上次诊断说了啥"。
+
+    summary 结构：{root_cause, confidence, missing_info, created_at}
+    - root_cause: 一句话根因（≤200字，从报告正文首条实质行截取）
+    - confidence: 0~1 置信度
+    - missing_info: 缺失信息列表（可能为空）
+    - created_at: ISO 时间戳
+
+    不存完整报告：报告是那一轮的结论，完整入库会过期误导。
+    """
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == int(task_id)).first()
+        if not task:
+            return False
+        meta = dict(task.metadata_info or {})
+        meta["diag_summary"] = summary
+        task.metadata_info = meta  # 整体替换，确保 SQLAlchemy JSON 列感知变更
+        db.commit()
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[task_adapter] 写入 diag_summary 失败 task={task_id}: {e}"
         )
         try:
             db.rollback()

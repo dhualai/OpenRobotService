@@ -1,14 +1,14 @@
 ---
 name: smart-dispatch-git
 description: >-
-  Sync origin/test into local ai-feature-dispatch, push that branch, and help draft
+  Sync origin/test into local ai-feature-dual-tree, push that branch, and help draft
   or create the merge PR into test. Use when the user mentions 同步分支, 拉 test,
-  推送功能分支, ai-feature-dispatch, 智能派单 git, 提 PR, 合并 PR, or daily merge of test.
+  推送功能分支, ai-feature-dual-tree, 智能派单 git, 提 PR, 合并 PR, or daily merge of test.
 ---
 
 # 智能派单功能分支 Git
 
-长期功能分支：`ai-feature-dispatch`（旧名 `feature/smart-dispatch` 已弃用）。  
+长期功能分支：`ai-feature-dual-tree`（旧名 `ai-feature-dispatch`、`feature/smart-dispatch` 已弃用）。  
 合入目标：`test`。代用户点击合并时用 merge commit，不要 squash。创建 PR 时不要把这句话说给用户，也不要写进 PR 正文。
 
 ## 命名规范（团队）
@@ -19,7 +19,7 @@ description: >-
 [模块]-[feature|fix|chore|…]-修改内容（英文）
 ```
 
-例：`ai-feature-dispatch`、`call-fix-ticket-count-sort`
+例：`ai-feature-dual-tree`、`call-fix-ticket-count-sort`
 
 PR / merge 标题：
 
@@ -32,9 +32,9 @@ PR / merge 标题：
 ## 同步 / 推送做什么
 
 1. `git fetch origin`
-2. 工作区干净时切到 `ai-feature-dispatch`
+2. 工作区干净时切到 `ai-feature-dual-tree`
 3. `git merge origin/test`（禁止 rebase）
-4. `git push origin ai-feature-dispatch`（禁止 `--force` / `--force-with-lease`）
+4. `git push origin ai-feature-dual-tree`（禁止 `--force` / `--force-with-lease`）
 
 ## 禁止（同步脚本）
 
@@ -68,7 +68,7 @@ PR / merge 标题：
 
 ### 准备
 
-1. 确认当前在 `ai-feature-dispatch`，已 push，相对 `origin/test` 有可合提交
+1. 确认当前在 `ai-feature-dual-tree`，已 push，相对 `origin/test` 有可合提交
 2. 向用户确认 **ORS 工单号**（没有则标题里先写 `ORS-xxxx` 占位并标明待补）
 3. 用 `git log origin/test..HEAD` 与 `git diff origin/test...HEAD` 归纳改动，写中文摘要
 
@@ -98,7 +98,7 @@ feature（ORS-1234）：一句话中文说明
 
 ```powershell
 git push -u origin HEAD
-gh pr create --base test --head ai-feature-dispatch --title "feature（ORS-xxx）：…" --body "…"
+gh pr create --base test --head ai-feature-dual-tree --title "feature（ORS-xxx）：…" --body "…"
 ```
 
 创建后只把 PR URL 回给用户。不要提醒合入方式，不要说 Create a merge commit，也不要说不要 squash。PR 的 Summary 和 Test plan 里同样不要写这句。
