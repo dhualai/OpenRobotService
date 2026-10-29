@@ -677,6 +677,51 @@ async def submit_new_project(
     return resp
 
 
+
+
+def _assert_option_review_permission(
+    current_user: Dict[str, Any],
+    sync_db,
+    target_type: str,
+    target_id: str,
+) -> None:
+    """审核通过 / 驳回公司·部门·项目的权限校验。
+
+    与前端 TaskDetailPage.tsx 按钮显示条件（isAssignee || hasPermission('backend:tasks:operate')）对齐：
+      - 用户是对应审核工单的处理人（assigned_to），或
+      - 拥有 backend:tasks:operate 权限
+    """
+    if has_permission_code(current_user, 'backend:tasks:operate'):
+        return
+
+    approval_type_map = {
+        'company': 'new_company',
+        'department': 'new_department',
+        'project': 'new_project',
+    }
+    approval_type = approval_type_map.get(target_type)
+    if approval_type:
+        from sqlalchemy import text as sa_text
+        row = sync_db.execute(
+            sa_text("""
+                SELECT assigned_to FROM tasks
+                WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.target_id')) = :target_id
+                  AND JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.approval_type')) = :approval_type
+                LIMIT 1
+            """),
+            {'target_id': target_id, 'approval_type': approval_type},
+        ).fetchone()
+        if row and row[0]:
+            username = current_user.get('username', '')
+            user_id = current_user.get('id', '')
+            if (username and row[0] == username) or (user_id and row[0] == user_id):
+                return
+
+    raise HTTPException(
+        status_code=403,
+        detail="无权限操作（需为审核工单处理人或拥有 backend:tasks:operate 权限）",
+    )
+
 @router.put("/options/{target_type}/{target_id}/approve", summary="管理员审核通过公司/部门/项目（可调整名称后通过）")
 async def approve_option(
     target_type: str,
@@ -687,14 +732,13 @@ async def approve_option(
     """审核通过。管理员可在 body 中传入 new_name / new_code 调整后再通过。"""
     if target_type not in ('company', 'department', 'project'):
         raise HTTPException(status_code=400, detail="类型必须是 company / department / project")
-    if current_user.get('username') != ADMIN_ASSIGNEE_ID:
-        raise HTTPException(status_code=403, detail="无权限操作")
 
     new_name = (data.get('new_name') or '').strip() if data else ''
     new_code = (data.get('new_code') or '').strip() if data else ''
 
     sync_db = db_manager.get_db()
     try:
+        _assert_option_review_permission(current_user, sync_db, target_type, target_id)
         if target_type == 'company':
             obj = sync_db.query(Company).filter(Company.id == target_id).first()
         elif target_type == 'department':
@@ -758,13 +802,12 @@ async def reject_option(
 ):
     if target_type not in ('company', 'department', 'project'):
         raise HTTPException(status_code=400, detail="类型必须是 company / department / project")
-    if current_user.get('username') != ADMIN_ASSIGNEE_ID:
-        raise HTTPException(status_code=403, detail="无权限操作")
 
     reason = (data.get('reason') or '').strip()
 
     sync_db = db_manager.get_db()
     try:
+        _assert_option_review_permission(current_user, sync_db, target_type, target_id)
         if target_type == 'company':
             obj = sync_db.query(Company).filter(Company.id == target_id).first()
         elif target_type == 'department':
