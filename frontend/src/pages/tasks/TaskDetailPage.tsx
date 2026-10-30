@@ -2118,47 +2118,60 @@ export default function TaskDetailPage() {
                 请审核以下信息，通过后该{approvalLabelMap[approvalInfo.type]}将对所有用户可见
               </div>
             </div>
-            {(getCurrentUserRoles().isAssignee || hasPermission('backend:tasks:operate')) ? (
-              <div style={{ display: 'flex', gap: 8 }}>
-              <Button
-                block
-                theme="primary"
-                loading={approving}
-                onClick={handleApprove}
-                style={{ borderRadius: '999px', backgroundColor: 'var(--blue-3)', color: '#fff', border: 'none' }}
-              >
-                通过
-              </Button>
-              <Button
-                block
-                theme="default"
-                variant="outline"
-                disabled={approving}
-                onClick={() => {
-                  setAdjustName(approvalInfo.targetName);
-                  setAdjustCode(approvalInfo.targetCode);
-                  setShowAdjustPopup(true);
-                }}
-                style={{ borderRadius: '999px' }}
-              >
-                调整后通过
-              </Button>
-              <Button
-                block
-                theme="danger"
-                variant="outline"
-                disabled={approving}
-                onClick={() => setShowRejectPopup(true)}
-                style={{ borderRadius: '999px' }}
-              >
-                驳回
-              </Button>
-              </div>
-            ) : (
-              <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
-                审核操作由工单处理人或管理员完成
-              </div>
-            )}
+            {(() => {
+              const isClosed = ['closed'].includes((detail.status || '').toLowerCase());
+              if (isClosed) {
+                return (
+                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
+                    该审核单已处理完毕
+                  </div>
+                );
+              }
+              if (getCurrentUserRoles().isAssignee || hasPermission('backend:tasks:operate')) {
+                return (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button
+                      block
+                      theme="primary"
+                      loading={approving}
+                      onClick={handleApprove}
+                      style={{ borderRadius: '999px', backgroundColor: 'var(--blue-3)', color: '#fff', border: 'none' }}
+                    >
+                      通过
+                    </Button>
+                    <Button
+                      block
+                      theme="default"
+                      variant="outline"
+                      disabled={approving}
+                      onClick={() => {
+                        setAdjustName(approvalInfo.targetName);
+                        setAdjustCode(approvalInfo.targetCode);
+                        setShowAdjustPopup(true);
+                      }}
+                      style={{ borderRadius: '999px' }}
+                    >
+                      调整后通过
+                    </Button>
+                    <Button
+                      block
+                      theme="danger"
+                      variant="outline"
+                      disabled={approving}
+                      onClick={() => setShowRejectPopup(true)}
+                      style={{ borderRadius: '999px' }}
+                    >
+                      驳回
+                    </Button>
+                  </div>
+                );
+              }
+              return (
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
+                  审核操作由工单处理人或管理员完成
+                </div>
+              );
+            })()}
           </div>
         )}
 
