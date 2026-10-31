@@ -184,7 +184,7 @@ def _run_pytest(
             "stdout": "",
             "stderr": "",
         }
-    command = [sys.executable, "-m", "pytest", *targets, "-p", "no:cacheprovider", "-q"]
+    command = [sys.executable, "-m", "pytest", "--import-mode=importlib", *targets, "-p", "no:cacheprovider", "-q"]
     if junit_path:
         command.extend(["--junitxml", str(junit_path)])
     if allure_dir:
