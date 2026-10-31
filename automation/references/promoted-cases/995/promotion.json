@@ -1,0 +1,15 @@
+{
+  "ticket_id": 995,
+  "ticket_type": "feature",
+  "project_id": "Leo_test",
+  "project_name": "摇人吧服务号",
+  "source_title": "拓扑平台功能移植升级到问题文档",
+  "case_count": 14,
+  "request_count": 35,
+  "review_status": "promoted",
+  "generated_at": "2026-10-30T20:01:11.638653+00:00",
+  "generator": "ticket_case_generator",
+  "spec_issues": [],
+  "promoted_at": "2026-10-31T05:58:43.112591+00:00",
+  "promoted_from": "D:\\WorkCode\\OpenRobotService\\automation\\references\\generated-cases\\tickets\\995"
+}

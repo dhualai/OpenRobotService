@@ -1,0 +1,13 @@
+{
+  "ticket_id": 1053,
+  "ticket_type": "bug",
+  "project_id": "Leo_test",
+  "project_name": "摇人吧服务号",
+  "source_title": "删除工单接口500报task_id不能为空",
+  "case_count": 10,
+  "request_count": 18,
+  "review_status": "approved",
+  "generated_at": "2026-10-30T20:00:11.120159+00:00",
+  "generator": "ticket_case_generator",
+  "spec_issues": []
+}

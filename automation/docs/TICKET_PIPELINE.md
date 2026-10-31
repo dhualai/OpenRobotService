@@ -17,6 +17,9 @@
 # 扫描生产候选工单
 python automation/scripts/cli-ticket-pipeline.py scan --limit 20
 
+# 按工单号查库取需求（只读，无视扫描过滤，按 id 直查）
+python automation/scripts/cli-ticket-pipeline.py get --ticket-id 837
+
 # 单工单生成
 python automation/scripts/cli-ticket-pipeline.py generate `
   --ticket-id 837 --title "..." --description "..."

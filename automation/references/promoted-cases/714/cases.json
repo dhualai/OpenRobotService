@@ -1,0 +1,632 @@
+[
+  {
+    "id": "TC001",
+    "req_id": "REQ-01",
+    "module": "自动化回归-范围定义",
+    "title": "常用基本功能回归集覆盖服务号核心链路（健康检查+菜单+消息推送）",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "服务号后端与微信测试环境可用，回归测试账号已关注服务号且具备消息接收权限",
+    "requests": [
+      {
+        "step": "Step 1: 服务号服务健康检查",
+        "method": "GET",
+        "path": "/api/wechat/health",
+        "expected_status": 200,
+        "auth": false
+      },
+      {
+        "step": "Step 2: 拉取当前服务号菜单配置",
+        "method": "GET",
+        "path": "/api/wechat/get_menu",
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 向测试用户发送一条消息",
+        "method": "POST",
+        "path": "/api/wechat/send_message",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "执行服务号健康检查接口",
+        "testData": "无",
+        "expectedResult": "接口返回 200，服务号服务状态正常"
+      },
+      {
+        "id": 2,
+        "step": "调用菜单查询接口获取当前菜单",
+        "testData": "无",
+        "expectedResult": "返回 200 且返回菜单结构，说明菜单配置能力在回归范围内可校验"
+      },
+      {
+        "id": 3,
+        "step": "向测试账号发送一条消息",
+        "testData": "测试 openid、测试消息内容",
+        "expectedResult": "返回 200，消息发送成功，说明消息推送链路可被自动化覆盖"
+      },
+      {
+        "id": 4,
+        "step": "核对冒烟回归集清单",
+        "testData": "范围清单：健康检查、菜单、消息推送、登录鉴权",
+        "expectedResult": "清单中每一项均能映射到至少一个可执行接口，范围边界明确无悬空项"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC002",
+    "req_id": "REQ-01",
+    "module": "自动化回归-范围定义",
+    "title": "非核心能力（群发）不纳入每轮冒烟回归，仅在专项回归中执行",
+    "type": "edge",
+    "priority": "P1",
+    "precondition": "回归范围清单已发布，冒烟集与专项集划分完成",
+    "requests": [
+      {
+        "step": "Step 1: 专项回归中验证群发消息能力",
+        "method": "POST",
+        "path": "/api/wechat/broadcast_message",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "检查冒烟回归集清单",
+        "testData": "冒烟集：健康检查、菜单、消息推送、登录鉴权",
+        "expectedResult": "群发、标签批量打标等低频高风险能力不在冒烟集中"
+      },
+      {
+        "id": 2,
+        "step": "在专项回归中执行群发消息接口",
+        "testData": "测试标签、测试消息内容",
+        "expectedResult": "返回 200，群发能力在专项集内可验证，且不会在每次发版时被误触发造成用户打扰"
+      },
+      {
+        "id": 3,
+        "step": "核对范围外功能的兜底方式",
+        "testData": "无",
+        "expectedResult": "范围外功能标记为“人工回归/小流量观察”，无遗漏项"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC003",
+    "req_id": "REQ-02",
+    "module": "自动化回归-流程建设",
+    "title": "自动化回归主流程可一次串行跑通：登录→权限→菜单→发消息",
+    "type": "flow",
+    "priority": "P0",
+    "precondition": "自动化回归流程与执行环境已配置，测试用户已在服务号内授权",
+    "requests": [
+      {
+        "step": "Step 1: 微信登录换取会话",
+        "method": "POST",
+        "path": "/api/wechat/login",
+        "expected_status": 200,
+        "auth": false
+      },
+      {
+        "step": "Step 2: 查询用户权限",
+        "method": "GET",
+        "path": "/api/wechat/permissions?openid=test_openid",
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 查询菜单配置",
+        "method": "GET",
+        "path": "/api/wechat/get_menu",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "触发自动化回归流程",
+        "testData": "测试 openid、回归任务配置",
+        "expectedResult": "流程按预设顺序执行，各步骤依次通过"
+      },
+      {
+        "id": 2,
+        "step": "观察各步骤执行结果",
+        "testData": "无",
+        "expectedResult": "登录、权限、菜单三步均返回 200，流程整体判定为通过"
+      },
+      {
+        "id": 3,
+        "step": "查看回归结果产出",
+        "testData": "无",
+        "expectedResult": "生成可读的回归报告，包含步骤耗时、通过率与失败明细，可替代人工逐条点测"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC004",
+    "req_id": "REQ-02",
+    "module": "自动化回归-流程建设",
+    "title": "登录态缺失时回归流程在首个鉴权步骤失败并终止",
+    "type": "negative",
+    "priority": "P1",
+    "precondition": "回归流程已配置，使用未登录的干净会话执行",
+    "requests": [
+      {
+        "step": "Step 1: 未带登录态直接调用菜单查询",
+        "method": "GET",
+        "path": "/api/wechat/get_menu",
+        "expected_status": 401,
+        "auth": false
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "清空登录态后触发回归流程",
+        "testData": "无 token / 无 cookie",
+        "expectedResult": "首步鉴权失败，接口返回 401"
+      },
+      {
+        "id": 2,
+        "step": "观察流程后续步骤",
+        "testData": "无",
+        "expectedResult": "流程立即终止，不再继续执行消息发送等写操作，避免无效数据产生"
+      },
+      {
+        "id": 3,
+        "step": "查看回归报告",
+        "testData": "无",
+        "expectedResult": "报告明确标记失败原因为“鉴权失败”，便于快速定位是环境问题还是代码问题"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC005",
+    "req_id": "REQ-03",
+    "module": "自动化回归-发版触发",
+    "title": "发版完成后自动触发冒烟回归并产出结果",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "发版流水线与回归触发钩子已接通，服务号测试环境可访问",
+    "requests": [
+      {
+        "step": "Step 1: 发版后校验服务健康状态",
+        "method": "GET",
+        "path": "/api/health?project_code=Leo_test",
+        "expected_status": 200,
+        "auth": false
+      },
+      {
+        "step": "Step 2: 校验服务号服务健康状态",
+        "method": "GET",
+        "path": "/api/wechat/health",
+        "expected_status": 200,
+        "auth": false
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "在流水线完成发版后观察回归任务",
+        "testData": "发版版本号、项目编码 Leo_test",
+        "expectedResult": "无需人工点击，回归任务被自动创建并开始执行"
+      },
+      {
+        "id": 2,
+        "step": "查看健康检查结果",
+        "testData": "无",
+        "expectedResult": "两个健康检查接口均返回 200，服务可用"
+      },
+      {
+        "id": 3,
+        "step": "查看回归任务记录",
+        "testData": "无",
+        "expectedResult": "记录中带有本次发版版本号，回归结果与版本一一对应，可追溯"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC006",
+    "req_id": "REQ-03",
+    "module": "自动化回归-发版触发",
+    "title": "发版后回归失败（微信依赖不可用）时应判定失败并阻断发布晋级",
+    "type": "negative",
+    "priority": "P1",
+    "precondition": "模拟微信接口不可用或消息发送通道异常的场景",
+    "requests": [
+      {
+        "step": "Step 1: 发版后执行消息发送冒烟用例",
+        "method": "POST",
+        "path": "/api/wechat/send_message",
+        "expected_status": 503,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "模拟微信侧不可用后触发发版回归",
+        "testData": "测试 openid、测试消息内容",
+        "expectedResult": "消息发送接口返回 503，冒烟用例判定失败"
+      },
+      {
+        "id": 2,
+        "step": "查看整体回归结论",
+        "testData": "无",
+        "expectedResult": "本次发版回归结论为失败，不因单条失败被吞掉"
+      },
+      {
+        "id": 3,
+        "step": "查看告警与发布拦截",
+        "testData": "无",
+        "expectedResult": "发出失败告警通知到责任人，且发布晋级被阻断或标记为需人工确认"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC007",
+    "req_id": "REQ-04",
+    "module": "自动化回归-环境与数据",
+    "title": "测试环境健康检查与测试数据准备可用，可支撑回归执行",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "服务号测试环境已部署，测试专用 openid 与测试数据已准备",
+    "requests": [
+      {
+        "step": "Step 1: 校验测试环境健康状态",
+        "method": "GET",
+        "path": "/api/health?project_code=Leo_test",
+        "expected_status": 200,
+        "auth": false
+      },
+      {
+        "step": "Step 2: 用测试 openid 查询权限数据",
+        "method": "GET",
+        "path": "/api/wechat/permissions?openid=test_openid",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "调用健康检查确认测试环境可用",
+        "testData": "project_code=Leo_test",
+        "expectedResult": "返回 200，测试环境服务正常"
+      },
+      {
+        "id": 2,
+        "step": "使用预置测试 openid 查询权限",
+        "testData": "openid=test_openid",
+        "expectedResult": "返回 200 且返回该测试用户的权限数据，说明测试数据已就绪"
+      },
+      {
+        "id": 3,
+        "step": "核对数据来源",
+        "testData": "无",
+        "expectedResult": "所用数据均来自测试数据池，未读取生产真实用户数据"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC008",
+    "req_id": "REQ-04",
+    "module": "自动化回归-环境与数据",
+    "title": "测试数据隔离：使用不存在的 openid 查询不报错且不污染真实数据",
+    "type": "edge",
+    "priority": "P1",
+    "precondition": "测试环境与生产数据隔离策略已落地",
+    "requests": [
+      {
+        "step": "Step 1: 使用不存在的 openid 查询权限",
+        "method": "GET",
+        "path": "/api/wechat/permissions?openid=not_exist_openid_0001",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "用不存在的 openid 调用权限查询接口",
+        "testData": "openid=not_exist_openid_0001",
+        "expectedResult": "接口正常返回（无权限数据或空结果），不出现 500 异常"
+      },
+      {
+        "id": 2,
+        "step": "检查数据写入情况",
+        "testData": "无",
+        "expectedResult": "未在用户表中产生脏数据，回归可重复执行"
+      },
+      {
+        "id": 3,
+        "step": "重复执行同一用例",
+        "testData": "同上",
+        "expectedResult": "多次执行结果一致，具备幂等性，满足每次发版自动回归要求"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC009",
+    "req_id": "REQ-05",
+    "module": "自动化回归-微信生态限制",
+    "title": "受微信端限制的场景以接口级校验替代：JS-SDK 配置与网页授权换取 openid",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "已明确微信端不可自动化的 E2E 场景清单，替代方案已设计",
+    "requests": [
+      {
+        "step": "Step 1: 校验 JS-SDK 签名配置接口",
+        "method": "GET",
+        "path": "/api/wechat/config/js-sdk-config?url=https://example.com/page",
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 用测试 code 换取 openid",
+        "method": "GET",
+        "path": "/api/wechat/get-openid?code=test_code_0001",
+        "expected_status": 200,
+        "auth": false
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "调用 JS-SDK 配置接口",
+        "testData": "url=https://example.com/page",
+        "expectedResult": "返回 200 且返回签名相关配置，说明前端授权链路后端部分可自动化校验"
+      },
+      {
+        "id": 2,
+        "step": "调用换取 openid 接口",
+        "testData": "code=test_code_0001",
+        "expectedResult": "接口正常响应，模拟微信端回调输入，无需真实微信客户端参与即可覆盖"
+      },
+      {
+        "id": 3,
+        "step": "核对补偿方案",
+        "testData": "微信内真实交互（授权弹窗、模板消息到达）",
+        "expectedResult": "这些无法自动化的部分登记为人工补充检查项，在回归报告中有明确标注"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC010",
+    "req_id": "REQ-05",
+    "module": "自动化回归-微信生态限制",
+    "title": "微信回调签名非法时接口拒绝请求，模拟微信侧不可控输入",
+    "type": "negative",
+    "priority": "P1",
+    "precondition": "服务号回调地址已配置，测试环境可访问",
+    "requests": [
+      {
+        "step": "Step 1: 使用非法签名调用微信回调校验接口",
+        "method": "GET",
+        "path": "/api/wechat?signature=invalid_signature&timestamp=1&nonce=2&echostr=test_echo",
+        "expected_status": 403,
+        "auth": false
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "构造非法 signature 调用回调校验接口",
+        "testData": "signature=invalid_signature，timestamp=1，nonce=2，echostr=test_echo",
+        "expectedResult": "接口返回 403，不返回 echostr，校验逻辑有效"
+      },
+      {
+        "id": 2,
+        "step": "使用正确签名重新调用",
+        "testData": "按测试环境 token 计算的合法 signature",
+        "expectedResult": "返回 200 并原样返回 echostr，说明正常链路可用"
+      },
+      {
+        "id": 3,
+        "step": "查看回归报告中的该项记录",
+        "testData": "无",
+        "expectedResult": "异常输入场景被纳入回归集，作为微信生态不确定输入的常态化防护校验"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC011",
+    "req_id": "REQ-06",
+    "module": "人工回归与小流量观察协同",
+    "title": "创建人工回归与小流量观察协同工单并回查确认",
+    "type": "flow",
+    "priority": "P1",
+    "precondition": "自动化回归尚未全覆盖常用基本功能，需保留人工回归与小流量观察作为补充手段；已登录具备建单权限的账号",
+    "requests": [
+      {
+        "step": "Step 1: 创建人工回归+小流量观察协同工单",
+        "method": "POST",
+        "path": "/api/tasks/",
+        "body": {
+          "title": "服务号发版人工回归与小流量观察协同",
+          "description": "自动化回归未覆盖场景由人工回归补充，发版后小流量观察，明确责任人与观察窗口",
+          "ticket_type": "feature",
+          "priority": "P1",
+          "project_id": "Leo_test"
+        },
+        "expected_status": 200,
+        "expected_fields": {
+          "title": "服务号发版人工回归与小流量观察协同"
+        },
+        "auth": true
+      },
+      {
+        "step": "Step 2: 回查该协同工单详情",
+        "method": "GET",
+        "path": "/api/tasks/1",
+        "expected_status": 200,
+        "expected_fields": {
+          "id": 1
+        },
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "以有建单权限的账号提报协同工单，填写人工回归范围、小流量观察窗口与责任人",
+        "testData": "title=服务号发版人工回归与小流量观察协同；ticket_type=feature；priority=P1；project_id=Leo_test",
+        "expectedResult": "建单成功，返回工单信息，工单可用于跟踪人工回归与小流量观察的执行"
+      },
+      {
+        "id": 2,
+        "step": "按工单 ID 查询详情核对内容",
+        "testData": "task_id=1",
+        "expectedResult": "返回工单详情，标题与描述与提交内容一致，可被责任人查阅并执行"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC012",
+    "req_id": "REQ-06",
+    "module": "人工回归与小流量观察协同",
+    "title": "协同工单缺少标题时建单失败",
+    "type": "negative",
+    "priority": "P1",
+    "precondition": "已登录具备建单权限的账号",
+    "requests": [
+      {
+        "step": "Step 1: 提交缺少标题的协同工单",
+        "method": "POST",
+        "path": "/api/tasks/",
+        "body": {
+          "description": "仅填写描述，缺失标题",
+          "ticket_type": "feature",
+          "priority": "P1",
+          "project_id": "Leo_test"
+        },
+        "expected_status": 422,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "调用建单接口，仅提交描述与类型，不提交标题",
+        "testData": "description=仅填写描述；ticket_type=feature",
+        "expectedResult": "接口返回 422 参数校验失败，提示标题为必填，不生成工单记录"
+      },
+      {
+        "id": 2,
+        "step": "确认系统未产生脏数据",
+        "testData": "无",
+        "expectedResult": "该次请求未创建任何工单，人工回归与小流量观察协同流程不受影响"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC013",
+    "req_id": "REQ-07",
+    "module": "平台侧评估与接入",
+    "title": "提交平台侧评估需求工单并回查评估状态",
+    "type": "flow",
+    "priority": "P0",
+    "precondition": "已登录具备建单权限的账号；REQ-01~REQ-06 的范围与卡点结论已整理完成",
+    "requests": [
+      {
+        "step": "Step 1: 提交平台侧评估需求工单",
+        "method": "POST",
+        "path": "/api/tasks/",
+        "body": {
+          "title": "服务号自动化回归测试机制-平台侧评估接入",
+          "description": "覆盖常用基本功能，发版自动触发回归；需平台侧评估可行性、实现方式、排期与投入产出",
+          "ticket_type": "feature",
+          "priority": "P0",
+          "project_id": "Leo_test"
+        },
+        "expected_status": 200,
+        "expected_fields": {
+          "title": "服务号自动化回归测试机制-平台侧评估接入"
+        },
+        "auth": true
+      },
+      {
+        "step": "Step 2: 回查工单确认已进入平台侧待评估",
+        "method": "GET",
+        "path": "/api/tasks/1",
+        "expected_status": 200,
+        "expected_fields": {
+          "id": 1
+        },
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "整理范围、卡点与期望后，向平台侧提报评估需求工单",
+        "testData": "title=服务号自动化回归测试机制-平台侧评估接入；ticket_type=feature；priority=P0；project_id=Leo_test",
+        "expectedResult": "建单成功，返回工单 ID，需求进入平台侧待评估队列"
+      },
+      {
+        "id": 2,
+        "step": "按工单 ID 查询详情，核对评估诉求与范围记录完整",
+        "testData": "task_id=1",
+        "expectedResult": "详情中范围（常用基本功能、发版自动触发）、卡点与期望可追溯，可被平台侧受理评估"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC014",
+    "req_id": "REQ-07",
+    "module": "平台侧评估与接入",
+    "title": "未登录提交平台侧评估需求应被拒绝",
+    "type": "permission",
+    "priority": "P1",
+    "precondition": "未携带登录态，直接调用建单接口",
+    "requests": [
+      {
+        "step": "Step 1: 未登录提交平台侧评估需求工单",
+        "method": "POST",
+        "path": "/api/tasks/",
+        "body": {
+          "title": "服务号自动化回归测试机制-平台侧评估接入",
+          "description": "未登录场景校验",
+          "ticket_type": "feature",
+          "priority": "P0",
+          "project_id": "Leo_test"
+        },
+        "expected_status": 401,
+        "auth": false
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "在无登录态下调用建单接口提交评估需求",
+        "testData": "无 token；title=服务号自动化回归测试机制-平台侧评估接入",
+        "expectedResult": "接口返回 401 未授权，需求工单未创建"
+      },
+      {
+        "id": 2,
+        "step": "登录后重试确认流程可正常走通",
+        "testData": "使用有权限账号登录后重提",
+        "expectedResult": "登录态下建单成功，说明权限拦截有效且正常路径不受影响"
+      }
+    ],
+    "source": "ticket"
+  }
+]
