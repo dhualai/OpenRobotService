@@ -390,3 +390,54 @@ def test_call_llm_rejects_key_with_padding(monkeypatch, capsys):
     assert grn.call_llm("p", api_key=" sk-abc\n",
                         base_url="https://api.deepseek.com") == ""
     assert "空白" in capsys.readouterr().out
+
+
+# ---------- 「上次发布以来」窗口 ----------
+
+def test_window_since_overrides_days(tmp_path):
+    """给了 since 就只收该时间之后的 PR，不再按 7 天算。
+
+    生产发布间隔常常超过一周（也常常只有几天），固定天数要么漏改动、要么把上次
+    已经发过的内容重复列一遍。
+    """
+    prs = [
+        _pr(1, "feat: 上次发布之后", 1),
+        _pr(2, "feat: 上次发布之前但不满 7 天", 5),
+        _pr(3, "feat: 很久以前", 40),
+    ]
+    got = grn.load_prs(_write_prs(tmp_path, prs), now=NOW,
+                       since=NOW - timedelta(days=3))
+    assert [p["number"] for p in got] == [1]
+
+
+def test_main_passes_since_to_window(tmp_path, monkeypatch):
+    """--since 要真正影响送进 LLM 的候选集，而不只是改日志。"""
+    monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
+    captured = {}
+
+    def fake(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return '{"新增功能": ["只有新功能"]}'
+
+    monkeypatch.setattr(grn, "call_llm", fake)
+    prs = _write_prs(tmp_path, [
+        _pr(1, "feat: 上次发布后的功能", 1),
+        _pr(2, "feat: 上次发布前的功能", 4),
+    ])
+    out = tmp_path / "out.md"
+    since = (NOW - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert grn.main(["--prs", prs, "--out", str(out), "--since", since]) == 0
+    assert "只有新功能" in out.read_text(encoding="utf-8")
+    assert "上次发布后的功能" in captured["prompt"]
+    assert "上次发布前的功能" not in captured["prompt"]
+
+
+def test_main_falls_back_to_days_when_since_invalid(tmp_path, monkeypatch, capsys):
+    """--since 传了垃圾值不能把发行说明搞没，退回 7 天并留一行日志。"""
+    monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
+    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: '{"新增功能": ["x"]}')
+    prs = _write_prs(tmp_path, [_pr(1, "feat: 一周内", 5)])
+    out = tmp_path / "out.md"
+    assert grn.main(["--prs", prs, "--out", str(out), "--since", "昨天"]) == 0
+    assert out.exists()
+    assert "--since 无法解析" in capsys.readouterr().out

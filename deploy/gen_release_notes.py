@@ -105,11 +105,18 @@ def parse_merged_at(value):
     return dt.astimezone(timezone.utc)
 
 
-def within_window(merged_at, now, days=WINDOW_DAYS):
-    """mergedAt 是否落在「now 往前 days 天」内；缺时间/非法时间一律算窗口外。"""
+def within_window(merged_at, now, days=WINDOW_DAYS, since=None):
+    """mergedAt 是否落在窗口内；缺时间/非法时间一律算窗口外。
+
+    传了 since 就按「since 之后」算，否则退回「now 往前 days 天」。since 是上一次
+    成功的生产发布时间点：固定天数在两次发布间隔超过一周时会漏掉中间改动，间隔很短
+    时又会把上次已经发过的内容重复列一遍。
+    """
     dt = merged_at if isinstance(merged_at, datetime) else parse_merged_at(merged_at)
     if dt is None:
         return False
+    if since is not None:
+        return dt >= since
     return dt >= now - timedelta(days=days)
 
 
@@ -138,7 +145,7 @@ def is_user_facing(pr):
     return True
 
 
-def load_prs(path, now=None, days=WINDOW_DAYS):
+def load_prs(path, now=None, days=WINDOW_DAYS, since=None):
     """读取 gh 输出的 PR JSON 数组，返回窗口内、用户可感知的 [{number, title}, ...]。
 
     文件缺失 / 非法 JSON / 非数组一律返回空列表（调用方据此跳过，不阻断部署）。
@@ -155,7 +162,7 @@ def load_prs(path, now=None, days=WINDOW_DAYS):
     for pr in raw:
         if not isinstance(pr, dict):
             continue
-        if not within_window(pr.get("mergedAt"), now, days):
+        if not within_window(pr.get("mergedAt"), now, days, since):
             continue
         if not is_user_facing(pr):
             continue
@@ -231,7 +238,7 @@ def build_prompt(prs):
         ensure_ascii=False,
     )
     rules = [
-        "下面是从 GitHub 拉取的最近 7 天已合并 PR（JSON 数组，字段 number/title）。",
+        "下面是从 GitHub 拉取的一批已合并 PR（JSON 数组，字段 number/title）。",
         "请整理成用户可感知的发布说明，严格按规则执行：",
         "1. 只依据给定 PR，禁止编造任何功能、修复或数据；",
         "2. 同一功能被拆成多个 PR 的合并成一条；表述重复的只保留一条；",
@@ -401,12 +408,12 @@ def call_llm(prompt, api_key, base_url="", model="", timeout=60.0, retries=1):
 
 # ---------- 渲染与入口 ----------
 
-def render_markdown(groups):
+def render_markdown(groups, scope="最近 7 天"):
     """输出与 docs/RELEASE_NOTES.md 同构的 Markdown，供 notify.parse_release_notes 解析。"""
     lines = [
         "# 发布说明（Release Notes）",
         "",
-        "> 本文件由部署流水线自动生成：最近 7 天已合并 PR，经 LLM 归纳去重。",
+        f"> 本文件由部署流水线自动生成：{scope}已合并 PR，经 LLM 归纳去重。",
         "> 由 .github/workflows/deploy-split.yml 的 build job 覆盖，请勿手工编辑。",
         "",
         "## 未发布",
@@ -429,6 +436,9 @@ def _parse_args(argv=None):
     parser.add_argument("--out", required=True, help="输出 Markdown 路径（成功时才写）")
     parser.add_argument("--days", type=int, default=WINDOW_DAYS,
                         help=f"时间窗口天数（默认 {WINDOW_DAYS}）")
+    parser.add_argument("--since", default="",
+                        help="窗口起点（ISO8601，如 2026-10-28T05:37:01Z）：只收该时间"
+                             "之后合并的 PR，对应「上次发布以来」；解析失败则退回 --days")
     return parser.parse_args(argv)
 
 
@@ -441,8 +451,12 @@ def main(argv=None):
         return 2
 
     days = args.days if args.days and args.days > 0 else WINDOW_DAYS
-    prs = load_prs(args.prs, days=days)
-    print(f"[release-notes] 近 {days} 天可归纳 PR：{len(prs)} 条")
+    since = parse_merged_at(args.since)
+    if args.since and since is None:
+        print(f"[release-notes] --since 无法解析（{args.since}），退回近 {days} 天窗口")
+    prs = load_prs(args.prs, days=days, since=since)
+    scope = (f"自 {since:%Y-%m-%d %H:%M} (UTC) 以来" if since else f"近 {days} 天")
+    print(f"[release-notes] {scope}可归纳 PR：{len(prs)} 条")
     if not prs:
         return 2
 
@@ -469,7 +483,7 @@ def main(argv=None):
         print("[release-notes] LLM 未产出有效条目，跳过（调用方回退人工版本）")
         return 2
 
-    markdown = render_markdown(groups)
+    markdown = render_markdown(groups, scope=scope)
     Path(args.out).write_text(markdown, encoding="utf-8")
     print(f"[release-notes] 已生成 {total} 条更新 → {args.out}")
     return 0
