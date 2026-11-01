@@ -10,7 +10,10 @@ from datetime import datetime, timedelta, timezone
 import gen_release_notes as grn
 import notify
 
-NOW = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+# 基准时间取「跑测试的那一刻」，不要写死日期：main() 里做窗口过滤用的是真实
+# 当前时间，写死会让整套用例在 7 天后集体变红，而且失败现场伪装成「LLM 失败」
+# 或「LLM 输出不可用」，排查时完全看不出是时间漂移。
+NOW = datetime.now(timezone.utc)
 
 
 def _iso(delta_days):
@@ -351,3 +354,39 @@ def test_worst_case_notes_still_render_as_image():
     png = notify_image.render_png(ctx)
     assert png[:4] == b"\x89PNG"
     assert len(png) <= 2 * 1024 * 1024
+
+
+def test_key_problem_accepts_clean_key():
+    """正常 Key 不该被拦。"""
+    assert grn._key_problem("sk-0123456789abcdef") == ""
+    assert "空" in grn._key_problem("")
+
+
+def test_call_llm_rejects_non_ascii_key_before_sending(monkeypatch, capsys):
+    """Key 混进全角空格时必须当场说清楚，不能让它退化成一个编码报错。
+
+    线上真事：Secret 值开头带了两个非 ASCII 字符，Authorization 头编不出来，
+    报 `'latin-1' codec can't encode characters in position 7-8`，又因为是
+    ValueError 子类被归到「响应格式异常」，连查两轮才定位到 Secret 本身。
+    """
+    def boom(*args, **kwargs):
+        raise AssertionError("Key 不可用时不该发请求")
+
+    monkeypatch.setattr(grn.urllib.request, "urlopen", boom)
+    assert grn.call_llm("p", api_key="\u3000\u3000sk-abc",
+                        base_url="https://api.deepseek.com") == ""
+    out = capsys.readouterr().out
+    assert "非 ASCII" in out and "RELEASE_LLM_API_KEY" in out
+    # 日志只报字符位置，不回显 Key 内容
+    assert "sk-abc" not in out
+
+
+def test_call_llm_rejects_key_with_padding(monkeypatch, capsys):
+    """首尾带空格同样会让服务端判成无效 Key，提前报出来比等 401 省事。"""
+    def boom(*args, **kwargs):
+        raise AssertionError("Key 不可用时不该发请求")
+
+    monkeypatch.setattr(grn.urllib.request, "urlopen", boom)
+    assert grn.call_llm("p", api_key=" sk-abc\n",
+                        base_url="https://api.deepseek.com") == ""
+    assert "空白" in capsys.readouterr().out

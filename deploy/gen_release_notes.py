@@ -293,6 +293,28 @@ def _snippet(raw, api_key=""):
     return _SPACE_RE.sub(" ", text).strip()[:_SNIPPET_CHARS]
 
 
+def _key_problem(api_key):
+    """检查 Key 能否安全放进 HTTP 头：正常返回空串，异常返回问题描述。
+
+    Key 直接拼进 Authorization 头，而 urllib 用 latin-1 编 header：粘贴时混进
+    全角空格或中文引号，请求根本发不出去，报的是 `'latin-1' codec can't encode
+    characters in position 7-8`（`Bearer ` 正好 7 个字符）。该异常是 ValueError
+    子类，历史上被笼统报成「响应格式异常」，线上连查两轮才定位到 Secret 本身。
+    这里提前拦下，把修法直接写进日志。
+
+    只报字符位置与类别，绝不回显 Key 内容。
+    """
+    if not api_key:
+        return "值为空"
+    if not api_key.isascii():
+        bad = [str(i) for i, ch in enumerate(api_key) if not ch.isascii()][:3]
+        return (f"含非 ASCII 字符（位置 {'/'.join(bad)}，"
+                "多半是粘贴时带进的全角空格或中文引号）")
+    if api_key != api_key.strip():
+        return "首尾有空白字符"
+    return ""
+
+
 def call_llm(prompt, api_key, base_url="", model="", timeout=60.0, retries=1):
     """调 OpenAI 兼容 chat/completions，返回正文；失败返回空串。
 
@@ -300,6 +322,10 @@ def call_llm(prompt, api_key, base_url="", model="", timeout=60.0, retries=1):
     失败时附带响应体片段：只报「响应格式异常」等于没有线索，线上曾连查两轮
     都只能靠猜（到底是 4xx、HTML 拦截页、还是流被截断）。
     """
+    problem = _key_problem(api_key)
+    if problem:
+        print(f"[release-notes] 密钥不可用：{problem}；请重设 RELEASE_LLM_API_KEY 后重试")
+        return ""
     url = chat_endpoint(base_url)
     validate_endpoint(url)
     host = urlparse(url).netloc
