@@ -3672,12 +3672,11 @@ class AiDiagnosisPlatform:
            66 款车型平铺）另有文件名白名单 model_files——检索层只能按
            sub_domain 过滤，型号级隔离只能在应用层做（_retrieve_inner 送
            prompt 前二次收窄，防 XQC 会话捞回 XFL/XCD 等其它车型资料）。
-        ② 追加平台操作手册域（team/USP/manual + ui_pages + troubleshooting
-           + error_codes）：旧口径把检索域整体换成车型域，team 域的 USP 操作
+        ② 追加平台操作手册域（team/USP/*）：旧口径把检索域整体换成车型域，team 域的 USP 操作
            手册在车型会话里永远 0 命中——实测生产「问 USP 操作手册」只能答
            排查决策类散点、没有手册出处（team/USP/manual/manual.md 就在库里）。
-           只放行手册/页面导航/排查指引/平台错误码四类，不放开 FAQ 与历史
-           工单，串味风险可控。
+           放行手册/诊断卡/页面导航/排查指引/平台错误码/FAQ/模块文档/术语表八类
+           （取值清单来自生产集合 facet 实测，见下方注释），不放算法与翻译。
 
         返回 (domains, files_map)；常规会话返回 (None, None)。"""
         try:
@@ -3708,12 +3707,27 @@ class AiDiagnosisPlatform:
         _filt = qmodels.Filter(must=[qmodels.FieldCondition(
             key="sub_domain", match=qmodels.MatchAny(any=dirs))])
         _domains = [("company", 8, _filt)]
+        # 平台操作手册域（team）：车型会话里问「USP 操作手册/怎么配置/报了什么码」
+        # 必须能捞到 team/USP/* 的手册本体，不能只有车型域。
+        # 取值依据=生产 team_20261022_155207 集合 facet 实测的 sub_domain 清单：
+        #   USP/error_codes 518 / USP/algorithm 221 / usp_cards 208 / USP/manual 138
+        #   / USP/translation 107 / USP/faq 81 / ORS 80 / USP/troubleshooting 70
+        #   / USP/overview 44 / USP/ui_pages 17 / USP/terminology 9
+        # ⚠️ 目录名 ≠ sub_domain：诊断卡目录是 team/USP/diagnosis_cards/，入库
+        # sub_domain 却是「usp_cards」（208 chunk）——只按目录名写过滤值会漏掉
+        # 诊断卡，而「机器人问题诊断页」这类答案正出自它。
+        # 有意排除：USP/algorithm（算法实现细节）、USP/translation（翻译对照）、
+        # ORS（另一产品线）——与「操作手册」无关且会挤占检索名额。
         _team_filt = qmodels.Filter(must=[qmodels.FieldCondition(
             key="sub_domain", match=qmodels.MatchAny(any=[
                 "USP/manual", "usp/manual",
-                "USP/ui_pages", "usp/ui_pages",
+                "usp_cards", "USP/diagnosis_cards",
                 "USP/troubleshooting", "usp/troubleshooting",
+                "USP/ui_pages", "usp/ui_pages",
                 "USP/error_codes", "usp/error_codes",
+                "USP/faq", "usp/faq",
+                "USP/overview", "usp/overview",
+                "USP/terminology", "usp/terminology",
             ]))])
         _domains.append(("team", 6, _team_filt))
         files_map = {str(k): [str(x) for x in (v or [])]
