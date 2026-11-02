@@ -133,6 +133,8 @@ jobs:
       backup_id: ${{ steps.resolve.outputs.backup_id }}
       # 「上次生产发布」的时间点（ISO8601）；空 = 没查到，发行说明退回固定 7 天
       release_since: ${{ steps.window.outputs.since }}
+      # 本次部署分支的最后提交时间；空 = 不设上界
+      release_until: ${{ steps.window.outputs.until }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -323,8 +325,10 @@ jobs:
         if: ${{ inputs.action != 'rollback' && steps.resolve.outputs.environment == 'prod' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_REF: ${{ steps.resolve.outputs.git_ref }}
         run: |
           set -uo pipefail
+          # 起点：最近一次成功的生产部署
           since=""
           for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=prod&per_page=8" \
                         --jq '.[].id' 2>/dev/null || true); do
@@ -336,11 +340,21 @@ jobs:
               break
             fi
           done
+          # 上界：本次部署分支的最后一次提交。合到 test 但还没进该分支的 PR 不在这
+          # 次部署的代码里，统计进来就是播报没上线的功能。
+          until=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GIT_REF" \
+                    --jq '.commit.committer.date' 2>/dev/null || true)
           echo "since=$since" >> "$GITHUB_OUTPUT"
+          echo "until=$until" >> "$GITHUB_OUTPUT"
           if [ -n "$since" ]; then
-            echo "上次生产发布：$since（本次发行说明只覆盖此后的 PR）"
+            echo "上次生产发布：$since（本次只统计此后的 PR）"
           else
             echo "::warning::没取到上次生产发布时间，发行说明退回固定 7 天窗口"
+          fi
+          if [ -n "$until" ]; then
+            echo "部署分支 $GIT_REF 最后提交：$until（之后的 PR 不计入）"
+          else
+            echo "::warning::没取到 $GIT_REF 的最后提交时间，不设窗口上界"
           fi
 
       - name: Upload PR list
@@ -437,6 +451,10 @@ jobs:
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      # auto = 本次由 LLM 生成；其他 = 沿用上次发行说明或人工版。
+      # deploy 只在 auto 时滚存，避免把同一份内容反复写回。
+      notes_source: ${{ steps.notes.outputs.source }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -492,12 +510,36 @@ jobs:
           fi
           ls -lh _artifacts/deploy
 
+      # 上一次成功的发行说明：每次自动生成成功且部署成功，deploy job 都会把它滚存到
+      # GitHub Release（tag=prod-release-notes）。这里优先读回来顶替 docs/RELEASE_NOTES.md
+      # ——后者是手写累积清单（条目只增不减），窗口为空时照播会让人以为发了新东西。
+      # 读取失败 / 首次发布时静默沿用人工版，绝不阻断构建。
+      # 用 Release 而非直接改文件：dev/test 的 ruleset 要求 1 人 approve 的 PR，
+      # CI 的 GITHUB_TOKEN 推不进这两个分支。
+      - name: Restore last release notes
+        # 只对生产生效：test 环境没有「生产发布」概念，别拿生产的历史盖它的兜底
+        if: ${{ needs.plan.outputs.environment == 'prod' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          body=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/prod-release-notes" \
+                   --jq '.body' 2>/dev/null || true)
+          if [ -n "${body//[[:space:]]/}" ]; then
+            printf '%s\n' "$body" > _artifacts/deploy/RELEASE_NOTES.md
+            echo "已用上次成功的发行说明覆盖人工版（$(wc -c < _artifacts/deploy/RELEASE_NOTES.md) 字节）"
+          else
+            echo "没有历史发行说明（首次发布或读取失败），沿用 docs/RELEASE_NOTES.md"
+          fi
+
       # 自动发行说明：上次生产发布以来的已合并 PR → LLM 归纳去重，成功才覆盖上一步
-      # 铺底的人工版本。窗口起点由 plan 的 Resolve release window 给出；test 环境没有
-      # 生产发布的概念，留空即退回固定 7 天。
-      # 未配置 RELEASE_LLM_API_KEY / 无 PR / LLM 失败时静默回退 docs/RELEASE_NOTES.md，
+      # 铺底的版本（上次发行说明或人工版）。窗口起点由 plan 的 Resolve release window
+      # 给出；test 环境没有生产发布的概念，留空即退回固定 7 天。
+      # 未配置 RELEASE_LLM_API_KEY / 无 PR / LLM 失败时静默回退上一步的内容，
       # 绝不阻断构建（脚本仅在成功时写文件，退出码 1/2 时不留半成品）。
       - name: Generate release notes (auto)
+        id: notes
         env:
           RELEASE_LLM_API_KEY: ${{ secrets.RELEASE_LLM_API_KEY }}
           RELEASE_LLM_BASE_URL: ${{ vars.RELEASE_LLM_BASE_URL }}
@@ -509,11 +551,14 @@ jobs:
           if python deploy/gen_release_notes.py \
                --prs _release_prs/release_prs.json \
                --out _artifacts/deploy/RELEASE_NOTES.auto.md \
-               --since "${{ needs.plan.outputs.release_since }}"; then
+               --since "${{ needs.plan.outputs.release_since }}" \
+               --until "${{ needs.plan.outputs.release_until }}"; then
             mv _artifacts/deploy/RELEASE_NOTES.auto.md _artifacts/deploy/RELEASE_NOTES.md
-            echo "已用自动生成的发行说明覆盖 docs/RELEASE_NOTES.md"
+            echo "source=auto" >> "$GITHUB_OUTPUT"
+            echo "已用自动生成的发行说明覆盖兜底内容（部署成功后会滚存为下次的兜底）"
           else
-            echo "::warning::自动发行说明不可用（未配置 / 无内容 / 调用失败），使用 docs/RELEASE_NOTES.md"
+            echo "source=reuse" >> "$GITHUB_OUTPUT"
+            echo "::warning::自动发行说明不可用（未配置 / 无内容 / 调用失败），沿用上一步的兜底内容"
             rm -f _artifacts/deploy/RELEASE_NOTES.auto.md
           fi
           ls -lh _artifacts/deploy/RELEASE_NOTES.md 2>/dev/null || true
@@ -549,6 +594,9 @@ jobs:
     runs-on: [self-hosted, ors-verify]
     timeout-minutes: 30
     environment: ${{ needs.plan.outputs.environment }}
+    # 仅 Save release notes 用到写权限（滚存发行说明到 Release）；写失败不阻断部署
+    permissions:
+      contents: write
     outputs:
       deploy_log: ${{ steps.export_log.outputs.deploy_log }}
     steps:
@@ -733,6 +781,7 @@ jobs:
           fi
 
       - name: Apply deployment
+        id: apply
         env:
           ENV_NAME: ${{ needs.plan.outputs.environment }}
           COMPONENTS: ${{ needs.plan.outputs.components }}
@@ -891,6 +940,39 @@ jobs:
           ACTOR: ${{ github.actor }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 _artifacts/deploy/notify.py
+
+      # 滚存本次发行说明：下次窗口为空时由 build 的 Restore release notes 读回来
+      # 顶替人工版，等于「人工版始终等于上一次成功的自动发行说明」。
+      # 只在「自动生成 + 本次部署成功」时写，保证存下来的一定是真上过线的版本；
+      # 写失败不阻断部署（continue-on-error），只影响下次的兜底内容。
+      # 用 curl 而非 gh：自托管 runner 不保证装了 gh CLI（现有下载逻辑同此口径）。
+      - name: Save release notes
+        # 判据只看「部署那一步成功」：通知失败不该影响滚存，而部署没成更不能写。
+        # 必须限定 prod：test 部署也会跑 Generate，若不拦截会把生产的历史冲掉。
+        if: ${{ needs.plan.outputs.environment == 'prod' && needs.build.outputs.notes_source == 'auto' && steps.apply.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          f=_artifacts/deploy/RELEASE_NOTES.md
+          [ -s "$f" ] || { echo "发行说明为空，跳过滚存"; exit 0; }
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/releases"
+          auth="Authorization: Bearer $GH_TOKEN"
+          rid=$(curl -fsS -H "$auth" -H "Accept: application/vnd.github+json" \
+                  "$api/tags/prod-release-notes" 2>/dev/null | jq -r '.id // empty' || true)
+          if [ -n "$rid" ]; then
+            payload=$(jq -Rs '{body: .}' "$f")
+            curl -fsS -X PATCH -H "$auth" -H "Accept: application/vnd.github+json" \
+                 -H "Content-Type: application/json" -d "$payload" "$api/$rid" > /dev/null
+            echo "已更新发行说明 Release（id=$rid，$(wc -c < "$f") 字节）"
+          else
+            payload=$(jq -Rs --arg tag "prod-release-notes" \
+                        '{tag_name: $tag, name: "上次成功的生产发行说明", body: .}' "$f")
+            curl -fsS -X POST -H "$auth" -H "Accept: application/vnd.github+json" \
+                 -H "Content-Type: application/json" -d "$payload" "$api" > /dev/null
+            echo "已创建发行说明 Release（tag=prod-release-notes，$(wc -c < "$f") 字节）"
+          fi
 
   # ---------------- 回滚（自托管 runner，复用上次缓存的部署脚本） ----------------
   rollback:

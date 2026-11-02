@@ -441,3 +441,56 @@ def test_main_falls_back_to_days_when_since_invalid(tmp_path, monkeypatch, capsy
     assert grn.main(["--prs", prs, "--out", str(out), "--since", "昨天"]) == 0
     assert out.exists()
     assert "--since 无法解析" in capsys.readouterr().out
+
+
+def test_window_until_drops_prs_not_in_deploy_branch(tmp_path):
+    """until 之后合并的 PR 不在本次部署的代码里，不能列进发行说明。
+
+    生产部署的是 dev，数据源是 test：test 上刚合、还没走 test→dev 的 PR 一旦被
+    统计，卡片就会播报根本没上线的功能。
+    """
+    prs = [
+        _pr(1, "feat: 已进 dev", 6),
+        _pr(2, "feat: 还在 test 上", 1),
+    ]
+    since = NOW - timedelta(days=7)
+    until = NOW - timedelta(days=3)          # dev 最后一次变更
+    got = grn.load_prs(_write_prs(tmp_path, prs), now=NOW, since=since, until=until)
+    assert [p["number"] for p in got] == [1]
+
+
+def test_main_passes_until_to_window(tmp_path, monkeypatch, capsys):
+    """--until 要真正截断候选集，并在日志/Markdown 里写清区间。"""
+    monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
+    captured = {}
+
+    def fake(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return '{"新增功能": ["已上线"]}'
+
+    monkeypatch.setattr(grn, "call_llm", fake)
+    prs = _write_prs(tmp_path, [
+        _pr(1, "feat: 已进 dev", 6),
+        _pr(2, "feat: 还在 test 上", 1),
+    ])
+    out = tmp_path / "out.md"
+    since = (NOW - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    until = (NOW - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert grn.main(["--prs", prs, "--out", str(out),
+                     "--since", since, "--until", until]) == 0
+    assert "还在 test 上" not in captured["prompt"]
+    assert "已进 dev" in captured["prompt"]
+    assert "期间" in out.read_text(encoding="utf-8")
+
+
+def test_main_warns_when_window_is_empty(tmp_path, monkeypatch, capsys):
+    """dev 自上次发布后没新合并时窗口为空，要明说，别让人以为脚本坏了。"""
+    monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
+    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: '{"新增功能": ["x"]}')
+    prs = _write_prs(tmp_path, [_pr(1, "feat: 旧功能", 30)])
+    out = tmp_path / "out.md"
+    since = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    until = (NOW - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert grn.main(["--prs", prs, "--out", str(out),
+                     "--since", since, "--until", until]) == 2
+    assert "窗口为空" in capsys.readouterr().out

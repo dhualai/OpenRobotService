@@ -105,19 +105,25 @@ def parse_merged_at(value):
     return dt.astimezone(timezone.utc)
 
 
-def within_window(merged_at, now, days=WINDOW_DAYS, since=None):
+def within_window(merged_at, now, days=WINDOW_DAYS, since=None, until=None):
     """mergedAt 是否落在窗口内；缺时间/非法时间一律算窗口外。
 
     传了 since 就按「since 之后」算，否则退回「now 往前 days 天」。since 是上一次
     成功的生产发布时间点：固定天数在两次发布间隔超过一周时会漏掉中间改动，间隔很短
     时又会把上次已经发过的内容重复列一遍。
+
+    until 是窗口上界，取本次部署分支最后一次变更的时间：PR 合到 test 后若还没进
+    dev，本次生产部署的代码里根本没有它，列出来就是虚报。
     """
     dt = merged_at if isinstance(merged_at, datetime) else parse_merged_at(merged_at)
     if dt is None:
         return False
-    if since is not None:
-        return dt >= since
-    return dt >= now - timedelta(days=days)
+    lower = since if since is not None else now - timedelta(days=days)
+    if dt < lower:
+        return False
+    if until is not None and dt > until:
+        return False
+    return True
 
 
 def pr_type(title):
@@ -145,7 +151,7 @@ def is_user_facing(pr):
     return True
 
 
-def load_prs(path, now=None, days=WINDOW_DAYS, since=None):
+def load_prs(path, now=None, days=WINDOW_DAYS, since=None, until=None):
     """读取 gh 输出的 PR JSON 数组，返回窗口内、用户可感知的 [{number, title}, ...]。
 
     文件缺失 / 非法 JSON / 非数组一律返回空列表（调用方据此跳过，不阻断部署）。
@@ -162,7 +168,7 @@ def load_prs(path, now=None, days=WINDOW_DAYS, since=None):
     for pr in raw:
         if not isinstance(pr, dict):
             continue
-        if not within_window(pr.get("mergedAt"), now, days, since):
+        if not within_window(pr.get("mergedAt"), now, days, since, until):
             continue
         if not is_user_facing(pr):
             continue
@@ -439,6 +445,9 @@ def _parse_args(argv=None):
     parser.add_argument("--since", default="",
                         help="窗口起点（ISO8601，如 2026-10-28T05:37:01Z）：只收该时间"
                              "之后合并的 PR，对应「上次发布以来」；解析失败则退回 --days")
+    parser.add_argument("--until", default="",
+                        help="窗口上界（ISO8601）：只收该时间之前合并的 PR，用于排除"
+                             "还在 test 上、没进本次部署分支的改动；解析失败则不限上界")
     return parser.parse_args(argv)
 
 
@@ -454,8 +463,19 @@ def main(argv=None):
     since = parse_merged_at(args.since)
     if args.since and since is None:
         print(f"[release-notes] --since 无法解析（{args.since}），退回近 {days} 天窗口")
-    prs = load_prs(args.prs, days=days, since=since)
-    scope = (f"自 {since:%Y-%m-%d %H:%M} (UTC) 以来" if since else f"近 {days} 天")
+    until = parse_merged_at(args.until)
+    if args.until and until is None:
+        print(f"[release-notes] --until 无法解析（{args.until}），不设窗口上界")
+    if since and until and until < since:
+        print(f"[release-notes] 窗口为空：上界 {args.until} 早于起点 {args.since}，"
+              "说明部署分支自上次发布后没有新合并")
+    prs = load_prs(args.prs, days=days, since=since, until=until)
+    if since and until:
+        scope = f"{since:%Y-%m-%d %H:%M} 至 {until:%Y-%m-%d %H:%M} (UTC) 期间"
+    elif since:
+        scope = f"自 {since:%Y-%m-%d %H:%M} (UTC) 以来"
+    else:
+        scope = f"近 {days} 天"
     print(f"[release-notes] {scope}可归纳 PR：{len(prs)} 条")
     if not prs:
         return 2
