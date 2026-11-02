@@ -40,7 +40,8 @@ _OPENING_KEEP_SUBSTR = "故障码"   # 保底类目（重要大类，随机时�
 _OPENING_LIMIT = 5
 
 
-def parse_fork_tree_choices(model: str, kb_root: Optional[Path] = None) -> List[str]:
+def parse_fork_tree_choices(model: str, kb_root: Optional[Path] = None,
+                             subpath: str = "") -> List[str]:
     """读 kb/company/{车型}/ 下文件名含「分叉树」的 md，解析顶层 ## 标题。
 
     只收**带数字序号前缀**的顶层节点（`## 1. xxx`）——分叉树大方向类目天然
@@ -48,8 +49,9 @@ def parse_fork_tree_choices(model: str, kb_root: Optional[Path] = None) -> List[
     混进过「待用户确认」）。剥序号后返回类目列表；文件不存在/无标题返回 []
     （开场题是可选能力，空库自动退化为纯输入框，不阻塞模式注册）。
     kb_root 参数供测试注入临时目录。
+    subpath：已解析的知识目录名（磁盘原名，ORS-1082）。
     """
-    sub = model_to_subpath(model)
+    sub = (subpath or "").strip() or model_to_subpath(model)
     if not sub:
         return []
     root = (kb_root or _default_kb_root()) / "company" / sub
@@ -150,7 +152,11 @@ def model_to_subpath(model: str) -> str:
     """车型 → company 域下的知识库子目录名。XQE → XQE；未来新车型零改动。
 
     车型知识不建独立顶层域（0930 用户定稿）：kb/company/{车型}/ 入库归
-    company 域，payload sub_domain="{车型}"，检索按此过滤（车型目录平铺，无子层级）。"""
+    company 域，payload sub_domain="{车型}"，检索按此过滤（车型目录平铺，无子层级）。
+
+    ⚠️ 这是**精确**目录口径（只去空格+大写）：录入串与目录名不逐字符相等就落空
+    （生产实证：XQE122 / xqe122-2 / XQC 全部命中不到，详见 resolve_model_dirs）。
+    模糊匹配走 resolve_model_dirs（ORS-1082），本函数保留为兜底。"""
     return (model or "").strip().upper()
 
 
@@ -159,10 +165,173 @@ def model_to_domain(model: str) -> str:
     return "company"
 
 
+# ============================================================
+# 车型 → 知识目录解析（ORS-1082：按车型的模糊匹配）
+# ============================================================
+# 生产实况（2026-11-02 实查 helpdesk_724 + 生产 KB）：
+#   kb/company/ 下只有 XQE/ 有车系级 SOP 资产（33 篇：分叉树 + 故障码表 +
+#   排查手册 + 2 型号页）；XQC/XFL/XCD… 的资料在 product_catalog/ 下**平铺**的
+#   66 篇车型资料页里（XQC161/XQC163/XQC201）。扫码录入值形态混乱：
+#   XQE122(16) / xqe122-2..4(3) / XQE151(2) / XQE(2) / XQC(2) / Xcd0051-01…
+#   旧口径（仅 upper）让除「恰好等于 XQE」之外的全部落空 → 手册清单空 +
+#   分叉树空 + 开场题空 + 检索 filter 空集 = 整条扫码 SOP 失效。
+#
+# 解析口径改为「字母族键」：型号串开头的连续字母段即车系键
+#   （XQE122 / xqe122-2 → XQE，XQC163 → XQC，Xcd0051-05 → XCD）
+# 分级：
+#   L1/L2 目录名精确 / 归一化相等（XQE-151 → XQE151 目录）
+#   L3    族键同名目录 → 车系手册全集（XQE）
+#   L4    族键无同名目录 → 找「{族}{数字}」形态文件所在目录（XQC →
+#        product_catalog），并带文件名白名单（平铺目录 66 款车型互相串味）
+#   L5    兜底：原值当目录名（KB 没建该车系时行为与旧版一致）
+
+# 归一化：去分隔符（空格/-/_）+ 大写。XQE-151 → XQE151；xqe122-2 → XQE1222
+_NORM_STRIP_RE = re.compile(r"[\s\-_]+")
+# 车型族键 = 型号串开头的连续字母段（XQE122→XQE，XQC163→XQC）
+_FAMILY_RE = re.compile(r"^([A-Za-z]+)")
+
+
+def _norm_model(model: str) -> str:
+    """车型串归一化（仅用于比较）：去分隔符 + 大写。"""
+    return _NORM_STRIP_RE.sub("", (model or "")).upper()
+
+
+def model_family(model: str) -> str:
+    """车型族键：型号串开头的连续字母段（大写）。XQE122→XQE；无字母前缀→空串。"""
+    m = _FAMILY_RE.match((model or "").strip())
+    return m.group(1).upper() if m else ""
+
+
+# company 域一级目录名缓存：root → (mtime, [目录名...])
+_MODEL_DIRS_CACHE: Dict[str, tuple] = {}
+
+
+def _company_model_dirs(kb_root: Optional[Path] = None) -> List[str]:
+    """列 kb/company/ 下的一级目录名（车系目录候选），带 mtime 缓存。
+
+    目录不存在 → 空列表（KB 未初始化时手册是可选能力，不阻塞模式注册）。"""
+    root = (kb_root or _default_kb_root()) / "company"
+    try:
+        mtime = root.stat().st_mtime
+    except OSError:
+        return []
+    key = str(root)
+    cached = _MODEL_DIRS_CACHE.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        dirs = sorted(p.name for p in root.iterdir() if p.is_dir())
+    except OSError:
+        dirs = []
+    _MODEL_DIRS_CACHE[key] = (mtime, dirs)
+    return dirs
+
+
+def resolve_model_dirs(model: str, kb_root: Optional[Path] = None) -> Dict[str, object]:
+    """车型 → 知识目录解析（ORS-1082 模糊匹配）。
+
+    返回 {"family", "dirs", "files", "primary"}：
+    - family：字母族键（XQE / XQC / …，无字母前缀时为空串）
+    - dirs：命中的知识目录名（相对 company 域，**磁盘原名**），车系目录优先
+    - files：{目录名: [文件名白名单]}——只约束平铺目录（如 product_catalog 下
+      的 XQC161/XQC163/XQC201），车系目录不在表里（不收窄）
+    - primary：主目录（分叉树/开场题/车型介绍页读它），无命中时为原值大写
+    """
+    raw = (model or "").strip()
+    if not raw:
+        return {"family": "", "dirs": [], "files": {}, "primary": ""}
+    norm = _norm_model(raw)
+    family = model_family(raw)
+    dirs = _company_model_dirs(kb_root)
+    root = (kb_root or _default_kb_root()) / "company"
+
+    # L1/L2：目录名精确 / 归一化相等
+    exact = [d for d in dirs if d.upper() == raw.upper()]
+    if not exact:
+        exact = [d for d in dirs if _norm_model(d) == norm]
+
+    if family:
+        # L3：族键同名目录 = 车系手册全集（XQE）
+        fam_dirs = [d for d in dirs if d.upper() == family]
+        if fam_dirs:
+            hit = list(dict.fromkeys(fam_dirs + exact))
+            return {"family": family, "dirs": hit, "files": {}, "primary": hit[0]}
+
+        # L4：族键无同名目录 → 找「{族}{数字}」形态型号文件所在目录
+        # （XQC → product_catalog）。文件名白名单随行返回，防 66 款车型串味。
+        pat = re.compile(rf"^{re.escape(family)}\d+", re.IGNORECASE)
+        flat_dirs: List[str] = []
+        flat_files: Dict[str, List[str]] = {}
+        for d in dirs:
+            sub = root / d
+            if not sub.is_dir():
+                continue
+            hits = [f.name for f in sorted(sub.glob("*.md")) if pat.match(f.stem)]
+            if not hits:
+                continue
+            flat_dirs.append(d)
+            flat_files[d] = hits
+        if flat_dirs:
+            hit = list(dict.fromkeys(flat_dirs + exact))
+            files = {d: flat_files[d] for d in flat_dirs if d in flat_files}
+            return {"family": family, "dirs": hit, "files": files, "primary": hit[0]}
+
+    # L5：只精确/归一化命中（族键无对应目录）
+    if exact:
+        return {"family": family, "dirs": exact, "files": {}, "primary": exact[0]}
+    # 兜底：原值当目录名——KB 未建该车系时行为与旧版一致（不阻塞注册，只是
+    # 手册空 + 检索 0 召回，AI 如实说未收录）
+    up = raw.upper()
+    return {"family": family, "dirs": [up] if up else [], "files": {}, "primary": up}
+
+
 # 引导设施文档（不走 SOP 外显按钮）：分叉树=对话引导题的内容源、故障码表=
 # 输码直查的内容源——它们的入口在对话里，不作为文档气泡重复露出（0930 定稿：
 # 除引导设施外，一个文件一个 SOP 气泡按钮）
 _GUIDE_DOC_KEYWORDS = ("分叉树", "故障码表")
+
+
+def is_guide_doc(name: str) -> bool:
+    """是否引导设施文档（分叉树/故障码表）——入口在对话里，不作为手册外显。"""
+    return any(k in (name or "") for k in _GUIDE_DOC_KEYWORDS)
+
+
+def list_manual_docs_multi(dirs: List[str], files: Optional[Dict[str, List[str]]] = None,
+                            kb_root: Optional[Path] = None,
+                            media_prefix: str = "/api/ai/media",
+                            exclude_guide_docs: bool = False) -> List[Dict[str, str]]:
+    """按目录（+ 文件白名单）生成手册文档清单（ORS-1082）。
+
+    dirs：company 域下的目录名列表（磁盘原名）；files：{目录名: [文件名白名单]}，
+    白名单目录只出白名单文件——平铺目录（product_catalog 下 66 款车型平铺）
+    靠它防车型互相串味。
+    kb 目录/车型目录不存在 → 返回空清单（手册是可选能力，不阻塞模式注册）。
+    URL 走 run.py 已挂的静态路由 {media_prefix}/kb/**（前端 fetch 后自行渲染）。
+    kb_root 参数供测试注入临时目录。
+    """
+    root = (kb_root or _default_kb_root()) / "company"
+    docs: List[Dict[str, str]] = []
+    seen = set()
+    for d in dirs or []:
+        sub = root / d
+        if not sub.is_dir():
+            continue
+        allow = set((files or {}).get(d) or [])
+        for f in sorted(sub.glob("*.md")):
+            if allow and f.name not in allow:
+                continue
+            if exclude_guide_docs and is_guide_doc(f.stem):
+                continue
+            path = f"company/{d}/{f.name}"
+            if path in seen:
+                continue
+            seen.add(path)
+            docs.append({
+                "title": f.stem,
+                "path": path,
+                "url": f"{media_prefix}/kb/company/{d}/{f.name}",
+            })
+    return docs
 
 
 def list_manual_docs(model: str, kb_root: Optional[Path] = None,
@@ -170,55 +339,50 @@ def list_manual_docs(model: str, kb_root: Optional[Path] = None,
                      exclude_guide_docs: bool = False) -> List[Dict[str, str]]:
     """扫 kb/company/{车型}/*.md 生成手册文档清单（title + 正文 URL）。
 
+    单目录精确口径（兼容入口）；多目录 + 文件白名单走 list_manual_docs_multi。
     exclude_guide_docs=True 时排除引导设施文档（分叉树/故障码表）——confirm
     响应的 manual_docs 用于 SOP 外显气泡，只出可在线查看的操作文档。
-    kb 目录/车型目录不存在 → 返回空清单（手册是可选能力，不阻塞模式注册）。
-    URL 走 run.py 已挂的静态路由 {media_prefix}/kb/**（前端 fetch 后自行渲染）。
-    kb_root 参数供测试注入临时目录。
     """
-    sub = model_to_subpath(model)
-    if not sub:
-        return []
-    root = (kb_root or _default_kb_root()) / "company" / sub
-    if not root.is_dir():
-        return []
-    docs: List[Dict[str, str]] = []
-    for f in sorted(root.glob("*.md")):
-        if exclude_guide_docs and any(k in f.stem for k in _GUIDE_DOC_KEYWORDS):
-            continue
-        docs.append({
-            "title": f.stem,
-            "path": f"company/{sub}/{f.name}",
-            "url": f"{media_prefix}/kb/company/{sub}/{f.name}",
-        })
-    return docs
+    return list_manual_docs_multi([model_to_subpath(model)], None, kb_root=kb_root,
+                                  media_prefix=media_prefix,
+                                  exclude_guide_docs=exclude_guide_docs)
 
 
-_VEHICLE_GUIDE_QUESTION = "想了解 XQE 车型信息？点击查看型号介绍"
+_VEHICLE_GUIDE_QUESTION = "想了解 {model} 车型信息？点击查看型号介绍"
 
 
-def build_vehicle_guide(model: str, kb_root: Optional[Path] = None) -> Optional[Dict]:
+def build_vehicle_guide(model: str, kb_root: Optional[Path] = None,
+                        files: Optional[List[str]] = None,
+                        subpath: str = "") -> Optional[Dict]:
     """车型基础信息引导（独立于开场故障题，1012）：扫车型目录下的型号详情页
     （XQE122.md / XQE151.md 形态）生成按钮组——新增型号详情页即自动出现。
 
     点击按钮 = 用户发出「{型号} 车型介绍」消息 → 走检索命中概览/详情页，
     带整车图与参数回答。无型号详情页 → None（不渲染引导条）。
+
+    subpath：已解析的知识目录名（磁盘原名，ORS-1082）——平铺目录名是小写
+    （product_catalog），不能再走 model_to_subpath 的大写口径。
+    files：文件名白名单（ORS-1082）——平铺目录 66 款车型页面平铺，不收窄
+    会把全系列塞进按钮组（XQC 会话只该出 XQC 三款）。
     """
-    sub = model_to_subpath(model)
+    sub = (subpath or "").strip() or model_to_subpath(model)
     if not sub:
         return None
     root = (kb_root or _default_kb_root()) / "company" / sub
     if not root.is_dir():
         return None
+    allow = set(files or [])
     models = []
     for f in sorted(root.glob("*.md")):
+        if allow and f.name not in allow:
+            continue
         m = re.fullmatch(r"([A-Z]+\d+)", f.stem)
         if m:
             models.append(m.group(1))
     if not models:
         return None
     return {
-        "question": _VEHICLE_GUIDE_QUESTION,
+        "question": _VEHICLE_GUIDE_QUESTION.format(model=(model or "").strip() or sub),
         "choices": [f"{m} 车型介绍" for m in models],
     }
 
@@ -246,14 +410,16 @@ def _default_kb_root() -> Path:
 _TREE_CACHE: Dict[str, tuple] = {}
 
 
-def parse_fork_tree(model: str, kb_root: Optional[Path] = None) -> List[Dict]:
+def parse_fork_tree(model: str, kb_root: Optional[Path] = None,
+                    subpath: str = "") -> List[Dict]:
     """解析分叉树全树：[{name, question, scenes:[{name,question,rows,deep...}], rows, deep_*}]。
 
     只收带数字序号的 ## 类目（与 parse_fork_tree_choices 同规则，管理章节天然
     排除）。文件不存在/解析异常返回 []（直出是增强能力，缺树时按钮消息落到
     正常 AI 链路）。带 mtime 缓存（每轮 ask 都要解析，树文件 16KB 级别）。
+    subpath：已解析的知识目录名（磁盘原名，ORS-1082）。
     """
-    sub = model_to_subpath(model)
+    sub = (subpath or "").strip() or model_to_subpath(model)
     if not sub:
         return []
     root = (kb_root or _default_kb_root()) / "company" / sub
@@ -400,14 +566,18 @@ def _match_tree_step(query: str, tree: List[Dict], nav: Dict) -> Optional[Dict]:
 
 def tree_direct_reply(query: str, vm_meta: Dict, model: str,
                       kb_root: Optional[Path] = None,
-                      rng: Optional[random.Random] = None) -> Optional[Dict]:
+                      rng: Optional[random.Random] = None,
+                      subpath: str = "") -> Optional[Dict]:
     """车型会话分叉树直出入口：命中返回组装好的回复（pipeline 直接下发）。
 
     返回 {kind, message, action, choices, nav}；未命中返回 None（走 AI）。
     vm_meta 是 memory.metadata["vehicle_mode"] 的引用：nav/话术记账直接写回，
     调用侧随后 save_memory 即持久（树导览轮次由调用侧 turns 机制记录）。
+    subpath：已解析的知识目录名（磁盘原名，ORS-1082）——model 是**录入车型**
+    （XQE122），车系目录是 XQE，不传 subpath 会按 XQE122 找分叉树 → 找不到，
+    点选项就落不到直出（退回 LLM 慢路径）。
     """
-    tree = parse_fork_tree(model, kb_root)
+    tree = parse_fork_tree(model, kb_root, subpath=subpath)
     if not tree:
         return None
     nav = vm_meta.get("tree_nav") or {}
@@ -490,16 +660,25 @@ async def register_mode(req: ModeConfirmRequest,
         return {"code": 1, "message": "该二维码未录入信息或不可用，请联系管理员"}
 
     # 车型以库内那行为准（录入界面必填，正常不会为空）；为空时用弹窗确认值兜底。
-    # 归一到大写（= 磁盘目录名）：下游拿 model 拼检索 filter 的 sub_domain
-    # （pipeline._vehicle_mode_domains）与 prompt 里的「车型 xxx」，都要与 kb
-    # 入库同形才对得上，小写会过滤成空集。
-    model_key = model_to_subpath(
-        (row.vehicle_model or "").strip() or (req.model or "").strip())
+    # 归一到大写：prompt 里的「车型 xxx」与 KB 入库口径一致（小写会失配）。
+    raw_model = (row.vehicle_model or "").strip() or (req.model or "").strip()
+    model_key = model_to_subpath(raw_model)
     if not model_key:
         logger.warning(
             f"[vehicle_mode] 车型为空拦截: scene={scene}, session={req.session_id}",
         )
         return {"code": 1, "message": "该二维码未录入车型信息，请联系管理员"}
+
+    # 车型 → 知识目录解析（ORS-1082 模糊匹配）：字母族键 XQE122/xqe122-2→XQE、
+    # XQC163→XQC。产出目录清单（可多个）+ 平铺目录的文件名白名单，手册清单与
+    # 检索域都按它走；解析不到目录时回退原值（与旧版一致：手册空 + 检索
+    # 0 召回，不阻塞模式注册）。
+    kb_root = _default_kb_root()
+    resolved = resolve_model_dirs(model_key, kb_root=kb_root)
+    model_dirs = list(resolved.get("dirs") or []) or [model_key]
+    model_files = dict(resolved.get("files") or {})
+    model_primary = str(resolved.get("primary") or model_key)
+    model_family_key = str(resolved.get("family") or "")
 
     # 项目名/客户名同口径：库内非空以库内为准，为空用弹窗确认值兜底
     project_name = (row.project_name or "").strip() or (req.project_name or "").strip()
@@ -508,6 +687,17 @@ async def register_mode(req: ModeConfirmRequest,
     domain = model_to_domain(model_key)
     mode_info = {
         "model": model_key,
+        # 解析出的知识目录（磁盘原名，可多个）：手册清单与检索域按它走
+        "model_dirs": model_dirs,
+        # 平铺目录的文件名白名单 {目录: [文件名]}：检索层只能按 sub_domain
+        # 过滤（product_catalog 下 66 款车型平铺），白名单在应用层二次收窄
+        "model_files": model_files,
+        # 主目录（分叉树/开场题/车型介绍页读它）
+        "model_primary": model_primary,
+        # 字母族键（XQE/XQC/…）
+        "model_family": model_family_key,
+        # 录入原串（只做追溯，不参与匹配）
+        "model_raw": raw_model,
         "domain": domain,
         # scene = 行 id：本会话绑定的是「哪一台车」的唯一身份，供追溯
         "scene": scene,
@@ -521,10 +711,16 @@ async def register_mode(req: ModeConfirmRequest,
 
     mm = memory_manager or await _default_memory_manager()
     memory = await mm.get_memory(req.session_id)
-    # SOP 外显清单：排除引导设施文档（分叉树/故障码表的入口在对话里）
-    manual_docs = list_manual_docs(model_key, exclude_guide_docs=True)
-    opening = build_opening(parse_fork_tree_choices(model_key))
-    vehicle_guide = build_vehicle_guide(model_key)
+    # SOP 外显清单：排除引导设施文档（分叉树/故障码表的入口在对话里）；
+    # 多目录合并 + 平铺目录按文件名白名单收窄
+    manual_docs = list_manual_docs_multi(model_dirs, model_files, kb_root=kb_root,
+                                         exclude_guide_docs=True)
+    # 分叉树/开场题/车型介绍按主目录单目录读（平铺目录里没有这两类资产）
+    opening = build_opening(parse_fork_tree_choices(model_key, kb_root=kb_root,
+                                                     subpath=model_primary))
+    vehicle_guide = build_vehicle_guide(model_key, kb_root=kb_root,
+                                        files=model_files.get(model_primary),
+                                        subpath=model_primary)
     if opening:
         # 开场类目随模式入 metadata：pipeline 识别「用户点开场气泡」（query
         # == 类目原文）做零 LLM 短接，不必再读分叉树文件
@@ -535,7 +731,8 @@ async def register_mode(req: ModeConfirmRequest,
 
     logger.info(
         f"[vehicle_mode] 定制模式注册: session={req.session_id} scene={scene} "
-        f"model={model_key} domain={domain} manual={len(manual_docs)}篇 "
+        f"model={model_key}(raw={raw_model}) family={model_family_key or '-'} "
+        f"dirs={model_dirs} manual={len(manual_docs)}篇 "
         f"opening={len(opening['choices']) if opening else 0}类",
     )
     return {
@@ -543,6 +740,11 @@ async def register_mode(req: ModeConfirmRequest,
         "data": {
             "confirmed": True,
             "model": model_key,
+            "model_raw": raw_model,
+            "model_family": model_family_key,
+            "model_primary": model_primary,
+            "model_dirs": model_dirs,
+            "model_files": model_files,
             "domain": domain,
             "manual_docs": manual_docs,
             "opening": opening,

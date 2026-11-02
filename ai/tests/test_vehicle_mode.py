@@ -410,3 +410,215 @@ def test_build_vehicle_guide_scans_model_pages(tmp_path):
         "question": "想了解 XQE 车型信息？点击查看型号介绍",
         "choices": ["XQE122 车型介绍", "XQE151 车型介绍"]}
     assert build_vehicle_guide("XQE", kb_root=tmp_path / "nope") is None
+
+
+# ============================================================
+# 车型模糊匹配（ORS-1082）
+# ============================================================
+# 生产实况（2026-11-02 实查 helpdesk_724 + 生产 KB）：
+#   kb/company/ 只有 XQE/ 有车系级 SOP 资产（33 篇），XQC 等车型的资料在
+#   product_catalog/ 下平铺的 66 篇车型页里；扫码录入值是 XQE122(16) /
+#   xqe122-2..4(3) / XQE151(2) / XQE(2) / XQC(2) 等。旧口径（仅 upper）
+#   只有恰好等于 "XQE" 的能命中，其余全部落空 → 手册/分叉树/开场题全空 +
+#   检索 filter 空集 = 整条扫码 SOP 失效。
+
+
+@pytest.fixture
+def kb_dirs(tmp_path):
+    """生产形态的 KB 目录：车系目录 XQE（分叉树+故障码表+手册+型号页）
+    + 平铺目录 product_catalog（66 款车型页平铺）。"""
+    xqe = tmp_path / "company" / "XQE"
+    xqe.mkdir(parents=True)
+    (xqe / "00_故障分叉树.md").write_text(
+        "# 树\n## 1. 车辆停着不动\n", encoding="utf-8")
+    (xqe / "01_故障码表.md").write_text("# 码\n", encoding="utf-8")
+    (xqe / "36_异常处理标准流程SOP.md").write_text("# SOP\n", encoding="utf-8")
+    (xqe / "XQE122.md").write_text("# XQE122\n", encoding="utf-8")
+    (xqe / "XQE151.md").write_text("# XQE151\n", encoding="utf-8")
+    pc = tmp_path / "company" / "product_catalog"
+    pc.mkdir(parents=True)
+    for name in ("XQC161.md", "XQC163.md", "XQC201.md", "XFL201.md"):
+        (pc / name).write_text(f"# {name}\n", encoding="utf-8")
+    (pc / "index.md").write_text("# 目录\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_resolve_model_dirs_exact(kb_dirs):
+    from ai.api.vehicle_mode import resolve_model_dirs
+
+    r = resolve_model_dirs("XQE", kb_root=kb_dirs)
+    assert r["family"] == "XQE"
+    assert r["dirs"] == ["XQE"]
+    assert r["files"] == {}
+    assert r["primary"] == "XQE"
+
+
+def test_resolve_model_dirs_model_to_series(kb_dirs):
+    """型号 → 车系目录：XQE122 / xqe122-2 / XQE-151 / XQE151 全部归到 XQE。
+
+    这是生产上占比最大的一类（XQE122 16 条 + 小写变体 3 条），旧口径全部
+    落空——手册清单空、分叉树空、检索 filter 空集，整条 SOP 失效。
+    """
+    from ai.api.vehicle_mode import resolve_model_dirs
+
+    for model in ("XQE122", "xqe122-2", "XQE-151", "XQE151", "XQE 122"):
+        r = resolve_model_dirs(model, kb_root=kb_dirs)
+        assert r["dirs"] == ["XQE"], model
+        assert r["files"] == {}, model
+        assert r["primary"] == "XQE", model
+        assert r["family"] == "XQE", model
+
+
+def test_resolve_model_dirs_series_to_flat_models(kb_dirs):
+    """车系无目录 → 平铺目录 + 文件名白名单（XQC → product_catalog 三款）。
+
+    白名单是刚需：product_catalog 下 66 款车型平铺，不收窄就会把 XFL/XCD
+    等其它车型资料一起当成 XQC 的手册。
+    """
+    from ai.api.vehicle_mode import resolve_model_dirs
+
+    r = resolve_model_dirs("XQC", kb_root=kb_dirs)
+    assert r["family"] == "XQC"
+    assert r["dirs"] == ["product_catalog"]
+    assert r["files"] == {"product_catalog": ["XQC161.md", "XQC163.md", "XQC201.md"]}
+    assert r["primary"] == "product_catalog"
+
+
+def test_resolve_model_dirs_model_in_flat_catalog(kb_dirs):
+    """具体型号在平铺目录里 → 同样落到 product_catalog + 单文件白名单。"""
+    from ai.api.vehicle_mode import resolve_model_dirs
+
+    r = resolve_model_dirs("XFL201", kb_root=kb_dirs)
+    assert r["dirs"] == ["product_catalog"]
+    assert r["files"] == {"product_catalog": ["XFL201.md"]}
+
+
+def test_resolve_model_dirs_unknown_falls_back(kb_dirs):
+    """KB 里彻底没有的车型 → 回退原值当目录名。
+
+    兜底口径与旧版一致：不阻塞注册（手册空 + 检索 0 召回，AI 如实说未收录）。
+    """
+    from ai.api.vehicle_mode import resolve_model_dirs
+
+    r = resolve_model_dirs("ZZZ999", kb_root=kb_dirs)
+    assert r["dirs"] == ["ZZZ999"]
+    assert r["files"] == {}
+    assert r["primary"] == "ZZZ999"
+
+
+def test_resolve_model_dirs_empty_model(kb_dirs):
+    from ai.api.vehicle_mode import resolve_model_dirs
+
+    r = resolve_model_dirs("", kb_root=kb_dirs)
+    assert r["dirs"] == []
+    assert r["primary"] == ""
+    assert r["family"] == ""
+
+
+def test_model_family_extraction():
+    from ai.api.vehicle_mode import model_family
+
+    assert model_family("XQE122") == "XQE"
+    assert model_family("xqe122-2") == "XQE"
+    assert model_family("XQC163") == "XQC"
+    assert model_family("Xcd0051-05") == "XCD"
+    assert model_family("") == ""
+    assert model_family("122") == ""
+
+
+def test_list_manual_docs_multi_dirs_and_whitelist(kb_dirs):
+    from ai.api.vehicle_mode import list_manual_docs_multi
+
+    # 车系目录：引导设施（分叉树/故障码表）不外显
+    docs = list_manual_docs_multi(["XQE"], None, kb_root=kb_dirs,
+                                  exclude_guide_docs=True)
+    titles = [d["title"] for d in docs]
+    assert "36_异常处理标准流程SOP" in titles
+    assert "00_故障分叉树" not in titles
+    assert "01_故障码表" not in titles
+    assert docs[0]["url"].startswith("/api/ai/media/kb/company/XQE/")
+
+    # 平铺目录 + 白名单：只出本族型号页（XFL201 不得混进来）
+    docs2 = list_manual_docs_multi(
+        ["product_catalog"], {"product_catalog": ["XQC161.md", "XQC163.md"]},
+        kb_root=kb_dirs)
+    assert [d["title"] for d in docs2] == ["XQC161", "XQC163"]
+    assert docs2[0]["path"] == "company/product_catalog/XQC161.md"
+
+    # 无白名单 = 该目录全出（平铺目录不用时）
+    docs3 = list_manual_docs_multi(["product_catalog"], None, kb_root=kb_dirs)
+    assert len(docs3) == 5  # 4 款型号页 + index.md
+
+    # 目录不存在 → 空清单（手册是可选能力，不阻塞）
+    assert list_manual_docs_multi(["NOPE"], None, kb_root=kb_dirs) == []
+
+
+async def test_register_mode_fuzzy_model_to_series(vehicle_db, kb_dirs, mock_memory,
+                                                   monkeypatch):
+    """录入 XQE122（生产主力车型）→ 解析到车系目录，手册/分叉树不再是空的。"""
+    from ai.api import vehicle_mode as vm
+
+    _seed_qrcode(vehicle_db, qr_id=101, model="XQE122")
+    monkeypatch.setattr(vm, "_default_kb_root", lambda: kb_dirs)
+
+    resp = await vm.register_mode(_make_request(scene="101", model="XQE122"),
+                                  memory_manager=mock_memory)
+    assert resp["code"] == 0
+    assert resp["data"]["model"] == "XQE122"       # 展示/追溯用录入串
+    assert resp["data"]["model_raw"] == "XQE122"
+    assert resp["data"]["model_family"] == "XQE"
+    assert resp["data"]["model_dirs"] == ["XQE"]
+    assert resp["data"]["model_primary"] == "XQE"
+    titles = [d["title"] for d in resp["data"]["manual_docs"]]
+    assert "36_异常处理标准流程SOP" in titles
+    assert "00_故障分叉树" not in titles
+
+    mem = await mock_memory.get_memory("sess-xqe-1")
+    mode = mem.metadata["vehicle_mode"]
+    assert mode["model"] == "XQE122"
+    assert mode["model_dirs"] == ["XQE"]
+    assert mode["model_primary"] == "XQE"
+
+
+async def test_register_mode_xqc_flat_catalog(vehicle_db, kb_dirs, mock_memory,
+                                              monkeypatch):
+    """XQC（车系无 SOP 资产）→ 平铺目录本族型号页；无分叉树 → 无开场题。
+
+    1A 口径：XQC 先给车型资料页，排障类问题如实答「手册未收录，建议转工单」。
+    """
+    from ai.api import vehicle_mode as vm
+
+    _seed_qrcode(vehicle_db, qr_id=202, model="XQC")
+    monkeypatch.setattr(vm, "_default_kb_root", lambda: kb_dirs)
+
+    resp = await vm.register_mode(_make_request(scene="202", model="XQC"),
+                                  memory_manager=mock_memory)
+    assert resp["code"] == 0
+    assert resp["data"]["model"] == "XQC"
+    assert resp["data"]["model_dirs"] == ["product_catalog"]
+    assert resp["data"]["model_files"] == {
+        "product_catalog": ["XQC161.md", "XQC163.md", "XQC201.md"]}
+    assert [d["title"] for d in resp["data"]["manual_docs"]] == [
+        "XQC161", "XQC163", "XQC201"]
+    # 平铺目录里没有分叉树 → 无开场引导题（如实退化为纯输入框）
+    assert resp["data"]["opening"] is None
+    # 车型介绍按钮只出本族三款（不把 66 款全塞进来）
+    assert resp["data"]["vehicle_guide"]["choices"] == [
+        "XQC161 车型介绍", "XQC163 车型介绍", "XQC201 车型介绍"]
+
+
+async def test_register_mode_lowercase_model_resolves(vehicle_db, kb_dirs,
+                                                       mock_memory, monkeypatch):
+    """小写 + 后缀录入（xqe122-2，生产有 3 条）同样归到车系目录。"""
+    from ai.api import vehicle_mode as vm
+
+    _seed_qrcode(vehicle_db, qr_id=303, model="xqe122-2")
+    monkeypatch.setattr(vm, "_default_kb_root", lambda: kb_dirs)
+
+    resp = await vm.register_mode(_make_request(scene="303", model="xqe122-2"),
+                                  memory_manager=mock_memory)
+    assert resp["code"] == 0
+    assert resp["data"]["model"] == "XQE122-2"
+    assert resp["data"]["model_family"] == "XQE"
+    assert resp["data"]["model_dirs"] == ["XQE"]
+    assert resp["data"]["manual_docs"], "手册不能为空（旧口径这里是空）"
