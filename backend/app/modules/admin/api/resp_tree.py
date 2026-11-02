@@ -67,6 +67,21 @@ async def seed_resp_trees(
                            "status": t.status, "revision": int(t.revision or 0)} for t in trees]})
 
 
+@router.post("/resp-trees/import-trial", response_model=DataResponse,
+             summary="责任双树：试做页 JSON 整份灌库（拆成 org/skill）")
+async def import_trial_snapshot(
+    body: Dict[str, Any] = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """入参：{nodes, mounts, force?}，格式同 dualTreeTrialSnapshot。"""
+    force = bool(body.get("force"))
+    return _ok(await _run(svc.import_trial_snapshot(
+        db, {"nodes": body.get("nodes") or [], "mounts": body.get("mounts") or []},
+        force=force,
+    )))
+
+
 @router.get("/resp-trees/{tree_id}/nodes", response_model=DataResponse,
             summary="责任双树：整树节点 + 挂载（含 revision）")
 async def get_resp_tree_nodes(

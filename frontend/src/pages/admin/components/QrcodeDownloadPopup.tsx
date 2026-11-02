@@ -6,7 +6,7 @@ interface Props {
   selectedIds: number[];
   pageIds: number[];
   filteredTotal: number;
-  filters: Pick<QrcodeDownloadParams, 'status' | 'qrcode_type' | 'keyword'>;
+  filters: Pick<QrcodeDownloadParams, 'status' | 'qrcode_type' | 'keyword' | 'date_start' | 'date_end' | 'date_field'>;
   onClose: () => void;
 }
 

@@ -37,6 +37,8 @@ class RewardStatsOut(BaseModel):
     pending_amount: int = Field(0, description="待提现总额（分）")
     pending_count: int = 0
     withdrawn_amount: int = Field(0, description="累计已到账（分）")
+    withdrawing_amount: int = Field(0, description="提现中总额（分，用户端展示为待提现）")
+    withdrawing_count: int = 0
 
 
 # ============ 提现 ============

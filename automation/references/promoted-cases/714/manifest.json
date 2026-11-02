@@ -1,0 +1,20 @@
+{
+  "ticket_id": 714,
+  "ticket_type": "feature",
+  "project_id": "Leo_test",
+  "project_name": "摇人吧服务号",
+  "source_title": "建立服务号自动化回归测试机制",
+  "case_count": 14,
+  "request_count": 23,
+  "review_status": "approved",
+  "generated_at": "2026-10-30T20:02:20.948288+00:00",
+  "generator": "ticket_case_generator",
+  "spec_issues": [
+    "case request path not in spec: '/api/wechat/permissions?openid=test_openid'",
+    "case request path not in spec: '/api/health?project_code=Leo_test'",
+    "case request path not in spec: '/api/wechat/permissions?openid=not_exist_openid_0001'",
+    "case request path not in spec: '/api/wechat/config/js-sdk-config?url=https://example.com/page'",
+    "case request path not in spec: '/api/wechat/get-openid?code=test_code_0001'",
+    "case request path not in spec: '/api/wechat?signature=invalid_signature&timestamp=1&nonce=2&echostr=test_echo'"
+  ]
+}

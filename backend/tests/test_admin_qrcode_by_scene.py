@@ -159,3 +159,126 @@ def test_not_gated_by_admin_permission(client, db):
 
     assert response.status_code == 200
     assert response.json()["status"] == QrcodeStatus.INIT
+
+
+def test_institute_member_overwrites_published_project_info(client, db, app):
+    app.dependency_overrides[get_current_active_user_from_token] = lambda: {
+        **LOGIN_USER, "department": "智能规划研究院",
+    }
+    row = _row()
+    first = db.query.return_value.filter.return_value.first
+    first.side_effect = [row, ("P-0002",)]
+    payload = {
+        "project_code": "P-0002",
+        "project_name": "项目B",
+        "project_location": "杭州",
+        "customer_name": "客户B",
+        "vehicle_model": "XCD",
+    }
+
+    response = client.put(f"/api/admin/qrcodes/{ROW_ID}/project-info", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == ROW_ID
+    assert body["scene_str"] == SCENE
+    assert body["status"] == QrcodeStatus.PUBLISHED
+    for field, value in payload.items():
+        assert body[field] == value
+        assert getattr(row, field) == value
+    assert row.name == payload["project_name"]
+    db.commit.assert_called_once()
+    db.refresh.assert_called_once_with(row)
+    db.add.assert_not_called()
+
+    first.side_effect = None
+    first.return_value = row
+    refreshed = client.get(f"/api/admin/qrcodes/by-scene/{SCENE}")
+
+    assert refreshed.status_code == 200
+    for field, value in payload.items():
+        assert refreshed.json()[field] == value
+
+
+@pytest.mark.parametrize("path", [f"by-scene/{SCENE}", str(ROW_ID)])
+@pytest.mark.parametrize(("auth", "can_edit"), [
+    ({}, False),
+    ({"department": None}, False),
+    ({"department": ""}, False),
+    ({"department": "智能规划研究院"}, True),
+    ({"department": "实施服务部"}, False),
+    ({"department": "智能规划研究院分院"}, False),
+    ({"department": "智能规划研究院（外包）"}, False),
+    ({"department": "实施服务部", "roles": {"P-0001": ["r-dispatch"]}}, False),
+    ({"department": "实施服务部", "roles": {"global": ["r-dev"]}}, False),
+    ({"department": "实施服务部", "permissions": ["admin"]}, False),
+    ({"permissions": ["admin"]}, False),
+])
+def test_qrcode_returns_department_based_edit_permission(client, db, app, path, auth, can_edit):
+    app.dependency_overrides[get_current_active_user_from_token] = lambda: {**LOGIN_USER, **auth}
+    db.query.return_value.filter.return_value.first.return_value = _row()
+
+    response = client.get(f"/api/admin/qrcodes/{path}")
+
+    assert response.status_code == 200
+    assert response.json()["can_edit_project_info"] is can_edit
+
+
+@pytest.mark.parametrize("auth", [
+    {},
+    {"department": None},
+    {"department": ""},
+    {"department": "实施服务部"},
+    {"department": "智能规划研究院分院"},
+    {"department": "实施服务部", "roles": {"P-0001": ["r-dispatch"]}},
+    {"department": "实施服务部", "roles": {"global": ["r-dev"]}},
+    {"department": "实施服务部", "permissions": ["admin"]},
+])
+def test_unauthorized_published_update_is_rejected_before_changes(client, db, app, auth):
+    app.dependency_overrides[get_current_active_user_from_token] = lambda: {**LOGIN_USER, **auth}
+    row = _row()
+    db.query.return_value.filter.return_value.first.return_value = row
+
+    response = client.put(f"/api/admin/qrcodes/{ROW_ID}/project-info", json={
+        "project_code": "OTHER",
+        "project_name": "不允许的修改",
+        "customer_name": "不允许的客户",
+        "department": "智能规划研究院",
+    })
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "仅智能规划研究院的用户可修改已发布信息"
+    assert row.project_code == "P-0001"
+    assert row.project_name == "项目A"
+    assert row.customer_name == "客户A"
+    db.commit.assert_not_called()
+    db.add.assert_not_called()
+
+
+@pytest.mark.parametrize("auth", [
+    {"department": "智能规划研究院"},
+    {"department": "智能规划研究院", "roles": {"global": ["r-dev"]}},
+    {"department": "智能规划研究院", "permissions": ["admin"]},
+])
+def test_institute_member_can_update_regardless_of_role(client, db, app, auth):
+    app.dependency_overrides[get_current_active_user_from_token] = lambda: {**LOGIN_USER, **auth}
+    row = _row()
+    db.query.return_value.filter.return_value.first.return_value = row
+
+    response = client.put(f"/api/admin/qrcodes/{ROW_ID}/project-info", json={"customer_name": "新客户"})
+
+    assert response.status_code == 200
+    assert row.customer_name == "新客户"
+    db.commit.assert_called_once()
+
+
+def test_ordinary_user_can_still_fill_unpublished_info(client, db):
+    row = _row(status=QrcodeStatus.ENTERING)
+    db.query.return_value.filter.return_value.first.return_value = row
+
+    response = client.put(f"/api/admin/qrcodes/{ROW_ID}/project-info", json={"customer_name": "首次录入"})
+
+    assert response.status_code == 200
+    assert row.customer_name == "首次录入"
+    assert row.status == QrcodeStatus.PUBLISHED
+    db.commit.assert_called_once()

@@ -819,6 +819,21 @@ class DiagnoseFlow:
         from ai.agents.AiTaskPlatform.runtime import report_cache
         report_cache.put(task_id, report_md)
 
+        # 结构化摘要落库：只存根因一句话 + 置信度 + 缺失信息，不存完整报告。
+        # 供 discuss 流跨进程 / 重启后引用"上次诊断说了啥"。
+        # 按实际情况记录，没话不硬说：root_cause 取报告首条实质行（≤200字），无则留空。
+        from datetime import datetime
+        try:
+            from ai.core.task_adapter import save_diag_summary
+            save_diag_summary(task_id, {
+                "root_cause": root_cause[:200] if root_cause and root_cause != report_md else "",
+                "confidence": conf,
+                "missing_info": [g.get("key") for g in (missing_info or [])],
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            })
+        except Exception as _e:
+            logger.warning(f"[diagnose] 写入 diag_summary 失败 task={task_id}: {_e}")
+
         # P3：needs_more_info 由"查漏出的缺失信息"驱动（而非仅 conf<0.5），
         # 更有意义——代表"确实有高价值信息缺失，建议补充"。
         return {

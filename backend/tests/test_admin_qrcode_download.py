@@ -1,6 +1,7 @@
 import asyncio
 import io
 import zipfile
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -53,6 +54,67 @@ def image_ids(response):
     assert "attachment;" in response.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         return {int(name.split("_")[0]) for name in archive.namelist() if name.endswith(".png")}
+
+
+@pytest.fixture
+def dated_rows(setup):
+    with setup.sessions() as db:
+        timestamps = {
+            1: (datetime(2026, 10, 26, 15, 59, 59), datetime(2026, 10, 27, 10)),
+            2: (datetime(2026, 10, 26, 16), datetime(2026, 10, 28, 10)),
+            3: (datetime(2026, 10, 27, 15, 59, 59, 999999), None),
+            4: (datetime(2026, 10, 27, 16), datetime(2026, 10, 27, 12)),
+        }
+        for qid, (created_at, ticket_created_at) in timestamps.items():
+            row = db.get(WechatQrcode, qid)
+            row.created_at = created_at
+            row.ticket_created_at = ticket_created_at
+        db.commit()
+    return setup
+
+
+@pytest.mark.parametrize("filters, expected", [
+    ({"date_start": "2026-10-27", "date_end": "2026-10-27"}, {2, 3}),
+    ({"date_start": "2026-10-27"}, {2, 3, 4}),
+    ({"date_end": "2026-10-27"}, {1, 2, 3}),
+    ({"date_field": "ticket_created_at", "date_start": "2026-10-27", "date_end": "2026-10-27"}, {1, 4}),
+    ({"date_start": "2026-10-27", "date_end": "2026-10-27", "status": "entering", "qrcode_type": "temporary"}, {2}),
+])
+def test_date_filters_use_inclusive_beijing_days(dated_rows, filters, expected):
+    response = dated_rows.client.get("/api/admin/qrcodes", params=filters)
+    assert response.status_code == 200
+    assert response.json()["total"] == len(expected)
+    assert {row["id"] for row in response.json()["items"]} == expected
+
+
+@pytest.mark.parametrize("field, expected", [("created_at", {2}), ("ticket_created_at", {1, 4})])
+def test_filtered_download_applies_same_date_range(dated_rows, field, expected):
+    response = dated_rows.client.post(ENDPOINT, json={
+        "scope": "filtered", "date_field": field, "date_start": "2026-10-27", "date_end": "2026-10-27",
+    })
+    assert image_ids(response) == expected
+
+
+@pytest.mark.parametrize("filters, expected_status", [
+    ({"date_start": "2026-10-28", "date_end": "2026-10-27"}, 400),
+    ({"date_start": "2026-02-30"}, 422),
+    ({"date_field": "name"}, 422),
+    ({"date_start": "0001-01-01"}, 400),
+])
+def test_invalid_dates_rejected_for_list_and_download(setup, filters, expected_status):
+    assert setup.client.get("/api/admin/qrcodes", params=filters).status_code == expected_status
+    assert setup.client.post(ENDPOINT, json={"scope": "filtered", **filters}).status_code == expected_status
+    setup.fetch_image.assert_not_awaited()
+
+
+def test_list_pagination_has_stable_order_for_identical_creation_times(setup):
+    with setup.sessions() as db:
+        for row in db.query(WechatQrcode).all():
+            row.created_at = datetime(2026, 10, 27)
+        db.commit()
+    first = setup.client.get("/api/admin/qrcodes", params={"limit": 2}).json()
+    second = setup.client.get("/api/admin/qrcodes", params={"limit": 2, "skip": 2}).json()
+    assert [row["id"] for row in first["items"] + second["items"]] == [4, 3, 2, 1]
 
 
 @pytest.mark.parametrize("scope", ["selected", "page"])

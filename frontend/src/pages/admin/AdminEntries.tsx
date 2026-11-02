@@ -53,7 +53,7 @@ const entryGroups: EntryGroup[] = [
     tone: 'blue-2',
     entries: [
       { path: '/admin/module-tree', label: '责任模块树', desc: '产品→界面→功能维护、工程师认领', icon: <MacTags />, tone: 'blue-2' },
-      { path: '/admin/dual-tree', label: '双树试做', desc: '本机试挂组织树和技能树，不改现有派单', icon: <MacTags />, tone: 'blue-3' },
+      { path: '/admin/dual-tree', label: '责任双树', desc: '组织树与技能树落库编辑（乐观锁），不改现有派单', icon: <MacTags />, tone: 'blue-3' },
       { path: '/admin/task-policy', label: '工单关联规则', desc: '阻塞开关、重复工单状态同步', icon: <MacKeyRound />, tone: 'blue-3' },
     ],
   },

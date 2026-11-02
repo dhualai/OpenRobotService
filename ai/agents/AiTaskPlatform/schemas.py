@@ -91,6 +91,9 @@ class TaskContext(BaseModel):
     resolution_summary: str = ""
     # AI 讨论摘要（metadata_info.ai_summary），作为"怎么解决"的补充说明
     ai_summary: str = ""
+    # 诊断报告结构化摘要（metadata_info.diag_summary，由 diagnose_flow 写入）：
+    # 不是完整报告，只存根因一句话 + 置信度 + 缺失信息，供 discuss 引用"上次诊断说了啥"。
+    diag_summary: Optional[dict] = None
 
 
 # ============================================================

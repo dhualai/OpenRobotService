@@ -13,20 +13,29 @@
 
 ## 接口
 
+### 后台管理：列表选择、全部显示与日期筛选
+
+- **一键全选本页 / 取消本页全选**：操作当前可见列表，保留其他页已勾选的记录；**清空已选**清除所有勾选。
+- **一页显示全部**：按当前筛选条件逐批加载完整列表（每批最多 500 条），不截断为前 500 条；加载后可一键全选全部，也可恢复每页 20 条的分页模式。
+- **日期筛选**：展开后选择创建日期或 ticket 生成日期，填写开始 / 结束日期，点击**按日期筛选**；支持只填一端，**清除日期**可恢复不按日期过滤。
+- 日期以北京时间自然日计算，包含起止日期的全天；ticket 生成日期筛选不包含尚未生成 ticket 的记录。筛选改变后回到第一页，全部显示模式继续生效。
+- 列表 `GET /api/admin/qrcodes` 与筛选范围下载共用 `date_start`、`date_end`（`YYYY-MM-DD`）和 `date_field`（`created_at`，默认；或 `ticket_created_at`）。数据库 UTC 时间转换边界后过滤。
+- 全部显示不改变单次 ZIP 下载最多 500 条的限制；记录过多时请先缩小日期 / 状态等筛选范围。
+
 ### 后台管理：批量下载
 
 后台管理 → 二维码管理 → **批量下载**，选择下载范围后获取一个 ZIP 压缩包：
 
 - **已勾选记录**：包含跨页勾选的记录。
 - **当前页**：下载当前页展示的记录。
-- **当前筛选结果**：沿用状态、类型及名称 / ID 搜索条件，覆盖所有分页。
+- **当前筛选结果**：沿用状态、类型、名称 / ID 搜索及已应用的日期条件，覆盖所有分页。
 - **指定 ID 区间**：包含起止 ID，不受页面筛选影响。
 - **全部记录**：忽略页面筛选。
 
 接口：`POST /api/admin/qrcodes/batch-download`，需要 `frontend:admin:other:show` 权限。
 请求体的 `scope` 必填，可选 `selected` / `page` / `filtered` / `range` / `all`；
 `selected`、`page` 传非空 `qid_list`，`range` 传正整数 `id_start`、`id_end`，
-`filtered` 可传 `status`、`qrcode_type`、`keyword`、`batch_id`。
+`filtered` 可传 `status`、`qrcode_type`、`keyword`、`batch_id`、`date_start`、`date_end`、`date_field`。
 例如：`{"scope":"range","id_start":100,"id_end":200}`。
 
 单次范围最多 500 条，超过上限会提示缩小范围，不会静默截断。

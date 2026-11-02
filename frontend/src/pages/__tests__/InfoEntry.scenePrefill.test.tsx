@@ -381,4 +381,32 @@ describe('InfoEntry 扫码带入项目id', () => {
     await waitFor(() => expect(valueOf(screen.getByPlaceholderText(CODE_PLACEHOLDER))).toBe('CODE-9'));
     expect(screen.queryByTestId('call-page')).not.toBeInTheDocument();
   });
+
+  it('已发布二维码修改五个字段后，按原行 id 更新而非新建', async () => {
+    mockFetchQrcode.mockResolvedValue({ ...infoRow, status: 'published' });
+    renderInfoEntry('/admin/info-entry/9');
+
+    await waitFor(() => expect(screen.getByPlaceholderText(NAME_PLACEHOLDER)).toHaveValue('项目九'));
+    expect(screen.getByPlaceholderText(LOCATION_PLACEHOLDER)).toHaveValue('现场九');
+    expect(screen.getByPlaceholderText(CUSTOMER_PLACEHOLDER)).toHaveValue('客户九');
+    expect(screen.getByPlaceholderText(VEHICLE_PLACEHOLDER)).toHaveValue('XQE');
+
+    fireEvent.change(screen.getByPlaceholderText(NAME_PLACEHOLDER), { target: { value: '修改后的项目' } });
+    fireEvent.change(screen.getByPlaceholderText(CODE_PLACEHOLDER), { target: { value: 'CODE-UPDATED' } });
+    fireEvent.change(screen.getByPlaceholderText(LOCATION_PLACEHOLDER), { target: { value: '修改后的现场' } });
+    fireEvent.change(screen.getByPlaceholderText(CUSTOMER_PLACEHOLDER), { target: { value: '修改后的客户' } });
+    fireEvent.change(screen.getByPlaceholderText(VEHICLE_PLACEHOLDER), { target: { value: 'XCD' } });
+    fireEvent.click(screen.getByText('保存'));
+
+    await waitFor(() => expect(mockUpdateProjectInfo).toHaveBeenCalledWith(9, {
+      project_code: 'CODE-UPDATED',
+      project_name: '修改后的项目',
+      project_location: '修改后的现场',
+      customer_name: '修改后的客户',
+      vehicle_model: 'XCD',
+    }));
+    expect(mockUpdateProjectInfo).toHaveBeenCalledTimes(1);
+    expect(mockCreateProjectInfo).not.toHaveBeenCalled();
+    expect(mockToast).toHaveBeenCalledWith({ message: '保存成功', theme: 'success' });
+  });
 });

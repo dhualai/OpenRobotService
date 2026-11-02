@@ -4,8 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 import traceback
 import time
+import logging
 from sqlalchemy import text
 from datetime import datetime
+
+logger = logging.getLogger("admin")
 
 from typing import Dict, Any
 from app.core.database import db_manager, get_user_with_roles, UserDB, get_async_db
@@ -674,6 +677,51 @@ async def submit_new_project(
     return resp
 
 
+
+
+def _assert_option_review_permission(
+    current_user: Dict[str, Any],
+    sync_db,
+    target_type: str,
+    target_id: str,
+) -> None:
+    """审核通过 / 驳回公司·部门·项目的权限校验。
+
+    与前端 TaskDetailPage.tsx 按钮显示条件（isAssignee || hasPermission('backend:tasks:operate')）对齐：
+      - 用户是对应审核工单的处理人（assigned_to），或
+      - 拥有 backend:tasks:operate 权限
+    """
+    if has_permission_code(current_user, 'backend:tasks:operate'):
+        return
+
+    approval_type_map = {
+        'company': 'new_company',
+        'department': 'new_department',
+        'project': 'new_project',
+    }
+    approval_type = approval_type_map.get(target_type)
+    if approval_type:
+        from sqlalchemy import text as sa_text
+        row = sync_db.execute(
+            sa_text("""
+                SELECT assigned_to FROM tasks
+                WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.target_id')) = :target_id
+                  AND JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.approval_type')) = :approval_type
+                LIMIT 1
+            """),
+            {'target_id': target_id, 'approval_type': approval_type},
+        ).fetchone()
+        if row and row[0]:
+            username = current_user.get('username', '')
+            user_id = current_user.get('id', '')
+            if (username and row[0] == username) or (user_id and row[0] == user_id):
+                return
+
+    raise HTTPException(
+        status_code=403,
+        detail="无权限操作（需为审核工单处理人或拥有 backend:tasks:operate 权限）",
+    )
+
 @router.put("/options/{target_type}/{target_id}/approve", summary="管理员审核通过公司/部门/项目（可调整名称后通过）")
 async def approve_option(
     target_type: str,
@@ -684,14 +732,13 @@ async def approve_option(
     """审核通过。管理员可在 body 中传入 new_name / new_code 调整后再通过。"""
     if target_type not in ('company', 'department', 'project'):
         raise HTTPException(status_code=400, detail="类型必须是 company / department / project")
-    if current_user.get('username') != ADMIN_ASSIGNEE_ID:
-        raise HTTPException(status_code=403, detail="无权限操作")
 
     new_name = (data.get('new_name') or '').strip() if data else ''
     new_code = (data.get('new_code') or '').strip() if data else ''
 
     sync_db = db_manager.get_db()
     try:
+        _assert_option_review_permission(current_user, sync_db, target_type, target_id)
         if target_type == 'company':
             obj = sync_db.query(Company).filter(Company.id == target_id).first()
         elif target_type == 'department':
@@ -755,13 +802,12 @@ async def reject_option(
 ):
     if target_type not in ('company', 'department', 'project'):
         raise HTTPException(status_code=400, detail="类型必须是 company / department / project")
-    if current_user.get('username') != ADMIN_ASSIGNEE_ID:
-        raise HTTPException(status_code=403, detail="无权限操作")
 
     reason = (data.get('reason') or '').strip()
 
     sync_db = db_manager.get_db()
     try:
+        _assert_option_review_permission(current_user, sync_db, target_type, target_id)
         if target_type == 'company':
             obj = sync_db.query(Company).filter(Company.id == target_id).first()
         elif target_type == 'department':
@@ -1231,6 +1277,48 @@ async def update_user_uspinfo(
         external_credentials=external_credentials,
         avatar_resource_id=updated_user.get('avatar_resource_id')
     )
+
+
+@router.get("/by-department", summary="按部门拉取用户列表（供「按组织批量分配项目角色」使用）")
+async def get_users_by_department(
+    department_id: str = Query(..., description="部门 ID"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """返回指定部门下所有用户的轻量信息：id / username / name / company_id / department_id / USP 是否已配置。
+    不做权限过滤（部门主数据是全局共享主数据），仅做登录拦截。"""
+    dept_id = (department_id or '').strip()
+    if not dept_id:
+        raise HTTPException(status_code=400, detail="department_id 不能为空")
+
+    db = db_manager.get_db()
+    try:
+        from sqlalchemy import text as sa_text
+        # 同时抓 USP 配置状态（JSON_EXTRACT 返回字符串或 NULL）
+        sql = sa_text("""
+            SELECT id, username, name, company_id, department_id,
+                   JSON_UNQUOTE(JSON_EXTRACT(external_credentials, '$.usp.username')) AS usp_username,
+                   JSON_UNQUOTE(JSON_EXTRACT(external_credentials, '$.usp.password')) AS usp_password
+            FROM users
+            WHERE department_id = :dept_id
+        """)
+        rows = db.execute(sql, {"dept_id": dept_id}).mappings().all()
+        result = []
+        for r in rows:
+            usp_username = (r["usp_username"] or "").strip() if r["usp_username"] else ""
+            usp_password = r["usp_password"] or ""
+            result.append({
+                "id": r["id"],
+                "username": r["username"],
+                "name": r["name"] or r["username"],
+                "company_id": r["company_id"],
+                "department_id": r["department_id"],
+                "usp_configured": bool(usp_username and usp_password),
+            })
+        logger.info(f"[by-department] dept_id={dept_id!r} 返回 {len(result)} 个用户")
+        return result
+    finally:
+        db.close()
+
 
 @router.post("/project/assign-roles", response_model=SuccessResponse, summary="为项目批量分配用户角色和汇报人")
 async def batch_assign_project_roles(

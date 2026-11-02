@@ -17,6 +17,7 @@ export interface QrcodeItem {
   type: 'temporary' | 'permanent';
   expire_seconds?: number;
   status: string;
+  can_edit_project_info?: boolean;
   batch_id?: string;
   /** 项目名（录入信息行自带；普通码行为 null）。项目id 就是行 id（str(id)），不单独下发 */
   project_name?: string | null;
@@ -59,11 +60,20 @@ export const QRCODE_STATUS_LABELS: Record<QrcodeStatus, { label: string; color: 
   deprecated: { label: '已弃用', color: '#c94a4a' },
 };
 
-export async function fetchQrcodes(params: {
+export interface QrcodeDateFilters {
+  date_start?: string;
+  date_end?: string;
+  date_field?: 'created_at' | 'ticket_created_at';
+}
+
+export interface QrcodeFilters extends QrcodeDateFilters {
   status?: string;
   qrcode_type?: string;
   keyword?: string;
   batch_id?: string;
+}
+
+export async function fetchQrcodes(params: QrcodeFilters & {
   skip?: number;
   limit?: number;
 }): Promise<QrcodeListResult> {
@@ -76,6 +86,19 @@ export async function fetchQrcodes(params: {
   return request(query ? `/qrcodes?${query}` : '/qrcodes');
 }
 
+export async function fetchAllQrcodes(params: QrcodeFilters, isCurrent = () => true): Promise<QrcodeListResult> {
+  const items: QrcodeItem[] = [];
+  let total = 0;
+  do {
+    if (!isCurrent()) break;
+    const page = await fetchQrcodes({ ...params, skip: items.length, limit: 500 });
+    total = page.total;
+    items.push(...page.items);
+    if (!page.items.length) break;
+  } while (items.length < total);
+  return { items, total };
+}
+
 export async function fetchQrcode(id: number): Promise<QrcodeItem> {
   return request(`/qrcodes/${id}`);
 }
@@ -84,7 +107,7 @@ export async function fetchQrcodeStats(): Promise<QrcodeStats> {
   return request('/qrcodes/stats/summary');
 }
 
-export interface QrcodeDownloadParams {
+export interface QrcodeDownloadParams extends QrcodeDateFilters {
   scope: 'selected' | 'page' | 'filtered' | 'range' | 'all';
   qid_list?: number[];
   status?: QrcodeStatus;

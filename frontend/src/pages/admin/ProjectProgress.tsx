@@ -253,7 +253,7 @@ export default function ProjectProgress() {
     const pinned = pinnedRank.has(p.id);
     setPinning(true);
     try {
-      await request(`/projects/${p.id}/pin`, { method: pinned ? 'DELETE' : 'POST' });
+      await request(`/projects/${encodeURIComponent(p.id)}/pin`, { method: pinned ? 'DELETE' : 'POST' });
       await fetchPins();
       Toast({ message: pinned ? '已取消置顶' : '已置顶到最前', theme: 'success' });
     } catch (err) {
@@ -314,7 +314,7 @@ export default function ProjectProgress() {
     if (!deleteConfirmProject || deleting) return;
     setDeleting(true);
     try {
-      await request(`/projects/${deleteConfirmProject.id}`, { method: 'DELETE' });
+      await request(`/projects/${encodeURIComponent(deleteConfirmProject.id)}`, { method: 'DELETE' });
       Toast({ message: '项目已删除', theme: 'success' });
       setDeleteConfirmProject(null);
       setLongPressProject(null);

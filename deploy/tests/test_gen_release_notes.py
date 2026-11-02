@@ -10,7 +10,10 @@ from datetime import datetime, timedelta, timezone
 import gen_release_notes as grn
 import notify
 
-NOW = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+# 基准时间取「跑测试的那一刻」，不要写死日期：main() 里做窗口过滤用的是真实
+# 当前时间，写死会让整套用例在 7 天后集体变红，而且失败现场伪装成「LLM 失败」
+# 或「LLM 输出不可用」，排查时完全看不出是时间漂移。
+NOW = datetime.now(timezone.utc)
 
 
 def _iso(delta_days):
@@ -351,3 +354,143 @@ def test_worst_case_notes_still_render_as_image():
     png = notify_image.render_png(ctx)
     assert png[:4] == b"\x89PNG"
     assert len(png) <= 2 * 1024 * 1024
+
+
+def test_key_problem_accepts_clean_key():
+    """正常 Key 不该被拦。"""
+    assert grn._key_problem("sk-0123456789abcdef") == ""
+    assert "空" in grn._key_problem("")
+
+
+def test_call_llm_rejects_non_ascii_key_before_sending(monkeypatch, capsys):
+    """Key 混进全角空格时必须当场说清楚，不能让它退化成一个编码报错。
+
+    线上真事：Secret 值开头带了两个非 ASCII 字符，Authorization 头编不出来，
+    报 `'latin-1' codec can't encode characters in position 7-8`，又因为是
+    ValueError 子类被归到「响应格式异常」，连查两轮才定位到 Secret 本身。
+    """
+    def boom(*args, **kwargs):
+        raise AssertionError("Key 不可用时不该发请求")
+
+    monkeypatch.setattr(grn.urllib.request, "urlopen", boom)
+    assert grn.call_llm("p", api_key="\u3000\u3000sk-abc",
+                        base_url="https://api.deepseek.com") == ""
+    out = capsys.readouterr().out
+    assert "非 ASCII" in out and "RELEASE_LLM_API_KEY" in out
+    # 日志只报字符位置，不回显 Key 内容
+    assert "sk-abc" not in out
+
+
+def test_call_llm_rejects_key_with_padding(monkeypatch, capsys):
+    """首尾带空格同样会让服务端判成无效 Key，提前报出来比等 401 省事。"""
+    def boom(*args, **kwargs):
+        raise AssertionError("Key 不可用时不该发请求")
+
+    monkeypatch.setattr(grn.urllib.request, "urlopen", boom)
+    assert grn.call_llm("p", api_key=" sk-abc\n",
+                        base_url="https://api.deepseek.com") == ""
+    assert "空白" in capsys.readouterr().out
+
+
+# ---------- 「上次发布以来」窗口 ----------
+
+def test_window_since_overrides_days(tmp_path):
+    """给了 since 就只收该时间之后的 PR，不再按 7 天算。
+
+    生产发布间隔常常超过一周（也常常只有几天），固定天数要么漏改动、要么把上次
+    已经发过的内容重复列一遍。
+    """
+    prs = [
+        _pr(1, "feat: 上次发布之后", 1),
+        _pr(2, "feat: 上次发布之前但不满 7 天", 5),
+        _pr(3, "feat: 很久以前", 40),
+    ]
+    got = grn.load_prs(_write_prs(tmp_path, prs), now=NOW,
+                       since=NOW - timedelta(days=3))
+    assert [p["number"] for p in got] == [1]
+
+
+def test_main_passes_since_to_window(tmp_path, monkeypatch):
+    """--since 要真正影响送进 LLM 的候选集，而不只是改日志。"""
+    monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
+    captured = {}
+
+    def fake(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return '{"新增功能": ["只有新功能"]}'
+
+    monkeypatch.setattr(grn, "call_llm", fake)
+    prs = _write_prs(tmp_path, [
+        _pr(1, "feat: 上次发布后的功能", 1),
+        _pr(2, "feat: 上次发布前的功能", 4),
+    ])
+    out = tmp_path / "out.md"
+    since = (NOW - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert grn.main(["--prs", prs, "--out", str(out), "--since", since]) == 0
+    assert "只有新功能" in out.read_text(encoding="utf-8")
+    assert "上次发布后的功能" in captured["prompt"]
+    assert "上次发布前的功能" not in captured["prompt"]
+
+
+def test_main_falls_back_to_days_when_since_invalid(tmp_path, monkeypatch, capsys):
+    """--since 传了垃圾值不能把发行说明搞没，退回 7 天并留一行日志。"""
+    monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
+    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: '{"新增功能": ["x"]}')
+    prs = _write_prs(tmp_path, [_pr(1, "feat: 一周内", 5)])
+    out = tmp_path / "out.md"
+    assert grn.main(["--prs", prs, "--out", str(out), "--since", "昨天"]) == 0
+    assert out.exists()
+    assert "--since 无法解析" in capsys.readouterr().out
+
+
+def test_window_until_drops_prs_not_in_deploy_branch(tmp_path):
+    """until 之后合并的 PR 不在本次部署的代码里，不能列进发行说明。
+
+    生产部署的是 dev，数据源是 test：test 上刚合、还没走 test→dev 的 PR 一旦被
+    统计，卡片就会播报根本没上线的功能。
+    """
+    prs = [
+        _pr(1, "feat: 已进 dev", 6),
+        _pr(2, "feat: 还在 test 上", 1),
+    ]
+    since = NOW - timedelta(days=7)
+    until = NOW - timedelta(days=3)          # dev 最后一次变更
+    got = grn.load_prs(_write_prs(tmp_path, prs), now=NOW, since=since, until=until)
+    assert [p["number"] for p in got] == [1]
+
+
+def test_main_passes_until_to_window(tmp_path, monkeypatch, capsys):
+    """--until 要真正截断候选集，并在日志/Markdown 里写清区间。"""
+    monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
+    captured = {}
+
+    def fake(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return '{"新增功能": ["已上线"]}'
+
+    monkeypatch.setattr(grn, "call_llm", fake)
+    prs = _write_prs(tmp_path, [
+        _pr(1, "feat: 已进 dev", 6),
+        _pr(2, "feat: 还在 test 上", 1),
+    ])
+    out = tmp_path / "out.md"
+    since = (NOW - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    until = (NOW - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert grn.main(["--prs", prs, "--out", str(out),
+                     "--since", since, "--until", until]) == 0
+    assert "还在 test 上" not in captured["prompt"]
+    assert "已进 dev" in captured["prompt"]
+    assert "期间" in out.read_text(encoding="utf-8")
+
+
+def test_main_warns_when_window_is_empty(tmp_path, monkeypatch, capsys):
+    """dev 自上次发布后没新合并时窗口为空，要明说，别让人以为脚本坏了。"""
+    monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
+    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: '{"新增功能": ["x"]}')
+    prs = _write_prs(tmp_path, [_pr(1, "feat: 旧功能", 30)])
+    out = tmp_path / "out.md"
+    since = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    until = (NOW - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert grn.main(["--prs", prs, "--out", str(out),
+                     "--since", since, "--until", until]) == 2
+    assert "窗口为空" in capsys.readouterr().out

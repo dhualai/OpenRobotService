@@ -178,6 +178,24 @@ def test_reply_free_text_returns_none(tree, kb):
     assert tree_direct_reply("车今天不太对劲", vm, "XQE", kb_root=kb) is None
 
 
+# ---- ORS-1082：分叉树按解析出的主目录找（model 是录入车型，不是目录名）----
+
+def test_tree_direct_reply_uses_primary_subpath(tree, kb):
+    """录入车型 XQE122、车系目录 XQE → 必须靠 subpath 命中树。
+
+    不给 subpath 时按 XQE122 找目录 → 找不到树 → 点选项落不到直出（退回
+    LLM 慢路径），这是「扫码后点选项不秒回」的隐性原因之一。
+    """
+    vm = {}
+    r = tree_direct_reply("车辆停着不动（任务中断）", vm, "XQE122",
+                          kb_root=kb, subpath="XQE", rng=random.Random(1))
+    assert r is not None
+    assert r["kind"] == "category"
+    # 不给 subpath（按录入串找目录）→ 找不到树 → None
+    assert tree_direct_reply("车辆停着不动（任务中断）", vm, "XQE122",
+                             kb_root=kb) is None
+
+
 # ================================================================
 # 管线短路集成：命中树零 LLM 零检索；自由输入穿透走 AI
 # ================================================================

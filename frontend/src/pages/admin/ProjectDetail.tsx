@@ -125,7 +125,7 @@ export default function ProjectDetail() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await request<ProjectDetailData>(`/projects/${id}?include_risks=true`);
+      const data = await request<ProjectDetailData>(`/projects/${encodeURIComponent(id)}?include_risks=true`);
       setProject(data);
     } catch (err) {
       Toast({ message: `加载项目详情失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -171,7 +171,7 @@ export default function ProjectDetail() {
       return;
     }
     try {
-      await request(`/projects/${id}`, { method: 'PUT', body: JSON.stringify({ [key]: value }) });
+      await request(`/projects/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ [key]: value }) });
       setProject((prev) => (prev ? { ...prev, [key]: value } : prev));
       Toast({ message: '已保存', theme: 'success' });
     } catch (err) {
@@ -198,7 +198,7 @@ export default function ProjectDetail() {
     setAiGenerating(true);
     try {
       const res = await request<{ summary: string; ext_info?: ProjectDetailData['ext_info'] }>(
-        `/projects/${id}/ai-summary`,
+        `/projects/${encodeURIComponent(id)}/ai-summary`,
         { method: 'POST', timeout: 180000 },
       );
       setProject((prev) => (prev ? { ...prev, ext_info: res.ext_info ?? prev.ext_info } : prev));

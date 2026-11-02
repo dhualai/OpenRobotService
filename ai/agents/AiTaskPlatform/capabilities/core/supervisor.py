@@ -43,8 +43,33 @@ MAX_SUB_TASKS = 5          # 一次最多派生子任务数（防无限分叉）
 SOFT_LIMIT = 2             # 调度 LLM 输出解析失败时的重试次数上限（浅则重试，达到上限走兜底）
 _CONCURRENCY = 3           # 同时最多并行执行几个子任务（asyncio.Semaphore，防拉爆 API/限流）
 _MAX_ROUNDS = 2            # 规划轮数上限：初始 + 追规一次。轮数越多越贵（每轮一次规划 LLM + 可能多派能力）
-_RESULT_SNIPPET_CHARS = 400   # 追规时每个能力结果喂回去的字符上限（防把长文本再灌一遍）
+_RESULT_SNIPPET_CHARS = 400   # 默认：追规时每个能力结果喂回去的字符上限
 _EXECUTED_BLOCK_CHARS = 2000  # 「本轮已执行」整段的字符上限
+
+# 按能力类型动态调整截断上限：
+# - 日志分析结果通常含报错堆栈、时间线等关键线索，400 字会砍掉根因段落 → 放宽到 1200
+# - 附件解析（对话记录/非日志文档）结论也偏长 → 放宽到 800
+# - 图片分析、代码搜索中等长度 → 600
+# - 知识库/历史/排查树检索结果是精炼摘要 → 保持 400
+_CAP_SNIPPET_BUDGET: dict[str, int] = {
+    "log_analyze": 1200,
+    "attachment_parse": 800,
+    "image_analyze": 600,
+    "code_search": 600,
+    "retrieve_kb": 400,
+    "retrieve_history": 400,
+    "retrieve_troubleshooting": 400,
+    "project_info": 600,
+    "ticket_ref": 400,
+    "discussion_read": 400,
+    "memory_recall": 400,
+    "memory_store": 400,
+}
+
+
+def _snippet_budget(cap: str) -> int:
+    """返回某能力的截断上限，未知能力用默认值。"""
+    return _CAP_SNIPPET_BUDGET.get(cap, _RESULT_SNIPPET_CHARS)
 
 
 def _plan_waves(plan: list[dict]) -> list[list[tuple[int, dict]]]:
@@ -148,6 +173,7 @@ def _upstream_block(step: dict, prev_results: dict) -> str:
     """该步骤声明依赖（`after`）的上游能力结果，供它接着分析。
 
     没有 `after` 的步骤拿不到 —— 不给它灌一堆无关的上游结论，避免把 query 冲淡。
+    截断上限按能力类型动态调整（日志分析 > 附件解析 > 知识库检索）。
     """
     deps = step.get("after") or []
     if not deps or not prev_results:
@@ -157,8 +183,9 @@ def _upstream_block(step: dict, prev_results: dict) -> str:
         text = str((prev_results.get(cap) or {}).get("text") or "").strip()
         if not text:
             continue
-        if len(text) > _RESULT_SNIPPET_CHARS:
-            text = text[:_RESULT_SNIPPET_CHARS] + "…（已截断）"
+        budget = _snippet_budget(cap)
+        if len(text) > budget:
+            text = text[:budget] + "…（已截断）"
         parts.append(f"[{cap}]\n{text}")
     return "\n\n".join(parts)[:_EXECUTED_BLOCK_CHARS]
 
@@ -169,6 +196,7 @@ def _executed_block(plan_all: list, results: dict) -> str:
     过程（日志子 Agent 的多轮、工具内部步骤）走 progress_emitter / span 树，
     是给前端过程区看的，**不进任何 prompt**。这里只喂「派了什么 + 拿到了什么」，
     让规划器知道还缺什么，而不是重复派同样的能力。
+    截断上限按能力类型动态调整（日志分析 > 附件解析 > 知识库检索）。
     """
     if not plan_all and not results:
         return ""
@@ -184,8 +212,9 @@ def _executed_block(plan_all: list, results: dict) -> str:
             # 明确告诉规划器「这条还能再试」——失败的重试不会覆盖任何证据，
             # 而换一个角度再查一次正是追规这一轮的意义。
             mark = f"（没拿到结果：{res.get('error') or '无输出'}，可换个说法再派一次）"
-        if len(text) > _RESULT_SNIPPET_CHARS:
-            text = text[:_RESULT_SNIPPET_CHARS] + "…（已截断）"
+        budget = _snippet_budget(cap)
+        if len(text) > budget:
+            text = text[:budget] + "…（已截断）"
         lines.append(f"- {cap}（{goal}）：{text or '（空）'} {mark}")
     return "\n".join(lines)[:_EXECUTED_BLOCK_CHARS]
 

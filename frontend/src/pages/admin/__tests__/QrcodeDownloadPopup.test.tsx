@@ -12,7 +12,8 @@ vi.mock('tdesign-mobile-react', () => ({
 import QrcodeDownloadPopup from '../components/QrcodeDownloadPopup';
 
 const onClose = vi.fn();
-const filters = { status: 'published' as const, qrcode_type: 'permanent' as const, keyword: '项目' };
+const filters = { status: 'published' as const, qrcode_type: 'permanent' as const, keyword: '项目',
+  date_start: '2026-10-27', date_end: '2026-10-28', date_field: 'created_at' as const };
 
 function open(selectedIds: number[] = [1, 25]) {
   return render(<QrcodeDownloadPopup selectedIds={selectedIds} pageIds={[1, 2]} filteredTotal={42}

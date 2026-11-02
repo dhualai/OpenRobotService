@@ -12,7 +12,7 @@ from app.core.auth_service import AuthService, AuthServiceError
 from app.schemas.token import Token, RefreshToken
 from app.schemas.user import User, UserLogin, UserCreate
 from app.schemas.response import SuccessResponse
-from app.services.working_time_service import WorkingTimeService
+from app.services.working_time_service import WorkingTimeService, SYSTEM_DEFAULT_TIMEZONE
 from app.services.identity_service import build_upr_id
 
 router = APIRouter()
@@ -256,7 +256,7 @@ async def get_my_timezone(
         "locked": bool((user or {}).get("timezone_locked")),
         "source": (user or {}).get("timezone_source"),
         "updated_at": (user or {}).get("timezone_updated_at"),
-        "system_default": WorkingTimeService.SYSTEM_DEFAULT_TIMEZONE,
+        "system_default": SYSTEM_DEFAULT_TIMEZONE,
         "detected": None,
     }
 

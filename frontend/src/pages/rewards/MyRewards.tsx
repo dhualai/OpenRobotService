@@ -26,8 +26,7 @@ const PAGE_SIZE = 20;
 
 const STATUS_TABS: { key: RewardStatus | ''; label: string }[] = [
   { key: '', label: '全部' },
-  { key: 'pending', label: '待提现' },
-  { key: 'withdrawing', label: '提现中' },
+  { key: 'withdrawing', label: '待提现' },
   { key: 'success', label: '已到账' },
   { key: 'expired', label: '已失效' },
 ];
@@ -36,7 +35,7 @@ const STATUS_META: Record<RewardStatus, { label: string; color: string; bg: stri
   pending_audit: { label: '待财务审核', color: '#b76e00', bg: 'rgba(255,167,38,0.16)' },
   rejected: { label: '已驳回', color: '#8a8f92', bg: 'rgba(138,143,146,0.14)' },
   pending: { label: '待提现', color: '#227197', bg: 'rgba(54,151,195,0.12)' },
-  withdrawing: { label: '提现中', color: '#b76e00', bg: 'rgba(255,167,38,0.16)' },
+  withdrawing: { label: '待提现', color: '#b76e00', bg: 'rgba(255,167,38,0.16)' },
   success: { label: '已到账', color: '#2ba471', bg: 'rgba(43,164,113,0.14)' },
   expired: { label: '已失效', color: '#8a8f92', bg: 'rgba(138,143,146,0.14)' },
 };
@@ -206,11 +205,11 @@ export default function MyRewards() {
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
             <span style={{ fontSize: 12, color: '#8a8f92' }}>待提现（元）</span>
             <span style={{ fontSize: 12, color: '#8a8f92', marginLeft: 'auto' }}>
-              {stats?.pending_count ?? 0} 笔可提
+              {stats?.withdrawing_count ?? 0} 笔可提
             </span>
           </div>
           <div style={{ fontSize: 28, fontWeight: 700, color: '#227197', lineHeight: 1.3 }}>
-            ¥{fenToYuan(stats?.pending_amount ?? 0)}
+            ¥{fenToYuan(stats?.withdrawing_amount ?? 0)}
           </div>
           <div
             style={{

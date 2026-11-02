@@ -57,6 +57,8 @@ export interface RewardStats {
   pending_count: number;
   /** 累计已到账（分） */
   withdrawn_amount: number;
+  withdrawing_amount: number;
+  withdrawing_count: number;
 }
 
 /**

@@ -17,9 +17,9 @@
 拉取选择、也可以直接手输——手输的新名字由 _ensure_project_row 用「项目编号」当新
 项目的 id/code 补进 project 表；编号已被占用则 400（detail 直接给前端 Toast）。
 
-权限：by-scene、GET /{id}、POST/PUT project-info、confirm 五个接口「登录即可」
-（2026-09-30 用户口径：所有人扫码都能录入信息并确认）；其余管理端接口仍要
-frontend:admin:other:show。
+权限：by-scene、GET /{id}、POST project-info、confirm 接口「登录即可」；
+PUT project-info 首次录入仍允许普通用户，修改已发布信息仅允许部门为「智能规划研究院」
+的用户，不再按角色或 admin 权限放行。其余管理端接口仍要 frontend:admin:other:show。
 
 权限依赖写法：current_user=require_permission(...)——require_permission 本身已经
 返回 Depends(permission_dependency)，不能再套一层 Depends(...)，否则 FastAPI 0.14x
@@ -34,7 +34,7 @@ import time
 import uuid
 import logging
 import zipfile
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import List, Literal, Optional
 
 import httpx
@@ -58,6 +58,10 @@ logger = logging.getLogger(__name__)
 
 
 # ── 请求/响应 Schema（用 dict，避免额外 schemas 文件） ──
+
+def _can_edit_project_info(current_user: dict) -> bool:
+    return current_user.get("department") == "智能规划研究院"
+
 
 def _to_dict(q: WechatQrcode) -> dict:
     return {
@@ -91,7 +95,20 @@ def _to_dict(q: WechatQrcode) -> dict:
 
 # ── 列表 ──
 
-def _filter_qrcodes(query, status=None, qrcode_type=None, keyword=None, batch_id=None):
+def _filter_qrcodes(
+    query, status=None, qrcode_type=None, keyword=None, batch_id=None,
+    date_start=None, date_end=None, date_field="created_at",
+):
+    if date_start and date_end and date_start > date_end:
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+    date_column = WechatQrcode.ticket_created_at if date_field == "ticket_created_at" else WechatQrcode.created_at
+    try:
+        if date_start:
+            query = query.filter(date_column >= datetime.combine(date_start, datetime.min.time()) - timedelta(hours=8))
+        if date_end:
+            query = query.filter(date_column <= datetime.combine(date_end, datetime.max.time()) - timedelta(hours=8))
+    except OverflowError:
+        raise HTTPException(status_code=400, detail="日期超出支持范围")
     if status:
         query = query.filter(WechatQrcode.status == status)
     if qrcode_type:
@@ -113,16 +130,21 @@ async def list_qrcodes(
     qrcode_type: Optional[str] = Query(None, description="按类型过滤: temporary/permanent"),
     keyword: Optional[str] = Query(None, description="按 name 模糊 / id 精确搜索"),
     batch_id: Optional[str] = Query(None, description="按批次过滤"),
+    date_start: Optional[date] = Query(None, description="开始日期（北京时间，包含当天）"),
+    date_end: Optional[date] = Query(None, description="结束日期（北京时间，包含当天）"),
+    date_field: Literal["created_at", "ticket_created_at"] = Query("created_at", description="日期字段"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     current_user=require_permission("frontend:admin:other:show"),
 ):
     db: Session = db_manager.get_db()
     try:
-        query = _filter_qrcodes(db.query(WechatQrcode), status, qrcode_type, keyword, batch_id)
+        query = _filter_qrcodes(
+            db.query(WechatQrcode), status, qrcode_type, keyword, batch_id, date_start, date_end, date_field,
+        )
 
         total = query.count()
-        items = query.order_by(WechatQrcode.created_at.desc()).offset(skip).limit(limit).all()
+        items = query.order_by(WechatQrcode.created_at.desc(), WechatQrcode.id.desc()).offset(skip).limit(limit).all()
         return {"total": total, "items": [_to_dict(q) for q in items]}
     finally:
         db.close()
@@ -135,6 +157,9 @@ class QrcodeDownloadRequest(BaseModel):
     qrcode_type: Optional[Literal["temporary", "permanent"]] = None
     keyword: Optional[str] = None
     batch_id: Optional[str] = None
+    date_start: Optional[date] = None
+    date_end: Optional[date] = None
+    date_field: Literal["created_at", "ticket_created_at"] = "created_at"
     id_start: Optional[PositiveInt] = None
     id_end: Optional[PositiveInt] = None
 
@@ -175,7 +200,10 @@ async def batch_download_qrcodes(
         if data.scope in ("selected", "page"):
             query = query.filter(WechatQrcode.id.in_(data.qid_list))
         elif data.scope == "filtered":
-            query = _filter_qrcodes(query, data.status, data.qrcode_type, data.keyword, data.batch_id)
+            query = _filter_qrcodes(
+                query, data.status, data.qrcode_type, data.keyword, data.batch_id,
+                data.date_start, data.date_end, data.date_field,
+            )
         elif data.scope == "range":
             query = query.filter(WechatQrcode.id.between(data.id_start, data.id_end))
         rows = query.order_by(WechatQrcode.id).limit(501).all()
@@ -261,7 +289,7 @@ async def get_qrcode_by_scene(
         q = db.query(WechatQrcode).filter(WechatQrcode.id == qid).first()
         if not q:
             raise HTTPException(status_code=404, detail="二维码不存在")
-        return _to_dict(q)
+        return {**_to_dict(q), "can_edit_project_info": _can_edit_project_info(current_user)}
     finally:
         db.close()
 
@@ -276,7 +304,7 @@ async def get_qrcode(qid: int, current_user=Depends(get_current_active_user_from
         q = db.query(WechatQrcode).filter(WechatQrcode.id == qid).first()
         if not q:
             raise HTTPException(status_code=404, detail="二维码不存在")
-        return _to_dict(q)
+        return {**_to_dict(q), "can_edit_project_info": _can_edit_project_info(current_user)}
     finally:
         db.close()
 
@@ -611,7 +639,7 @@ async def create_project_info(
         db.close()
 
 
-@router.put("/{qid}/project-info", summary="录入信息：更新一条项目信息（登录即可）")
+@router.put("/{qid}/project-info", summary="录入信息：更新一条项目信息（已发布信息仅智能规划研究院可修改）")
 async def update_project_info(
     qid: int,
     project_code: Optional[str] = Body(None, embed=True, description="项目编号（唯一，可改）；不传不改"),
@@ -619,7 +647,7 @@ async def update_project_info(
     project_location: Optional[str] = Body(None, embed=True, description="项目地点；传空串清空"),
     customer_name: Optional[str] = Body(None, embed=True, description="客户名；传空串清空"),
     vehicle_model: Optional[str] = Body(None, embed=True, description="车型；传空串清空"),
-    # 权限「登录即可」：扫码录入/确认链路普通用户也要用（2026-09-30 用户口径）
+    # 首次录入登录即可；已发布信息在读取原记录后按用户所属部门校验编辑权限
     current_user=Depends(get_current_active_user_from_token),
 ):
     db: Session = db_manager.get_db()
@@ -627,6 +655,9 @@ async def update_project_info(
         q = db.query(WechatQrcode).filter(WechatQrcode.id == qid).first()
         if not q:
             raise HTTPException(status_code=404, detail="二维码不存在")
+
+        if q.status == QrcodeStatus.PUBLISHED and not _can_edit_project_info(current_user):
+            raise HTTPException(status_code=403, detail="仅智能规划研究院的用户可修改已发布信息")
 
         if project_code is not None:
             code = _clean_info_value(project_code, "project_code")

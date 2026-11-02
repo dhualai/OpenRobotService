@@ -83,7 +83,13 @@ class TicketPipeline:
     ) -> Dict[str, Any]:
         wanted = {int(item) for item in ticket_ids} if ticket_ids else None
         result = TicketPipelineResult(outputs=[])
-        for ticket in self.scan(limit=limit):
+        source = getattr(self.scanner, "source", None)
+        if wanted is not None and source is not None and hasattr(source, "fetch_by_ids"):
+            # 指定工单号时按 id 直查生产库，无视 scan 的项目/状态/类型过滤
+            tickets = source.fetch_by_ids(wanted)
+        else:
+            tickets = self.scan(limit=limit)
+        for ticket in tickets:
             result.scanned += 1
             if wanted is not None and ticket.id not in wanted:
                 result.skipped += 1
@@ -130,7 +136,9 @@ class TicketPipeline:
             )
         if target_dir.exists():
             shutil.rmtree(target_dir)
-        shutil.copytree(candidate_dir, target_dir)
+        # 排除 __pycache__：候选目录里可能残留 pytest collect 产生的字节码，
+        # 带过去会让 pytest 加载嵌着旧路径的 stale .pyc，traceback 混乱
+        shutil.copytree(candidate_dir, target_dir, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         promoted_at = datetime.now(timezone.utc).isoformat()
         manifest.update(
             {

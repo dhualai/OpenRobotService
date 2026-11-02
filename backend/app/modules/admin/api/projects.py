@@ -461,15 +461,20 @@ async def create_project(
     project_data: ProjectCreate,
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> ProjectResponse:
-    # project_code 可选：先 strip，空则自动生成
-    from app.modules.admin.services.project_service import project_service, gen_project_code
+    # project_code 可选：先 strip，空则自动生成；非空则校验合法性
+    from app.modules.admin.services.project_service import project_service, gen_project_code, validate_project_code
     raw_code = project_data.project_code
-    project_data.project_code = (project_data.project_code or "").strip()
-    if raw_code != project_data.project_code:
-        logger.warning(f"[create_project] project_code 含空白字符，已 strip: raw={raw_code!r} → cleaned={project_data.project_code!r}")
-    if not project_data.project_code:
+    stripped = (project_data.project_code or "").strip()
+    if raw_code != stripped:
+        logger.warning(f"[create_project] project_code 含空白字符，已 strip: raw={raw_code!r} → cleaned={stripped!r}")
+    if not stripped:
         project_data.project_code = gen_project_code()
         logger.info(f"[create_project] project_code 未填写，已自动生成: {project_data.project_code}")
+    else:
+        try:
+            project_data.project_code = validate_project_code(stripped)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"项目编号不合法: {e}")
 
     token = request.headers.get("Authorization", "")
     token = token[7:]
@@ -583,12 +588,16 @@ async def update_project(
     if not existing_project:
         raise HTTPException(status_code=404, detail="项目不存在")
     
-    # update_data 里的 project_code 若被显式传入，同样 strip
-    if update_data.project_code:
+    # update_data 里的 project_code 若被显式传入，校验合法性
+    if update_data.project_code is not None and update_data.project_code != "":
+        from app.modules.admin.services.project_service import validate_project_code
         raw_code = update_data.project_code
-        update_data.project_code = update_data.project_code.strip()
+        try:
+            update_data.project_code = validate_project_code(raw_code)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"项目编号不合法: {e}")
         if raw_code != update_data.project_code:
-            logger.warning(f"[update_project] update_data.project_code 含空白字符，已 strip: raw={raw_code!r} → cleaned={update_data.project_code!r}")
+            logger.warning(f"[update_project] project_code 含空白字符，已 strip: raw={raw_code!r} → cleaned={update_data.project_code!r}")
     
     if update_data.contact_person_id and update_data.contact_person_id != existing_project["contact_person_id"]:
         token = request.headers.get("Authorization", "")

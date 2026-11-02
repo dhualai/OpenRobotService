@@ -56,6 +56,8 @@ import { useAuthStore } from '@/stores/auth';
 const SCENE = '101';
 
 const publishedRecord = {
+  id: 101,
+  can_edit_project_info: true,
   scene_str: SCENE,
   status: 'published',
   project_name: '项目A',
@@ -70,6 +72,7 @@ function Harness() {
   return (
     <>
       <div data-testid="search">{location.search}</div>
+      <div data-testid="pathname">{location.pathname}</div>
       <button data-testid="remount" onClick={() => setMounted((v) => !v)}>
         remount
       </button>
@@ -85,9 +88,10 @@ const renderCall = (search = '') =>
     </MemoryRouter>,
   );
 
-/** 用户点「确认」/「暂不」：按钮本身的点击语义由弹窗自身用例覆盖，这里只验编排层接线 */
+/** 用户点「确认」/「修改信息」/遮罩：点击语义由弹窗自身用例覆盖，这里只验编排层接线 */
 const clickConfirm = () => act(() => dialogProps?.onConfirm());
 const clickCancel = () => act(() => dialogProps?.onCancel());
+const clickEdit = () => act(() => dialogProps?.onEdit());
 
 describe('resolveSceneCode（URL 场景值解析）', () => {
   it('取到合法 scene 并去空白', () => {
@@ -108,7 +112,7 @@ describe('CallView 车体扫码进入', () => {
     dialogProps = null;
     mockToast.mockClear();
     mockFetchQrcodeByScene.mockReset();
-    useAuthStore.setState({ username: 'bob', isAdmin: false });
+    useAuthStore.setState({ username: 'bob', isAdmin: false, permissions: [], roles: null });
     useWorkbenchStore.setState({
       conversationId: 5,
       conversationTitle: '上一轮会话',
@@ -241,7 +245,66 @@ describe('CallView 车体扫码进入', () => {
     await waitFor(() => expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument());
   });
 
-  it('点「暂不」：只关弹窗，不写车辆上下文、不动当前会话', async () => {
+  it('部门鉴权通过，点「修改信息」按码记录 id 打开编辑页，不动当前会话', async () => {
+    mockFetchQrcodeByScene.mockResolvedValue({ ...publishedRecord, id: 202 });
+    renderCall(`?scene=${SCENE}&openid=oXk4js`);
+
+    await waitFor(() => expect(screen.getByTestId('vehicle-confirm')).toBeInTheDocument());
+    expect(dialogProps?.canEdit).toBe(true);
+    clickEdit();
+
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/admin/info-entry/202');
+    expect(screen.getByTestId('search')).toBeEmptyDOMElement();
+    expect(useWorkbenchStore.getState().vehicleContext).toBeNull();
+    expect(useWorkbenchStore.getState().conversationId).toBe(5);
+    expect(useWorkbenchStore.getState().pendingNewConversation).toBe(false);
+    expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument();
+  });
+
+  it.each([false, undefined])('部门鉴权结果为 %s：不能通过修改回调进入编辑页', async (canEdit) => {
+    mockFetchQrcodeByScene.mockResolvedValue({ ...publishedRecord, can_edit_project_info: canEdit });
+    renderCall(`?scene=${SCENE}`);
+
+    await waitFor(() => expect(screen.getByTestId('vehicle-confirm')).toBeInTheDocument());
+    expect(dialogProps?.canEdit).toBe(false);
+    clickEdit();
+
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/call');
+    expect(screen.getByTestId('vehicle-confirm')).toBeInTheDocument();
+    clickCancel();
+    expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument();
+    expect(useWorkbenchStore.getState().conversationId).toBe(5);
+    expect(useWorkbenchStore.getState().vehicleContext).toBeNull();
+  });
+
+  it('普通用户仍可确认信息并开启扫码会话', async () => {
+    mockFetchQrcodeByScene.mockResolvedValue({ ...publishedRecord, can_edit_project_info: false });
+    renderCall(`?scene=${SCENE}`);
+
+    await waitFor(() => expect(screen.getByTestId('vehicle-confirm')).toBeInTheDocument());
+    clickConfirm();
+
+    expect(useWorkbenchStore.getState().pendingNewConversation).toBe(true);
+    expect(useWorkbenchStore.getState().vehicleContext?.scene).toBe(SCENE);
+    expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument();
+  });
+
+  it('其他部门即使有管理员权限，也不能绕过部门鉴权修改信息', async () => {
+    useAuthStore.setState({ isAdmin: true, permissions: ['admin'] });
+    mockFetchQrcodeByScene.mockResolvedValue({ ...publishedRecord, can_edit_project_info: false });
+    renderCall(`?scene=${SCENE}`);
+
+    await waitFor(() => expect(screen.getByTestId('vehicle-confirm')).toBeInTheDocument());
+    expect(dialogProps?.canEdit).toBe(false);
+    clickEdit();
+
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/call');
+    clickCancel();
+    expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument();
+    expect(useWorkbenchStore.getState().conversationId).toBe(5);
+  });
+
+  it('点遮罩：只关弹窗，不跳转、不写车辆上下文、不动当前会话', async () => {
     mockFetchQrcodeByScene.mockResolvedValue(publishedRecord);
     renderCall(`?scene=${SCENE}`);
 
@@ -251,6 +314,7 @@ describe('CallView 车体扫码进入', () => {
     const state = useWorkbenchStore.getState();
     expect(state.vehicleContext).toBeNull();
     expect(state.conversationId).toBe(5);
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/call');
     await waitFor(() => expect(screen.queryByTestId('vehicle-confirm')).not.toBeInTheDocument());
   });
 });

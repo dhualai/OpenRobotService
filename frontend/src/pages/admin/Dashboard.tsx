@@ -182,7 +182,7 @@ export default function Dashboard() {
       try {
         const stats = await fetchRewardStats();
         if (alive) {
-          setPendingReward({ amount: stats.pending_amount, count: stats.pending_count, withdrawn: stats.withdrawn_amount ?? 0 });
+          setPendingReward({ amount: stats.withdrawing_amount, count: stats.withdrawing_count, withdrawn: stats.withdrawn_amount ?? 0 });
         }
       } catch {
         // 接口异常时保留上次成功的金额，后续刷新自动重试。

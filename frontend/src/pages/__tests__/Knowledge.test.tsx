@@ -41,6 +41,7 @@ vi.mock('@/api/knowledge', async (importOriginal) => ({
   fetchKnowledgeDiscussions: vi.fn(), createKnowledgeDiscussion: vi.fn(), fetchContributorQuestions: vi.fn(),
 }));
 
+const rewardStatsDefaults = { pending_amount: 9900, pending_count: 9, withdrawing_amount: 0, withdrawing_count: 0, withdrawn_amount: 0 };
 const person = { user_id: 'alice', name: '贡献甲', avatar_resource_id: null, rank: 1,
   question_count: 4, answer_count: 6, contribution_count: 10, valid_like_count: 8,
   estimated_reward_fen: 10000, earned_reward_fen: 1250, tied: false };
@@ -57,7 +58,7 @@ const report: api.KnowledgeReview = { report_id: 9, task_id: 7, version: 2, revi
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(fetchChallengePreview).mockResolvedValue({ items: [], total: 0, can_manage: false });
-  vi.mocked(fetchRewardStats).mockResolvedValue({ pending_amount: 0, pending_count: 0, withdrawn_amount: 0 });
+  vi.mocked(fetchRewardStats).mockResolvedValue(rewardStatsDefaults);
   useAuthStore.setState({ username: 'knowledge-test', name: '当前用户', projectIds: [], permissions: [], isAdmin: false, roles: null, canViewKnowledgeContribution: true });
   vi.mocked(api.fetchKnowledgeOverview).mockResolvedValue(overview);
   vi.mocked(api.fetchContributors).mockResolvedValue({ items: [person] });
@@ -76,7 +77,7 @@ beforeEach(() => {
 
 describe('知识贡献榜UI', () => {
   it('首页同时保留知识贡献榜和我的奖励入口，并显示待提现金额', async () => {
-    vi.mocked(fetchRewardStats).mockResolvedValue({ pending_amount: 1250, pending_count: 2, withdrawn_amount: 3456 });
+    vi.mocked(fetchRewardStats).mockResolvedValue({ ...rewardStatsDefaults, withdrawing_amount: 1250, withdrawing_count: 2, withdrawn_amount: 3456 });
     render(<MemoryRouter><Routes><Route path="/" element={<Dashboard />} /><Route path="/rewards" element={<p>奖励详情入口</p>} /></Routes></MemoryRouter>);
     expect(await screen.findByRole('region', { name: '知识贡献榜' })).toBeInTheDocument();
     const rewardsEntry = await screen.findByRole('button', { name: /待提现（元）.*2 笔可提.*¥12\.50/ });
@@ -84,6 +85,7 @@ describe('知识贡献榜UI', () => {
     expect(screen.getAllByRole('button', { name: /待提现（元）/ })).toHaveLength(1);
     expect(rewardsEntry).toHaveClass('mac-card', 'mac-card--pad');
     expect(within(rewardsEntry).getByText('¥12.50')).toHaveStyle({ fontSize: '28px', fontWeight: '700', color: '#227197' });
+    expect(within(rewardsEntry).queryByText('¥99.00')).not.toBeInTheDocument();
     expect(within(rewardsEntry).getByText('累计已到账')).toBeInTheDocument();
     expect(within(rewardsEntry).getByText('¥34.56')).toHaveStyle({ color: '#2ba471' });
     fireEvent.click(rewardsEntry);
@@ -94,8 +96,8 @@ describe('知识贡献榜UI', () => {
     vi.useFakeTimers();
     try {
       vi.mocked(fetchRewardStats)
-        .mockResolvedValueOnce({ pending_amount: 1250, pending_count: 1, withdrawn_amount: 0 })
-        .mockResolvedValue({ pending_amount: 1250 + 2350 + 99, pending_count: 3, withdrawn_amount: 7000 });
+        .mockResolvedValueOnce({ ...rewardStatsDefaults, withdrawing_amount: 1250, withdrawing_count: 1 })
+        .mockResolvedValue({ ...rewardStatsDefaults, withdrawing_amount: 1250 + 2350 + 99, withdrawing_count: 3, withdrawn_amount: 7000 });
       const view = render(<MemoryRouter><Dashboard /></MemoryRouter>);
       await act(async () => {});
       const card = screen.getByRole('button', { name: /待提现（元）/ });
@@ -116,14 +118,14 @@ describe('知识贡献榜UI', () => {
   });
 
   it('回到前台时重新汇总，临时失败保留金额并可再次刷新', async () => {
-    vi.mocked(fetchRewardStats).mockResolvedValueOnce({ pending_amount: 3699, pending_count: 3, withdrawn_amount: 0 });
+    vi.mocked(fetchRewardStats).mockResolvedValueOnce({ ...rewardStatsDefaults, withdrawing_amount: 3699, withdrawing_count: 3 });
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
     const card = await screen.findByRole('button', { name: /3 笔可提.*¥36\.99/ });
     vi.mocked(fetchRewardStats).mockRejectedValueOnce(new Error('temporary failure'));
     await act(async () => { fireEvent.focus(window); });
     expect(fetchRewardStats).toHaveBeenCalledTimes(2);
     expect(within(card).getByText('¥36.99')).toBeInTheDocument();
-    vi.mocked(fetchRewardStats).mockResolvedValue({ pending_amount: 2449, pending_count: 2, withdrawn_amount: 1250 });
+    vi.mocked(fetchRewardStats).mockResolvedValue({ ...rewardStatsDefaults, withdrawing_amount: 2449, withdrawing_count: 2, withdrawn_amount: 1250 });
     await act(async () => { fireEvent(document, new Event('visibilitychange')); });
     expect(within(card).getByText('¥24.49')).toBeInTheDocument();
     expect(within(card).getByText('2 笔可提')).toBeInTheDocument();
@@ -135,7 +137,7 @@ describe('知识贡献榜UI', () => {
     try {
       vi.mocked(fetchRewardStats)
         .mockRejectedValueOnce(new Error('temporary failure'))
-        .mockResolvedValue({ pending_amount: 3699, pending_count: 3, withdrawn_amount: 0 });
+        .mockResolvedValue({ ...rewardStatsDefaults, withdrawing_amount: 3699, withdrawing_count: 3 });
       const view = render(<MemoryRouter><Dashboard /></MemoryRouter>);
       await act(async () => {});
       await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS); });
@@ -150,12 +152,12 @@ describe('知识贡献榜UI', () => {
     let finishPrevious!: (stats: Awaited<ReturnType<typeof fetchRewardStats>>) => void;
     vi.mocked(fetchRewardStats)
       .mockReturnValueOnce(new Promise((resolve) => { finishPrevious = resolve; }))
-      .mockResolvedValue({ pending_amount: 2350, pending_count: 1, withdrawn_amount: 0 });
+      .mockResolvedValue({ ...rewardStatsDefaults, withdrawing_amount: 2350, withdrawing_count: 1 });
     render(<MemoryRouter><Dashboard /></MemoryRouter>);
     await act(async () => { useAuthStore.setState({ username: 'another-user' }); });
     const card = screen.getByRole('button', { name: /待提现（元）/ });
     expect(within(card).getByText('¥23.50')).toBeInTheDocument();
-    await act(async () => { finishPrevious({ pending_amount: 9900, pending_count: 9, withdrawn_amount: 0 }); });
+    await act(async () => { finishPrevious({ ...rewardStatsDefaults, withdrawing_amount: 9900, withdrawing_count: 9 }); });
     expect(within(card).getByText('¥23.50')).toBeInTheDocument();
     expect(within(card).queryByText('¥99.00')).not.toBeInTheDocument();
   });

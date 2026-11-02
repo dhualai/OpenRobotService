@@ -22,10 +22,44 @@ def gen_project_code() -> str:
     - 时间戳保证粗略有序，便于人工辨认创建时间
     - 8 位 hex 提供 16^8 ≈ 43 亿碰撞空间，与 timestamp 组合后可视为唯一
     - 长度约 25，远小于 project_code 实际可用上限
+    - 字符集严格符合 validate_project_code 的 [a-zA-Z0-9_]+ 规范
     """
     ts = datetime.now().strftime("%y%m%d%H%M%S")
     suffix = uuid.uuid4().hex[:8]
     return f"proj_{ts}_{suffix}"
+
+
+import re as _re
+
+PROJECT_CODE_MAX_LEN = 64
+PROJECT_CODE_RE = _re.compile(r'^[A-Za-z0-9_]+$')
+
+
+def validate_project_code(code: str) -> str:
+    """校验 project_code 合法性并返回 strip 后的值。
+
+    规则：
+    - 只能包含字母、数字、下划线（[A-Za-z0-9_]+）
+    - 长度 1 ~ PROJECT_CODE_MAX_LEN（默认 64，受 DB 列宽约束）
+    - 自动 strip 首尾空白后再校验
+
+    Raises:
+        ValueError: 不合法时抛出，message 会描述具体违规点，供 API 层转 HTTP 400
+    """
+    if not isinstance(code, str):
+        raise ValueError("项目编号必须是字符串")
+    stripped = code.strip()
+    if not stripped:
+        raise ValueError("项目编号不能为空")
+    if len(stripped) > PROJECT_CODE_MAX_LEN:
+        raise ValueError(f"项目编号最多 {PROJECT_CODE_MAX_LEN} 字符（当前 {len(stripped)}）")
+    if not PROJECT_CODE_RE.match(stripped):
+        illegal = sorted({c for c in stripped if not c.isalnum() and c != '_'})
+        raise ValueError(
+            "项目编号只能包含字母、数字和下划线，"
+            f"不允许: {', '.join(repr(c) for c in illegal)}"
+        )
+    return stripped
 
 
 from app.models.identity import user_project_roles  # noqa: E402
