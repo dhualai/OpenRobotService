@@ -1,6 +1,6 @@
 // 车辆信息确认弹窗（车体扫码进入链路）
 //
-// 纯受控：只负责展示 项目名称/客户名称/车型信息 三行，以及承接「暂不 / 确认」两个动作，
+// 纯受控：展示 项目名称/客户名称/车型信息 三行，按权限承接「修改信息 / 暂不」和「确认」动作，
 // 自己不发任何请求。确认过程中的 loading 由父组件传入，期间两个按钮都禁用，防重复提交。
 // 弹层复用全站统一的 tdesign-mobile-react Dialog，与既有弹窗（如 SubscriptionReminder）观感一致。
 import type { CSSProperties } from 'react';
@@ -35,8 +35,10 @@ export interface VehicleConfirmDialogProps {
   info: VehicleContext | null;
   /** 确认提交中：主按钮转 loading，两个按钮都禁用 */
   confirming?: boolean;
+  canEdit?: boolean;
   onConfirm: () => void;
-  /** 点「暂不」或点遮罩：关闭弹窗并保持当前对话 */
+  onEdit: () => void;
+  /** 点「暂不」或遮罩：关闭弹窗并保持当前对话 */
   onCancel: () => void;
 }
 
@@ -44,7 +46,9 @@ export default function VehicleConfirmDialog({
   visible,
   info,
   confirming = false,
+  canEdit = false,
   onConfirm,
+  onEdit,
   onCancel,
 }: VehicleConfirmDialogProps) {
   const rows: Array<{ label: string; value: string }> = [
@@ -61,11 +65,11 @@ export default function VehicleConfirmDialog({
       width={360}
       style={{ maxWidth: '88vw' }}
       // 只挂 onCancel（取消按钮）与 onOverlayClick（遮罩）：
-      // Dialog 内部点「取消」时会同时回调 onCancel 和 onClose，两个都接会把「暂不」重复触发一次，
+      // Dialog 内部点「取消」时会同时回调 onCancel 和 onClose，两个都接会把「修改信息」重复触发一次，
       // 故这里刻意不接 onClose。
-      cancelBtn={{ content: '暂不', disabled: confirming }}
+      cancelBtn={{ content: canEdit ? '修改信息' : '暂不', disabled: confirming }}
       confirmBtn={{ content: '确认', loading: confirming, disabled: confirming }}
-      onCancel={onCancel}
+      onCancel={canEdit ? onEdit : onCancel}
       onOverlayClick={onCancel}
       onConfirm={onConfirm}
     >

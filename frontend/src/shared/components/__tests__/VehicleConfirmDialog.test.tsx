@@ -23,6 +23,7 @@ vi.mock('tdesign-mobile-react', () => ({
     cancelBtn,
     confirmBtn,
     onCancel,
+    onOverlayClick,
     onConfirm,
     children,
   }: {
@@ -31,12 +32,14 @@ vi.mock('tdesign-mobile-react', () => ({
     cancelBtn?: BtnProps | null;
     confirmBtn?: BtnProps | null;
     onCancel?: () => void;
+    onOverlayClick?: () => void;
     onConfirm?: () => void;
     children?: ReactNode;
   }) => {
     if (!visible) return null;
     return (
       <div data-testid="vehicle-confirm-dialog">
+        <button aria-label="遮罩" onClick={onOverlayClick} />
         <div>{title}</div>
         <div>{children}</div>
         <button disabled={cancelBtn?.disabled} onClick={() => { if (!cancelBtn?.disabled) onCancel?.(); }}>
@@ -61,13 +64,13 @@ const INFO = {
 
 describe('VehicleConfirmDialog（车辆信息确认弹窗）', () => {
   it('visible=false 时不渲染内容', () => {
-    render(<VehicleConfirmDialog visible={false} info={INFO} onConfirm={vi.fn()} onCancel={vi.fn()} />);
+    render(<VehicleConfirmDialog visible={false} info={INFO} onConfirm={vi.fn()} onEdit={vi.fn()} onCancel={vi.fn()} />);
 
     expect(screen.queryByTestId('vehicle-confirm-dialog')).not.toBeInTheDocument();
   });
 
   it('渲染标题与三行「标签 + 值」', () => {
-    render(<VehicleConfirmDialog visible info={INFO} onConfirm={vi.fn()} onCancel={vi.fn()} />);
+    render(<VehicleConfirmDialog visible info={INFO} onConfirm={vi.fn()} onEdit={vi.fn()} onCancel={vi.fn()} />);
 
     expect(screen.getByText('车辆信息确认')).toBeInTheDocument();
     expect(screen.getByText('项目名称')).toBeInTheDocument();
@@ -84,6 +87,7 @@ describe('VehicleConfirmDialog（车辆信息确认弹窗）', () => {
         visible
         info={{ ...INFO, customerName: '', vehicleModel: '   ' }}
         onConfirm={vi.fn()}
+        onEdit={vi.fn()}
         onCancel={vi.fn()}
       />,
     );
@@ -93,43 +97,73 @@ describe('VehicleConfirmDialog（车辆信息确认弹窗）', () => {
   });
 
   it('info 为 null 时三行全为占位符（不抛错）', () => {
-    render(<VehicleConfirmDialog visible info={null} onConfirm={vi.fn()} onCancel={vi.fn()} />);
+    render(<VehicleConfirmDialog visible info={null} onConfirm={vi.fn()} onEdit={vi.fn()} onCancel={vi.fn()} />);
 
     expect(screen.getAllByText('—')).toHaveLength(3);
   });
 
   it('点「确认」触发 onConfirm', () => {
     const onConfirm = vi.fn();
-    render(<VehicleConfirmDialog visible info={INFO} onConfirm={onConfirm} onCancel={vi.fn()} />);
+    render(<VehicleConfirmDialog visible info={INFO} onConfirm={onConfirm} onEdit={vi.fn()} onCancel={vi.fn()} />);
 
     fireEvent.click(screen.getByText('确认'));
 
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it('点「暂不」触发 onCancel 且只触发一次', () => {
+  it('点「修改信息」只触发 onEdit 一次，不触发确认或遮罩回调', () => {
     const onConfirm = vi.fn();
+    const onEdit = vi.fn();
     const onCancel = vi.fn();
-    render(<VehicleConfirmDialog visible info={INFO} onConfirm={onConfirm} onCancel={onCancel} />);
+    render(<VehicleConfirmDialog visible info={INFO} canEdit onConfirm={onConfirm} onEdit={onEdit} onCancel={onCancel} />);
 
+    fireEvent.click(screen.getByText('修改信息'));
+
+    expect(onEdit).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(screen.queryByText('暂不')).not.toBeInTheDocument();
+  });
+
+  it('点遮罩只关闭弹窗，不触发修改信息', () => {
+    const onEdit = vi.fn();
+    const onCancel = vi.fn();
+    render(<VehicleConfirmDialog visible info={INFO} canEdit onConfirm={vi.fn()} onEdit={onEdit} onCancel={onCancel} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '遮罩' }));
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('canEdit=%s，confirming 期间两个按钮都禁用', (canEdit) => {
+    const onConfirm = vi.fn();
+    const onEdit = vi.fn();
+    const onCancel = vi.fn();
+    render(<VehicleConfirmDialog visible info={INFO} canEdit={canEdit} confirming onConfirm={onConfirm} onEdit={onEdit} onCancel={onCancel} />);
+
+    expect(screen.getByText('确认')).toBeDisabled();
+    expect(screen.getByText(canEdit ? '修改信息' : '暂不')).toBeDisabled();
+
+    fireEvent.click(screen.getByText('确认'));
+    fireEvent.click(screen.getByText(canEdit ? '修改信息' : '暂不'));
+
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it.each([false, undefined])('canEdit=%s，普通用户显示「暂不」，只关闭弹窗', (canEdit) => {
+    const onConfirm = vi.fn();
+    const onEdit = vi.fn();
+    const onCancel = vi.fn();
+    render(<VehicleConfirmDialog visible info={INFO} canEdit={canEdit} onConfirm={onConfirm} onEdit={onEdit} onCancel={onCancel} />);
+
+    expect(screen.queryByText('修改信息')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('暂不'));
 
     expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onEdit).not.toHaveBeenCalled();
     expect(onConfirm).not.toHaveBeenCalled();
-  });
-
-  it('confirming 期间两个按钮都禁用，再点「确认」不会重复回调', () => {
-    const onConfirm = vi.fn();
-    const onCancel = vi.fn();
-    render(<VehicleConfirmDialog visible info={INFO} confirming onConfirm={onConfirm} onCancel={onCancel} />);
-
-    expect(screen.getByText('确认')).toBeDisabled();
-    expect(screen.getByText('暂不')).toBeDisabled();
-
-    fireEvent.click(screen.getByText('确认'));
-    fireEvent.click(screen.getByText('暂不'));
-
-    expect(onConfirm).not.toHaveBeenCalled();
-    expect(onCancel).not.toHaveBeenCalled();
   });
 });

@@ -53,6 +53,8 @@ export default function CallView() {
   const sceneCode = useMemo(() => resolveSceneCode(searchParams), [searchParams]);
   // 待确认的车辆信息 + 弹窗开合 + 确认中（挡住同一帧内的重复点击）
   const [vehicleInfo, setVehicleInfo] = useState<VehicleContext | null>(null);
+  const [vehicleQrcodeId, setVehicleQrcodeId] = useState<number | null>(null);
+  const [canEditVehicleInfo, setCanEditVehicleInfo] = useState(false);
   const [vehicleDialogVisible, setVehicleDialogVisible] = useState(false);
   const [vehicleConfirming, setVehicleConfirming] = useState(false);
   // 活动中心抽屉（公告条点开）
@@ -91,6 +93,8 @@ export default function CallView() {
         Toast({ message: '该二维码未录入信息或不可用，请联系管理员', theme: 'warning' });
         return;
       }
+      setVehicleQrcodeId(record.id);
+      setCanEditVehicleInfo(record.can_edit_project_info === true);
       setVehicleInfo({
         scene: sceneCode,
         projectName: record.project_name ?? '',
@@ -101,11 +105,17 @@ export default function CallView() {
     })();
   }, [sceneCode, searchParams, setSearchParams]);
 
-  /** 点「暂不」/点遮罩：只关弹窗，保持当前对话不动 */
+  /** 点「暂不」/遮罩：只关弹窗，保持当前对话不动 */
   const handleVehicleCancel = useCallback(() => {
     setVehicleDialogVisible(false);
     setVehicleConfirming(false);
   }, []);
+
+  const handleVehicleEdit = useCallback(() => {
+    if (!canEditVehicleInfo || vehicleQrcodeId === null || vehicleConfirming) return;
+    setVehicleDialogVisible(false);
+    navigate(`/admin/info-entry/${vehicleQrcodeId}`);
+  }, [canEditVehicleInfo, vehicleQrcodeId, vehicleConfirming, navigate]);
 
   /** 点「确认」：另起一个空白会话（这次扫码专用），再把车辆上下文投给 ChatPanel 注入引导消息 */
   const handleVehicleConfirm = useCallback(() => {
@@ -161,7 +171,9 @@ export default function CallView() {
         visible={vehicleDialogVisible}
         info={vehicleInfo}
         confirming={vehicleConfirming}
+        canEdit={canEditVehicleInfo}
         onConfirm={handleVehicleConfirm}
+        onEdit={handleVehicleEdit}
         onCancel={handleVehicleCancel}
       />
     </div>

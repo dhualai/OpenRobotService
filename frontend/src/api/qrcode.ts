@@ -17,6 +17,7 @@ export interface QrcodeItem {
   type: 'temporary' | 'permanent';
   expire_seconds?: number;
   status: string;
+  can_edit_project_info?: boolean;
   batch_id?: string;
   /** 项目名（录入信息行自带；普通码行为 null）。项目id 就是行 id（str(id)），不单独下发 */
   project_name?: string | null;
