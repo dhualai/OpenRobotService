@@ -133,6 +133,8 @@ jobs:
       backup_id: ${{ steps.resolve.outputs.backup_id }}
       # 「上次生产发布」的时间点（ISO8601）；空 = 没查到，发行说明退回固定 7 天
       release_since: ${{ steps.window.outputs.since }}
+      # 本次部署分支的最后提交时间；空 = 不设上界
+      release_until: ${{ steps.window.outputs.until }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -323,8 +325,10 @@ jobs:
         if: ${{ inputs.action != 'rollback' && steps.resolve.outputs.environment == 'prod' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_REF: ${{ steps.resolve.outputs.git_ref }}
         run: |
           set -uo pipefail
+          # 起点：最近一次成功的生产部署
           since=""
           for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=prod&per_page=8" \
                         --jq '.[].id' 2>/dev/null || true); do
@@ -336,11 +340,21 @@ jobs:
               break
             fi
           done
+          # 上界：本次部署分支的最后一次提交。合到 test 但还没进该分支的 PR 不在这
+          # 次部署的代码里，统计进来就是播报没上线的功能。
+          until=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GIT_REF" \
+                    --jq '.commit.committer.date' 2>/dev/null || true)
           echo "since=$since" >> "$GITHUB_OUTPUT"
+          echo "until=$until" >> "$GITHUB_OUTPUT"
           if [ -n "$since" ]; then
-            echo "上次生产发布：$since（本次发行说明只覆盖此后的 PR）"
+            echo "上次生产发布：$since（本次只统计此后的 PR）"
           else
             echo "::warning::没取到上次生产发布时间，发行说明退回固定 7 天窗口"
+          fi
+          if [ -n "$until" ]; then
+            echo "部署分支 $GIT_REF 最后提交：$until（之后的 PR 不计入）"
+          else
+            echo "::warning::没取到 $GIT_REF 的最后提交时间，不设窗口上界"
           fi
 
       - name: Upload PR list
@@ -509,7 +523,8 @@ jobs:
           if python deploy/gen_release_notes.py \
                --prs _release_prs/release_prs.json \
                --out _artifacts/deploy/RELEASE_NOTES.auto.md \
-               --since "${{ needs.plan.outputs.release_since }}"; then
+               --since "${{ needs.plan.outputs.release_since }}" \
+               --until "${{ needs.plan.outputs.release_until }}"; then
             mv _artifacts/deploy/RELEASE_NOTES.auto.md _artifacts/deploy/RELEASE_NOTES.md
             echo "已用自动生成的发行说明覆盖 docs/RELEASE_NOTES.md"
           else
