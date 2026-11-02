@@ -114,6 +114,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # 读 deployments：定位「上一次生产发布」的时间点，作为发行说明的窗口起点
+      deployments: read
     outputs:
       environment: ${{ steps.resolve.outputs.environment }}
       action: ${{ steps.resolve.outputs.action }}
@@ -129,6 +131,8 @@ jobs:
       artifact_name: ${{ steps.resolve.outputs.artifact_name }}
       pr_artifact_name: ${{ steps.resolve.outputs.pr_artifact_name }}
       backup_id: ${{ steps.resolve.outputs.backup_id }}
+      # 「上次生产发布」的时间点（ISO8601）；空 = 没查到，发行说明退回固定 7 天
+      release_since: ${{ steps.window.outputs.since }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -274,25 +278,69 @@ jobs:
             if [ "$action" = "rollback" ]; then echo "| 回滚目标 | \`$backup_id\` |"; fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 自动发行说明的输入：最近 200 条已合并 PR，由 build 里的脚本按 mergedAt
-      # 精确过滤「当前时间往前推 7 天」。不用 --search 的 merged:>= 语法——它与
-      # --base 组合依赖 search API，语法/限流都多一个失败点；多拉的那点 JSON 无所谓。
+      # 自动发行说明的输入：最近 200 条已合并 PR，由 build 里的脚本按 mergedAt 过滤。
+      # 数据源用 base=test 而不是部署分支：功能 PR 全部合到 test，dev 上只有
+      # 「test→dev」的发布批次 PR（标题是 ORS-Dailyrenew_20261028 这种），拿它当
+      # 更新条目没有任何信息量。再补一份 base=dev，兜住直合 dev 的紧急修复，但
+      # 排除 head=test 的批次 PR，否则同一次发布会被拆成「批次名 + 明细」两套。
+      # 不用 --search 的 merged:>= 语法——它与 --base 组合依赖 search API，语法/
+      # 限流都多一个失败点；多拉的那点 JSON 无所谓。
       - name: Collect merged PRs for release notes
         if: ${{ inputs.action != 'rollback' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GIT_REF: ${{ steps.resolve.outputs.git_ref }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p release_prs
-          if gh pr list --repo "$GITHUB_REPOSITORY" --base "$GIT_REF" --state merged \
-               --limit 200 --json number,title,mergedAt,labels > release_prs/release_prs.json; then
+          fetch_prs() {
+            gh pr list --repo "$GITHUB_REPOSITORY" --base "$1" --state merged \
+              --limit 200 --json number,title,mergedAt,labels,headRefName
+          }
+          for base in test dev; do
+            file="release_prs/$base.json"
+            fetch_prs "$base" > "$file" 2>/dev/null || echo '[]' > "$file"
+            # 单个来源坏掉只丢它自己那一半，不要让整份发行说明退回人工版本
+            jq -e 'type == "array"' "$file" > /dev/null 2>&1 || echo '[]' > "$file"
+          done
+          if jq -s 'map(select(type == "array") | .[])
+                    | map(select((.headRefName // "") != "test"))
+                    | unique_by(.number)' \
+               release_prs/test.json release_prs/dev.json > release_prs/release_prs.json 2>/dev/null; then
             count=$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))))' \
               release_prs/release_prs.json 2>/dev/null || echo 0)
-            echo "已抓取 $count 条已合并 PR（脚本内按最近 7 天过滤）"
+            echo "已抓取 $count 条已合并 PR（test 分支为主 + 直合 dev 的修复）"
           else
             echo "::warning::抓取 PR 列表失败，自动发行说明将退回人工维护版本"
             echo '[]' > release_prs/release_prs.json
+          fi
+
+      # 「上次发布以来」的窗口起点：最近一次成功的生产部署时间。
+      # 只能在这里查：deployment 记录由 deploy job 的 environment 创建，而 plan 跑在
+      # deploy 之前，所以读到的最新一条必然是上一次发布，不会把本次算进去。
+      # 拿不到（无历史 / 权限不足）就留空，脚本自动退回固定 7 天，绝不阻断部署。
+      - name: Resolve release window
+        id: window
+        if: ${{ inputs.action != 'rollback' && steps.resolve.outputs.environment == 'prod' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          since=""
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=prod&per_page=8" \
+                        --jq '.[].id' 2>/dev/null || true); do
+            ok=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
+                   --jq '[.[] | select(.state == "success")] | length' 2>/dev/null || echo 0)
+            if [ "${ok:-0}" != "0" ]; then
+              since=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id" \
+                        --jq '.created_at' 2>/dev/null || true)
+              break
+            fi
+          done
+          echo "since=$since" >> "$GITHUB_OUTPUT"
+          if [ -n "$since" ]; then
+            echo "上次生产发布：$since（本次发行说明只覆盖此后的 PR）"
+          else
+            echo "::warning::没取到上次生产发布时间，发行说明退回固定 7 天窗口"
           fi
 
       - name: Upload PR list
@@ -444,7 +492,9 @@ jobs:
           fi
           ls -lh _artifacts/deploy
 
-      # 自动发行说明：最近 7 天已合并 PR → LLM 归纳去重，成功才覆盖上一步铺底的人工版本。
+      # 自动发行说明：上次生产发布以来的已合并 PR → LLM 归纳去重，成功才覆盖上一步
+      # 铺底的人工版本。窗口起点由 plan 的 Resolve release window 给出；test 环境没有
+      # 生产发布的概念，留空即退回固定 7 天。
       # 未配置 RELEASE_LLM_API_KEY / 无 PR / LLM 失败时静默回退 docs/RELEASE_NOTES.md，
       # 绝不阻断构建（脚本仅在成功时写文件，退出码 1/2 时不留半成品）。
       - name: Generate release notes (auto)
@@ -458,7 +508,8 @@ jobs:
           rm -f _artifacts/deploy/RELEASE_NOTES.auto.md
           if python deploy/gen_release_notes.py \
                --prs _release_prs/release_prs.json \
-               --out _artifacts/deploy/RELEASE_NOTES.auto.md; then
+               --out _artifacts/deploy/RELEASE_NOTES.auto.md \
+               --since "${{ needs.plan.outputs.release_since }}"; then
             mv _artifacts/deploy/RELEASE_NOTES.auto.md _artifacts/deploy/RELEASE_NOTES.md
             echo "已用自动生成的发行说明覆盖 docs/RELEASE_NOTES.md"
           else
