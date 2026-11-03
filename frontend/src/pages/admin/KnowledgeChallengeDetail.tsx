@@ -5,11 +5,12 @@ import { Navbar } from 'tdesign-mobile-react';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import {
   changeChallengeState, fetchChallenge, fetchMyChallengeAnswer, likeChallenge, likeChallengeAnswer,
-  overrideChallengeResult, publishChallenge, saveChallengeAnswer, type ChallengeDetail, type MyChallengeAnswer,
+  overrideChallengeResult, publishChallenge, saveChallengeAnswer, uploadChallengeAnswerImage, type ChallengeDetail, type MyChallengeAnswer,
 } from '@/api/knowledgeChallenges';
 import { challengeStateLabels, useChallengePolling } from './HighValueQuestionCard';
 import { localDateInput } from './KnowledgeChallenges';
 import { KnowledgeEmpty, KnowledgeState, knowledgeMoney, knowledgeTime, useKnowledgeResource } from './knowledgeShared';
+import ChallengeAnswerImages from './ChallengeAnswerImages';
 import '@/shared/styles/knowledgeChallenges.css';
 
 const actionLabels: Record<string, string> = {
@@ -70,6 +71,8 @@ export function ChallengeManagement({ challenge, onChanged }: { challenge: Chall
 export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted, onCancel, embedded = false }: { id: string; canAnswer: boolean; onSubmitted: () => void; onCancel?: () => void; embedded?: boolean }) {
   const resource = useKnowledgeResource(`my-challenge-answer:${id}`, () => fetchMyChallengeAnswer(id));
   const [content, setContent] = useState('');
+  const [images, setImages] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -77,22 +80,25 @@ export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted, onCancel, em
   const [answerState, setAnswerState] = useState<MyChallengeAnswer | null>(null);
   const version = useRef(0);
   const saved = useRef('');
+  const savedImages = useRef('[]');
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (resource.data && !ready) {
       setContent(resource.data.content); saved.current = resource.data.content;
+      setImages(resource.data.images || []); savedImages.current = JSON.stringify(resource.data.images || []);
       version.current = resource.data.version; setReady(true);
       setAnswerState(resource.data);
       setStatus(resource.data.submitted_at ? '已有已发布答案，修改后需再次发布' : '草稿仅自己可见');
     }
   }, [resource.data, ready]);
-  const persist = useCallback((value: string, submit: boolean) => {
+  const persist = useCallback((value: string, submit: boolean, imageList: string[]) => {
     const operation = queue.current.then(async () => {
-      if (!submit && value === saved.current) return;
-      const answer = await saveChallengeAnswer(id, value, version.current, submit);
+      if (!submit && value === saved.current && JSON.stringify(imageList) === savedImages.current) return;
+      const answer = await saveChallengeAnswer(id, value, version.current, submit, imageList);
       version.current = answer.version; saved.current = value;
+      savedImages.current = JSON.stringify(imageList);
       if (mounted.current) { setAnswerState(answer); setStatus(submit ? '答案已发布' : '草稿已保存，仅自己可见'); setError(''); }
     });
     queue.current = operation.catch(() => undefined);
@@ -102,19 +108,33 @@ export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted, onCancel, em
   const isEditing = !!answerState?.submitted_at;
   const editExhausted = isEditing && answerState.remaining_edits === 0;
   useEffect(() => {
-    if (!ready || !canSubmit || busy || content === saved.current) return;
+    if (!ready || !canSubmit || busy || uploading || (content === saved.current && JSON.stringify(images) === savedImages.current)) return;
     const timer = window.setTimeout(() => {
-      void persist(content, false).catch((failure: unknown) => {
+      void persist(content, false, images).catch((failure: unknown) => {
         if (mounted.current) setError(failure instanceof Error ? failure.message : '自动保存失败，请重试');
       });
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [content, ready, canSubmit, busy, persist]);
+  }, [content, images, ready, canSubmit, busy, uploading, persist]);
+  async function uploadImages(files: File[]) {
+    if (!canSubmit || busy || uploading || !files.length) return;
+    if (files.some((file) => !/\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name))) { setError('仅支持 PNG、JPG、GIF、WEBP、BMP 图片'); return; }
+    if (files.some((file) => file.size > 10 * 1024 * 1024)) { setError('单张图片不能超过10MB'); return; }
+    setUploading(true); setError('');
+    try {
+      for (const file of files) {
+        const url = await uploadChallengeAnswerImage(file);
+        if (!mounted.current) return;
+        setImages((previous) => [...previous, url]);
+      }
+    } catch (failure) { if (mounted.current) setError(failure instanceof Error ? failure.message : '图片上传失败，请重试'); }
+    finally { if (mounted.current) setUploading(false); }
+  }
   async function publish(event: FormEvent) {
     event.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || busy || uploading) return;
     setBusy(true); setError('');
-    try { await persist(content, true); onSubmitted(); }
+    try { await persist(content, true, images); onSubmitted(); }
     catch (failure) { setError(failure instanceof Error ? failure.message : '发布失败'); }
     finally { if (mounted.current) setBusy(false); }
   }
@@ -122,9 +142,12 @@ export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted, onCancel, em
     {ready && <form className="challenge-form" onSubmit={publish}><p className="challenge-notice">回答将展示你的用户名，请勿填写电话、客户信息或原工单内部链接。每人每天最多点赞5条不同答案，不能给自己的答案点赞。</p>
       <p role="note" className="knowledge-note">{editExhausted ? '本题解答已修改过一次，不能再次编辑。' : isEditing ? '每个问题的已发布解答仅可修改一次。提交修改后不能再次编辑；保存草稿或取消编辑不消耗修改次数。' : '首次发布后，每个问题的解答仅可再修改一次，请确认内容后发布。'}</p>
       <label>答案内容<textarea className="knowledge-textarea" value={content} onChange={(event) => setContent(event.target.value)} required maxLength={20000} disabled={busy || !canSubmit} /></label>
+      <label>上传解答图片<input type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.bmp" multiple disabled={busy || uploading || !canSubmit} onChange={(event) => { const files = Array.from(event.target.files || []); event.target.value = ''; void uploadImages(files); }} /></label>
+      <p className="knowledge-muted">{uploading ? '图片上传中…' : `已上传${images.length}张，数量不限，单张不超过10MB。请勿上传客户隐私、账号口令等敏感信息。`}</p>
+      <ChallengeAnswerImages images={images} disabled={busy || uploading || !canSubmit} onRemove={(index) => setImages((previous) => previous.filter((_, position) => position !== index))} />
       <span className="knowledge-muted" role="status">{editExhausted ? '本题修改机会已用完' : canAnswer ? status : '问题已截止或暂停，不能继续提交'}</span>
       {error && <p role="alert" className="knowledge-discussion-error">{error}</p>}
-      <div className="challenge-actions"><button type="submit" className="knowledge-button" disabled={!canSubmit || busy || !content.trim()}>{busy ? '发布中…' : isEditing ? '提交修改' : '发布答案'}</button><button type="button" className="knowledge-link" disabled={!canSubmit || busy} onClick={() => void persist(content, false).catch((failure: unknown) => setError(failure instanceof Error ? failure.message : '保存失败'))}>保存草稿</button>{onCancel && <button type="button" className="knowledge-link" disabled={busy} onClick={onCancel}>取消编辑</button>}</div>
+      <div className="challenge-actions"><button type="submit" className="knowledge-button" disabled={!canSubmit || busy || uploading || !content.trim()}>{busy ? '发布中…' : isEditing ? '提交修改' : '发布答案'}</button><button type="button" className="knowledge-link" disabled={!canSubmit || busy || uploading} onClick={() => void persist(content, false, images).catch((failure: unknown) => setError(failure instanceof Error ? failure.message : '保存失败'))}>保存草稿</button>{onCancel && <button type="button" className="knowledge-link" disabled={busy || uploading} onClick={onCancel}>取消编辑</button>}</div>
     </form>}
   </section>;
 }
@@ -169,7 +192,7 @@ export default function KnowledgeChallengeDetail() {
         <section className="mac-card mac-card--pad"><h3>{challenge.best_answer ? '社区优选解答' : '解答'} · {challenge.answers.length}</h3><p className="challenge-notice">社区解答，未经专业验证。问题赞表达共性需求，答案赞决定默认获奖者。</p>
           {challenge.my_reward_status && <div className="knowledge-note">你的奖励已接入原奖励管理，可在<Link className="knowledge-link" to="/rewards">我的奖励</Link>查看实际处理状态。</div>}
           {!challenge.answers.length && <KnowledgeEmpty>暂无解答，期待你的经验与思路</KnowledgeEmpty>}
-          {[...challenge.answers].sort((first, second) => Number(second.is_mine) - Number(first.is_mine) || Number(second.is_best) - Number(first.is_best)).map((answer) => <article key={answer.id} className={`challenge-answer${answer.is_best ? ' challenge-answer--best' : ''}`}><div className="knowledge-toolbar"><strong>{answer.author}{answer.is_best ? ' · 最佳解答' : ''}{answer.is_mine ? ' · 我的答案' : ''}</strong><div className="challenge-actions">{answer.is_mine && <button type="button" className="knowledge-link" disabled={!canAnswer || !answer.can_edit} title={answer.remaining_edits === 0 ? '本题修改机会已用完' : '每个问题的已发布解答仅可修改一次'} onClick={() => setEditorOpen(!editorOpen)}>{editorOpen ? '收起编辑' : '编辑'}</button>}<button type="button" className="knowledge-like" aria-pressed={answer.liked_by_me} disabled={busy || !answer.can_like || !canAnswer} onClick={() => void vote(() => likeChallengeAnswer(challenge.id, answer))}>有帮助 · {answer.like_count}</button></div></div><p className="challenge-content">{answer.content}</p><time className="knowledge-muted">{knowledgeTime(answer.submitted_at)}</time>{answer.is_mine && answer.remaining_edits === 0 && <p className="challenge-notice">本题修改机会已用完</p>}{answer.is_mine && editorOpen && <div ref={editorContainer}><ChallengeAnswerEditor key={challengeId} id={challengeId} canAnswer={canAnswer} onSubmitted={submitted} onCancel={() => setEditorOpen(false)} embedded /></div>}</article>)}
+          {[...challenge.answers].sort((first, second) => Number(second.is_mine) - Number(first.is_mine) || Number(second.is_best) - Number(first.is_best)).map((answer) => <article key={answer.id} className={`challenge-answer${answer.is_best ? ' challenge-answer--best' : ''}`}><div className="knowledge-toolbar"><strong>{answer.author}{answer.is_best ? ' · 最佳解答' : ''}{answer.is_mine ? ' · 我的答案' : ''}</strong><div className="challenge-actions">{answer.is_mine && <button type="button" className="knowledge-link" disabled={!canAnswer || !answer.can_edit} title={answer.remaining_edits === 0 ? '本题修改机会已用完' : '每个问题的已发布解答仅可修改一次'} onClick={() => setEditorOpen(!editorOpen)}>{editorOpen ? '收起编辑' : '编辑'}</button>}<button type="button" className="knowledge-like" aria-pressed={answer.liked_by_me} disabled={busy || !answer.can_like || !canAnswer} onClick={() => void vote(() => likeChallengeAnswer(challenge.id, answer))}>有帮助 · {answer.like_count}</button></div></div><p className="challenge-content">{answer.content}</p><ChallengeAnswerImages images={answer.images} /><time className="knowledge-muted">{knowledgeTime(answer.submitted_at)}</time>{answer.is_mine && answer.remaining_edits === 0 && <p className="challenge-notice">本题修改机会已用完</p>}{answer.is_mine && editorOpen && <div ref={editorContainer}><ChallengeAnswerEditor key={challengeId} id={challengeId} canAnswer={canAnswer} onSubmitted={submitted} onCancel={() => setEditorOpen(false)} embedded /></div>}</article>)}
         </section>
       </>}
     </div></div>;

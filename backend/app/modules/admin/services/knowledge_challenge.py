@@ -282,6 +282,7 @@ async def detail(db, actor, challenge_id):
         liked = await db.get(KnowledgeChallengeLike, ("answer", answer.id, user_id))
         items.append({"id": answer.id, "author": (author.name or author.username) if author else "未知用户",
             "content": entry["content"] if entry else answer.content,
+            "images": entry.get("images", []) if entry else (answer.images or []),
             "like_count": entry["likes"] if entry else await answer_votes(db, answer.id),
             "submitted_at": knowledge.iso(answer.submitted_at), "is_mine": answer.author_id == user_id,
             "is_best": answer.id == challenge.best_answer_id,
@@ -309,6 +310,7 @@ async def my_answer(db, actor, challenge_id):
         KnowledgeChallengeAnswer.challenge_id == challenge_id,
         KnowledgeChallengeAnswer.author_id == user_id))).scalar_one_or_none()
     return {"content": (answer.draft_content if answer.draft_content is not None else answer.content) if answer else "",
+        "images": ((answer.draft_images if answer.draft_images is not None else answer.images) or []) if answer else [],
         "version": answer.version if answer else 0,
         "submitted_at": knowledge.iso(answer.submitted_at) if answer else None,
         "remaining_edits": remaining_answer_edits(answer),
@@ -323,7 +325,7 @@ async def community_result(db, actor, challenge_id):
     return result
 
 
-async def write_answer(db, actor, challenge_id, content, version, submit=False):
+async def write_answer(db, actor, challenge_id, content, version, submit=False, images=None):
     user_id = await knowledge.actor_id(db, actor)
     challenge = await get_challenge(db, challenge_id, actor, lock=True)
     ensure_open(challenge)
@@ -344,12 +346,16 @@ async def write_answer(db, actor, challenge_id, content, version, submit=False):
         raise HTTPException(409, "每个问题的已发布解答只能修改一次，本题修改机会已用完")
     if submit and answer.submitted_at is not None:
         answer.history = [*answer.history, {"version": answer.version,
-            "content": answer.content, "at": knowledge.iso(utcnow())}]
+            "content": answer.content, "images": answer.images or [], "at": knowledge.iso(utcnow())}]
     answer.version += 1
     answer.updated_at = utcnow()
     answer.draft_content = content
+    answer.draft_images = list(images) if images is not None else (
+        answer.draft_images if answer.draft_images is not None else (answer.images or []))
     if submit:
         answer.content = await public_text(db, challenge, content.strip(), user_id)
+        answer.images = answer.draft_images
+        answer.draft_images = None
         answer.draft_content = None
         answer.submitted_at = answer.submitted_at or utcnow()
     ensure_open(challenge)
@@ -421,6 +427,7 @@ async def settle(db, challenge_id):
         KnowledgeChallengeAnswer.submitted_at < challenge.ends_at,
         KnowledgeChallengeAnswer.hidden.is_(False)))).scalars().all()
     entries = [{"id": answer.id, "content": answer.content, "submitted_at": knowledge.iso(answer.submitted_at),
+        "images": answer.images or [],
         "likes": await answer_votes(db, answer.id)} for answer in answers]
     entries.sort(key=lambda entry: (-entry["likes"], entry["submitted_at"], entry["id"]))
     challenge.snapshot = {"cutoff": knowledge.iso(challenge.ends_at), "rule_version": challenge.rule_version,

@@ -19,7 +19,7 @@ from app.models.knowledge_challenge import (
 )
 from app.models.task import Task
 from app.models.wxpay import RewardRecord
-from app.modules.admin.api.knowledge_challenge import CreateChallenge, OverrideBody, StateBody, router
+from app.modules.admin.api.knowledge_challenge import AnswerBody, CreateChallenge, OverrideBody, StateBody, router
 from app.modules.admin.services import knowledge_challenge as service
 from app.modules.admin.services import knowledge_service as knowledge
 from backend.tests.test_knowledge import actor, db, seed
@@ -46,6 +46,75 @@ async def submitted(db, challenge_id, user_id="alice", content="先检测电源�
 
 def after_deadline(monkeypatch):
     monkeypatch.setattr(knowledge, "utcnow", lambda: datetime(2026, 11, 22))
+
+
+IMAGE = "/api/tasks/files/helpdesk-comment/spec-doc/images/" + "a" * 32 + ".png"
+OTHER_IMAGE = "/api/tasks/files/helpdesk-comment/spec-doc/images/" + "b" * 32 + ".jpg"
+
+
+@pytest.mark.asyncio
+async def test_answer_images_follow_private_draft_published_edit_and_snapshot(db, monkeypatch):
+    seed(db, 1)
+    challenge = await published(db, task_id=1)
+    draft = await service.write_answer(db, actor("alice"), challenge["id"], "排查截图", 0, images=[IMAGE])
+    assert draft["images"] == [IMAGE]
+    assert (await service.detail(db, actor("voter"), challenge["id"]))["answers"] == []
+    assert (await service.my_answer(db, actor("bob"), challenge["id"]))["images"] == []
+
+    published_answer = await service.write_answer(db, actor("alice"), challenge["id"], "排查截图", draft["version"], submit=True)
+    public = await service.detail(db, actor("voter"), challenge["id"])
+    assert published_answer["images"] == [IMAGE]
+    assert public["answers"][0]["images"] == [IMAGE]
+
+    edited = await service.write_answer(db, actor("alice"), challenge["id"], "替换截图", published_answer["version"], images=[OTHER_IMAGE])
+    assert edited["images"] == [OTHER_IMAGE]
+    assert (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]["images"] == [IMAGE]
+    assert edited["remaining_edits"] == 1
+    edited = await service.write_answer(db, actor("alice"), challenge["id"], "替换截图", edited["version"], submit=True, images=[OTHER_IMAGE])
+    assert edited["images"] == [OTHER_IMAGE]
+    assert edited["remaining_edits"] == 0
+    answer = db.session.scalar(select(KnowledgeChallengeAnswer))
+    assert answer.history[0]["images"] == [IMAGE]
+    assert answer.draft_images is None
+    with pytest.raises(HTTPException) as error:
+        await service.write_answer(db, actor("alice"), challenge["id"], "继续修改", edited["version"], images=[])
+    assert error.value.status_code == 409
+
+    after_deadline(monkeypatch)
+    await service.settle(db, challenge["id"])
+    result = await service.detail(db, actor("voter"), challenge["id"])
+    assert result["best_answer"]["images"] == [OTHER_IMAGE]
+    assert db.session.get(KnowledgeChallenge, challenge["id"]).snapshot["answers"][0]["images"] == [OTHER_IMAGE]
+
+
+@pytest.mark.asyncio
+async def test_answer_images_can_be_removed_without_changing_public_draft_early(db):
+    challenge = await published(db)
+    answer = await service.write_answer(db, actor("alice"), challenge["id"], "文字答案", 0, submit=True, images=[IMAGE])
+    draft = await service.write_answer(db, actor("alice"), challenge["id"], "文字答案", answer["version"], images=[])
+    assert draft["images"] == []
+    assert (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]["images"] == [IMAGE]
+    saved = await service.write_answer(db, actor("alice"), challenge["id"], "文字答案", draft["version"], submit=True, images=[])
+    assert saved["images"] == []
+    assert (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]["images"] == []
+
+
+@pytest.mark.parametrize("images", [
+    ["https://example.com/a.png"], ["javascript:alert(1)"], [IMAGE.replace(".png", ".svg")],
+    [IMAGE.replace("a" * 32, "../secret")],
+])
+def test_answer_image_payload_rejects_untrusted_paths(images):
+    with pytest.raises(ValueError):
+        AnswerBody(content="答案", version=0, images=images)
+
+
+def test_answer_image_payload_accepts_uploaded_images_and_deduplicates():
+    assert AnswerBody(content="答案", version=0, images=[IMAGE, IMAGE]).images == [IMAGE]
+
+
+def test_answer_image_payload_accepts_more_than_nine_images():
+    images = [IMAGE.replace("a" * 32, f"{index:032x}") for index in range(20)]
+    assert AnswerBody(content="答案", version=0, images=images).images == images
 
 
 @pytest.mark.asyncio
@@ -363,6 +432,64 @@ def test_api_forbids_non_admin_create_and_accepts_standalone_payload(db):
     assert response.json()["source"] == "standalone"
     assert client.post("/knowledge/challenges", json=body).json()["id"] == response.json()["id"]
     assert client.post("/knowledge/challenges", json={**body, "bounty_fen": 200}).status_code == 409
+
+
+def test_image_migration_preserves_existing_answers_and_is_idempotent():
+    path = Path(__file__).parents[1] / "alembic/versions/f2a5b8c1d437_challenge_answer_images.py"
+    spec = importlib.util.spec_from_file_location("challenge_image_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE knowledge_challenge_answers (id INTEGER PRIMARY KEY, content TEXT)")
+        connection.exec_driver_sql("INSERT INTO knowledge_challenge_answers (id, content) VALUES (1, 'legacy answer')")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+            migration.upgrade()
+            columns = {column["name"]: column for column in inspect(connection).get_columns("knowledge_challenge_answers")}
+            assert columns["images"]["nullable"] and columns["draft_images"]["nullable"]
+            assert connection.exec_driver_sql("SELECT content, images, draft_images FROM knowledge_challenge_answers").one() == ("legacy answer", None, None)
+            migration.downgrade()
+            migration.downgrade()
+            assert {column["name"] for column in inspect(connection).get_columns("knowledge_challenge_answers")} == {"id", "content"}
+            assert connection.exec_driver_sql("SELECT content FROM knowledge_challenge_answers").scalar_one() == "legacy answer"
+    engine.dispose()
+
+
+def test_answer_image_api_saves_private_drafts_and_publishes_images(db):
+    images = [IMAGE.replace("a" * 32, f"{index:032x}") for index in range(12)]
+    published_images = [*images, OTHER_IMAGE]
+    app = FastAPI()
+    app.include_router(router)
+
+    async def get_db():
+        yield db
+
+    app.dependency_overrides[get_async_db] = get_db
+    app.dependency_overrides[get_current_active_user_from_token] = admin
+    with TestClient(app) as client:
+        created = client.post("/knowledge/challenges", json={
+            "request_key": "image-api", "title": "带图问题", "content": "请附图解答", "bounty_fen": 100,
+            "ends_at": "2026-11-21T00:00:00Z",
+        }).json()
+        base = f"/knowledge/challenges/{created['id']}"
+        assert client.post(f"{base}/publish", json={"version": created["version"]}).status_code == 200
+        app.dependency_overrides[get_current_active_user_from_token] = lambda: actor("alice")
+        invalid = client.put(f"{base}/my-answer", json={"content": "步骤", "version": 0, "images": ["https://example.com/image.png"]})
+        assert invalid.status_code == 422
+        saved = client.put(f"{base}/my-answer", json={"content": "步骤", "version": 0, "images": images})
+        assert saved.status_code == 200
+        assert saved.json()["images"] == images
+        assert client.get(f"{base}/my-answer").json()["images"] == images
+        app.dependency_overrides[get_current_active_user_from_token] = lambda: actor("voter")
+        assert client.get(base).json()["answers"] == []
+        assert client.get(f"{base}/my-answer").json()["images"] == []
+        app.dependency_overrides[get_current_active_user_from_token] = lambda: actor("alice")
+        submitted = client.post(f"{base}/my-answer/submit", json={"content": "步骤", "version": saved.json()["version"], "images": published_images})
+        assert submitted.status_code == 200
+        assert submitted.json()["images"] == published_images
+        app.dependency_overrides[get_current_active_user_from_token] = lambda: actor("voter")
+        assert client.get(base).json()["answers"][0]["images"] == published_images
 
 
 @pytest.mark.asyncio
