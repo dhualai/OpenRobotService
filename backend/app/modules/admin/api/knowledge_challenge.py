@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -35,6 +36,16 @@ class Version(BaseModel):
 class AnswerBody(BaseModel):
     content: str = Field(max_length=20000)
     version: int = Field(ge=0)
+    images: list[str] | None = None
+
+    @field_validator("images")
+    @classmethod
+    def uploaded_images(cls, value):
+        if value is not None and any(not re.fullmatch(
+            r"/api/tasks/files/[A-Za-z0-9_-]+/spec-doc/images/[0-9a-f]{32}\.(?:png|jpg|jpeg|gif|webp|bmp)", image,
+        ) for image in value):
+            raise ValueError("请使用上传成功的图片")
+        return list(dict.fromkeys(value)) if value is not None else None
 
 
 class StateBody(Version):
@@ -115,13 +126,13 @@ async def my_answer(challenge_id: int, db=Depends(get_async_db), actor=Depends(g
 @router.put("/{challenge_id}/my-answer")
 async def save_answer(challenge_id: int, body: AnswerBody, db=Depends(get_async_db),
                       actor=Depends(get_current_active_user_from_token)):
-    return await service.write_answer(db, actor, challenge_id, body.content, body.version)
+    return await service.write_answer(db, actor, challenge_id, body.content, body.version, images=body.images)
 
 
 @router.post("/{challenge_id}/my-answer/submit")
 async def submit_answer(challenge_id: int, body: AnswerBody, db=Depends(get_async_db),
                         actor=Depends(get_current_active_user_from_token)):
-    return await service.write_answer(db, actor, challenge_id, body.content, body.version, submit=True)
+    return await service.write_answer(db, actor, challenge_id, body.content, body.version, submit=True, images=body.images)
 
 
 @router.put("/{challenge_id}/like")

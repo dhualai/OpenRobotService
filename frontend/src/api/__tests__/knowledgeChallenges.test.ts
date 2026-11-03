@@ -30,6 +30,13 @@ describe('高价值问题接口', () => {
     await likeChallengeAnswer(3, { id: 8, liked_by_me: true } as Parameters<typeof likeChallengeAnswer>[1]);
     expect(request).toHaveBeenCalledWith('/3/answers/8/like', { method: 'DELETE' });
   });
+  it('图片列表随草稿与发布提交，空列表可以删除已有图片', async () => {
+    const images = ['/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'a'.repeat(32) + '.png'];
+    await saveChallengeAnswer('7', '附图排查', 2, false, images);
+    expect(request).toHaveBeenLastCalledWith('/7/my-answer', { method: 'PUT', body: JSON.stringify({ content: '附图排查', version: 2, images }) });
+    await saveChallengeAnswer('7', '删除图片', 3, true, []);
+    expect(request).toHaveBeenLastCalledWith('/7/my-answer/submit', { method: 'POST', body: JSON.stringify({ content: '删除图片', version: 3, images: [] }) });
+  });
   it('管理状态与结果纠正独立于财务接口', async () => {
     const state = { action: 'pause', reason: '补充材料', version: 2 };
     await changeChallengeState(3, state);

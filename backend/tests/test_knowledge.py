@@ -68,6 +68,7 @@ def db(monkeypatch):
     for name in names:
         Base.metadata.tables[name].to_metadata(metadata)
     metadata.tables['users'].c.job_level.type = Integer()
+    metadata.tables['users'].c.timezone_locked.type = Integer()
     metadata.tables['task_operation_logs'].c.id.type = Integer()
     metadata.create_all(engine)
     with Session(engine, expire_on_commit=False) as session:
