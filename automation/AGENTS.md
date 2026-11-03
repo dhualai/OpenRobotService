@@ -380,11 +380,39 @@ $env:USE_MOCK = "0"; pytest tests/ -m api
 |--------|------|------|
 | 健康检查 | GET /health | 状态查询 |
 | 认证 | POST /auth/login, GET /auth/me | JWT mock |
-| 任务 | 完整 CRUD + 状态流转 + 指派 + 评论 + 筛选 + AI 指派 | 任务模块 |
-| 微信 | 健康检查 + 菜单 + 发消息 + 标签 | 微信模块 |
+| 任务 | 完整 CRUD + 状态流转 + 指派 + 评论 + 筛选 + AI 指派 + spec-doc + operation-logs + relations | 任务模块 |
+| 微信 | 健康检查 + 菜单 + 发消息/群发 + 标签 + permissions + get-openid + js-sdk-config | 微信模块 |
 | 对话 | 会话 CRUD + QA 提问 + 流式 + 消息 | 我要摇人 |
 | 管理后台 | 工单总览 + 项目/风险/日报 + 用户/角色 + 导出 + 资源 | 后台管理 |
 | AI | 诊断 + 讨论 + 摘要 | AI 模块 |
+
+> 注意：`handle()` 会归一化路径尾斜杠（`/api/tasks/` → `/api/tasks`），真实 FastAPI 路由以 `/` 结尾的端点与工单生成用例（按 OpenAPI 原样携带尾斜杠）均可命中。
+
+### 工单驱动测试生成（ticket pipeline）
+
+**定位**：Mock 是工单生成用例的**本地冒烟近似实现**，真契约以真实后端（CI 门禁 `USE_MOCK=0`）为准。近似实现的已知边界：
+
+- Mock 数据库**初始为空**：用例若引用生产已知工单号（如 `GET /api/tasks/995`），mock 下 404 属预期；
+- 微信只读接口不建模 auth 行为、部分 503 场景不模拟；
+- 生成用例自身的契约错误（缺必填字段、布尔值渲染异常）在 mock 下同样会暴露——这类失败是**用例质量问题**而非 mock 缺口。
+
+**CLI 速查**（详见 `automation/docs/TICKET_PIPELINE.md`）：
+
+```powershell
+# 按工单号直查生产库取需求（只读）
+python automation/scripts/cli-ticket-pipeline.py get --ticket-id 837
+
+# 扫描未解决需求/bug 工单（过滤条件由 PROD_TICKET_* 环境变量控制）
+python automation/scripts/cli-ticket-pipeline.py scan --limit 20
+
+# 生成候选用例（需 --spec-dir 指向接口规格）
+python automation/scripts/cli-ticket-pipeline.py run --limit 20 --spec-dir automation/references/spec
+
+# 人工 review 通过后转正
+python automation/scripts/cli-ticket-pipeline.py promote --ticket-id 837
+```
+
+**对话式 Agent**：`.agents/skills/ticket-test-gen/SKILL.md`（查库 → 生成 → 自审 → 人工确认 → promote → 跑 → 回写的 7 步工作流），OpenCode / Claude Code 按需加载。
 
 ### 默认用户
 
