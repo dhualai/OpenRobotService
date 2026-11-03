@@ -216,6 +216,19 @@ export default function UserAvatarMenu() {
             style={{ marginBottom: 8 }}
             onClick={() => {
               setVisible(false);
+              navigate('/rewards');
+            }}
+          >
+            我的奖励
+          </Button>
+
+          <Button
+            block
+            theme="primary"
+            variant="outline"
+            style={{ marginBottom: 8 }}
+            onClick={() => {
+              setVisible(false);
               navigate('/admin/profile');
             }}
           >

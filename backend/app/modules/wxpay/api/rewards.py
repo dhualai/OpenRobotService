@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_async_db as get_db
 from app.core.security import decode_token
 from app.models.identity import UserDB
+from app.modules.wxpay import newcomer_bonus
 from app.modules.wxpay.schemas import (
+    NewcomerBonusClaimOut,
+    NewcomerBonusStatusOut,
     RewardListOut,
     RewardOut,
     RewardStatsOut,
@@ -69,6 +72,31 @@ async def reward_stats(
     user: UserDB = Depends(current_user),
 ):
     return await RewardService.stats(db, user.id)
+
+
+@router.get("/newcomer-bonus/status", response_model=NewcomerBonusStatusOut, summary="新人红包弹窗状态")
+async def newcomer_bonus_status(
+    db: AsyncSession = Depends(get_db),
+    user: UserDB = Depends(current_user),
+):
+    """新用户领钱弹窗的状态：能不能领、领没领过、领多少。
+
+    口径与幂等说明见 `app/modules/wxpay/newcomer_bonus.py`。
+    """
+    return await newcomer_bonus.evaluate(db, user)
+
+
+@router.post("/newcomer-bonus/claim", response_model=NewcomerBonusClaimOut, summary="领取新人红包")
+async def newcomer_bonus_claim(
+    db: AsyncSession = Depends(get_db),
+    user: UserDB = Depends(current_user),
+):
+    """发放新人红包。
+
+    **只记账**（`status=pending`），不直接调微信转账：用户到「我的奖励」页点「立即提现」
+    时才调起微信确认收款页（与其它奖励同一套链路）。
+    """
+    return await newcomer_bonus.claim(db, user)
 
 
 @router.get("/{reward_id}", response_model=RewardOut, summary="奖励详情")

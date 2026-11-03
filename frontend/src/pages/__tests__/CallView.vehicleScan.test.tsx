@@ -39,6 +39,12 @@ vi.mock('@/shared/components/VehicleConfirmDialog', () => ({
 }));
 
 vi.mock('@/shared/components/ChatPanel', () => ({ default: () => <div data-testid="chat-panel" /> }));
+// 新人红包弹窗（ORS-1086）与本用例无关：轻量替身，避免它引 tdesign Popup 影响收集
+vi.mock('@/shared/components/NewcomerBonusDialog', () => ({ default: () => null }));
+vi.mock('@/api/wxpay', () => ({
+  fetchNewcomerBonusStatus: vi.fn().mockResolvedValue({ eligible: false, claimed: false, amount_fen: 0, title: '', desc: '', reason: '', campaign_code: '', reward_id: '' }),
+  claimNewcomerBonus: vi.fn(),
+}));
 // 顶栏/提示来自 tdesign：只保留 Navbar + Toast 最小替身（真实 tdesign 会让本文件收集阶段卡住）
 vi.mock('tdesign-mobile-react', () => ({
   Navbar: ({ title }: { title?: ReactNode }) => <div>{title}</div>,
