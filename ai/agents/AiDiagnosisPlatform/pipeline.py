@@ -291,6 +291,18 @@ def _agent_state_summary(state: AgentState) -> dict:
     }
 
 
+def _file_in_allow(r, allow_map: Dict[str, List[str]]) -> bool:
+    """检索命中是否在车型族文件白名单内（ORS-1082）。
+
+    allow_map：{sub_domain: [文件名白名单]}——只约束平铺目录（product_catalog
+    下 66 款车型平铺，sub_domain 整体一个，过滤不了型号）；其余目录一律放行。
+    """
+    allow = allow_map.get((r.sub_domain or "").strip() or "")
+    if not allow:
+        return True
+    return (r.source_file or "").rsplit("/", 1)[-1] in allow
+
+
 def _can_submit(state: AgentState) -> tuple[bool, str]:
     """闭环保护：防「提交后用户一句话没说」的机器性重复提单。
 
@@ -1658,6 +1670,10 @@ class AiDiagnosisPlatform:
         # 回复出口用它拦截 LLM 编造的图片链接（文件名幻觉——prompt 管不住，
         # 机械校验兜底：进过 prompt 的 URL 才允许出现在回复里）。
         self._kb_image_allowlist: dict = {}
+        # 会话级「本轮命中的操作手册」清单（ORS-1082）：检索定稿时写入，
+        # 随 result 事件下发，前端在回答气泡下渲染手册 chips（点击看全文）。
+        # 非车型会话恒为空列表（顺带清掉上一轮残留）。
+        self._vehicle_manuals: dict = {}
 
     # 缺 media/ 段的 KB 图片 URL 兜底：LLM 回答里偶发把 /kb/{domain}/{sub}/{file}
     # 拼成少了 /media/ 的坏 URL（如 .../manual/image111.png → 静态挂载 404）。
@@ -3642,24 +3658,36 @@ class AiDiagnosisPlatform:
         return "（知识库检索失败，请告知用户当前系统检索异常、建议稍后重试或转工单处理，不要自己编造答案。）"
 
     async def _vehicle_mode_domains(self, session_id: str):
-        """车辆定制模式的检索域配额；常规会话返回 None（走默认三域，行为不变）。
+        """车辆定制模式的检索域配额；常规会话返回 (None, None)（走默认三域）。
 
         0930 收紧为**车型知识库定向过滤**：车型知识挂 company 域车型目录
         （kb/company/{车型}/ 平铺，payload sub_domain="{车型}"），检索
         company 域 + sub_domain 精确过滤——两重隔离：既不捞 team/cheduan
         老知识（通用域兜底已删，串味实锤），也不捞 company 域里其他产品线
         内容（xmover 等）。车型域空 = LLM 如实说手册未收录，宁缺勿串。
-        返回元素 (domain, top_k, qdrant_filter)；qdrant_filter=None 时等价
-        旧行为（域内不过滤）。"""
+
+        ORS-1082 两处调整：
+        ① 车型目录按模糊匹配解析成 model_dirs（可能多个目录），qdrant 过滤
+           由 MatchValue 改 MatchAny（并集）；平铺目录（product_catalog 下
+           66 款车型平铺）另有文件名白名单 model_files——检索层只能按
+           sub_domain 过滤，型号级隔离只能在应用层做（_retrieve_inner 送
+           prompt 前二次收窄，防 XQC 会话捞回 XFL/XCD 等其它车型资料）。
+        ② 追加平台操作手册域（team/USP/*）：旧口径把检索域整体换成车型域，team 域的 USP 操作
+           手册在车型会话里永远 0 命中——实测生产「问 USP 操作手册」只能答
+           排查决策类散点、没有手册出处（team/USP/manual/manual.md 就在库里）。
+           放行手册/诊断卡/页面导航/排查指引/平台错误码/FAQ/模块文档/术语表八类
+           （取值清单来自生产集合 facet 实测，见下方注释），不放算法与翻译。
+
+        返回 (domains, files_map)；常规会话返回 (None, None)。"""
         try:
             memory = await self._memory_manager.get_memory(session_id)
             vm = (getattr(memory, "metadata", None) or {}).get("vehicle_mode") or {}
         except Exception as e:
             logger.debug(f"[retrieve] vehicle_mode 读取失败按常规处理: {e}")
-            return None
+            return None, None
         model = str(vm.get("model") or "").strip()
         if not model:
-            return None
+            return None, None
         from qdrant_client import models as qmodels
 
         from ai.api.vehicle_mode import model_to_subpath
@@ -3669,10 +3697,61 @@ class AiDiagnosisPlatform:
         # xqe/，qdrant 命中 0，company 域 0+0，开场类目除故障码外全部零
         # 召回，模型只能拿历史工单凑答案）。1010 起车型目录平铺（无 manual 层），
         # sub_domain 即车型串本身。
-        sub_domain = model_to_subpath(model)
+        #
+        # ORS-1082：model_dirs = 模糊匹配解析出的目录（可多个，如车系目录 +
+        # 平铺目录）；老会话没有这个键 → 回退单值（旧口径），升级前后老
+        # session 行为不变。
+        dirs = [str(d).strip() for d in (vm.get("model_dirs") or []) if str(d).strip()]
+        if not dirs:
+            dirs = [model_to_subpath(model)]
         _filt = qmodels.Filter(must=[qmodels.FieldCondition(
-            key="sub_domain", match=qmodels.MatchValue(value=sub_domain))])
-        return [("company", 8, _filt)]
+            key="sub_domain", match=qmodels.MatchAny(any=dirs))])
+        _domains = [("company", 8, _filt)]
+        # 平台操作手册域（team）：车型会话里问「USP 操作手册/怎么配置/报了什么码」
+        # 必须能捞到 team/USP/* 的手册本体，不能只有车型域。
+        # 取值依据=生产 team_20261022_155207 集合 facet 实测的 sub_domain 清单：
+        #   USP/error_codes 518 / USP/algorithm 221 / usp_cards 208 / USP/manual 138
+        #   / USP/translation 107 / USP/faq 81 / ORS 80 / USP/troubleshooting 70
+        #   / USP/overview 44 / USP/ui_pages 17 / USP/terminology 9
+        # ⚠️ 目录名 ≠ sub_domain：诊断卡目录是 team/USP/diagnosis_cards/，入库
+        # sub_domain 却是「usp_cards」（208 chunk）——只按目录名写过滤值会漏掉
+        # 诊断卡，而「机器人问题诊断页」这类答案正出自它。
+        # 有意排除：USP/algorithm（算法实现细节）、USP/translation（翻译对照）、
+        # ORS（另一产品线）——与「操作手册」无关且会挤占检索名额。
+        _team_filt = qmodels.Filter(must=[qmodels.FieldCondition(
+            key="sub_domain", match=qmodels.MatchAny(any=[
+                "USP/manual", "usp/manual",
+                "usp_cards", "USP/diagnosis_cards",
+                "USP/troubleshooting", "usp/troubleshooting",
+                "USP/ui_pages", "usp/ui_pages",
+                "USP/error_codes", "usp/error_codes",
+                "USP/faq", "usp/faq",
+                "USP/overview", "usp/overview",
+                "USP/terminology", "usp/terminology",
+            ]))])
+        _domains.append(("team", 6, _team_filt))
+        files_map = {str(k): [str(x) for x in (v or [])]
+                     for k, v in (vm.get("model_files") or {}).items()}
+        return _domains, (files_map or None)
+
+    def _manual_entry(self, r) -> Optional[Dict[str, str]]:
+        """检索命中 → 手册入口 {title, url}；非手册文件 → None（ORS-1082）。
+
+        URL = {media_prefix}/kb/{domain}/{source_file}：source_file 是相对域
+        目录的路径（company 域 "XQE/36_异常处理标准流程SOP.md"、team 域
+        "USP/manual/manual.md"）。引导设施（分叉树/故障码表）不外显——它们的
+        入口在对话里（0930 定稿：除引导设施外一个文件一个 SOP 气泡）。
+        """
+        from ai.api.vehicle_mode import is_guide_doc
+        sf = (r.source_file or "").strip().strip("/")
+        if not sf or not sf.lower().endswith(".md"):
+            return None
+        stem = sf.rsplit("/", 1)[-1][:-3]
+        if is_guide_doc(stem):
+            return None
+        dom = (r.domain or "company").strip() or "company"
+        return {"title": stem,
+                "url": f"{self.config.media_url_prefix}/kb/{dom}/{sf}"}
 
     async def _three_way_retrieve(self, query: str, domains=None) -> list:
         """三路并行域检索（team/company/industry），异常降级为空列表。
@@ -3803,7 +3882,8 @@ class AiDiagnosisPlatform:
         logger.info(f"[retrieve] 三路域检索: query={search_query[:60]}...")
         # 车辆定制模式（XQE 试点）：注册 vehicle_mode 的会话检索域换成车型域
         # 优先配额；常规会话 _vm_domains=None，检索路径与旧版完全一致。
-        _vm_domains = await self._vehicle_mode_domains(session_id)
+        # ORS-1082：_vehicle_mode_domains 改返回 (域配额, 车型族文件白名单)。
+        _vm_domains, _vm_files = await self._vehicle_mode_domains(session_id)
         # 双查询合并检索:改写词与原词都查,结果并集。
         # 「可以调整吗」vs「怎么调整」这类提问方式差异会让 embedding 漂移,
         # 改写后的操作句式查询把另一侧命中的文档捞回来,抹平表述差异;
@@ -3893,6 +3973,16 @@ class AiDiagnosisPlatform:
             if r.id not in seen:
                 seen.add(r.id)
                 uniq.append(r)
+
+        # ORS-1082：平铺目录（product_catalog 下 66 款车型平铺）按车型族文件
+        # 白名单二次收窄——检索层只能按 sub_domain 过滤（该目录整体是一个
+        # sub_domain），型号级隔离只能在应用层做；不收窄会把 XFL/XCD 等其它
+        # 车型资料一起捞进 XQC 会话。收窄放在选池之前，保证名额不被占用。
+        if _vm_files:
+            _n_before = len(uniq)
+            uniq = [r for r in uniq if _file_in_allow(r, _vm_files)]
+            if len(uniq) != _n_before:
+                logger.info(f"[retrieve] 车型族文件白名单收窄: {_n_before} → {len(uniq)}")
 
         # 双路分池（按原始分各自排序，尺度不同不能混排）：
         # 稀疏 1-2 vs 稠密余弦 0.5-0.6，混排会把一路挤掉。
@@ -3985,6 +4075,8 @@ class AiDiagnosisPlatform:
         uniq = _final[:_PROMPT_DOCS]
 
         hit_logs = []  # 送入 prompt 的 chunk 摘要（[路别][域]标题@分数，用于生产排查检索效果）
+        _manuals: List[Dict[str, str]] = []  # ORS-1082：本轮实际进 prompt 的手册文件
+        _manual_seen = set()
         for _ri, r in enumerate(uniq[:_MAX_RETRIEVAL_DOCS]):
             content = self._rewrite_images(r) if r.content else ""
             if not content.strip():
@@ -3997,6 +4089,13 @@ class AiDiagnosisPlatform:
             content = content[:1500]
             title = f"（{r.title}）" if r.title else ""
             docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
+            # ORS-1082：记录本轮进 prompt 的手册文件（车型会话才记）——随 result
+            # 下发，前端在回答气泡下渲染「相关操作手册」入口
+            if _vm_domains:
+                _m = self._manual_entry(r)
+                if _m and _m["url"] not in _manual_seen:
+                    _manual_seen.add(_m["url"])
+                    _manuals.append(_m)
             _tag = _final_tags[_ri] if _ri < len(_final_tags) else "?"
             hit_logs.append(f"[{_tag}][{r.sub_domain or '-'}]{r.title or '(无标题)'}@{r.score:.4f}")
             idx += 1
@@ -4009,6 +4108,10 @@ class AiDiagnosisPlatform:
             logger.warning(f"[retrieve] 送prompt为0条（各域召回与池诊断见上方日志——"
                            f"域全0=检索/集合异常，有召回但低分=知识库未覆盖）: query={search_query[:50]}")
         result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
+
+        # ORS-1082：本轮手册清单落会话缓存（随 result 事件下发）。非车型会话
+        # 恒为空列表——顺带清掉上一轮残留，避免旧手册挂到新回答上。
+        self._vehicle_manuals[session_id] = _manuals
 
         # KB 图片白名单累积（会话内 union）：本轮注入 prompt 的图片 URL 全部合法。
         # 覆盖后续出口拦截 _strip_unknown_kb_images；会话级 union 而非每轮覆盖——
@@ -5782,11 +5885,16 @@ class AiDiagnosisPlatform:
         _vm_meta_td = (getattr(memory, "metadata", None) or {}).get("vehicle_mode") or {}
         if _vm_meta_td.get("model"):
             from ai.api.vehicle_mode import tree_direct_reply
-            _td = tree_direct_reply(request.query, _vm_meta_td,
-                                    model=_vm_meta_td.get("model"))
+            _td = tree_direct_reply(
+                request.query, _vm_meta_td, model=_vm_meta_td.get("model"),
+                # ORS-1082：分叉树按解析出的主目录找（model 是录入车型
+                # XQE122，车系目录是 XQE）——不传则按 XQE122 找树 → 直出失效
+                subpath=_vm_meta_td.get("model_primary") or "")
             if _td:
                 logger.info(f"[vehicle_mode] 分叉树直出({_td['kind']}): "
                             f"session={request.session_id}, q={request.query[:30]}")
+                # 直出轮不带手册（ORS-1082）：内容源就是分叉树本身，引导设施不外显
+                self._vehicle_manuals.pop(request.session_id, None)
                 yield {"event": "token", "data": _td["message"]}
                 _td_result = await self._finalize_diagnosis(
                     request.session_id, state,
@@ -6962,6 +7070,14 @@ class AiDiagnosisPlatform:
         # 车型追问气泡（0930）：随 result 下发，前端同位渲染可点按钮
         if _vc:
             result_data["vehicle_choices"] = _vc
+        # 车型会话「相关操作手册」（ORS-1082）：本轮检索实际命中的手册文件随
+        # result 下发，前端在回答气泡下渲染手册 chips（点击看全文）。没有命中
+        # 就不带这个字段（前端不渲染空行）。分叉树直出轮不带（直出内容源就
+        # 是分叉树本身，引导设施不外显）。
+        if _vm_meta.get("model"):
+            _manuals = self._vehicle_manuals.get(request.session_id) or []
+            if _manuals:
+                result_data["vehicle_sop_docs"] = _manuals
 
         # 标题生成：第2轮对话结束后通过独立 SSE event 发送
         if result_data.get("title"):

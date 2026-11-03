@@ -27,15 +27,25 @@ class TextLLM(Protocol):
 
 
 def extract_cases(text: str) -> list[dict[str, Any]]:
-    """Extract a JSON case array from an LLM response."""
+    """Extract a JSON case array from an LLM response.
+
+    Tolerates fenced blocks, trailing commas, and mid-output truncation
+    (the incomplete trailing case is dropped with a best-effort salvage).
+    """
     blob = strip_code_fence(text).strip()
-    match = re.search(r"\[[\s\S]*\]", blob)
-    if match:
-        blob = match.group()
-    try:
-        data = json.loads(blob)
-    except json.JSONDecodeError:
-        data = json.loads(re.sub(r",\s*([}\]])", r"\1", blob))
+    if not blob.startswith("["):
+        match = re.search(r"\[[\s\S]*", blob)
+        if match:
+            blob = match.group()
+    data: Any = None
+    for candidate in (blob, re.sub(r",\s*([}\]])", r"\1", blob)):
+        try:
+            data = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            continue
+    if data is None:
+        data = _salvage_truncated_array(blob)
     if isinstance(data, dict) and isinstance(data.get("cases"), list):
         data = data["cases"]
     if not isinstance(data, list) or not data:
@@ -58,6 +68,38 @@ def extract_cases(text: str) -> list[dict[str, Any]]:
         normalized["source"] = "ticket"
         cases.append(normalized)
     return cases
+
+
+def _salvage_truncated_array(blob: str) -> Optional[list[dict[str, Any]]]:
+    """Keep the leading complete objects of a truncated JSON array.
+
+    Walks `},` boundaries from the tail backwards and returns the first
+    prefix that parses as a non-empty array. Returns None when nothing
+    can be salvaged.
+    """
+    idx = blob.rfind("},")
+    while idx != -1:
+        candidate = blob[: idx + 1] + "]"
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            idx = blob.rfind("},", 0, idx)
+            continue
+        if isinstance(data, list) and data:
+            return data
+        idx = blob.rfind("},", 0, idx)
+    return None
+
+
+def _extract_req_ids(analysis: str) -> list[str]:
+    """Extract ordered unique REQ ids from an analysis document."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for match in re.findall(r"REQ-\d+", analysis or ""):
+        if match not in seen:
+            seen.add(match)
+            ids.append(match)
+    return ids
 
 
 def _render_cases_md(ticket: TicketCandidate, cases: list[dict[str, Any]]) -> str:
@@ -115,6 +157,7 @@ class TicketCaseGenerator:
         output_root: Path | None = None,
         spec: Optional[dict[str, Any]] = None,
         endpoints: Optional[list[dict[str, Any]]] = None,
+        case_batch_size: int = 5,
     ) -> None:
         automation_root = Path(__file__).resolve().parents[1]
         self.llm = llm
@@ -122,6 +165,7 @@ class TicketCaseGenerator:
         self.output_root = output_root or automation_root / "references" / "generated-cases" / "tickets"
         self.spec = spec
         self.endpoints = endpoints or []
+        self.case_batch_size = case_batch_size
 
     def _prompt(self, name: str) -> str:
         return (self.prompts_dir / name).read_text(encoding="utf-8")
@@ -175,13 +219,40 @@ class TicketCaseGenerator:
             f"## 工单\n{ticket_payload}",
             max_tokens=4096,
         )
-        cases_raw = await self.llm.complete(
-            self._prompt("ticket_case_gen.md"),
-            f"## 工单\n{ticket_payload}\n\n## 测试分析\n{analysis}\n\n"
-            f"## 接口清单\n{self._endpoint_brief()}",
-            max_tokens=8192,
-        )
-        cases = extract_cases(cases_raw)
+
+        # 按功能点分批生成：一次输出全部用例容易超出单次 token 上限被截断
+        req_ids = _extract_req_ids(analysis)
+        if req_ids:
+            batches = [
+                req_ids[i : i + self.case_batch_size]
+                for i in range(0, len(req_ids), self.case_batch_size)
+            ]
+        else:
+            batches = [[]]
+        merged: list[dict[str, Any]] = []
+        for batch in batches:
+            scope = "、".join(batch) if batch else "（全部功能点）"
+            cases_raw = await self.llm.complete(
+                self._prompt("ticket_case_gen.md"),
+                f"## 工单\n{ticket_payload}\n\n## 测试分析\n{analysis}\n\n"
+                f"## 接口清单\n{self._endpoint_brief()}\n\n"
+                f"## 本批功能点\n仅生成以下 REQ 的用例，不得生成其他 REQ 的用例：{scope}",
+                max_tokens=8192,
+            )
+            merged.extend(extract_cases(cases_raw))
+
+        # 全局重编号：各批可能重复使用 TC001 等 id，重名后确定性去重
+        seen_ids: set[str] = set()
+        next_seq = 1
+        for case in merged:
+            cid = case.get("id")
+            if cid in seen_ids:
+                while f"TC{next_seq:03d}" in seen_ids:
+                    next_seq += 1
+                case["id"] = f"TC{next_seq:03d}"
+                next_seq += 1
+            seen_ids.add(case.get("id"))
+        cases = merged
 
         spec_issues = validate_case_requests(cases, self.spec)
         script = render_script(ticket, cases)

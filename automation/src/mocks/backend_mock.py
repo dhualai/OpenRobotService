@@ -58,6 +58,9 @@ class MockBackend:
         self._task_id_counter: int = 1
         self._comments: Dict[int, list] = {}
         self._comment_id_counter: int = 1
+        self._spec_docs: Dict[int, dict] = {}
+        self._operation_logs: Dict[int, list] = {}
+        self._relations: Dict[int, list] = {}
         self._wechat_menu: dict = {}
         self._conversations: Dict[int, dict] = {}
         self._wechat_tags: dict = {}
@@ -103,6 +106,10 @@ class MockBackend:
 
     async def handle(self, request):
         path = request.url.path
+        # 归一化尾斜杠：真实 FastAPI 路由常以 / 结尾（如 POST /api/tasks/），
+        # 生成用例也按 OpenAPI 原样携带尾斜杠，这里统一去掉避免 404
+        if len(path) > 1 and path.endswith("/"):
+            path = path.rstrip("/")
         method = request.method.upper()
         qs = urlparse(str(request.url)).query
         params = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(qs).items()} if qs else {}
@@ -168,6 +175,14 @@ class MockBackend:
         if rest == "/filter" and method == "POST":
             e = self._require_auth(request)
             return e if e else self._handle_task_filter(body)
+        if rest == "/spec-doc/image" and method == "POST":
+            return httpx.Response(200, json={"object_path": "mock/spec-doc/image/1.jpg"})
+        if rest == "/spec-doc/parse" and method == "POST":
+            return httpx.Response(200, json={
+                "content": "Mock 解析结果（近似实现，真契约以真实后端为准）",
+                "content_type": "markdown",
+                "source": "upload",
+            })
         if not rest and method == "GET":
             return self._handle_task_list(params)
         if not rest and method == "POST":
@@ -190,6 +205,18 @@ class MockBackend:
                 return self._handle_task_respond(tid, body)
             if sub == "/complete-step" and method == "POST":
                 return self._handle_task_complete_step(tid, body)
+            if sub == "/spec-doc" and method == "GET":
+                return self._handle_spec_doc_get(tid)
+            if sub == "/spec-doc" and method == "PUT":
+                return self._handle_spec_doc_put(tid, body)
+            if sub == "/operation-logs" and method == "GET":
+                return self._handle_operation_logs(tid)
+            if sub == "/relations" and method == "GET":
+                return self._handle_relations_get(tid)
+            if sub == "/relations" and method == "POST":
+                return self._handle_relations_post(tid, body)
+            if sub == "/relations/tree" and method == "GET":
+                return self._handle_relations_tree(tid)
             e = self._get_task_or_404(tid)
             if e:
                 return e
@@ -206,7 +233,9 @@ class MockBackend:
         if missing:
             return httpx.Response(422, json={"detail": [{"loc": ["body", f], "msg": "field required"} for f in missing]})
         ttype = body.get("ticket_type", "problem")
-        allowed_types = {"bug", "requirement", "support", "problem"}
+        # 与真实后端 TaskType 对齐：problem / feature / bug / support / other；
+        # requirement 为历史别名继续兼容
+        allowed_types = {"bug", "requirement", "support", "problem", "feature", "other"}
         if ttype not in allowed_types:
             return httpx.Response(400, json={"detail": f"Invalid ticket_type: {ttype}. Allowed: {allowed_types}"})
         tid = self._task_id_counter
@@ -292,6 +321,62 @@ class MockBackend:
         del self._tasks[tid]
         self._comments.pop(tid, None)
         return httpx.Response(204)
+
+    # --- 工单「完整问题文档」（task_spec_doc，近似实现） ---
+
+    def _handle_spec_doc_get(self, tid):
+        doc = self._spec_docs.get(tid)
+        if doc is None:
+            return httpx.Response(200, json={
+                "content": "", "content_type": "markdown",
+                "revision": 1, "source": "inline",
+            })
+        return httpx.Response(200, json=doc)
+
+    def _handle_spec_doc_put(self, tid, body):
+        content = body.get("content", "")
+        if not content:
+            return httpx.Response(422, json={
+                "detail": [{"loc": ["body", "content"], "msg": "field required"}]})
+        revision = self._spec_docs.get(tid, {}).get("revision", 1) + 1
+        doc = {
+            "content": content,
+            "content_type": body.get("content_type", "markdown"),
+            "revision": revision,
+            "source": body.get("source", "inline"),
+        }
+        self._spec_docs[tid] = doc
+        return httpx.Response(200, json=doc)
+
+    # --- 工单操作日志（task_operation_logs，近似实现） ---
+
+    def _handle_operation_logs(self, tid):
+        logs = self._operation_logs.get(tid, [])
+        return httpx.Response(200, json={"items": logs, "total": len(logs)})
+
+    # --- 工单关联（task_relations，近似实现） ---
+
+    def _handle_relations_get(self, tid):
+        items = self._relations.get(tid, [])
+        return httpx.Response(200, json={"items": items, "total": len(items)})
+
+    def _handle_relations_post(self, tid, body):
+        target = body.get("target_task_id")
+        if not target:
+            return httpx.Response(422, json={
+                "detail": [{"loc": ["body", "target_task_id"], "msg": "field required"}]})
+        rel = {
+            "id": len(self._relations.get(tid, [])) + 1,
+            "source_task_id": tid,
+            "target_task_id": int(target),
+            "relation_type": body.get("relation_type", "predecessor"),
+        }
+        self._relations.setdefault(tid, []).append(rel)
+        return httpx.Response(200, json=rel)
+
+    def _handle_relations_tree(self, tid):
+        items = self._relations.get(tid, [])
+        return httpx.Response(200, json={"task_id": tid, "relations": items, "tree": items})
 
     _MOCK_STEP_NAMES = {1: "初步诊断", 2: "临时解决", 3: "最终解决"}
 
@@ -470,6 +555,17 @@ class MockBackend:
             return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
         if rest == "/send_message" and method == "POST":
             return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
+        if rest == "/broadcast_message" and method == "POST":
+            return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
+        if rest == "/permissions" and method == "GET":
+            return httpx.Response(200, json={"permissions": []})
+        if rest == "/get-openid" and method == "GET":
+            return httpx.Response(200, json={"openid": "mock_openid"})
+        if rest == "/config/js-sdk-config" and method == "GET":
+            return httpx.Response(200, json={
+                "app_id": "mock-app", "timestamp": int(time.time()),
+                "nonce_str": "mock-nonce", "signature": "mock-signature",
+            })
         if not rest and method == "GET":
             tags = [{"id": k, "name": v} for k, v in self._wechat_tags.items()]
             return httpx.Response(200, json={"tags": tags})
@@ -555,8 +651,9 @@ class MockBackend:
                 return httpx.Response(200, json=self._messages[mid])
             return httpx.Response(404)
         # --- My Tasks ---
-        if path.startswith("/api/call/my-tasks/"):
-            rest = path[len("/api/call/my-tasks/"):] or ""
+        if path.startswith("/api/call/my-tasks"):
+            # handle() 已归一化尾斜杠，这里兼容有无尾斜杠两种形态
+            rest = path[len("/api/call/my-tasks"):].lstrip("/")
             if method == "GET" and rest:
                 tid = int(rest) if rest.isdigit() else -1
                 if tid in self._tasks:

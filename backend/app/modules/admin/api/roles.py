@@ -7,6 +7,7 @@ from app.core.database import db_manager
 from app.modules.admin.schemas.role import Role, RoleCreate, RoleUpdate, RolePermissionCreate
 from app.modules.admin.schemas.response import SuccessResponse
 from app.modules.admin.api.auth import get_current_active_user_from_token, require_permission
+from app.services.identity_service import build_rp_id
 
 router = APIRouter(prefix="/roles", tags=["admin-roles"])
 
@@ -125,7 +126,7 @@ async def add_permissions_to_role(
     try:
         added_count = 0
         for perm_id in permission_ids:
-            role_permission_id = f"rp_{role_id}_{perm_id}_{uuid.uuid4().hex[:4]}"
+            role_permission_id = build_rp_id(role_id, perm_id)
             
             result = db_manager.add_role_permission(
                 role_permission_id, role_id, perm_id

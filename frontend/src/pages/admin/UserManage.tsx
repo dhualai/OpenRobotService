@@ -681,7 +681,7 @@ export default function UserManage() {
           style={{ fontWeight: 400 }}
           onClick={() => navigate('/admin/dual-tree')}
         >
-          双树试做
+          责任双树
         </button>
       </div>
 

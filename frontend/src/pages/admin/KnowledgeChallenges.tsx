@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar } from 'tdesign-mobile-react';
@@ -6,6 +6,8 @@ import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { createChallenge, fetchChallenges, fetchChallengeSource, publishChallenge } from '@/api/knowledgeChallenges';
 import { ChallengeSummary, challengeStateLabels, useChallengePolling } from './HighValueQuestionCard';
 import { KnowledgeEmpty, KnowledgeState, useKnowledgeResource } from './knowledgeShared';
+import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
+import { isPcWechat, navigateInWechat, setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import '@/shared/styles/knowledgeChallenges.css';
 
 export function localDateInput(date: Date) {
@@ -73,13 +75,29 @@ export default function KnowledgeChallenges() {
   useChallengePolling(resource.reload);
   const canManage = resource.data?.can_manage === true;
   const tabs = [['active', '进行中'], ['mine', '我的参与'], ['ended', '已结束']];
+
+  // 转发卡片（ORS-1086）：列表页按站点级标题生成；具体「问题标题 + 悬赏奖金」在详情页生成。
+  useEffect(() => {
+    const title = '高价值问题榜单 · 摇人吧';
+    const desc = '共同解答复杂问题，按点赞选出最佳解答，悬赏奖金由最佳解答者获得。';
+    setShareMeta({ title, description: desc });
+    void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
+  }, []);
   return <div className="dashboard-page knowledge-page"><Navbar title="高价值问题榜单" leftArrow onLeftClick={() => navigate('/admin')} right={<UserAvatarMenu />} fixed />
     <div className="knowledge-content"><div className="knowledge-toolbar"><h2>共同解答复杂问题</h2>{canManage && <div className="challenge-actions"><Link className="knowledge-link challenge-manage-entry" to="?view=manage" aria-current={view === 'manage' ? 'page' : undefined}>管理问题</Link><button className="knowledge-link" type="button" onClick={() => setPublishing(true)}>发布问题</button></div>}</div>
       {publishing && canManage && <ChallengePublishForm onDone={(id) => navigate(`/admin/knowledge/challenges/${id}`)} onCancel={() => setPublishing(false)} />}
       <div className="knowledge-tabs challenge-view-switch" role="group" aria-label="高价值问题分类">{tabs.map(([value, label]) => <button type="button" key={value} aria-pressed={view === value} onClick={() => setParams({ view: value })}>{label}</button>)}</div>
       <KnowledgeState loading={resource.loading && !resource.data} error={resource.error} retry={resource.reload} />
       {resource.data?.items.map((challenge) => <section className="mac-card mac-card--pad challenge-list-card knowledge-clickable-card" key={challenge.id}>
-        <Link className="knowledge-clickable-card__link" to={`/admin/knowledge/challenges/${challenge.id}`}>
+        <Link className="knowledge-clickable-card__link" to={`/admin/knowledge/challenges/${challenge.id}`}
+          onClick={(event) => {
+            // PC 微信不认 JS-SDK 设的分享 link，只认「最近一次整页加载时的 URL」：
+            // SPA 跳转进详情后转发出去的仍是本页（列表页，卡片里没有问题标题与奖金）。
+            // 故 PC 微信下改走整页跳转；其它端保持 Link 默认行为不变。
+            if (!isPcWechat()) return;
+            event.preventDefault();
+            navigateInWechat(navigate, `/admin/knowledge/challenges/${challenge.id}`);
+          }}>
           <ChallengeSummary challenge={challenge} />
           <div className="knowledge-question-footer"><span>{challengeStateLabels[challenge.state]}{challenge.hidden ? ' · 已隐藏' : ''}</span></div>
         </Link>

@@ -1,0 +1,707 @@
+[
+  {
+    "id": "TC001",
+    "req_id": "REQ-01",
+    "module": "迁移范围识别",
+    "title": "按项目拉取工单清单并逐单核对问题文档映射完整性",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "已以有权限账号登录；拓扑平台侧已输出待迁移需求文档清单；目标项目 Leo_test 存在对应需求工单",
+    "requests": [
+      {
+        "step": "Step 1: 拉取项目下工单列表作为迁移源范围",
+        "method": "GET",
+        "path": "/api/tasks/?project_id=Leo_test&page=1&size=50",
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 逐单读取目标问题文档，确认源文档已建立映射",
+        "method": "GET",
+        "path": "/api/tasks/1001/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "使用管理员账号登录服务号",
+        "testData": "testadmin/admin123",
+        "expectedResult": "登录成功，获取有效访问令牌"
+      },
+      {
+        "id": 2,
+        "step": "调用工单列表接口，按 project_id=Leo_test 拉取全部需求工单",
+        "testData": "project_id=Leo_test, page=1, size=50",
+        "expectedResult": "返回工单列表，条数与拓扑平台需求清单数量可核对"
+      },
+      {
+        "id": 3,
+        "step": "对照拓扑平台迁移清单，逐条核对源文档→目标工单的映射",
+        "testData": "迁移清单 N 条",
+        "expectedResult": "每条源文档均能在目标侧找到对应工单；无遗漏、无重复映射"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC002",
+    "req_id": "REQ-01",
+    "module": "迁移范围识别",
+    "title": "无源文档工单查询问题文档时不应产生脏数据",
+    "type": "negative",
+    "priority": "P1",
+    "precondition": "已登录；存在一份拓扑平台无源文档的工单 1002",
+    "requests": [
+      {
+        "step": "Step 1: 查询无源文档工单的问题文档",
+        "method": "GET",
+        "path": "/api/tasks/1002/spec-doc",
+        "expected_status": 404,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 回查工单详情，确认未被误写入文档",
+        "method": "GET",
+        "path": "/api/tasks/1002",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "查询未纳入迁移范围的工单 1002 的问题文档",
+        "testData": "task_id=1002",
+        "expectedResult": "返回 404/空文档，不返回其他工单的文档内容"
+      },
+      {
+        "id": 2,
+        "step": "查看工单 1002 详情",
+        "testData": "task_id=1002",
+        "expectedResult": "工单信息正常，未被迁移动作污染，无来源不明的文档挂载"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC003",
+    "req_id": "REQ-02",
+    "module": "需求文档内容迁移",
+    "title": "迁移文档内容写入目标工单并回读校验一致",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "已登录；已确定源文档 1001 的内容基线",
+    "requests": [
+      {
+        "step": "Step 1: 写入迁移后的需求文档内容",
+        "method": "PUT",
+        "path": "/api/tasks/1001/spec-doc",
+        "body": {
+          "content": "# 拓扑平台需求文档\n## 一、背景\n将拓扑平台需求文档迁移至工单问题文档。"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 回读目标文档校验内容一致",
+        "method": "GET",
+        "path": "/api/tasks/1001/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "将源文档正文通过问题文档接口写入工单 1001",
+        "testData": "源文档正文（含标题与段落）",
+        "expectedResult": "写入成功，返回成功状态"
+      },
+      {
+        "id": 2,
+        "step": "重新进入工单问题文档查看内容",
+        "testData": "task_id=1001",
+        "expectedResult": "文档挂载在正确工单下，正文与源文档逐段一致"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC004",
+    "req_id": "REQ-02",
+    "module": "需求文档内容迁移",
+    "title": "向不存在的工单写入问题文档应失败且不影响其他文档",
+    "type": "negative",
+    "priority": "P1",
+    "precondition": "已登录；工单 1001 已有迁移完成的问题文档",
+    "requests": [
+      {
+        "step": "Step 1: 向不存在的工单写入问题文档",
+        "method": "PUT",
+        "path": "/api/tasks/999999/spec-doc",
+        "body": {
+          "content": "# 异常写入测试"
+        },
+        "expected_status": 404,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 校验既有工单文档未被覆盖",
+        "method": "GET",
+        "path": "/api/tasks/1001/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "调用问题文档写入接口，task_id 传不存在的 999999",
+        "testData": "task_id=999999",
+        "expectedResult": "返回 404/参数错误，不创建孤立文档"
+      },
+      {
+        "id": 2,
+        "step": "回读工单 1001 的问题文档",
+        "testData": "task_id=1001",
+        "expectedResult": "内容与迁移后基线一致，未被串改或覆盖"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC005",
+    "req_id": "REQ-03",
+    "module": "迁移内容完整性",
+    "title": "含图片的文档迁移后图片不丢失可正常展示",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "已登录；源文档 1001 含至少 1 张图片",
+    "requests": [
+      {
+        "step": "Step 1: 上传文档内嵌图片",
+        "method": "POST",
+        "path": "/api/tasks/spec-doc/image",
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 写入含图片引用的文档内容",
+        "method": "PUT",
+        "path": "/api/tasks/1001/spec-doc",
+        "body": {
+          "content": "# 需求\n![架构图](/api/tasks/files/spec-doc/1001/arch.png)"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 回读文档确认图片引用保留",
+        "method": "GET",
+        "path": "/api/tasks/1001/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "上传源文档中的图片资源",
+        "testData": "arch.png",
+        "expectedResult": "上传成功，返回可访问的图片地址"
+      },
+      {
+        "id": 2,
+        "step": "将含图片引用的文档写入工单问题文档",
+        "testData": "包含图片语法的 Markdown",
+        "expectedResult": "写入成功"
+      },
+      {
+        "id": 3,
+        "step": "回读文档并打开图片链接",
+        "testData": "task_id=1001",
+        "expectedResult": "图片引用完整保留且可正常打开，与源图片一致"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC006",
+    "req_id": "REQ-03",
+    "module": "迁移内容完整性",
+    "title": "含表格与代码块的文档结构要素解析与迁移后数量一致",
+    "type": "edge",
+    "priority": "P1",
+    "precondition": "已登录；源文档含表格、代码块、列表等结构化元素",
+    "requests": [
+      {
+        "step": "Step 1: 解析含结构化元素的源文档",
+        "method": "POST",
+        "path": "/api/tasks/spec-doc/parse",
+        "body": {
+          "content": "## 参数表\n| 字段 | 说明 |\n|---|---|\n| id | 主键 |\n\n```python\nprint(1)\n```\n\n- 列表项1\n- 列表项2"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 写入解析后的文档内容",
+        "method": "PUT",
+        "path": "/api/tasks/1001/spec-doc",
+        "body": {
+          "content": "## 参数表\n| 字段 | 说明 |\n|---|---|\n| id | 主键 |\n\n```python\nprint(1)\n```\n\n- 列表项1\n- 列表项2"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 回读校验表格/代码块/列表数量一致",
+        "method": "GET",
+        "path": "/api/tasks/1001/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "调用解析接口解析源文档",
+        "testData": "含 1 表格、1 代码块、2 列表项",
+        "expectedResult": "解析成功，结构化节点数量与源文档一致，无内容截断"
+      },
+      {
+        "id": 2,
+        "step": "写入并回读目标文档",
+        "testData": "task_id=1001",
+        "expectedResult": "表格行列数、代码块内容、列表项数量与源文档完全一致"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC007",
+    "req_id": "REQ-04",
+    "module": "迁移内容格式保真",
+    "title": "多级标题与样式迁移后可正常展示且可继续编辑",
+    "type": "positive",
+    "priority": "P1",
+    "precondition": "已登录；源文档含多级标题、加粗、有序/无序列表",
+    "requests": [
+      {
+        "step": "Step 1: 写入含多级层次与样式的文档",
+        "method": "PUT",
+        "path": "/api/tasks/1001/spec-doc",
+        "body": {
+          "content": "# 一级标题\n## 二级标题\n### 三级标题\n\n**加粗文本** 与 *斜体文本*\n\n1. 步骤一\n2. 步骤二"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 回读文档校验层级与样式标记保留",
+        "method": "GET",
+        "path": "/api/tasks/1001/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "写入含多级标题与文本样式的文档",
+        "testData": "1~3 级标题、加粗、斜体、有序列表",
+        "expectedResult": "写入成功，无格式报错"
+      },
+      {
+        "id": 2,
+        "step": "在文档编辑器中打开并再次保存",
+        "testData": "task_id=1001",
+        "expectedResult": "标题层级正确、列表编号连续、样式可正常显示，再次保存后内容不错乱"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC008",
+    "req_id": "REQ-04",
+    "module": "迁移内容格式保真",
+    "title": "特殊字符与编码在迁移后逐字符一致",
+    "type": "edge",
+    "priority": "P2",
+    "precondition": "已登录；源文档含特殊符号、全角字符、emoji",
+    "requests": [
+      {
+        "step": "Step 1: 写入含特殊字符的文档",
+        "method": "PUT",
+        "path": "/api/tasks/1001/spec-doc",
+        "body": {
+          "content": "# 需求 §1 ±√ ≤≥ \"引号\" 😀 全角　空格\n\n换行测试\n\n```\n<TAG> & \"quoted\" \n```"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 回读文档逐字符比对",
+        "method": "GET",
+        "path": "/api/tasks/1001/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "写入含特殊符号/emoji/全角空格/转义字符的文档",
+        "testData": "§±√≤≥😀、全角空格、尖括号与引号",
+        "expectedResult": "写入成功，无编码异常报错"
+      },
+      {
+        "id": 2,
+        "step": "回读并逐字符比对",
+        "testData": "task_id=1001",
+        "expectedResult": "字符、换行、空格与源内容完全一致，无乱码、无实体转义错乱"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC009",
+    "req_id": "REQ-05",
+    "module": "文档与需求工单关联",
+    "title": "建立问题文档与需求工单关联并可双向追溯",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "已登录；工单 995 为迁移目标工单，1001 为需求源工单",
+    "requests": [
+      {
+        "step": "Step 1: 建立文档与需求工单的关联",
+        "method": "POST",
+        "path": "/api/tasks/995/relations",
+        "body": {
+          "related_task_id": 1001,
+          "relation_type": "spec_doc"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 从工单侧查询关联列表",
+        "method": "GET",
+        "path": "/api/tasks/995/relations",
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 查询关联树确认可逐层打开",
+        "method": "GET",
+        "path": "/api/tasks/995/relations/tree?max_depth=2",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "从需求工单侧发起与问题文档所属工单的关联",
+        "testData": "task_id=995, related_task_id=1001",
+        "expectedResult": "关联创建成功，关系唯一不重复"
+      },
+      {
+        "id": 2,
+        "step": "查看工单关联列表",
+        "testData": "task_id=995",
+        "expectedResult": "关联列表中可看到 1001，可点击跳转到对应工单及其问题文档"
+      },
+      {
+        "id": 3,
+        "step": "查看关联树",
+        "testData": "max_depth=2",
+        "expectedResult": "关联层级正确，双向可追溯，无断链"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC010",
+    "req_id": "REQ-05",
+    "module": "文档与需求工单关联",
+    "title": "关联不存在的工单应失败且不产生脏关联",
+    "type": "negative",
+    "priority": "P2",
+    "precondition": "已登录；工单 995 已存在有效关联记录",
+    "requests": [
+      {
+        "step": "Step 1: 关联不存在的工单",
+        "method": "POST",
+        "path": "/api/tasks/995/relations",
+        "body": {
+          "related_task_id": 999999,
+          "relation_type": "spec_doc"
+        },
+        "expected_status": 404,
+        "auth": true
+      },
+      {
+        "step": "Step 2: 校验关联列表未新增脏关联",
+        "method": "GET",
+        "path": "/api/tasks/995/relations",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "调用关联创建接口，related_task_id 传不存在的 999999",
+        "testData": "related_task_id=999999",
+        "expectedResult": "返回 404/参数错误，不创建关联记录"
+      },
+      {
+        "id": 2,
+        "step": "回查工单 995 关联列表",
+        "testData": "task_id=995",
+        "expectedResult": "仅保留原有有效关联，未出现无效或重复关联"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC011",
+    "req_id": "REQ-06",
+    "module": "问题文档维护",
+    "title": "在工单问题文档中补充新内容并保存，重新进入后内容一致",
+    "type": "positive",
+    "priority": "P0",
+    "precondition": "工单995存在且已有迁移完成的问题文档；使用具备该工单问题文档编辑权限的账号登录",
+    "requests": [
+      {
+        "step": "Step 1: 登录服务号",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "body": {
+          "username": "testadmin",
+          "password": "admin123"
+        },
+        "expected_status": 200,
+        "auth": false
+      },
+      {
+        "step": "Step 2: 在工单995的问题文档末尾追加一段维护说明并保存",
+        "method": "PUT",
+        "path": "/api/tasks/995/spec-doc",
+        "body": {
+          "content": "# 拓扑平台需求文档（迁移）\n## 1. 迁移范围\n## 2. 维护说明\n2024-06-01 补充：迁移后的需求内容统一在本问题文档维护。"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 重新读取工单995的问题文档",
+        "method": "GET",
+        "path": "/api/tasks/995/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "使用有编辑权限的账号登录服务号",
+        "testData": "testadmin/admin123",
+        "expectedResult": "登录成功，获得访问令牌"
+      },
+      {
+        "id": 2,
+        "step": "打开工单995，进入问题文档，在原内容末尾追加“维护说明”段落并保存",
+        "testData": "追加段落：2024-06-01 补充：迁移后的需求内容统一在本问题文档维护。",
+        "expectedResult": "保存成功，无报错，页面提示保存生效"
+      },
+      {
+        "id": 3,
+        "step": "退出文档后重新进入工单995的问题文档",
+        "testData": "-",
+        "expectedResult": "新增段落存在且位置正确，原有迁移内容未被覆盖或错乱"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC012",
+    "req_id": "REQ-06",
+    "module": "问题文档维护",
+    "title": "修改与删除问题文档已有段落并保存，相邻内容不受影响",
+    "type": "edge",
+    "priority": "P1",
+    "precondition": "工单995的问题文档已完成迁移，包含章节、列表、表格等多段内容；使用具备编辑权限的账号登录",
+    "requests": [
+      {
+        "step": "Step 1: 登录服务号",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "body": {
+          "username": "testadmin",
+          "password": "admin123"
+        },
+        "expected_status": 200,
+        "auth": false
+      },
+      {
+        "step": "Step 2: 修改其中一个章节标题与正文，并删除一个列表条目后保存",
+        "method": "PUT",
+        "path": "/api/tasks/995/spec-doc",
+        "body": {
+          "content": "# 拓扑平台需求文档（迁移）\n## 1. 迁移范围（已更新）\n本次迁移覆盖拓扑平台全部需求文档。\n| 项目 | 数量 |\n| --- | --- |\n| 需求文档 | 20 |"
+        },
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 重新读取问题文档校验修改与删除结果",
+        "method": "GET",
+        "path": "/api/tasks/995/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "登录后进入工单995的问题文档",
+        "testData": "testadmin/admin123",
+        "expectedResult": "文档正常展示已有迁移内容"
+      },
+      {
+        "id": 2,
+        "step": "将章节标题改为“1. 迁移范围（已更新）”，更新正文，并删除一个列表条目后保存",
+        "testData": "删除的条目：原列表中的一条历史条目",
+        "expectedResult": "保存成功；被修改内容已更新，被删除条目消失"
+      },
+      {
+        "id": 3,
+        "step": "重新进入文档并逐段对比",
+        "testData": "-",
+        "expectedResult": "仅目标段落发生变化，表格、其余段落与相邻内容完整无误删、无乱码、无格式错乱"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC013",
+    "req_id": "REQ-07",
+    "module": "统一维护入口",
+    "title": "迁移后从需求工单侧进入问题文档完成维护闭环",
+    "type": "flow",
+    "priority": "P0",
+    "precondition": "工单995状态为in_progress且已完成文档迁移；使用具备查看与编辑权限的账号登录",
+    "requests": [
+      {
+        "step": "Step 1: 登录服务号",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "body": {
+          "username": "testadmin",
+          "password": "admin123"
+        },
+        "expected_status": 200,
+        "auth": false
+      },
+      {
+        "step": "Step 2: 打开需求工单995详情，确认可定位到问题文档入口",
+        "method": "GET",
+        "path": "/api/tasks/995",
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 通过工单问题文档入口读取并更新文档",
+        "method": "GET",
+        "path": "/api/tasks/995/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "登录服务号并进入项目“摇人吧服务号”",
+        "testData": "testadmin/admin123",
+        "expectedResult": "登录成功，可访问工单995"
+      },
+      {
+        "id": 2,
+        "step": "打开工单995详情页，查找问题文档入口并进入",
+        "testData": "task_id=995",
+        "expectedResult": "工单详情可从工单侧直接定位到问题文档，无需跳转拓扑平台"
+      },
+      {
+        "id": 3,
+        "step": "在该问题文档中完成一次内容更新并保存，再次从工单侧进入确认",
+        "testData": "更新一段需求描述",
+        "expectedResult": "更新保存生效，再次进入内容一致，说明服务号问题文档为唯一可用维护入口，无内容回写拓扑平台的双份维护"
+      }
+    ],
+    "source": "ticket"
+  },
+  {
+    "id": "TC014",
+    "req_id": "REQ-07",
+    "module": "统一维护入口",
+    "title": "无编辑权限用户只能查看问题文档，不能通过接口修改",
+    "type": "permission",
+    "priority": "P1",
+    "precondition": "存在一个不具备工单995问题文档编辑权限的普通账号；该账号与工单995属于同一项目可查看范围",
+    "requests": [
+      {
+        "step": "Step 1: 以普通账号登录服务号",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "body": {
+          "username": "testuser",
+          "password": "user123"
+        },
+        "expected_status": 200,
+        "auth": false
+      },
+      {
+        "step": "Step 2: 普通账号读取工单995的问题文档",
+        "method": "GET",
+        "path": "/api/tasks/995/spec-doc",
+        "expected_status": 200,
+        "auth": true
+      },
+      {
+        "step": "Step 3: 普通账号尝试更新工单995的问题文档",
+        "method": "PUT",
+        "path": "/api/tasks/995/spec-doc",
+        "body": {
+          "content": "# 越权修改尝试"
+        },
+        "expected_status": 403,
+        "auth": true
+      }
+    ],
+    "steps": [
+      {
+        "id": 1,
+        "step": "使用无编辑权限的普通账号登录",
+        "testData": "testuser/user123",
+        "expectedResult": "登录成功"
+      },
+      {
+        "id": 2,
+        "step": "进入工单995问题文档查看内容",
+        "testData": "task_id=995",
+        "expectedResult": "可正常查看文档内容，页面不展示可编辑操作或编辑后保存被拒绝"
+      },
+      {
+        "id": 3,
+        "step": "直接调用文档更新接口尝试修改内容",
+        "testData": "提交内容“# 越权修改尝试”",
+        "expectedResult": "返回403无权限，文档内容保持不变，符合迁移后维护入口的权限控制"
+      }
+    ],
+    "source": "ticket"
+  }
+]

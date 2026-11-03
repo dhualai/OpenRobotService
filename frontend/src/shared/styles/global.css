@@ -1069,6 +1069,60 @@ html, body, #root {
   border-color: #1a73e8;
   color: #1a5cc8;
 }
+/* 相关操作手册（ORS-1082）：回答气泡下方的分组入口
+   风格对齐通知卡片（纯粗体小标题贴左 + 小圆点条目 + 充足行距），不堆图标 */
+.chat-veh-manuals {
+  margin: 10px 0 2px;
+  padding-top: 8px;
+  border-top: 1px dashed #e6ebf3;
+}
+.chat-veh-manuals__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #5a6478;
+  letter-spacing: 0.2px;
+  margin-bottom: 6px;
+}
+.chat-veh-manuals__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-veh-manuals__chip {
+  appearance: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 0;
+  border: none;
+  background: transparent;
+  color: #45536b;
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.15s;
+}
+/* 条目前小圆点 bullet（不用彩色图标） */
+.chat-veh-manuals__chip::before {
+  content: '';
+  flex: none;
+  width: 4px;
+  height: 4px;
+  margin-top: 8px;
+  border-radius: 50%;
+  background: #9aa4b5;
+}
+.chat-veh-manuals__chip:hover {
+  color: #1a5cc8;
+}
+.chat-veh-manuals__chip:hover::before {
+  background: #1a73e8;
+}
+.chat-veh-manuals__chip:active {
+  color: #1a5cc8;
+}
 /* SOP 在线查看抽屉：全屏遮罩 + 白面板（头部固定 + 正文滚动） */
 .chat-veh-sop-viewer {
   position: fixed;
@@ -10926,3 +10980,24 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 }
 .ann-editor__switch-row .ann-editor__label { margin-bottom: 0; }
 .ann-editor__btns { display: flex; gap: 10px; }
+
+/* ══ 新人红包弹窗（ORS-1086）═════════════════════════════════════
+   极简风：粗体小标题 + 大字金额 + 一行说明 + 主按钮，不加彩色图标与花哨元素。 */
+.newcomer-bonus {
+  width: 78vw; max-width: 320px; padding: 22px 20px 16px;
+  background: var(--card); border-radius: 16px; box-sizing: border-box;
+}
+.newcomer-bonus__title {
+  margin: 0 0 12px; font-size: 15px; font-weight: 700; color: var(--foreground);
+}
+.newcomer-bonus__amount {
+  margin: 0 0 12px; font-size: 34px; font-weight: 700; color: #e37318; line-height: 1.1;
+}
+.newcomer-bonus__currency { font-size: 20px; margin-right: 2px; }
+.newcomer-bonus__desc {
+  margin: 0 0 20px; font-size: 13px; line-height: 1.75; color: var(--muted-foreground);
+}
+.newcomer-bonus__actions { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.newcomer-bonus__later {
+  all: unset; font-size: 13px; color: var(--muted-foreground); cursor: pointer; padding: 4px 10px;
+}

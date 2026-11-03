@@ -3,11 +3,11 @@
 
 核心断言：常规会话（无 vehicle_mode 键）路径零变化——
 - _vehicle_mode_block 返回空串
-- _vehicle_mode_domains 返回 None
+- _vehicle_mode_domains 返回 (None, None)
 - _three_way_retrieve 默认走 team/company/industry 三域（域参数逐字节一致）
 定制会话：
 - 【车辆】块注入 session_state / 收集 / 快路径
-- 检索域换成车型域优先配额
+- 检索域换成车型域优先配额（ORS-1082：MatchAny 多目录 + 平台手册域追加）
 """
 import pytest
 from unittest.mock import AsyncMock
@@ -144,21 +144,41 @@ def test_vehicle_block_minimal_fields():
 async def test_domains_none_for_normal_session():
     p = AiDiagnosisPlatform()
     p._memory_manager = MagicMockMem(_memory())
-    assert await p._vehicle_mode_domains("s-vm") is None
+    assert await p._vehicle_mode_domains("s-vm") == (None, None)
 
 
 async def test_domains_vehicle_filtered_company():
     p = AiDiagnosisPlatform()
     p._memory_manager = MagicMockMem(_memory(_VM))
-    domains = await p._vehicle_mode_domains("s-vm")
-    # 0930 定稿：company 域 + sub_domain 精确过滤（车型知识挂 company/{车型}/，
+    domains, files = await p._vehicle_mode_domains("s-vm")
+    # 0930 定稿：company 域 + sub_domain 过滤（车型知识挂 company/{车型}/，
     # 不建独立域）——两重隔离：不捞通用域老知识，也不捞 company 其他产品线内容
-    assert len(domains) == 1
+    # ORS-1082：过滤值改 MatchAny（模糊匹配后的多目录并集）+ 追加平台手册域
     assert domains[0][0] == "company" and domains[0][1] == 8
     qfilter = domains[0][2]
     assert qfilter is not None
     cond = qfilter.must[0]
-    assert cond.key == "sub_domain" and cond.match.value == "XQE"
+    assert cond.key == "sub_domain"
+    assert list(cond.match.any) == ["XQE"]
+    # 平台操作手册域（ORS-1082）：车型会话问「USP 操作手册」时手册必须能捞到
+    assert domains[1][0] == "team" and domains[1][1] == 6
+    team_any = list(domains[1][2].must[0].match.any)
+    assert "USP/manual" in team_any
+    assert "USP/ui_pages" in team_any
+    # 诊断卡（usp_cards）：目录名是 USP/diagnosis_cards/ 但入库 sub_domain 是
+    # usp_cards——「机器人问题诊断页」类答案出自它，漏了就说「没有整本手册」
+    assert "usp_cards" in team_any
+    # 平台错误码（排障最常引用）+ FAQ + 模块文档 + 术语表
+    assert "USP/error_codes" in team_any
+    assert "USP/faq" in team_any
+    assert "USP/overview" in team_any
+    assert "USP/terminology" in team_any
+    # 有意排除：算法实现 / 翻译对照 / 另一产品线（挤占名额且与手册无关）
+    assert "USP/algorithm" not in team_any
+    assert "USP/translation" not in team_any
+    assert "ORS" not in team_any
+    # 老 metadata 没有车型族文件白名单
+    assert files is None
 
 
 async def test_domains_vehicle_model_case_normalized():
@@ -170,10 +190,29 @@ async def test_domains_vehicle_model_case_normalized():
     """
     p = AiDiagnosisPlatform()
     p._memory_manager = MagicMockMem(_memory({"model": "xqe", "domain": "company"}))
-    domains = await p._vehicle_mode_domains("s-vm")
-    assert len(domains) == 1
-    cond = domains[0][2].must[0]
-    assert cond.key == "sub_domain" and cond.match.value == "XQE"
+    domains, _ = await p._vehicle_mode_domains("s-vm")
+    assert list(domains[0][2].must[0].match.any) == ["XQE"]
+
+
+async def test_domains_multi_dirs_from_fuzzy_match():
+    """ORS-1082：model_dirs（模糊匹配解析出的目录，可多个）→ MatchAny 并集。"""
+    p = AiDiagnosisPlatform()
+    p._memory_manager = MagicMockMem(
+        _memory(dict(_VM, model="XQE122", model_dirs=["XQE"], model_files={})))
+    domains, files = await p._vehicle_mode_domains("s-vm")
+    assert list(domains[0][2].must[0].match.any) == ["XQE"]
+    assert files is None
+
+
+async def test_domains_flat_dir_carries_family_file_whitelist():
+    """XQC 落在平铺目录 product_catalog → 域过滤 + 文件名白名单随行返回。"""
+    p = AiDiagnosisPlatform()
+    p._memory_manager = MagicMockMem(_memory(dict(
+        _VM, model="XQC", model_dirs=["product_catalog"],
+        model_files={"product_catalog": ["XQC161.md", "XQC163.md"]})))
+    domains, files = await p._vehicle_mode_domains("s-vm")
+    assert list(domains[0][2].must[0].match.any) == ["product_catalog"]
+    assert files == {"product_catalog": ["XQC161.md", "XQC163.md"]}
 
 
 async def test_domains_none_on_memory_error():
@@ -185,7 +224,52 @@ async def test_domains_none_on_memory_error():
 
     p._memory_manager = Boom()
     # 读取失败按常规处理（不阻塞检索主链路）
-    assert await p._vehicle_mode_domains("s-vm") is None
+    assert await p._vehicle_mode_domains("s-vm") == (None, None)
+
+
+# ================================================================
+# 车型族文件白名单 + 手册入口（ORS-1082）
+# ================================================================
+
+def test_file_in_allow_only_filters_listed_dir():
+    """白名单只约束平铺目录：白名单目录外的文件被丢弃，其它目录一律放行。"""
+    from ai.agents.AiDiagnosisPlatform.pipeline import _file_in_allow
+
+    allow = {"product_catalog": ["XQC161.md"]}
+
+    class _R:
+        def __init__(self, sd, sf):
+            self.sub_domain = sd
+            self.source_file = sf
+
+    assert _file_in_allow(_R("product_catalog", "product_catalog/XQC161.md"), allow) is True
+    assert _file_in_allow(_R("product_catalog", "product_catalog/XFL201.md"), allow) is False
+    # 非白名单目录不受约束（XQE 车系手册照常进 prompt）
+    assert _file_in_allow(_R("XQE", "XQE/36_异常处理标准流程SOP.md"), allow) is True
+
+
+def test_manual_entry_url_and_guide_excluded():
+    """手册入口：URL 拼静态路由；引导设施（分叉树/故障码表）不外显。"""
+    p = AiDiagnosisPlatform()
+
+    class _R:
+        def __init__(self, dom, sf):
+            self.domain = dom
+            self.source_file = sf
+            self.title = ""
+
+    e = p._manual_entry(_R("company", "XQE/36_异常处理标准流程SOP.md"))
+    assert e["title"] == "36_异常处理标准流程SOP"
+    assert e["url"].endswith("/kb/company/XQE/36_异常处理标准流程SOP.md")
+    # team 域的 USP 手册也要能出（车型会话问平台手册）
+    e2 = p._manual_entry(_R("team", "USP/manual/manual.md"))
+    assert e2["title"] == "manual"
+    assert e2["url"].endswith("/kb/team/USP/manual/manual.md")
+    # 引导设施不外显（入口在对话里）
+    assert p._manual_entry(_R("company", "XQE/00_故障分叉树.md")) is None
+    assert p._manual_entry(_R("company", "XQE/01_故障码表.md")) is None
+    # 非 md 文件不是手册
+    assert p._manual_entry(_R("company", "XQE/media/x.png")) is None
 
 
 class MagicMockMem:

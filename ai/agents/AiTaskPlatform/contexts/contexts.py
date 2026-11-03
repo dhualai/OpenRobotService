@@ -207,6 +207,8 @@ def load_task_context(task_id: str) -> TaskContext:
             ctx.resolution_summary = d.get("resolution_summary") or ""
             # AI 讨论摘要（metadata_info.ai_summary），作为"怎么解决"的补充说明
             ctx.ai_summary = d.get("ai_summary") or ""
+            # 诊断报告结构化摘要（metadata_info.diag_summary）
+            ctx.diag_summary = d.get("diag_summary") or None
         else:
             logger.warning(f"Task {task_id} not found in database (load_task_context_dict returned empty)")
     except Exception as e:
@@ -395,13 +397,23 @@ def format_project_roles(project_id: str, project_name: str = "") -> str:
 
 
 def asks_project_role(query: str) -> bool:
-    """用户是否在问项目表上的对接人/经理/销售等（确定性，不靠 LLM）。"""
+    """用户是否在问项目表上的对接人/经理/销售等（确定性，不靠 LLM）。
+
+    纯关键词匹配，宁可多命中也不要漏 —— 漏了会走 Supervisor 派 project_info，
+    虽然也能答出来但多绕一圈 LLM；多命中只是走短路直接用主数据，没有副作用。
+    """
     blob = (query or "").strip()
     if not blob:
         return False
     keys = (
+        # 直接问角色
         "对接人", "项目对接人", "调度对接人", "项目经理",
         "销售是谁", "售前是谁", "实施工程师是谁", "联系人是谁",
+        # 自然问法变体
+        "谁在跟", "谁负责", "谁对接", "谁跟进",
+        "项目负责人", "项目销售", "项目实施",
+        "对接人是谁", "经理是谁", "负责人是谁",
+        "这个项目谁", "项目谁在",
     )
     return any(k in blob for k in keys)
 

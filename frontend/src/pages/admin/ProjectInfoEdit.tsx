@@ -156,7 +156,7 @@ export default function ProjectInfoEdit({
   // 项目名称仅用于页头副标题（真实数据；失败静默降级为项目编号）
   useEffect(() => {
     if (!id) return;
-    request<{ name?: string }>(`/projects/${id}`)
+    request<{ name?: string }>(`/projects/${encodeURIComponent(id)}`)
       .then((data) => setProjectName(data.name || ''))
       .catch(() => setProjectName(''));
   }, [id, request]);

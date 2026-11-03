@@ -20,6 +20,18 @@ def fetch_task(mysql_client, task_id: int) -> Optional[Dict[str, Any]]:
     )
 
 
+# 这些列在 MySQL 里是 ENUM，落库值是大写（NEW / IN_PROGRESS / PROBLEM），
+# 而接口返回的是小写（new / in_progress / problem）。比对时忽略大小写，
+# 其余字段仍按原值严格比较，避免掩盖真正的内容差异。
+_ENUM_FIELDS = frozenset({"status", "task_type", "priority", "ticket_type"})
+
+
+def _matches(field: str, actual: Any, expected: Any) -> bool:
+    if field in _ENUM_FIELDS and isinstance(actual, str) and isinstance(expected, str):
+        return actual.strip().lower() == expected.strip().lower()
+    return actual == expected
+
+
 def assert_task_row(mysql_client, task_id: int, expected: Dict[str, Any]) -> Dict[str, Any]:
     """Assert that a task row exists and contains the expected field values."""
     row = fetch_task(mysql_client, task_id)
@@ -37,7 +49,7 @@ def assert_task_row(mysql_client, task_id: int, expected: Dict[str, Any]) -> Dic
             )
         except Exception:
             pass
-        if actual_value != expected_value:
+        if not _matches(field, actual_value, expected_value):
             pytest.fail(
                 f"Task {task_id} field {field!r} mismatch: "
                 f"expected {expected_value!r}, got {actual_value!r}; row={row}"

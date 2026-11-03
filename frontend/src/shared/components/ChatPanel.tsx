@@ -99,6 +99,8 @@ interface Message {
   vehicle_choices?: Array<string> | null;
   // 折叠的剩余类目（1012 v2）：仅开场题带，点「展开全部」后并入按钮组渲染
   vehicle_collapsed?: Array<string> | null;
+  // 本轮检索命中的操作手册（ORS-1082）：气泡下方渲染手册入口，点击在线看全文
+  vehicle_manuals?: Array<{ title: string; url: string }> | null;
   // 开场大方向引导题标记：题面大字渲染（区别于追问条的普通题面）
   vehicleOpening?: boolean;
   // 车型资料引导条标记（1012）：题面走普通渲染、不显示「其他情况」提示语
@@ -277,6 +279,12 @@ const mapDbMessages = (
       if (Array.isArray(vcol) && vcol.length > 0) {
         msg.vehicle_collapsed = vcol as NonNullable<Message['vehicle_collapsed']>;
       }
+      // 相关操作手册恢复（ORS-1082）：metadata_.vehicle_manuals 落库的命中手册
+      // 清单 → 气泡下的手册入口，切会话/刷新后仍在
+      const vman = meta?.vehicle_manuals;
+      if (Array.isArray(vman) && vman.length > 0) {
+        msg.vehicle_manuals = vman as NonNullable<Message['vehicle_manuals']>;
+      }
       if (meta?.vehicle_opening) msg.vehicleOpening = true;
       if (meta?.vehicle_guide) msg.vehicleGuide = true;
       if (meta?.vehicle_confirm) msg.vehicleConfirm = true;
@@ -368,7 +376,7 @@ const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice, answered, selectedChoice, onVehicleChoice, vehicleAnswered, vehiclePicked, vehicleExpanded, onToggleVehicleExpand,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice, answered, selectedChoice, onVehicleChoice, vehicleAnswered, vehiclePicked, vehicleExpanded, onToggleVehicleExpand, onOpenSopDoc,
   selectMode, checked, onCheck, onLongPress, selActive,
 }: {
   msg: Message;
@@ -397,6 +405,8 @@ const MessageBubble = memo(function MessageBubble({
   // 开场题折叠态（1012 v2）：展开后常驻与折叠类目并排渲染，开关文案切「收起」
   vehicleExpanded?: boolean;
   onToggleVehicleExpand?: (msgId: string) => void;
+  // 相关操作手册（ORS-1082）：点击手册入口 → 在线查看全文（复用 SOP 抽屉）
+  onOpenSopDoc?: (doc: { title: string; url: string }) => void;
   // 转发多选（0911）：多选模式下点击整条切换勾选；长按唤起操作菜单（复制/多选，微信式）
   selectMode?: boolean;
   checked?: boolean;
@@ -704,6 +714,27 @@ const MessageBubble = memo(function MessageBubble({
           )
         ) : (
           <div className="chat-bubble__text">{msg.content}</div>
+        )}
+
+        {/* 相关操作手册（ORS-1082）：本轮检索实际命中的手册文件，点击在线看全文。
+            手册清单由服务端随 result 下发（vehicle_sop_docs）——不猜、不写死，
+            命中哪篇给哪篇；分叉树直出轮不带（直出来自分叉树本身）。 */}
+        {msg.vehicle_manuals && msg.vehicle_manuals.length > 0 && (
+          <div className="chat-veh-manuals">
+            <div className="chat-veh-manuals__title">相关操作手册</div>
+            <div className="chat-veh-manuals__list">
+              {msg.vehicle_manuals.map((d) => (
+                <button
+                  key={d.url}
+                  type="button"
+                  className="chat-veh-manuals__chip"
+                  onClick={() => onOpenSopDoc?.(d)}
+                >
+                  {d.title}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
       </div>
 
@@ -1862,6 +1893,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 本轮项目题候选：前端兜底落库时随 metadata 持久化（同 send 主链路）
     let turnChoices: Array<{ index: number; name: string; code?: string }> | null = null;
     let turnVChoices: Array<string> | null = null;
+    // 本轮命中的操作手册（ORS-1082）：随 metadata 持久化（切会话/刷新后入口仍在）
+    let turnVManuals: Array<{ title: string; url: string }> | null = null;
     const FLUSH_MS = 90;
     const paint = () => setMessages((prev) => prev.map((m) => {
       if (m.id !== assistantId) return m;
@@ -1961,6 +1994,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             turnVChoices = vchoices;
             setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, vehicle_choices: vchoices } : m)));
           }
+          // 相关操作手册（ORS-1082）：附件+文字路径与纯文字路径统一挂手册入口
+          if (Array.isArray(data.vehicle_sop_docs) && data.vehicle_sop_docs.length) {
+            const vmanuals = data.vehicle_sop_docs as Array<{ title: string; url: string }>;
+            turnVManuals = vmanuals;
+            setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, vehicle_manuals: vmanuals } : m)));
+          }
           if (!acc && typeof data.message === 'string' && data.message) {
             acc = data.message;
             paint();
@@ -1986,11 +2025,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (finalContent) {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, phase: undefined, streaming: false } : m)));
         // 落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）；
-        // 项目题候选/车型选项随 metadata 持久化（切会话/刷新后按钮可恢复）
-        if (convId) appendMessage(convId, 'assistant', finalContent, {
-          ...(turnChoices ? { metadata: JSON.stringify({ project_choices: turnChoices }) } : {}),
-          ...(turnVChoices ? { metadata: JSON.stringify({ vehicle_choices: turnVChoices }) } : {}),
-        }).then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); }).catch(() => {});
+        // 项目题候选/车型选项/相关手册随 metadata 持久化（切会话/刷新后按钮可恢复）
+        // ⚠️ 三者合并成一个 metadata 对象：同一 key 多次展开会互相覆盖
+        // （旧写法两行 spread 都写 metadata，后者覆盖前者 → 项目题候选丢失）
+        if (convId) {
+          const _meta: Record<string, unknown> = {};
+          if (turnChoices) _meta.project_choices = turnChoices;
+          if (turnVChoices) _meta.vehicle_choices = turnVChoices;
+          if (turnVManuals) _meta.vehicle_manuals = turnVManuals;
+          appendMessage(convId, 'assistant', finalContent,
+            Object.keys(_meta).length ? { metadata: JSON.stringify(_meta) } : {},
+          ).then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); }).catch(() => {});
+        }
       } else if (!hasResult) {
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       } else {
@@ -2072,6 +2118,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // （后端 SSE 主路径自己写 metadata，这里仅老后端未接管时的兜底）
     let turnChoices: Array<{ index: number; name: string; code?: string }> | null = null;
     let turnVChoices: Array<string> | null = null;
+    // 本轮命中的操作手册（ORS-1082）：随 metadata 持久化
+    let turnVManuals: Array<{ title: string; url: string }> | null = null;
     let typeTimer: ReturnType<typeof setInterval> | null = null;
     // 伪流式（打字机缓冲）：token 先入 pending 队列，定时器按积压规模渐进出字到 acc。
     // 上游（中转站）token 是突发块+真空期交替，直接上屏就是「卡一下出一坨」；
@@ -2251,6 +2299,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             turnVChoices = vchoices;
             setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, vehicle_choices: vchoices } : m)));
           }
+          // 相关操作手册（ORS-1082）：result 携带 vehicle_sop_docs → 挂到本轮
+          // assistant 气泡（气泡下渲染手册入口，点击在线看全文）。服务端按本轮
+          // 检索实际命中的手册文件下发——命中哪篇给哪篇，不写死。
+          if (currentEvent === 'result' && Array.isArray(data.vehicle_sop_docs) && data.vehicle_sop_docs.length) {
+            const vmanuals = data.vehicle_sop_docs as Array<{ title: string; url: string }>;
+            turnVManuals = vmanuals;
+            setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, vehicle_manuals: vmanuals } : m)));
+          }
           // 第2轮 AI 生成会话标题：更新当前标题 + 刷新左侧列表（DB 已由后端同步）
           if (currentEvent === 'title' && data.title) {
             setConversationTitle(data.title);
@@ -2348,11 +2404,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
       if (fullText && assistantDbId == null && sentConvId) {
         // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）；
-        // 项目题候选/车型选项随 metadata 持久化（切会话/刷新后按钮可恢复）
-        appendMessage(sentConvId, 'assistant', fullText, {
-          ...(turnChoices ? { metadata: JSON.stringify({ project_choices: turnChoices }) } : {}),
-          ...(turnVChoices ? { metadata: JSON.stringify({ vehicle_choices: turnVChoices }) } : {}),
-        })
+        // 项目题候选/车型选项/相关手册随 metadata 持久化（切会话/刷新后按钮可恢复）
+        // ⚠️ 三者合并成一个 metadata 对象：同一 key 多次展开会互相覆盖
+        const _meta: Record<string, unknown> = {};
+        if (turnChoices) _meta.project_choices = turnChoices;
+        if (turnVChoices) _meta.vehicle_choices = turnVChoices;
+        if (turnVManuals) _meta.vehicle_manuals = turnVManuals;
+        appendMessage(sentConvId, 'assistant', fullText,
+          Object.keys(_meta).length ? { metadata: JSON.stringify(_meta) } : {},
+        )
           .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
           .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
       }
@@ -3609,6 +3669,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             vehiclePicked={vehiclePicked}
             vehicleExpanded={expandedVehicleIds.has(msg.id)}
             onToggleVehicleExpand={toggleVehicleExpanded}
+            onOpenSopDoc={(d) => void openSopDoc(d)}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
             selectMode={isCall && selectMode}

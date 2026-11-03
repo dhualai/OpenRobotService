@@ -140,7 +140,7 @@ class Settings(BaseSettings):
     WXPAY_TRANSFER_SCENE_ID: str = Field(default="1000", description="商家转账场景 ID")
     WXPAY_USER_RECV_PERCEPTION: str = Field(default="现金奖励", description="收款感知：现金奖励/活动奖励")
     WXPAY_REWARD_EXPIRE_DAYS: int = Field(default=30, description="奖励有效期（天），超期未提现即失效")
-    WXPAY_MIN_WITHDRAW_FEN: int = Field(default=100, description="最低提现金额（分），默认 1 元")
+    WXPAY_MIN_WITHDRAW_FEN: int = Field(default=50, description="最低提现金额（分），默认 0.5 元（ORS-1086 新人红包 0.5 元需可提现）")
     WXPAY_MAX_TRANSFER_FEN: int = Field(default=20000, description="单笔转账上限（分），默认 200 元")
     WXPAY_RECONCILE_INTERVAL_MINUTES: int = Field(default=10, description="兜底查单/巡检周期（分钟）")
     WXPAY_SERVICE_TIMEOUT: float = Field(default=10.0, description="调用 Go 服务超时（秒）")

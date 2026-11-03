@@ -105,12 +105,25 @@ def parse_merged_at(value):
     return dt.astimezone(timezone.utc)
 
 
-def within_window(merged_at, now, days=WINDOW_DAYS):
-    """mergedAt 是否落在「now 往前 days 天」内；缺时间/非法时间一律算窗口外。"""
+def within_window(merged_at, now, days=WINDOW_DAYS, since=None, until=None):
+    """mergedAt 是否落在窗口内；缺时间/非法时间一律算窗口外。
+
+    传了 since 就按「since 之后」算，否则退回「now 往前 days 天」。since 是上一次
+    成功的生产发布时间点：固定天数在两次发布间隔超过一周时会漏掉中间改动，间隔很短
+    时又会把上次已经发过的内容重复列一遍。
+
+    until 是窗口上界，取本次部署分支最后一次变更的时间：PR 合到 test 后若还没进
+    dev，本次生产部署的代码里根本没有它，列出来就是虚报。
+    """
     dt = merged_at if isinstance(merged_at, datetime) else parse_merged_at(merged_at)
     if dt is None:
         return False
-    return dt >= now - timedelta(days=days)
+    lower = since if since is not None else now - timedelta(days=days)
+    if dt < lower:
+        return False
+    if until is not None and dt > until:
+        return False
+    return True
 
 
 def pr_type(title):
@@ -138,7 +151,7 @@ def is_user_facing(pr):
     return True
 
 
-def load_prs(path, now=None, days=WINDOW_DAYS):
+def load_prs(path, now=None, days=WINDOW_DAYS, since=None, until=None):
     """读取 gh 输出的 PR JSON 数组，返回窗口内、用户可感知的 [{number, title}, ...]。
 
     文件缺失 / 非法 JSON / 非数组一律返回空列表（调用方据此跳过，不阻断部署）。
@@ -155,7 +168,7 @@ def load_prs(path, now=None, days=WINDOW_DAYS):
     for pr in raw:
         if not isinstance(pr, dict):
             continue
-        if not within_window(pr.get("mergedAt"), now, days):
+        if not within_window(pr.get("mergedAt"), now, days, since, until):
             continue
         if not is_user_facing(pr):
             continue
@@ -231,7 +244,7 @@ def build_prompt(prs):
         ensure_ascii=False,
     )
     rules = [
-        "下面是从 GitHub 拉取的最近 7 天已合并 PR（JSON 数组，字段 number/title）。",
+        "下面是从 GitHub 拉取的一批已合并 PR（JSON 数组，字段 number/title）。",
         "请整理成用户可感知的发布说明，严格按规则执行：",
         "1. 只依据给定 PR，禁止编造任何功能、修复或数据；",
         "2. 同一功能被拆成多个 PR 的合并成一条；表述重复的只保留一条；",
@@ -293,6 +306,28 @@ def _snippet(raw, api_key=""):
     return _SPACE_RE.sub(" ", text).strip()[:_SNIPPET_CHARS]
 
 
+def _key_problem(api_key):
+    """检查 Key 能否安全放进 HTTP 头：正常返回空串，异常返回问题描述。
+
+    Key 直接拼进 Authorization 头，而 urllib 用 latin-1 编 header：粘贴时混进
+    全角空格或中文引号，请求根本发不出去，报的是 `'latin-1' codec can't encode
+    characters in position 7-8`（`Bearer ` 正好 7 个字符）。该异常是 ValueError
+    子类，历史上被笼统报成「响应格式异常」，线上连查两轮才定位到 Secret 本身。
+    这里提前拦下，把修法直接写进日志。
+
+    只报字符位置与类别，绝不回显 Key 内容。
+    """
+    if not api_key:
+        return "值为空"
+    if not api_key.isascii():
+        bad = [str(i) for i, ch in enumerate(api_key) if not ch.isascii()][:3]
+        return (f"含非 ASCII 字符（位置 {'/'.join(bad)}，"
+                "多半是粘贴时带进的全角空格或中文引号）")
+    if api_key != api_key.strip():
+        return "首尾有空白字符"
+    return ""
+
+
 def call_llm(prompt, api_key, base_url="", model="", timeout=60.0, retries=1):
     """调 OpenAI 兼容 chat/completions，返回正文；失败返回空串。
 
@@ -300,6 +335,10 @@ def call_llm(prompt, api_key, base_url="", model="", timeout=60.0, retries=1):
     失败时附带响应体片段：只报「响应格式异常」等于没有线索，线上曾连查两轮
     都只能靠猜（到底是 4xx、HTML 拦截页、还是流被截断）。
     """
+    problem = _key_problem(api_key)
+    if problem:
+        print(f"[release-notes] 密钥不可用：{problem}；请重设 RELEASE_LLM_API_KEY 后重试")
+        return ""
     url = chat_endpoint(base_url)
     validate_endpoint(url)
     host = urlparse(url).netloc
@@ -375,12 +414,12 @@ def call_llm(prompt, api_key, base_url="", model="", timeout=60.0, retries=1):
 
 # ---------- 渲染与入口 ----------
 
-def render_markdown(groups):
+def render_markdown(groups, scope="最近 7 天"):
     """输出与 docs/RELEASE_NOTES.md 同构的 Markdown，供 notify.parse_release_notes 解析。"""
     lines = [
         "# 发布说明（Release Notes）",
         "",
-        "> 本文件由部署流水线自动生成：最近 7 天已合并 PR，经 LLM 归纳去重。",
+        f"> 本文件由部署流水线自动生成：{scope}已合并 PR，经 LLM 归纳去重。",
         "> 由 .github/workflows/deploy-split.yml 的 build job 覆盖，请勿手工编辑。",
         "",
         "## 未发布",
@@ -403,6 +442,12 @@ def _parse_args(argv=None):
     parser.add_argument("--out", required=True, help="输出 Markdown 路径（成功时才写）")
     parser.add_argument("--days", type=int, default=WINDOW_DAYS,
                         help=f"时间窗口天数（默认 {WINDOW_DAYS}）")
+    parser.add_argument("--since", default="",
+                        help="窗口起点（ISO8601，如 2026-10-28T05:37:01Z）：只收该时间"
+                             "之后合并的 PR，对应「上次发布以来」；解析失败则退回 --days")
+    parser.add_argument("--until", default="",
+                        help="窗口上界（ISO8601）：只收该时间之前合并的 PR，用于排除"
+                             "还在 test 上、没进本次部署分支的改动；解析失败则不限上界")
     return parser.parse_args(argv)
 
 
@@ -415,8 +460,23 @@ def main(argv=None):
         return 2
 
     days = args.days if args.days and args.days > 0 else WINDOW_DAYS
-    prs = load_prs(args.prs, days=days)
-    print(f"[release-notes] 近 {days} 天可归纳 PR：{len(prs)} 条")
+    since = parse_merged_at(args.since)
+    if args.since and since is None:
+        print(f"[release-notes] --since 无法解析（{args.since}），退回近 {days} 天窗口")
+    until = parse_merged_at(args.until)
+    if args.until and until is None:
+        print(f"[release-notes] --until 无法解析（{args.until}），不设窗口上界")
+    if since and until and until < since:
+        print(f"[release-notes] 窗口为空：上界 {args.until} 早于起点 {args.since}，"
+              "说明部署分支自上次发布后没有新合并")
+    prs = load_prs(args.prs, days=days, since=since, until=until)
+    if since and until:
+        scope = f"{since:%Y-%m-%d %H:%M} 至 {until:%Y-%m-%d %H:%M} (UTC) 期间"
+    elif since:
+        scope = f"自 {since:%Y-%m-%d %H:%M} (UTC) 以来"
+    else:
+        scope = f"近 {days} 天"
+    print(f"[release-notes] {scope}可归纳 PR：{len(prs)} 条")
     if not prs:
         return 2
 
@@ -443,7 +503,7 @@ def main(argv=None):
         print("[release-notes] LLM 未产出有效条目，跳过（调用方回退人工版本）")
         return 2
 
-    markdown = render_markdown(groups)
+    markdown = render_markdown(groups, scope=scope)
     Path(args.out).write_text(markdown, encoding="utf-8")
     print(f"[release-notes] 已生成 {total} 条更新 → {args.out}")
     return 0

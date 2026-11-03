@@ -25,7 +25,14 @@ from automation.src.ticket_pipeline.selector import (  # noqa: E402
 
 
 def _print(data):
-    print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+    text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        # GBK 控制台（Windows PowerShell 默认）遇到 emoji 等字符会编码失败，
+        # 降级为"替换不可编码字符"后再输出，保证 CLI 不因打印崩溃。
+        encoding = sys.stdout.encoding or "utf-8"
+        print(text.encode(encoding, errors="replace").decode(encoding))
 
 
 def _load_spec(spec_dir):
@@ -91,6 +98,9 @@ def build_parser():
         help="Comma separated ticket sources to skip, e.g. ai",
     )
 
+    get = sub.add_parser("get")
+    get.add_argument("--ticket-id", type=int, required=True, help="Ticket id (tasks.id) to fetch")
+
     gen = sub.add_parser("generate")
     gen.add_argument("--ticket-id", type=int, required=True)
     gen.add_argument("--title", required=True)
@@ -140,6 +150,11 @@ def main(argv=None):
 
     if args.command == "scan":
         _print([ticket.model_dump(mode="json") for ticket in _scanner(args).scan(limit=args.limit)])
+        return 0
+
+    if args.command == "get":
+        source = SSHMySQLTicketSource.from_env()
+        _print([ticket.model_dump(mode="json") for ticket in source.fetch_by_ids([args.ticket_id])])
         return 0
 
     if args.command == "generate":

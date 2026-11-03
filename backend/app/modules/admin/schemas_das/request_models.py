@@ -114,7 +114,8 @@ class ServerDeploymentStatus(str, Enum):
 
 class ProjectBase(BaseModel):
     system_id: Optional[str] = None
-    project_code: str
+    # 项目编号：可选；创建时若留空，后端会自动生成随机串作为编号（见 project_service._gen_project_code）
+    project_code: Optional[str] = None
     name: str
     description: Optional[str] = None
     contact_person: Optional[str] = None

@@ -14,6 +14,20 @@ import pymysql
 from automation.src.ticket_pipeline.models import TicketCandidate
 
 
+def _env(name: str, default: str) -> str:
+    """读环境变量，空字符串按"未设置"处理。
+
+    GitHub Actions 会把未配置的 secret 注入为空字符串，而 ``os.getenv(name, default)``
+    在变量存在但为空时不会回退默认值，会导致数据库用户名变成空串、端口 ``int("")`` 报错。
+    """
+    return os.getenv(name) or default
+
+
+def _env_int(name: str, default: int) -> int:
+    """读整数环境变量，空字符串回退默认值。"""
+    return int(_env(name, str(default)))
+
+
 class TicketSource(Protocol):
     """Read-only source of candidate tickets."""
 
@@ -130,17 +144,17 @@ class SSHMySQLTicketSource:
     @classmethod
     def from_env(cls) -> "SSHMySQLTicketSource":
         return cls(
-            ssh_host=os.getenv("PROD_TICKET_SSH_HOST", "125.122.97.107"),
-            ssh_port=int(os.getenv("PROD_TICKET_SSH_PORT", "8802")),
-            ssh_user=os.getenv("PROD_TICKET_SSH_USER", "usp-a"),
+            ssh_host=_env("PROD_TICKET_SSH_HOST", "125.122.97.107"),
+            ssh_port=_env_int("PROD_TICKET_SSH_PORT", 8802),
+            ssh_user=_env("PROD_TICKET_SSH_USER", "usp-a"),
             ssh_key=os.getenv("PROD_TICKET_SSH_KEY", ""),
-            db_host=os.getenv("PROD_TICKET_DB_HOST", "127.0.0.1"),
-            db_port=int(os.getenv("PROD_TICKET_DB_PORT", "3306")),
-            db_user=os.getenv("PROD_TICKET_DB_USER", "root"),
+            db_host=_env("PROD_TICKET_DB_HOST", "127.0.0.1"),
+            db_port=_env_int("PROD_TICKET_DB_PORT", 3306),
+            db_user=_env("PROD_TICKET_DB_USER", "root"),
             db_password=os.getenv("PROD_TICKET_DB_PASSWORD", ""),
-            db_name=os.getenv("PROD_TICKET_DB_NAME", "helpdesk_724"),
-            connect_timeout=int(os.getenv("PROD_TICKET_CONNECT_TIMEOUT", "10")),
-            project_id=os.getenv("PROD_TICKET_PROJECT_ID", "Leo_test"),
+            db_name=_env("PROD_TICKET_DB_NAME", "helpdesk_724"),
+            connect_timeout=_env_int("PROD_TICKET_CONNECT_TIMEOUT", 10),
+            project_id=_env("PROD_TICKET_PROJECT_ID", "Leo_test"),
             statuses=tuple(
                 item
                 for item in os.getenv("PROD_TICKET_STATUSES", "new").split(",")
