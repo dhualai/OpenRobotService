@@ -164,6 +164,7 @@ class IdentityService:
                 elif hasattr(db_user, key):
                     setattr(db_user, key, value)
             db.commit()
+            invalidate_user_roles_cache()
             from app.services.user_service import UserService
             UserService.invalidate_cache()
             # 若改到 AI 派单画像相关字段，通知 AI 失效画像缓存（下次派单重拉最新）
