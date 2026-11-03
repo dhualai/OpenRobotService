@@ -120,6 +120,71 @@ class TestNewcomerBonus(IsolatedAsyncioTestCase):
         self.assertFalse(state["eligible"])
         self.assertEqual(state["reward_id"], "reward-1")
 
+    async def test_resubscribe_after_unsubscribe_is_not_treated_as_newcomer(self):
+        """取关再关注：`subscribe_time` 被刷新成新时间，但活动前就用过摇人吧 → 不算新人。
+
+        微信给的 subscribe_time 是「最近一次关注时间」，只看它会把老用户误判成新人；
+        这里靠「首次交互时间」（wechat_user_activity 最早记录）把它挡掉。
+        """
+        user = wechat_user()
+        self.session.add(WechatUserActivity(
+            ref_date=START_AT.date() - timedelta(days=30), openid=user.id,
+            source="event", last_active_at=datetime.now(timezone.utc),
+        ))
+        self.session.commit()
+        # 取关后再关注 → 微信返回的是新的关注时间（看起来像活动期新关注）
+        self.stub_wechat_info({"subscribe": 1, "subscribe_time": int(START_AT.timestamp())})
+
+        state = await newcomer_bonus.evaluate(self.db, user)
+
+        self.assertFalse(state["eligible"])
+        self.assertIn("活动前已使用过", state["reason"])
+
+    async def test_newcomer_whose_first_activity_is_after_start_is_eligible(self):
+        """活动期才第一次出现的用户（关注 + 进摇人吧都在活动后）→ 算新人。"""
+        user = wechat_user()
+        self.session.add(WechatUserActivity(
+            ref_date=START_AT.date() + timedelta(days=1), openid=user.id,
+            source="h5", last_active_at=datetime.now(timezone.utc),
+        ))
+        self.session.commit()
+        self.stub_wechat_info({"subscribe": 1, "subscribe_time": int(START_AT.timestamp())})
+
+        state = await newcomer_bonus.evaluate(self.db, user)
+
+        self.assertTrue(state["eligible"])
+
+    async def test_claim_after_resubscribe_never_pays_twice(self):
+        """取关再关注再来领：钱只能发一次（幂等键 = 活动 + openid + 角色）。"""
+        user = wechat_user()
+        self.session.add(WechatUserActivity(
+            ref_date=START_AT.date() + timedelta(days=1), openid=user.id,
+            source="h5", last_active_at=datetime.now(timezone.utc),
+        ))
+        self.session.commit()
+        self.stub_wechat_info({"subscribe": 1, "subscribe_time": int(START_AT.timestamp())})
+
+        with patch.object(settings, "WXPAY_ENABLED", True):
+            first = await newcomer_bonus.claim(self.db, user)
+            self.assertTrue(first["ok"])
+            self.assertTrue(first["created"])
+
+            # 取关后再关注：关注时间刷新，但已领过 → 不再发钱
+            self.stub_wechat_info({
+                "subscribe": 1,
+                "subscribe_time": int((START_AT + timedelta(days=2)).timestamp()),
+            })
+            second = await newcomer_bonus.claim(self.db, user)
+            self.assertTrue(second["ok"])
+            self.assertFalse(second["created"])
+            self.assertEqual(second["reward_id"], first["reward_id"])
+
+        rows = self.session.execute(
+            select(RewardRecord).where(RewardRecord.source_type == newcomer_bonus.SOURCE_TYPE)
+        ).scalars().all()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].amount, 50)
+
     async def test_claim_grants_once_and_is_idempotent(self):
         user = wechat_user()
         self.stub_wechat_info({"subscribe": 1, "subscribe_time": int(START_AT.timestamp())})

@@ -175,6 +175,31 @@ async def resolve_subscribe_time(db: AsyncSession, openid: str) -> Optional[date
     return None
 
 
+async def resolve_first_seen(db: AsyncSession, openid: str) -> Optional[datetime]:
+    """该用户与我们的**首次交互时间**（UTC），取不到返回 None。
+
+    为什么必须有它：微信给的 `subscribe_time` 是「**最近一次**关注时间」，
+    取关再关注会被刷新成新时间——只看它会把老用户误判成新用户（能反复看到弹窗）。
+    首次交互时间不会随取关再关注而改变，用它把「活动前就已经在用摇人吧」的人挡掉。
+
+    数据源 `wechat_user_activity`（关注/扫码/进 H5/发消息/点菜单都会写一条），
+    取该 openid 的**最早**一条记录。
+    """
+    try:
+        earliest = (
+            await db.execute(
+                select(func.min(WechatUserActivity.ref_date)).where(
+                    WechatUserActivity.openid == openid,
+                )
+            )
+        ).scalar_one_or_none()
+        if isinstance(earliest, date):
+            return datetime.combine(earliest, time.min, tzinfo=timezone.utc)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[newcomer_bonus] 读微信活跃记录失败: %s", exc)
+    return None
+
+
 async def find_claimed(
     db: AsyncSession, openid: str, campaign_code: str
 ) -> Optional[RewardRecord]:
@@ -230,6 +255,12 @@ async def evaluate(db: AsyncSession, user: UserDB) -> Dict[str, Any]:
         return state
     if config.end_at is not None and subscribed_at > config.end_at:
         state["reason"] = "非活动期新关注用户"
+        return state
+    # 取关再关注的用户，`subscribe_time` 会被刷新成新时间（看起来像新人）。
+    # 用「首次交互时间」兜一道：活动前就已经在用摇人吧的人，不算这次活动的新用户。
+    first_seen = await resolve_first_seen(db, openid)
+    if first_seen is not None and first_seen < config.start_at:
+        state["reason"] = "活动前已使用过摇人吧，非新用户"
         return state
 
     state["eligible"] = True
