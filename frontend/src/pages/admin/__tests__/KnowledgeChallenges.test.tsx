@@ -358,3 +358,28 @@ describe('高价值问题交互', () => {
     for (const value of ['-1', '1.001', 'NaN', '0']) expect(() => parseBountyFen(value)).toThrow();
   });
 });
+
+/**
+ * 转发卡片（ORS-1086）
+ * 企微没有 JS-SDK 分享接口，卡片内容只能来自页面 head 的 og 标签；
+ * 这里锁死「标题=问题标题、描述含悬赏奖金、缩略图为绝对地址」这条契约。
+ */
+describe('高价值问题转发卡片（ORS-1086）', () => {
+  beforeEach(() => { vi.resetAllMocks(); document.head.innerHTML = ''; });
+  afterEach(cleanup);
+
+  it('详情页渲染后按问题生成卡片：标题=问题标题，描述带悬赏奖金与人数，缩略图是绝对地址', async () => {
+    api.fetchChallenge.mockResolvedValue(challenge(7));
+    detailPage();
+    await screen.findByRole('heading', { name: '高价值问题7' });
+
+    const ogTitle = document.head.querySelector('meta[property="og:title"]')?.getAttribute('content');
+    const ogDesc = document.head.querySelector('meta[property="og:description"]')?.getAttribute('content');
+    const ogImage = document.head.querySelector('meta[property="og:image"]')?.getAttribute('content');
+
+    expect(ogTitle).toBe('高价值问题7');
+    expect(ogDesc).toContain('¥100');
+    expect(ogDesc).toContain('人也遇到');
+    expect(ogImage).toMatch(/^https?:\/\//);
+  });
+});
