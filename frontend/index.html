@@ -5,6 +5,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="theme-color" content="#0052d9" />
     <title>摇人吧 - OpenRobotService</title>
+
+    <!--
+      转发卡片静态兜底（ORS-1086）
+      ──────────────────────────────────────────────────────────────
+      企业微信没有 JS-SDK 分享接口：企微里点右上角「…」转发出去的卡片，内容只能来自
+      页面 head（title + og:image + og:description）。本项目是 SPA 且由 nginx 静态托管
+      （所有路由回退同一份 index.html），所以这里必须预置一份**站点级**兜底，
+      否则企微转发出去就是一张没有图、只有固定标题的空卡片。
+      页面渲染时 src/shared/utils/shareMeta.ts 会按当前内容（问题标题、奖金数目等）
+      在运行时覆盖这些标签，并按实际环境把 og:image 换成当前站点的绝对地址。
+    -->
+    <meta name="description" content="摇人吧：机器人行业问题求助与专家解答，提问、接单、沉淀知识都有回报。" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="摇人吧" />
+    <meta property="og:title" content="摇人吧 · 机器人行业问题求助" />
+    <meta property="og:description" content="有问题就摇人：提单、跟踪、闭环，全程有回报。" />
+    <!-- og:image 必须是绝对地址；此处为生产站点兜底值，运行时会被 shareMeta 按环境覆盖 -->
+    <meta property="og:image" content="https://usp.ep-zl.com/p/app/share-thumb.png" />
+    <meta property="og:url" content="https://usp.ep-zl.com/p/app/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="摇人吧 · 机器人行业问题求助" />
+    <meta name="twitter:image" content="https://usp.ep-zl.com/p/app/share-thumb.png" />
   </head>
   <body>
     <div id="root"></div>

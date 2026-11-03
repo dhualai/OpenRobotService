@@ -10,6 +10,8 @@ import {
 import { challengeStateLabels, useChallengePolling } from './HighValueQuestionCard';
 import { localDateInput } from './KnowledgeChallenges';
 import { KnowledgeEmpty, KnowledgeState, knowledgeMoney, knowledgeTime, useKnowledgeResource } from './knowledgeShared';
+import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import '@/shared/styles/knowledgeChallenges.css';
 
 const actionLabels: Record<string, string> = {
@@ -143,6 +145,16 @@ export default function KnowledgeChallengeDetail() {
   useEffect(() => { const timer = window.setInterval(() => refreshClock((value) => value + 1), 15000); return () => window.clearInterval(timer); }, []);
   const canAnswer = !!challenge && challenge.can_answer && new Date(challenge.ends_at).getTime() > Date.now();
   const myAnswer = challenge?.answers.find((answer) => answer.is_mine);
+
+  // 转发卡片（ORS-1086）：按当前问题生成卡片——标题=问题标题，描述里带上悬赏奖金与截止时间。
+  // 企微无 JS-SDK，只能读 head（setShareMeta 写 og 标签）；微信内再由 JS-SDK 精确指定字段。
+  useEffect(() => {
+    if (!challenge) return;
+    const title = challenge.title || '高价值问题';
+    const desc = `悬赏 ${knowledgeMoney(challenge.bounty_fen)} · ${challenge.like_count} 人也遇到 · ${knowledgeTime(challenge.ends_at)}截止 · 点击查看并解答`;
+    setShareMeta({ title, description: desc });
+    void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
+  }, [challenge?.id, challenge?.title, challenge?.bounty_fen, challenge?.like_count, challenge?.ends_at]);
   useEffect(() => { if (editorOpen) editorContainer.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' }); }, [editorOpen]);
   function submitted() {
     setEditorOpen(false);

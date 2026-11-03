@@ -15,6 +15,8 @@ import { qaListTickets } from '@/api/ai';
 import { fetchQrcodeByScene } from '@/api/qrcode';
 import { useWorkbenchStore, type VehicleContext } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
+import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 
 /** 码记录状态「已发布」即车辆已出厂，才进入信息确认流程（其余状态给出提示，见下方 effect） */
 const STATUS_PUBLISHED = 'published';
@@ -104,6 +106,16 @@ export default function CallView() {
       setVehicleDialogVisible(true);
     })();
   }, [sceneCode, searchParams, setSearchParams]);
+
+  // 转发卡片（ORS-1086）：进「我要摇人」即预置本页的分享卡片。
+  // 企微无 JS-SDK，只能读 head（setShareMeta 写 og 标签）；微信内再由 JS-SDK 精确指定
+  // 标题/描述/logo，转发出去不再是一张空白卡片。
+  useEffect(() => {
+    const title = '摇人吧 · 机器人行业问题求助';
+    const desc = '有问题就摇人：提单、跟踪、闭环，全程有回报。';
+    setShareMeta({ title, description: desc });
+    void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
+  }, []);
 
   /** 点「暂不」/遮罩：只关弹窗，保持当前对话不动 */
   const handleVehicleCancel = useCallback(() => {
