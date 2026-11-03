@@ -99,6 +99,34 @@ class GrantRewardOut(BaseModel):
     duplicated: bool = Field(False, description="True 表示同 (source_type, source_id) 已发放过，返回既有记录")
 
 
+# ============ 新人红包（ORS-1086）============
+
+class NewcomerBonusStatusOut(BaseModel):
+    """新人红包弹窗状态。"""
+
+    eligible: bool = Field(..., description="当前用户是否可领取")
+    claimed: bool = Field(False, description="是否已领过（每人限一次）")
+    amount_fen: int = Field(0, description="可领金额，单位：分")
+    title: str = ""
+    desc: str = ""
+    reason: str = Field("", description="不可领取的原因（仅提示用）")
+    campaign_code: str = ""
+    reward_id: str = Field("", description="已领取时的奖励记录 ID")
+
+
+class NewcomerBonusClaimOut(BaseModel):
+    """领取新人红包的结果。"""
+
+    ok: bool = Field(..., description="本次调用是否完成发放")
+    claimed: bool = Field(False, description="是否已领过（每人限一次）")
+    created: bool = Field(False, description="True=本次新建；False=此前已发过，返回同一条记录")
+    reward_id: str = ""
+    amount_fen: int = 0
+    title: str = ""
+    desc: str = ""
+    message: str = ""
+
+
 # ============ 管理端：奖励 / 转账单运维（后台管理-其他-奖励管理）============
 
 

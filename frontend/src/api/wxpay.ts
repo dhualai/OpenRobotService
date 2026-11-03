@@ -135,6 +135,54 @@ export function fenToYuan(fen: number): string {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 新人红包（ORS-1086）：新关注公众号的用户进「我要摇人」可领 0.5 元
+// 对应后端 backend/app/modules/wxpay/newcomer_bonus.py
+// ═══════════════════════════════════════════════════════════════
+
+export interface NewcomerBonusStatus {
+  /** 当前用户是否可领取 */
+  eligible: boolean;
+  /** 是否已领过（每人限一次） */
+  claimed: boolean;
+  /** 可领金额，单位：分 */
+  amount_fen: number;
+  title: string;
+  desc: string;
+  /** 不可领取的原因（仅提示用） */
+  reason: string;
+  campaign_code: string;
+  /** 已领取时的奖励记录 ID */
+  reward_id: string;
+}
+
+export interface NewcomerBonusClaimResp {
+  ok: boolean;
+  claimed: boolean;
+  /** true=本次新建；false=此前已发过，返回同一条记录 */
+  created: boolean;
+  reward_id: string;
+  amount_fen: number;
+  title: string;
+  desc: string;
+  message: string;
+}
+
+/** 弹窗状态（可领 / 已领 / 不可领及原因） */
+export function fetchNewcomerBonusStatus(): Promise<NewcomerBonusStatus> {
+  return request<NewcomerBonusStatus>('/rewards/newcomer-bonus/status', { skipCache: true });
+}
+
+/**
+ * 领取新人红包。
+ *
+ * 只记账（reward_record），**不直接转账**：用户到「我的奖励」页点「立即提现」
+ * 才调起微信确认收款页，与其它奖励同一套链路。
+ */
+export function claimNewcomerBonus(): Promise<NewcomerBonusClaimResp> {
+  return request<NewcomerBonusClaimResp>('/rewards/newcomer-bonus/claim', { method: 'POST' });
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 管理端（后台管理 → 其他 → 奖励管理）
 // 对应后端 backend/app/modules/wxpay/api/admin.py，路由 /api/wxpay/admin/*
 // ═══════════════════════════════════════════════════════════════
