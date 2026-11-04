@@ -1,9 +1,9 @@
 """Extract FastAPI OpenAPI spec (interface inventory) from backend code.
 
 Usage:
-    python -m automation.ci_ai_gen.extract_api --out test-gen/spec
-    python -m automation.ci_ai_gen.extract_api --out test-gen/spec --url http://127.0.0.1:8000/api/v1/openapi.json
-    python -m automation.ci_ai_gen.extract_api --out test-gen/spec --backend-path backend
+    python -m automation.ci_ai_gen.extract_api --out automation/references/spec
+    python -m automation.ci_ai_gen.extract_api --out automation/references/spec --url http://127.0.0.1:8000/api/v1/openapi.json
+    python -m automation.ci_ai_gen.extract_api --out automation/references/spec --backend-path backend
 
 Resolution order:
     1. --url: fetch spec from a running service

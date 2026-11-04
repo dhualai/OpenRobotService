@@ -56,10 +56,6 @@ cd automation; allure generate output/allure-results -o output/allure-report --c
 python scripts/cli-import-cases.py <cases.yaml>        # YAML 用例 → Excel
 python scripts/cli-generate-test-modules.py            # Excel sheet → pytest 模块
 python scripts/cli-generate-report.py                  # 用例 Excel → 报表 xlsx
-
-# AI 用例转正合并(AI 产物 → 正式 Excel,半自动闭环最后一环)
-python scripts/cli-merge-ai-cases.py --run-id demo-008 --dry-run   # 预览合并计划
-python scripts/cli-merge-ai-cases.py --run-id demo-008             # 合并(自动备份 .bak)
 ```
 
 > 注意:`cli-init-cases.py` 无参数直接运行会重建/覆盖 Excel,仅用于初始化,勿在生产用例上执行。
