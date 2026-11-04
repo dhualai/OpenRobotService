@@ -1,12 +1,4 @@
-// 活动中心抽屉（摇人页公告条点开）
-//
-// 全屏右侧滑出，内容两段：
-//   1) 公告：已发布公告全文（标题 + 正文，正文保留换行）
-//   2) 优质问题 TOP 榜：与后台「知识贡献榜」同源（GET /api/admin/knowledge/questions?sort=likes），
-//      按有效点赞数倒序，可按月切换；行内点赞走知识点赞接口（受 can_like 与每日 5 个限制）。
-//
-// 打开时才拉数据（visible 变化触发），关闭保留上次内容避免闪烁；点工单跳「系统任务」详情页。
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Toast } from 'tdesign-mobile-react';
 import { X, ThumbsUp, Trophy } from 'lucide-react';
@@ -16,6 +8,7 @@ import {
   fetchKnowledgeOverview, fetchKnowledgeQuestions, toggleKnowledgeLike, type KnowledgeQuestion,
 } from '@/api/knowledge';
 import { formatDateTimeShort } from '@/shared/utils/url';
+import { fetchChallenges, type Challenge } from '@/api/knowledgeChallenges';
 
 interface Props {
   visible: boolean;
@@ -42,6 +35,55 @@ export default function ActivityCenterDrawer({ visible, onClose }: Props) {
   const [annLoading, setAnnLoading] = useState(false);
   const [boardLoading, setBoardLoading] = useState(false);
   const [pending, setPending] = useState<PendingSet>(new Set());
+  const [annExpanded, setAnnExpanded] = useState(false);
+  const [annOverflow, setAnnOverflow] = useState(false);
+  const announcementViewport = useRef<HTMLDivElement>(null);
+  const announcementContent = useRef<HTMLDivElement>(null);
+  const announcementId = useId();
+  const [challenges, setChallenges] = useState<Challenge[]>([]);
+  const [challengeTotal, setChallengeTotal] = useState(0);
+  const [challengePage, setChallengePage] = useState(1);
+  const [challengeReload, setChallengeReload] = useState(0);
+  const [challengeLoading, setChallengeLoading] = useState(false);
+  const [challengeError, setChallengeError] = useState(false);
+
+  useEffect(() => {
+    if (visible) setAnnExpanded(false);
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible || annExpanded) return;
+    const viewport = announcementViewport.current;
+    const content = announcementContent.current;
+    if (!viewport || !content) return;
+    const measure = () => setAnnOverflow(viewport.scrollHeight > viewport.clientHeight + 1);
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure);
+    observer?.observe(viewport);
+    observer?.observe(content);
+    window.addEventListener('resize', measure);
+    window.visualViewport?.addEventListener('resize', measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+      window.visualViewport?.removeEventListener('resize', measure);
+    };
+  }, [visible, annExpanded, announcements]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let alive = true;
+    setChallengeLoading(true);
+    setChallengeError(false);
+    void fetchChallenges('active', challengePage).then((result) => {
+      if (!alive) return;
+      setChallenges(result.items);
+      setChallengeTotal(result.total);
+    }).catch(() => {
+      if (alive) { setChallenges([]); setChallengeError(true); }
+    }).finally(() => { if (alive) setChallengeLoading(false); });
+    return () => { alive = false; };
+  }, [visible, challengePage, challengeReload]);
 
   // 公告 + 月份信息：两者互不依赖，并行请求；任一失败都不清空另一段
   useEffect(() => {
@@ -141,22 +183,27 @@ export default function ActivityCenterDrawer({ visible, onClose }: Props) {
 
         <div className="activity-drawer__body">
           {/* ── 公告 ── */}
-          <section className="activity-section">
+          <section className={`activity-section activity-announcements${annExpanded ? ' is-expanded' : ''}`}>
             <h3 className="activity-section__title">公告</h3>
-            {announcements.length === 0 ? (
-              <div className="activity-empty">{annLoading ? '加载中…' : '暂无公告'}</div>
-            ) : announcements.map((item) => (
-              <article key={item.id} className="activity-announcement">
-                <div className="activity-announcement__head">
-                  <span className="activity-announcement__title">{item.title}</span>
-                  {item.is_pinned && <span className="activity-announcement__pin">置顶</span>}
-                </div>
-                {item.published_at && (
-                  <div className="activity-announcement__time">{formatDateTimeShort(item.published_at)}</div>
-                )}
-                <p className="activity-announcement__content">{item.content}</p>
-              </article>
-            ))}
+            <div className="activity-announcements__viewport" ref={announcementViewport} id={announcementId}>
+              <div ref={announcementContent}>
+                {announcements.length === 0 ? (
+                  <div className="activity-empty">{annLoading ? '加载中…' : '暂无公告'}</div>
+                ) : announcements.map((item) => (
+                  <article key={item.id} className="activity-announcement">
+                    <div className="activity-announcement__head">
+                      <span className="activity-announcement__title">{item.title}</span>
+                      {item.is_pinned && <span className="activity-announcement__pin">置顶</span>}
+                    </div>
+                    {item.published_at && (
+                      <div className="activity-announcement__time">{formatDateTimeShort(item.published_at)}</div>
+                    )}
+                    <p className="activity-announcement__content">{item.content}</p>
+                  </article>
+                ))}
+              </div>
+            </div>
+            {annOverflow && <button type="button" className="activity-announcements__toggle" aria-expanded={annExpanded} aria-controls={announcementId} onClick={() => setAnnExpanded(!annExpanded)}>{annExpanded ? '收起内容' : '查看完整内容'}</button>}
           </section>
 
           {/* ── 优质问题 TOP 榜（与后台知识贡献榜问题榜同源） ── */}
@@ -218,6 +265,29 @@ export default function ActivityCenterDrawer({ visible, onClose }: Props) {
                 ))}
               </ol>
             )}
+          </section>
+
+          <section className="activity-section" aria-label="高价值问题">
+            <div className="activity-section__head">
+              <h3 className="activity-section__title">高价值问题</h3>
+              <button type="button" className="activity-section__link" onClick={() => { onClose(); navigate('/admin/knowledge/challenges'); }}>查看全部</button>
+            </div>
+            {challengeError ? <div className="activity-empty">高价值问题加载失败 <button type="button" className="activity-section__link" onClick={() => setChallengeReload((previous) => previous + 1)}>重试高价值问题</button></div>
+              : challengeLoading ? <div className="activity-empty">加载中…</div>
+                : challenges.length === 0 ? <div className="activity-empty">暂无高价值问题</div>
+                  : <ol className="featured-list">{challenges.map((challenge) => <li key={challenge.id} className="featured-item">
+                    <button type="button" className="featured-item__main" onClick={() => { onClose(); navigate(`/admin/knowledge/challenges/${challenge.id}`); }}>
+                      <span className="featured-item__info">
+                        <span className="featured-item__title">{challenge.title}</span>
+                        <span className="featured-item__project">悬赏 ¥{(challenge.bounty_fen / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} · {challenge.state === 'paused' ? '已暂停' : '征集中'} · {formatDateTimeShort(challenge.ends_at)}截止</span>
+                      </span>
+                    </button>
+                  </li>)}</ol>}
+            {challengeTotal > 20 && <div className="activity-challenge-pages" aria-label="高价值问题分页">
+              <button type="button" className="activity-section__link" disabled={challengeLoading || challengePage === 1} onClick={() => setChallengePage((previous) => previous - 1)}>上一页</button>
+              <span>{challengePage} / {Math.ceil(challengeTotal / 20)}</span>
+              <button type="button" className="activity-section__link" disabled={challengeLoading || challengePage * 20 >= challengeTotal} onClick={() => setChallengePage((previous) => previous + 1)}>下一页</button>
+            </div>}
           </section>
         </div>
       </aside>
