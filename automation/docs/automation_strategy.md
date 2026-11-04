@@ -158,7 +158,7 @@ CI 已配置于 `.github/workflows/`：
 | Workflow | 触发 | 内容 |
 |----------|------|------|
 | `test.yml` | push (hxg/develop) / PR → develop | 基础设施测试：MySQL 8.0 / Redis 7 / Qdrant 容器服务 + 后端/自动化测试 |
-| `ai-test.yml` | push (hxg/develop) / PR → develop，后端变更 | AI 用例生成 + 执行 |
+| `ticket-gate.yml` | push → test | 工单门禁：按 commit 工单号执行转正功能用例（真实后端）+ 回归（Mock） |
 
 本地可用 `automation/ci/scripts/` 下的 bat 脚本模拟 CI 通道：`run-fast-lane.bat`（框架库快速验证）、`run-full-lane.bat`（全量 API + Allure 报告）、`setup-env.bat`（环境准备）。
 
