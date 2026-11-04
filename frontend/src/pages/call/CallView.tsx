@@ -191,7 +191,6 @@ export default function CallView() {
               </div>
             }
           />
-          {/* 顶部公告条（无生效公告时组件自渲染为 null）；点击打开活动中心抽屉 */}
           <AnnouncementBar onOpen={() => setActivityOpen(true)} />
           <div className="call-full-chat">
             <ChatPanel scene="call" />
@@ -200,7 +199,6 @@ export default function CallView() {
       </div>
       {/* 会话抽屉 + 遮罩 */}
       <ConversationDrawer visible={drawerOpen} onClose={() => setDrawerOpen(false)} />
-      {/* 活动中心抽屉（公告全文 + 优质问题 TOP 榜）+ 遮罩 */}
       <ActivityCenterDrawer visible={activityOpen} onClose={() => setActivityOpen(false)} />
       {/* 车体扫码进入：车辆信息确认（仅该码「已发布/已出厂」时出现，用户关掉后本次访问不再弹） */}
       <VehicleConfirmDialog
