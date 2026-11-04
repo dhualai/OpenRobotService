@@ -21,7 +21,8 @@ import {
   type RewardStatus,
 } from '@/api/wxpay';
 import { requestMerchantTransfer } from '@/shared/utils/merchantTransfer';
-import { setShareMeta } from '@/shared/utils/shareMeta';
+import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 
 const PAGE_SIZE = 20;
 
@@ -186,12 +187,13 @@ export default function MyRewards() {
 
   const hasMore = items.length < total;
 
-  // 转发卡片（ORS-1086）：企微转发只能读页面 head，这里补上标题与描述（含默认 logo）。
+  // 转发卡片（ORS-1086）：企微转发只能读页面 head，这里补上标题与描述（含默认 logo）；
+  // 微信内再由 JS-SDK 精确指定卡片，两条链路都覆盖。
   useEffect(() => {
-    setShareMeta({
-      title: '我的奖励 · 摇人吧',
-      description: '摇人吧现金奖励：提单、解答、审核都有回报，可随时提现到微信零钱。',
-    });
+    const title = '我的奖励 · 摇人吧';
+    const desc = '摇人吧现金奖励：提单、解答、审核都有回报，可随时提现到微信零钱。';
+    setShareMeta({ title, description: desc });
+    void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
   }, []);
 
   return (

@@ -17,6 +17,9 @@ export const SHARE_SITE_NAME = '摇人吧';
 /** 默认 logo 文件名（放在 public/ 下，随构建产物部署到站点根） */
 const DEFAULT_LOGO_FILE = 'share-thumb.png';
 
+/** 默认 logo 的边长（px）：微信分享卡片建议 ≥300×300，改图时需同步改这里 */
+const DEFAULT_LOGO_SIZE = 300;
+
 /** 卡片字段（纯文本，不接受 HTML） */
 export interface ShareMetaInput {
   /** 卡片标题：同时写入 `document.title` */
@@ -122,6 +125,13 @@ export function setShareMeta(input: ShareMetaInput): void {
   if (image) {
     upsertMeta('og:image', image, 'property');
     upsertMeta('twitter:image', image, 'name');
+    // 只有默认 logo 的尺寸是确定的（微信建议 ≥300×300）；页面自定义配图不写死宽高，
+    // 否则会给抓取方错误信息，反而导致抓图失败。
+    if (image === shareImageUrl()) {
+      upsertMeta('og:image:width', String(DEFAULT_LOGO_SIZE), 'property');
+      upsertMeta('og:image:height', String(DEFAULT_LOGO_SIZE), 'property');
+      upsertMeta('og:image:type', 'image/png', 'property');
+    }
   }
   if (url) {
     upsertMeta('og:url', url, 'property');

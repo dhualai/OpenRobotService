@@ -35,6 +35,8 @@ import KnowledgeContributionCard from './KnowledgeContributionCard';
 import HighValueQuestionCard from './HighValueQuestionCard';
 import { fetchRewardStats, fenToYuan } from '@/api/wxpay';
 import { POLL_INTERVAL_MS } from '@/config/poll';
+import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
 
@@ -105,6 +107,15 @@ const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
 export default function Dashboard() {
   const navigate = useNavigate();
   const { hasPermission, projectIds, username, name, avatarResourceId } = useAuthStore();
+
+  // 转发卡片（ORS-1086）：后台首页也预置标题与描述，企微读 head、微信走 JS-SDK。
+  useEffect(() => {
+    const title = '后台管理 · 摇人吧';
+    const desc = '摇人吧后台：工单数据、跨项目进度与项目管理入口一屏总览。';
+    setShareMeta({ title, description: desc });
+    void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
+  }, []);
+
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
