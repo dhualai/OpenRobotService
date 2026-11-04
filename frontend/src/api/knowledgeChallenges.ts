@@ -5,11 +5,19 @@ export { uploadSpecDocImage as uploadChallengeAnswerImage } from '@/api/specDoc'
 const request = createRequest(`${API_CONFIG.ADMIN.BASE_URL}/knowledge/challenges`, '高价值问题');
 const fresh = { skipCache: true };
 
+export interface ChallengeAttachment {
+  id: string;
+  name: string;
+  size: number;
+  content_type: string;
+}
+
 export interface ChallengeAnswer {
   id: number;
   author: string;
   content: string;
   images?: string[];
+  attachments?: ChallengeAttachment[];
   like_count: number;
   submitted_at: string;
   is_mine: boolean;
@@ -31,6 +39,7 @@ export interface Challenge {
   version: number;
   source: 'standalone' | 'task';
   questioner: string;
+  publisher_username?: string | null;
   like_count: number;
   liked_by_me: boolean;
   can_like: boolean;
@@ -60,6 +69,7 @@ export interface ChallengeList {
 export interface MyChallengeAnswer {
   content: string;
   images?: string[];
+  attachments?: ChallengeAttachment[];
   version: number;
   submitted_at: string | null;
   remaining_edits: number;
@@ -82,7 +92,20 @@ export const fetchChallengeSource = (taskId: string) => request<{ title: string;
 export const createChallenge = (body: CreateChallengeBody) => request<ChallengeDetail>('', { method: 'POST', body: JSON.stringify(body) });
 export const publishChallenge = (id: number, version: number) => request<ChallengeDetail>(`/${id}/publish`, { method: 'POST', body: JSON.stringify({ version }) });
 export const fetchMyChallengeAnswer = (id: string) => request<MyChallengeAnswer>(`/${encodeURIComponent(id)}/my-answer`, fresh);
-export const saveChallengeAnswer = (id: string, content: string, version: number, submit = false, images?: string[]) => request<MyChallengeAnswer>(`/${encodeURIComponent(id)}/my-answer${submit ? '/submit' : ''}`, { method: submit ? 'POST' : 'PUT', body: JSON.stringify({ content, version, ...(images === undefined ? {} : { images }) }) });
+export const saveChallengeAnswer = (id: string, content: string, version: number, submit = false, images?: string[], attachments?: string[]) => request<MyChallengeAnswer>(`/${encodeURIComponent(id)}/my-answer${submit ? '/submit' : ''}`, { method: submit ? 'POST' : 'PUT', body: JSON.stringify({ content, version, ...(images === undefined ? {} : { images }), ...(attachments === undefined ? {} : { attachments }) }) });
+export function uploadChallengeAnswerAttachment(id: string, file: File) {
+  const body = new FormData();
+  body.append('file', file);
+  return request<ChallengeAttachment>(`/${encodeURIComponent(id)}/answer-attachments`, { method: 'POST', body, timeout: 120000 });
+}
+export async function downloadChallengeAnswerAttachment(id: string, attachment: ChallengeAttachment) {
+  const data = await request<ArrayBuffer>(`/${encodeURIComponent(id)}/answer-attachments/${encodeURIComponent(attachment.id)}`, { skipCache: true, responseType: 'arrayBuffer' });
+  const url = URL.createObjectURL(new Blob([data], { type: 'application/octet-stream' }));
+  const anchor = document.createElement('a');
+  anchor.href = url; anchor.download = attachment.name;
+  document.body.appendChild(anchor); anchor.click(); anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 export const likeChallenge = (challenge: Challenge) => request<ChallengeDetail>(`/${challenge.id}/like`, { method: challenge.liked_by_me ? 'DELETE' : 'PUT' });
 export const likeChallengeAnswer = (id: number, answer: ChallengeAnswer) => request<ChallengeDetail>(`/${id}/answers/${answer.id}/like`, { method: answer.liked_by_me ? 'DELETE' : 'PUT' });
 export const changeChallengeState = (id: number, body: { action: string; reason: string; version: number; ends_at?: string }) => request<ChallengeDetail>(`/${id}/state`, { method: 'PATCH', body: JSON.stringify(body) });
