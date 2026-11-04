@@ -20,6 +20,8 @@ from app.models.task import Task
 from app.models.wxpay import RewardRecord
 from app.modules.admin.services import knowledge_service as knowledge
 from app.modules.admin.services.knowledge_like_quota import check_question_quota
+from app.modules.admin.services.knowledge_public_links import redact_with_public_links
+from app.modules.admin.services.knowledge_challenge_attachments import attachment_details, validate_attachment_ids
 from app.modules.wxpay.schemas import GrantRewardIn
 from app.modules.wxpay.service import RewardService
 
@@ -83,16 +85,26 @@ def expect_version(challenge, version):
         raise HTTPException(409, "问题状态已变化，请刷新后重试")
 
 
-async def public_text(db, challenge, text, author_id=None):
+async def public_text(db, challenge, text, author_id=None, preserve_public_links=False):
     identities = {challenge.publisher_id, challenge.questioner_id, author_id}
     identities.update((await db.execute(select(KnowledgeChallengeAnswer.author_id).where(
         KnowledgeChallengeAnswer.challenge_id == challenge.id))).scalars().all())
     if challenge.task_id is not None:
         task = await db.get(Task, challenge.task_id)
         if task:
-            text = await knowledge.anonymous_text(db, task, text)
+            text = await knowledge.anonymous_text(db, task, text, preserve_public_links=preserve_public_links)
     identities.discard(None)
     users = (await db.execute(select(UserDB).where(UserDB.id.in_(identities)))).scalars().all()
+    if preserve_public_links:
+        def redact(value):
+            for user in users:
+                for term in (user.name, user.username, user.id, user.wechat_openid):
+                    if term and len(term) >= 2:
+                        value = value.replace(term, "[匿名]")
+            value = re.sub(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", "[邮箱已隐藏]", value)
+            return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[电话已隐藏]", value)
+
+        return redact_with_public_links(text, redact)
     for user in users:
         for term in (user.name, user.username, user.id, user.wechat_openid):
             if term and len(term) >= 2:
@@ -224,7 +236,7 @@ async def card(db, actor, challenge, user_id, votes=None):
         votes = (await db.execute(select(like_total_expression()).where(
             KnowledgeChallenge.id == challenge.id))).scalar_one()
     state = "settling" if challenge.state in ("active", "paused") and challenge.ends_at <= utcnow() else challenge.state
-    return {"id": challenge.id, "title": challenge.title, "bounty_fen": challenge.bounty_fen,
+    result = {"id": challenge.id, "title": challenge.title, "bounty_fen": challenge.bounty_fen,
         "ends_at": knowledge.iso(challenge.ends_at), "asked_at": knowledge.iso(challenge.asked_at),
         "state": state, "hidden": challenge.hidden, "version": challenge.version,
         "source": "task" if challenge.task_id is not None else "standalone",
@@ -232,6 +244,10 @@ async def card(db, actor, challenge, user_id, votes=None):
         "like_count": votes, "liked_by_me": await question_liked(db, challenge, user_id),
         "can_like": await can_like_question(db, challenge, user_id),
         "can_answer": accepting(challenge), "can_manage_state": can_manage(actor)}
+    if can_manage(actor):
+        publisher = await db.get(UserDB, challenge.publisher_id)
+        result["publisher_username"] = publisher.username if publisher else None
+    return result
 
 
 async def listing(db, actor, view="active", page=1, size=20):
@@ -283,6 +299,7 @@ async def detail(db, actor, challenge_id):
         items.append({"id": answer.id, "author": (author.name or author.username) if author else "未知用户",
             "content": entry["content"] if entry else answer.content,
             "images": entry.get("images", []) if entry else (answer.images or []),
+            "attachments": await attachment_details(db, entry.get("attachments", []) if entry else answer.attachments),
             "like_count": entry["likes"] if entry else await answer_votes(db, answer.id),
             "submitted_at": knowledge.iso(answer.submitted_at), "is_mine": answer.author_id == user_id,
             "is_best": answer.id == challenge.best_answer_id,
@@ -311,6 +328,8 @@ async def my_answer(db, actor, challenge_id):
         KnowledgeChallengeAnswer.author_id == user_id))).scalar_one_or_none()
     return {"content": (answer.draft_content if answer.draft_content is not None else answer.content) if answer else "",
         "images": ((answer.draft_images if answer.draft_images is not None else answer.images) or []) if answer else [],
+        "attachments": await attachment_details(db,
+            (answer.draft_attachments if answer.draft_attachments is not None else answer.attachments) if answer else []),
         "version": answer.version if answer else 0,
         "submitted_at": knowledge.iso(answer.submitted_at) if answer else None,
         "remaining_edits": remaining_answer_edits(answer),
@@ -325,7 +344,7 @@ async def community_result(db, actor, challenge_id):
     return result
 
 
-async def write_answer(db, actor, challenge_id, content, version, submit=False, images=None):
+async def write_answer(db, actor, challenge_id, content, version, submit=False, images=None, attachments=None):
     user_id = await knowledge.actor_id(db, actor)
     challenge = await get_challenge(db, challenge_id, actor, lock=True)
     ensure_open(challenge)
@@ -344,18 +363,25 @@ async def write_answer(db, actor, challenge_id, content, version, submit=False, 
         raise HTTPException(409, "该答案已隐藏，请联系管理员")
     if answer.submitted_at is not None and remaining_answer_edits(answer) == 0:
         raise HTTPException(409, "每个问题的已发布解答只能修改一次，本题修改机会已用完")
+    if attachments is not None:
+        attachments = await validate_attachment_ids(db, challenge.id, user_id, attachments)
     if submit and answer.submitted_at is not None:
         answer.history = [*answer.history, {"version": answer.version,
-            "content": answer.content, "images": answer.images or [], "at": knowledge.iso(utcnow())}]
+            "content": answer.content, "images": answer.images or [],
+            "attachments": answer.attachments or [], "at": knowledge.iso(utcnow())}]
     answer.version += 1
     answer.updated_at = utcnow()
     answer.draft_content = content
     answer.draft_images = list(images) if images is not None else (
         answer.draft_images if answer.draft_images is not None else (answer.images or []))
+    answer.draft_attachments = list(attachments) if attachments is not None else (
+        answer.draft_attachments if answer.draft_attachments is not None else (answer.attachments or []))
     if submit:
-        answer.content = await public_text(db, challenge, content.strip(), user_id)
+        answer.content = await public_text(db, challenge, content.strip(), user_id, preserve_public_links=True)
         answer.images = answer.draft_images
         answer.draft_images = None
+        answer.attachments = answer.draft_attachments
+        answer.draft_attachments = None
         answer.draft_content = None
         answer.submitted_at = answer.submitted_at or utcnow()
     ensure_open(challenge)
@@ -428,6 +454,7 @@ async def settle(db, challenge_id):
         KnowledgeChallengeAnswer.hidden.is_(False)))).scalars().all()
     entries = [{"id": answer.id, "content": answer.content, "submitted_at": knowledge.iso(answer.submitted_at),
         "images": answer.images or [],
+        "attachments": answer.attachments or [],
         "likes": await answer_votes(db, answer.id)} for answer in answers]
     entries.sort(key=lambda entry: (-entry["likes"], entry["submitted_at"], entry["id"]))
     challenge.snapshot = {"cutoff": knowledge.iso(challenge.ends_at), "rule_version": challenge.rule_version,
@@ -437,7 +464,7 @@ async def settle(db, challenge_id):
     challenge.state = "completed" if entries else "unanswered"
     challenge.settled_at, challenge.last_error = utcnow(), None
     challenge.version += 1
-    if entries:
+    if entries and challenge.bounty_fen > 0:
         winner = next(answer for answer in answers if answer.id == challenge.best_answer_id)
         user = await db.get(UserDB, winner.author_id)
         await RewardService.grant(db, GrantRewardIn(user_id=winner.author_id,

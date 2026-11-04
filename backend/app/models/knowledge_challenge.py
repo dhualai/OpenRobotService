@@ -42,11 +42,26 @@ class KnowledgeChallengeAnswer(Base):
     draft_content = Column(Text, nullable=True)
     images = Column(JSON, nullable=True)
     draft_images = Column(JSON, nullable=True)
+    attachments = Column(JSON, nullable=True)
+    draft_attachments = Column(JSON, nullable=True)
     submitted_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=False)
     version = Column(Integer, nullable=False, default=1)
     hidden = Column(Boolean, nullable=False, default=False)
     history = Column(JSON, nullable=False, default=list)
+
+
+class KnowledgeChallengeAttachment(Base):
+    __tablename__ = "knowledge_challenge_attachments"
+
+    id = Column(String(32), primary_key=True)
+    challenge_id = Column(Integer, nullable=False, index=True)
+    uploader_id = Column(String(64), nullable=False)
+    filename = Column(String(255), nullable=False)
+    size = Column(Integer, nullable=False)
+    content_type = Column(String(128), nullable=False)
+    object_path = Column(String(512), nullable=False)
+    created_at = Column(DateTime, nullable=False)
 
 
 class KnowledgeChallengeLike(Base):

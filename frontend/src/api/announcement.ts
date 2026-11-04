@@ -8,7 +8,6 @@
 //   PUT/DELETE /api/admin/announcements/{id}
 //   POST       /api/admin/announcements/{id}/publish | /offline
 //
-// 首页公告条只常驻一条（后端排序：已发布 → 置顶优先 → 发布时间倒序），不轮播。
 
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';

@@ -2,9 +2,9 @@ name: Test
 
 on:
   push:
-    branches: [hxg, develop, test]
+    branches: [test]
   pull_request:
-    branches: [develop, test]
+    branches: [test]
 
 env:
   PYTHON_VERSION: "3.11"
@@ -276,7 +276,7 @@ jobs:
           keep_reports: 20
 
       - name: Deploy report to GitHub Pages
-        if: github.ref == 'refs/heads/develop'
+        if: github.ref == 'refs/heads/test'
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

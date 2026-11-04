@@ -162,7 +162,6 @@ USE_MOCK=0 REAL_API_BASE_URL=http://localhost:8400 pytest tests/real -m smoke -v
 
 | 脚本 | 用途 |
 |------|------|
-| `scripts/cli-merge-ai-cases.py` | 合并 AI 生成用例（`--dry-run` 预览） |
 | `scripts/cli-compare-ai-runs.py` | 对比 AI 评估运行记录 |
 | `scripts/cli-update-bad-cases.py` | 更新 AI bad-case 台账 |
 | `scripts/cli-gen-case-inventory.py` | 生成用例清单 |
