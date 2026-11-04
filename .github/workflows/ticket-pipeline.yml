@@ -1,0 +1,93 @@
+name: Ticket-Driven Test Pipeline
+
+# 本文件为 main 注册壳：workflow_dispatch 按钮与 cron 定时只认默认分支上的
+# 工作流文件，因此注册在 main；实际执行代码取 test 分支（正文与代码随 test 演进，
+# 修改本工作流请直接改 test 分支，勿在 main 上单独维护）。
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * 1-5"
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  generate:
+    name: Scan and generate candidate cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test
+
+      - name: Gate - ticket pipeline enabled?
+        id: gate
+        run: |
+          if [ "${{ vars.TICKET_PIPELINE_ENABLED }}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TICKET_PIPELINE_ENABLED 未开启，跳过"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -e automation/
+
+      - name: Extract OpenAPI spec
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          AI_EXTRACT_SKIP_DB: "1"
+        run: |
+          python automation/ci_ai_gen/extract_api.py \
+            --out automation/references/spec \
+            --backend-path backend
+
+      - name: Prepare SSH key
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PROD_TICKET_SSH_PRIVATE_KEY"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$PROD_TICKET_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/prod_ticket_key"
+          chmod 600 "$HOME/.ssh/prod_ticket_key"
+          echo "PROD_TICKET_SSH_KEY=$HOME/.ssh/prod_ticket_key" >> "$GITHUB_ENV"
+
+      - name: Run ticket pipeline
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
+          PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
+          PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
+          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
+          PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
+          PROD_TICKET_EXCLUDE_SOURCES: "ai"
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+        run: |
+          python automation/scripts/cli-ticket-pipeline.py run \
+            --limit 20 \
+            --statuses new \
+            --task-types feature \
+            --tag "" \
+            --spec-dir automation/references/spec
+
+      - name: Upload candidate cases
+        if: steps.gate.outputs.enabled == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticket-generated-cases
+          path: automation/references/generated-cases/tickets/
