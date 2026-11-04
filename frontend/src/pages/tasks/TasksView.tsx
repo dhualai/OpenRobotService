@@ -5,7 +5,8 @@ import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { navigateInWechat } from '@/shared/utils/wechatJsSdk';
+import { navigateInWechat, setupWechatShare } from '@/shared/utils/wechatJsSdk';
+import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
 import {
   captureTasksListScrollFromDom,
   clearTasksListScroll,
@@ -885,6 +886,14 @@ export default function TasksView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
   const adminRequest = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
+
+  // 转发卡片（ORS-1086）：系统任务列表页预置标题与描述（企微读 head、微信走 JS-SDK）。
+  useEffect(() => {
+    const title = '系统任务 · 摇人吧';
+    const desc = '摇人吧系统任务：待处理工单与协作进展，进来就能接着干。';
+    setShareMeta({ title, description: desc });
+    void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
+  }, []);
 
   const {
     tasksRefreshKey, ticketDraft, consumeTicketDraft, refreshTasks,
