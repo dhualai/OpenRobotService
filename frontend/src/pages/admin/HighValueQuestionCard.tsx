@@ -24,7 +24,7 @@ export function ChallengeSummary({ challenge, rank }: { challenge: Challenge; ra
   return <div className="challenge-summary">
     {rank !== undefined && <span className="knowledge-board-preview__rank">{rank}</span>}
     <span className="challenge-summary__text"><strong>{challenge.title}</strong><small>{challenge.like_count}人也遇到 · {knowledgeTime(challenge.ends_at)}截止</small></span>
-    <span className="knowledge-ranking-prize">{knowledgeMoney(challenge.bounty_fen)}<small>悬赏奖金</small></span>
+    <span className="knowledge-ranking-prize">{knowledgeMoney(challenge.bounty_fen)}<small>悬赏奖金</small>{challenge.publisher_username && <small className="challenge-publisher">发布者：{challenge.publisher_username}</small>}</span>
   </div>;
 }
 

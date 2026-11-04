@@ -18,7 +18,7 @@ export function parseBountyFen(value: string) {
   if (!/^\d+(\.\d{1,2})?$/.test(value.trim())) throw new Error('请输入有效奖金，最多两位小数');
   const [whole, decimal = ''] = value.trim().split('.');
   const amount = Number(whole) * 100 + Number(decimal.padEnd(2, '0'));
-  if (!Number.isSafeInteger(amount) || amount < 1 || amount > 2147483647) throw new Error('请填写有效的悬赏奖金');
+  if (!Number.isSafeInteger(amount) || amount < 0 || amount > 2147483647) throw new Error('请填写有效的悬赏奖金');
   return amount;
 }
 
