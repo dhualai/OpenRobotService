@@ -11,10 +11,17 @@ import ActivityCenterDrawer from '@/shared/components/ActivityCenterDrawer';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import VehicleConfirmDialog from '@/shared/components/VehicleConfirmDialog';
+import NewcomerBonusDialog from '@/shared/components/NewcomerBonusDialog';
 import { qaListTickets } from '@/api/ai';
 import { fetchQrcodeByScene } from '@/api/qrcode';
+import { fetchNewcomerBonusStatus, type NewcomerBonusStatus } from '@/api/wxpay';
 import { useWorkbenchStore, type VehicleContext } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
+import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
+
+/** 新人红包弹窗「已提示」标记：同一浏览器只弹一次（后端也会按「已领取」拦第二次） */
+const BONUS_PROMPT_KEY = 'ors1086_newcomer_bonus_prompted';
 
 /** 码记录状态「已发布」即车辆已出厂，才进入信息确认流程（其余状态给出提示，见下方 effect） */
 const STATUS_PUBLISHED = 'published';
@@ -59,6 +66,9 @@ export default function CallView() {
   const [vehicleConfirming, setVehicleConfirming] = useState(false);
   // 活动中心抽屉（公告条点开）
   const [activityOpen, setActivityOpen] = useState(false);
+  // 新人红包弹窗（ORS-1086）：进「我要摇人」时按后端口径判断能不能领
+  const [bonusStatus, setBonusStatus] = useState<NewcomerBonusStatus | null>(null);
+  const [bonusVisible, setBonusVisible] = useState(false);
   // 同一个场景值只查一次、只弹一次（用户关掉后本次访问不再重弹）
   const handledSceneRef = useRef<string | null>(null);
 
@@ -72,6 +82,22 @@ export default function CallView() {
       } catch { /* ignore */ }
     })();
   }, [tasksRefreshKey, username, isAdmin]);
+
+  // 新人红包（ORS-1086）：进「我要摇人」弹一次。
+  // 能不能领由后端口径决定（新关注公众号 + 未领过）；同一浏览器只提示一次，
+  // 领取成功后直接跳「我的奖励」，由用户自己点提现到微信零钱。
+  useEffect(() => {
+    (async () => {
+      try {
+        if (window.localStorage.getItem(BONUS_PROMPT_KEY)) return;
+        const status = await fetchNewcomerBonusStatus();
+        if (!status?.eligible || status.claimed) return;
+        setBonusStatus(status);
+        setBonusVisible(true);
+        window.localStorage.setItem(BONUS_PROMPT_KEY, '1');
+      } catch { /* 静默失败：不影响正常对话 */ }
+    })();
+  }, []);
 
   // 车体扫码进入监听：解析 scene → 查一次码记录 → 仅「已发布（出厂）」才弹车辆信息确认。
   // 未携带 scene（Tab / 登录 / 根路径跳转等日常入口）保持静默；而查无此码 / 查询异常 /
@@ -104,6 +130,16 @@ export default function CallView() {
       setVehicleDialogVisible(true);
     })();
   }, [sceneCode, searchParams, setSearchParams]);
+
+  // 转发卡片（ORS-1086）：进「我要摇人」即预置本页的分享卡片。
+  // 企微无 JS-SDK，只能读 head（setShareMeta 写 og 标签）；微信内再由 JS-SDK 精确指定
+  // 标题/描述/logo，转发出去不再是一张空白卡片。
+  useEffect(() => {
+    const title = '摇人吧 · 机器人行业问题求助';
+    const desc = '有问题就摇人：提单、跟踪、闭环，全程有回报。';
+    setShareMeta({ title, description: desc });
+    void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
+  }, []);
 
   /** 点「暂不」/遮罩：只关弹窗，保持当前对话不动 */
   const handleVehicleCancel = useCallback(() => {
@@ -175,6 +211,16 @@ export default function CallView() {
         onConfirm={handleVehicleConfirm}
         onEdit={handleVehicleEdit}
         onCancel={handleVehicleCancel}
+      />
+      {/* 新人红包（ORS-1086）：仅新关注公众号且未领过的用户可见；领取后跳「我的奖励」自行提现 */}
+      <NewcomerBonusDialog
+        visible={bonusVisible}
+        status={bonusStatus}
+        onClose={() => setBonusVisible(false)}
+        onClaimed={() => {
+          setBonusVisible(false);
+          navigate('/rewards');
+        }}
       />
     </div>
   );

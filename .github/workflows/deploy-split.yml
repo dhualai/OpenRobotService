@@ -524,14 +524,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          body=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/prod-release-notes" \
-                   --jq '.body' 2>/dev/null || true)
-          if [ -n "${body//[[:space:]]/}" ]; then
-            printf '%s\n' "$body" > _artifacts/deploy/RELEASE_NOTES.md
-            echo "已用上次成功的发行说明覆盖人工版（$(wc -c < _artifacts/deploy/RELEASE_NOTES.md) 字节）"
-          else
-            echo "没有历史发行说明（首次发布或读取失败），沿用 docs/RELEASE_NOTES.md"
-          fi
+          # 交给脚本取 Release body，不要在这里直接 `gh api ... --jq '.body'`：
+          # Release 不存在时 gh 会把 404 的错误 JSON 打到 stdout（--jq 不生效），
+          # 那段 JSON 会被当成发行说明写进文件，把手写版覆盖成脏内容，通知侧
+          # 解析不到「## 未发布」区 → 生产卡片退化成没有更新日志区的 standard 版面。
+          python deploy/fetch_release_notes.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag prod-release-notes \
+            --out _artifacts/deploy/RELEASE_NOTES.md
 
       # 自动发行说明：上次生产发布以来的已合并 PR → LLM 归纳去重，成功才覆盖上一步
       # 铺底的版本（上次发行说明或人工版）。窗口起点由 plan 的 Resolve release window

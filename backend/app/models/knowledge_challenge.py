@@ -40,6 +40,8 @@ class KnowledgeChallengeAnswer(Base):
     author_id = Column(String(64), nullable=False)
     content = Column(Text, nullable=False, default="")
     draft_content = Column(Text, nullable=True)
+    images = Column(JSON, nullable=True)
+    draft_images = Column(JSON, nullable=True)
     submitted_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=False)
     version = Column(Integer, nullable=False, default=1)

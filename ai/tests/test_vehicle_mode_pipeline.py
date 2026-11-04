@@ -165,6 +165,18 @@ async def test_domains_vehicle_filtered_company():
     team_any = list(domains[1][2].must[0].match.any)
     assert "USP/manual" in team_any
     assert "USP/ui_pages" in team_any
+    # 诊断卡（usp_cards）：目录名是 USP/diagnosis_cards/ 但入库 sub_domain 是
+    # usp_cards——「机器人问题诊断页」类答案出自它，漏了就说「没有整本手册」
+    assert "usp_cards" in team_any
+    # 平台错误码（排障最常引用）+ FAQ + 模块文档 + 术语表
+    assert "USP/error_codes" in team_any
+    assert "USP/faq" in team_any
+    assert "USP/overview" in team_any
+    assert "USP/terminology" in team_any
+    # 有意排除：算法实现 / 翻译对照 / 另一产品线（挤占名额且与手册无关）
+    assert "USP/algorithm" not in team_any
+    assert "USP/translation" not in team_any
+    assert "ORS" not in team_any
     # 老 metadata 没有车型族文件白名单
     assert files is None
 

@@ -10980,3 +10980,24 @@ button.dispatch-dev__rate-row { cursor: pointer; }
 }
 .ann-editor__switch-row .ann-editor__label { margin-bottom: 0; }
 .ann-editor__btns { display: flex; gap: 10px; }
+
+/* ══ 新人红包弹窗（ORS-1086）═════════════════════════════════════
+   极简风：粗体小标题 + 大字金额 + 一行说明 + 主按钮，不加彩色图标与花哨元素。 */
+.newcomer-bonus {
+  width: 78vw; max-width: 320px; padding: 22px 20px 16px;
+  background: var(--card); border-radius: 16px; box-sizing: border-box;
+}
+.newcomer-bonus__title {
+  margin: 0 0 12px; font-size: 15px; font-weight: 700; color: var(--foreground);
+}
+.newcomer-bonus__amount {
+  margin: 0 0 12px; font-size: 34px; font-weight: 700; color: #e37318; line-height: 1.1;
+}
+.newcomer-bonus__currency { font-size: 20px; margin-right: 2px; }
+.newcomer-bonus__desc {
+  margin: 0 0 20px; font-size: 13px; line-height: 1.75; color: var(--muted-foreground);
+}
+.newcomer-bonus__actions { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.newcomer-bonus__later {
+  all: unset; font-size: 13px; color: var(--muted-foreground); cursor: pointer; padding: 4px 10px;
+}
