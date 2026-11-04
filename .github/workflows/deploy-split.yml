@@ -1000,3 +1000,75 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  # 部署成功后自动生成工单候选用例（摇人吧未解决需求/bug 工单）。
+  # 与部署结果解耦：本 job 失败不改变部署结论，产物以 artifact 上传供人工 review。
+  # 过滤口径由环境变量驱动（scanner 的 SQL 层过滤只读 env，CLI 参数仅是二次过滤）：
+  #   - 状态：未解决集合（new/in_progress/pending/pending_requested）
+  #   - 类型：feature/bug
+  #   - 不排除 ai 来源（摇人吧工单绝大多数为 AI 转单；生成只写本地候选文件，不写工单）
+  ticket-cases:
+    name: Generate ticket test cases
+    needs: [plan, deploy]
+    if: ${{ !cancelled() && needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 与本次部署同一 ref，保证接口规格与代码版本一致
+          ref: ${{ needs.plan.outputs.git_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -e automation/
+
+      - name: Extract OpenAPI spec
+        env:
+          AI_EXTRACT_SKIP_DB: "1"
+        run: |
+          python automation/ci_ai_gen/extract_api.py \
+            --out automation/references/spec \
+            --backend-path backend
+
+      - name: Prepare SSH key
+        env:
+          PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PROD_TICKET_SSH_PRIVATE_KEY"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$PROD_TICKET_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/prod_ticket_key"
+          chmod 600 "$HOME/.ssh/prod_ticket_key"
+          echo "PROD_TICKET_SSH_KEY=$HOME/.ssh/prod_ticket_key" >> "$GITHUB_ENV"
+
+      - name: Run ticket pipeline
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
+          PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
+          PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
+          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
+          PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
+          PROD_TICKET_STATUSES: "new,in_progress,pending,pending_requested"
+          PROD_TICKET_TASK_TYPES: "feature,bug"
+          PROD_TICKET_EXCLUDE_SOURCES: ""
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          python automation/scripts/cli-ticket-pipeline.py run \
+            --limit 20 \
+            --spec-dir automation/references/spec
+
+      - name: Upload candidate cases
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticket-generated-cases-${{ needs.plan.outputs.environment }}-${{ github.run_id }}
+          path: automation/references/generated-cases/tickets/
+          if-no-files-found: warn
+          retention-days: 30
+
