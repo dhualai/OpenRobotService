@@ -1,7 +1,0 @@
-{
-  "method": "DELETE",
-  "url": "http://mock.local/api/admin/users/testadmin",
-  "headers": {
-    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NTQ3NjkuNjUyMDc0OCwgImlhdCI6IDE3OTM4NTExNjkuNjUyMDc1M30.bW9jay1zaWc"
-  }
-}

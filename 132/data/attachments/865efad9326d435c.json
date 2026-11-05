@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/call/my-tasks/",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NzAzNTIuNTcyOTkwNCwgImlhdCI6IDE3OTM4NjY3NTIuNTcyOTkwN30.bW9jay1zaWc"
+  }
+}

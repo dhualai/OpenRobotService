@@ -1,3 +1,0 @@
-2026-11-05 03:59:27 | [32mINFO | httpx | HTTP Request: GET http://test/api/tasks/1/spec-doc "HTTP/1.1 200 OK"
-2026-11-05 03:59:27 | [32mINFO | httpx | HTTP Request: PUT http://test/api/tasks/1/spec-doc "HTTP/1.1 200 OK"
-2026-11-05 03:59:27 | [32mINFO | httpx | HTTP Request: GET http://test/api/tasks/1/spec-doc "HTTP/1.1 200 OK"

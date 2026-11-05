@@ -1,0 +1,4 @@
+2026-11-05 08:19:09 | [32mINFO | automation.clients.ApiClient | Connected to API: http://localhost:8400
+2026-11-05 08:19:09 | [32mINFO | httpx | HTTP Request: POST http://localhost:8400/api/auth/login "HTTP/1.1 200 OK"
+2026-11-05 08:19:09 | [32mINFO | httpx | HTTP Request: GET http://localhost:8400/api/auth/me "HTTP/1.1 200 OK"
+2026-11-05 08:19:09 | [32mINFO | automation.clients.ApiClient | API client disconnected

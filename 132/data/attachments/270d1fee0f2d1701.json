@@ -1,0 +1,15 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NzAzNTIuNzI1NTc0MywgImlhdCI6IDE3OTM4NjY3NTIuNzI1NTc0NX0.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "Full task",
+    "description": "Full",
+    "priority": "high",
+    "tags": [
+      "urgent"
+    ]
+  }
+}

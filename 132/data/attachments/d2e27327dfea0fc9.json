@@ -1,0 +1,33 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/tasks",
+  "reason": "OK",
+  "headers": {
+    "content-length": "437",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": 1,
+    "title": "支持任务",
+    "description": "支持描述",
+    "ticket_type": "support",
+    "priority": "medium",
+    "status": "pending",
+    "created_by": "testadmin",
+    "assigned_to": null,
+    "customer": null,
+    "project_name": null,
+    "project_id": null,
+    "tags": [],
+    "metadata_info": {},
+    "attachments": [],
+    "created_at": "2026-11-05T08:19:12",
+    "updated_at": "2026-11-05T08:19:12",
+    "resolved_at": null,
+    "closed_at": null,
+    "deadline_at": null,
+    "reply_count": 0,
+    "view_count": 0,
+    "comments": []
+  }
+}

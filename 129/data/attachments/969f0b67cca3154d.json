@@ -1,7 +1,0 @@
-{
-  "method": "GET",
-  "url": "http://mock.local/api/admin/users/",
-  "headers": {
-    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NTQ3NjkuNjM3MTUyLCAiaWF0IjogMTc5Mzg1MTE2OS42MzcxNTI0fQ.bW9jay1zaWc"
-  }
-}

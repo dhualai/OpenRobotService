@@ -1,7 +1,0 @@
-{
-  "method": "GET",
-  "url": "http://mock.local/api/call/messages/1",
-  "headers": {
-    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NTQ3NzAuMDgzNTAyLCAiaWF0IjogMTc5Mzg1MTE3MC4wODM1MDIzfQ.bW9jay1zaWc"
-  }
-}

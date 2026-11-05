@@ -1,0 +1,4 @@
+2026-11-05 08:19:12 | [32mINFO | automation.clients.ApiClient | Connected to API: http://mock.local
+2026-11-05 08:19:12 | [32mINFO | httpx | HTTP Request: POST http://mock.local/api/auth/login "HTTP/1.1 200 OK"
+2026-11-05 08:19:12 | [32mINFO | httpx | HTTP Request: GET http://mock.local/api/tasks/stats/overview "HTTP/1.1 200 OK"
+2026-11-05 08:19:12 | [32mINFO | automation.clients.ApiClient | API client disconnected

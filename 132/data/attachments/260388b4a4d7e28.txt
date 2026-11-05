@@ -1,0 +1,2 @@
+2026-11-05 08:19:10 | [32mINFO | httpx | HTTP Request: PUT http://test/api/tasks/1/spec-doc "HTTP/1.1 422 Unprocessable Entity"
+2026-11-05 08:19:10 | [32mINFO | httpx | HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"

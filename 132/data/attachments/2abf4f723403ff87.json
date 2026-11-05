@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NzAzNTIuNzU4OTc5MywgImlhdCI6IDE3OTM4NjY3NTIuNzU4OTc5Nn0.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "非法类型任务",
+    "description": "描述",
+    "ticket_type": "invalid"
+  }
+}

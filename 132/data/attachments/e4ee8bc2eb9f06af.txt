@@ -1,0 +1,3 @@
+2026-11-05 08:19:10 | [32mINFO | httpx | HTTP Request: POST http://test/api/auth/login "HTTP/1.1 200 OK"
+2026-11-05 08:19:10 | [32mINFO | httpx | HTTP Request: POST http://test/api/tasks/ "HTTP/1.1 200 OK"
+2026-11-05 08:19:10 | [32mINFO | httpx | HTTP Request: GET http://test/api/tasks/ "HTTP/1.1 200 OK"
