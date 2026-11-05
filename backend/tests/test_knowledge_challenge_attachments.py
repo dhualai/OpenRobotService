@@ -282,7 +282,10 @@ async def test_hidden_answers_and_questions_do_not_expose_document_downloads(db,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("privilege", [{"is_admin": True}, {"permissions": ["admin"]}, {"can_manage_knowledge_challenges": True}, {}])
-async def test_publisher_username_only_in_administrator_payloads(db, monkeypatch, privilege):
+async def test_publisher_display_uses_users_name_only_for_administrators(db, monkeypatch, privilege):
+    publisher = await db.get(UserDB, "reviewer")
+    publisher.wechat_openid = "wx-publisher-openid"
+    await db.commit()
     challenge = await published(db)
     reader = {**actor("voter"), **privilege}
     responses = [(await challenges.listing(db, reader))["items"][0], await challenges.detail(db, reader, challenge["id"])]
@@ -291,11 +294,14 @@ async def test_publisher_username_only_in_administrator_payloads(db, monkeypatch
     await challenges.settle(db, challenge["id"])
     responses.append(await challenges.community_result(db, reader, challenge["id"]))
     for response in responses:
+        serialized = json.dumps(response, ensure_ascii=False)
         if privilege:
-            assert response["publisher_username"] == "reviewer-account"
+            assert response["publisher_username"] == publisher.name == "审核丙"
         else:
             assert "publisher_username" not in response
-            assert "reviewer-account" not in json.dumps(response)
+            assert publisher.name not in serialized
+        assert publisher.username not in serialized
+        assert publisher.wechat_openid not in serialized
         assert "publisher_id" not in response
 
 
@@ -310,7 +316,25 @@ def test_publisher_is_filtered_in_list_overview_and_detail_api(db, api):
         current["actor"] = {**actor("voter"), "can_manage_knowledge_challenges": administrator}
         for path in ("/knowledge/challenges", "/knowledge/challenges/overview", base):
             payload = client.get(path).json()
-            assert ("reviewer-account" in json.dumps(payload)) is administrator
+            serialized = json.dumps(payload, ensure_ascii=False)
+            assert ("审核丙" in serialized) is administrator
+            assert "reviewer-account" not in serialized
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, ""])
+async def test_missing_publisher_name_does_not_fall_back_to_account_or_wechat_id(db, name):
+    publisher = await db.get(UserDB, "reviewer")
+    publisher.name = name
+    publisher.wechat_openid = "wx-publisher-openid"
+    await db.commit()
+    challenge = await published(db)
+    reader = {**actor("voter"), "is_admin": True}
+    responses = [(await challenges.listing(db, reader))["items"][0], await challenges.detail(db, reader, challenge["id"])]
+    for response in responses:
+        assert response["publisher_username"] == name
+        assert publisher.username not in json.dumps(response)
+        assert publisher.wechat_openid not in json.dumps(response)
 
 
 @pytest.mark.asyncio

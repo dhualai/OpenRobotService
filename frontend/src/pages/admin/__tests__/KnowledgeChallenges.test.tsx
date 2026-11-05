@@ -61,20 +61,29 @@ describe('高价值问题交互', () => {
     await waitFor(() => expect(done).toHaveBeenCalledWith(1));
     expect(api.createChallenge).toHaveBeenCalledWith(expect.objectContaining({ bounty_fen: 0 }));
   });
-  it.each([true, false])('详情页按服务端授权显示奖金下方的发布者：%s', async (allowed) => {
-    api.fetchChallenge.mockResolvedValue({ ...challenge(), ...(allowed ? { publisher_username: 'publisher-account' } : {}) });
+  it.each([true, false])('详情页按服务端授权显示奖金下方的发布者名称：%s', async (allowed) => {
+    api.fetchChallenge.mockResolvedValue({ ...challenge(), ...(allowed ? { publisher_username: '张三' } : {}) });
     detailPage();
     await screen.findByRole('heading', { name: '高价值问题1' });
     if (allowed) {
-      const publisher = screen.getByText('发布者：publisher-account');
+      const publisher = screen.getByText('发布者：张三');
       expect(publisher).toBeVisible();
       expect(publisher.closest('.challenge-prize')).toHaveTextContent('最佳解答悬赏');
     } else expect(screen.queryByText(/发布者：/)).toBeNull();
   });
-  it.each([true, false])('列表摘要按服务端授权显示奖金下方的发布者：%s', (allowed) => {
-    wrapped(<ChallengeSummary challenge={{ ...challenge(), ...(allowed ? { publisher_username: 'publisher-account' } : {}) }} />);
-    if (allowed) expect(screen.getByText('发布者：publisher-account').closest('.knowledge-ranking-prize')).toHaveTextContent('悬赏奖金');
+  it.each([true, false])('列表摘要按服务端授权显示奖金下方的发布者名称：%s', (allowed) => {
+    wrapped(<ChallengeSummary challenge={{ ...challenge(), ...(allowed ? { publisher_username: '张三' } : {}) }} />);
+    if (allowed) expect(screen.getByText('发布者：张三').closest('.knowledge-ranking-prize')).toHaveTextContent('悬赏奖金');
     else expect(screen.queryByText(/发布者：/)).toBeNull();
+  });
+  it.each([null, ''])('发布者名称为空时不显示账号或微信ID：%s', async (name) => {
+    const detail = { ...challenge(), publisher_username: name };
+    api.fetchChallenge.mockResolvedValue(detail);
+    detailPage();
+    await screen.findByRole('heading', { name: '高价值问题1' });
+    expect(screen.queryByText(/发布者：/)).toBeNull();
+    wrapped(<ChallengeSummary challenge={detail} />);
+    expect(screen.queryByText(/发布者：/)).toBeNull();
   });
   it('文档上传完成后随答案发布，上传中禁止保存和提交', async () => {
     const attachment = documentAttachment();
