@@ -1,0 +1,13 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/ai/qa/ticket/ack",
+  "reason": "OK",
+  "headers": {
+    "content-length": "39",
+    "content-type": "application/json"
+  },
+  "body": {
+    "ticket_id": 1,
+    "status": "acknowledged"
+  }
+}

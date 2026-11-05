@@ -1,0 +1,2 @@
+INFO     automation.clients.QdrantClient:qdrant_client.py:41 Connected to Qdrant: test-qdrant:6333
+INFO     automation.clients.QdrantClient:qdrant_client.py:51 Qdrant client disconnected

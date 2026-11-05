@@ -1,0 +1,20 @@
+{
+  "status_code": 422,
+  "url": "http://mock.local/api/admin/projects/risks",
+  "reason": "Unprocessable Entity",
+  "headers": {
+    "content-length": "59",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": [
+      {
+        "loc": [
+          "body",
+          "name"
+        ],
+        "msg": "field required"
+      }
+    ]
+  }
+}

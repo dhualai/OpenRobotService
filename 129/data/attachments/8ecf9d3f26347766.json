@@ -1,0 +1,20 @@
+{
+  "status_code": 422,
+  "url": "http://mock.local/api/admin/users",
+  "reason": "Unprocessable Entity",
+  "headers": {
+    "content-length": "63",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": [
+      {
+        "loc": [
+          "body",
+          "username"
+        ],
+        "msg": "field required"
+      }
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/auth/login",
+  "body": {
+    "username": "u1_auto",
+    "password": "123456"
+  }
+}

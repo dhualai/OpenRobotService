@@ -1,0 +1,1 @@
+INFO     automation.test_dir:test_logger.py:125 dir created

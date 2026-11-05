@@ -1,0 +1,19 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/admin/roles/",
+  "reason": "OK",
+  "headers": {
+    "content-length": "52",
+    "content-type": "application/json"
+  },
+  "body": [
+    {
+      "id": 1,
+      "name": "admin"
+    },
+    {
+      "id": 2,
+      "name": "engineer"
+    }
+  ]
+}

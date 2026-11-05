@@ -1,0 +1,12 @@
+{
+  "status_code": 403,
+  "url": "http://mock.local/api/admin/users",
+  "reason": "Forbidden",
+  "headers": {
+    "content-length": "34",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Admin access required"
+  }
+}

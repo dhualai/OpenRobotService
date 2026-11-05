@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "url": "http://localhost:8400/api/auth/login",
+  "body": {
+    "username": "admin",
+    "password": "usp2026@EP"
+  }
+}

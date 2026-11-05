@@ -1,0 +1,4 @@
+INFO     automation.clients.ApiClient:api_client.py:56 Connected to API: http://mock.local
+INFO     httpx:_client.py:1740 HTTP Request: POST http://mock.local/api/auth/login "HTTP/1.1 200 OK"
+INFO     httpx:_client.py:1740 HTTP Request: GET http://mock.local/api/admin/users "HTTP/1.1 200 OK"
+INFO     automation.clients.ApiClient:api_client.py:63 API client disconnected

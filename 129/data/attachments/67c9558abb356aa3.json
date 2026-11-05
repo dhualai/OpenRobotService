@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/call/conversations/1",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NTQ3NjkuOTU5MzI1LCAiaWF0IjogMTc5Mzg1MTE2OS45NTkzMjU4fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "Updated conv"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/health",
+  "reason": "OK",
+  "headers": {
+    "content-length": "20",
+    "content-type": "application/json"
+  },
+  "body": {
+    "status": "healthy"
+  }
+}

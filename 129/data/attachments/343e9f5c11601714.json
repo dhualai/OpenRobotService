@@ -1,0 +1,28 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/tasks/1/assign",
+  "reason": "OK",
+  "headers": {
+    "content-length": "351",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": 1,
+    "title": "Default task",
+    "description": "Seeded for tests",
+    "ticket_type": "problem",
+    "priority": "medium",
+    "status": "pending",
+    "created_by": "system",
+    "assigned_to": null,
+    "tags": [],
+    "metadata_info": {},
+    "attachments": [],
+    "created_at": "2026-11-05T03:59:30",
+    "updated_at": "2026-11-05T03:59:30",
+    "resolved_at": null,
+    "closed_at": null,
+    "reply_count": 0,
+    "view_count": 0
+  }
+}

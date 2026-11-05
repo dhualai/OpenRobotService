@@ -1,0 +1,14 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/tasks/cuiban-notification",
+  "reason": "OK",
+  "headers": {
+    "content-length": "50",
+    "content-type": "application/json"
+  },
+  "body": {
+    "success": true,
+    "task_id": 1,
+    "message": "Urge sent"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/qa/ask/stream",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NTQ3NzAuMDEwOTM0NiwgImlhdCI6IDE3OTM4NTExNzAuMDEwOTM0OH0.bW9jay1zaWc"
+  },
+  "body": {
+    "question": "Tell me"
+  }
+}

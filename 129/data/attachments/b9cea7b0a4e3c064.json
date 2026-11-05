@@ -1,0 +1,16 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/call/qa/ask",
+  "reason": "OK",
+  "headers": {
+    "content-length": "119",
+    "content-type": "application/json"
+  },
+  "body": {
+    "success": true,
+    "question": "How to reset?",
+    "answer": "Mock: How to reset?",
+    "conversation_id": 1,
+    "action": "GENERAL_REPLY"
+  }
+}

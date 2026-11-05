@@ -1,0 +1,1 @@
+[{"values":["local"],"name":"Automation.Env"},{"values":["mock"],"name":"Backend.Mode"},{"values":["http://localhost:8400"],"name":"Backend.BaseUrl"},{"values":["3.11.18"],"name":"Python"},{"values":["Linux 7.0.0-1017-azure"],"name":"Platform"},{"values":["2026-11-05 03:59:28"],"name":"RunTime"}]

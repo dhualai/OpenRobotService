@@ -1,0 +1,15 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/admin/dashboard/tickets/summary",
+  "reason": "OK",
+  "headers": {
+    "content-length": "45",
+    "content-type": "application/json"
+  },
+  "body": {
+    "total_tickets": 1,
+    "by_status": {
+      "pending": 1
+    }
+  }
+}

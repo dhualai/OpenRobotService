@@ -1,0 +1,12 @@
+{
+  "status_code": 409,
+  "url": "http://mock.local/api/admin/roles",
+  "reason": "Conflict",
+  "headers": {
+    "content-length": "37",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Role name already exists"
+  }
+}

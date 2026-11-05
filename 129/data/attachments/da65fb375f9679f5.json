@@ -1,0 +1,12 @@
+{
+  "status_code": 409,
+  "url": "http://mock.local/api/admin/users",
+  "reason": "Conflict",
+  "headers": {
+    "content-length": "36",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Username already exists"
+  }
+}

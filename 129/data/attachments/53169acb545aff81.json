@@ -1,0 +1,13 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/tasks/filter",
+  "reason": "OK",
+  "headers": {
+    "content-length": "22",
+    "content-type": "application/json"
+  },
+  "body": {
+    "items": [],
+    "total": 0
+  }
+}

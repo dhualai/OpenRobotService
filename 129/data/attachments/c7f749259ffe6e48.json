@@ -1,0 +1,18 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/auth/me",
+  "reason": "OK",
+  "headers": {
+    "content-length": "95",
+    "content-type": "application/json"
+  },
+  "body": {
+    "username": "testadmin",
+    "name": "test admin",
+    "role": "admin",
+    "id": "u001",
+    "permissions": [
+      "admin"
+    ]
+  }
+}

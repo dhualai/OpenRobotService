@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/ai/task/analyze",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTM4NTQ3NzAuNjI1NDU3NSwgImlhdCI6IDE3OTM4NTExNzAuNjI1NDU3OH0.bW9jay1zaWc"
+  },
+  "body": {
+    "task_id": 1
+  }
+}

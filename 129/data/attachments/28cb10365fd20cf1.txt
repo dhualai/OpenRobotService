@@ -1,0 +1,2 @@
+INFO     httpx:_client.py:1740 HTTP Request: POST http://test/api/tasks/spec-doc/image "HTTP/1.1 200 OK"
+INFO     httpx:_client.py:1740 HTTP Request: POST http://test/api/tasks/spec-doc/parse "HTTP/1.1 200 OK"
