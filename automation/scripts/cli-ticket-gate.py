@@ -106,6 +106,11 @@ def build_parser():
         default=os.getenv("TICKET_GATE_REGRESSION_USE_MOCK", "1"),
         help="USE_MOCK for the regression suite (1 = in-memory mock backend).",
     )
+    parser.add_argument(
+        "--no-regression",
+        action="store_true",
+        help="Skip the regression group entirely (e.g. deploy-time acceptance, regression runs elsewhere).",
+    )
     return parser
 
 
@@ -119,7 +124,7 @@ def main(argv=None):
         if args.promoted_root
         else AUTOMATION_ROOT / "references" / "promoted-cases"
     )
-    regression = args.regression or DEFAULT_REGRESSION
+    regression = [] if args.no_regression else (args.regression or DEFAULT_REGRESSION)
     resolved_statuses = [item.strip() for item in args.resolved_statuses.split(",") if item.strip()]
 
     ticket_ids = extract_ticket_ids(message)
