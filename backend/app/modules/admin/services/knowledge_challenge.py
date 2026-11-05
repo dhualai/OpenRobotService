@@ -246,7 +246,7 @@ async def card(db, actor, challenge, user_id, votes=None):
         "can_answer": accepting(challenge), "can_manage_state": can_manage(actor)}
     if can_manage(actor):
         publisher = await db.get(UserDB, challenge.publisher_id)
-        result["publisher_username"] = publisher.username if publisher else None
+        result["publisher_username"] = publisher.name if publisher else None
     return result
 
 
