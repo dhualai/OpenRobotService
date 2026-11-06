@@ -78,7 +78,22 @@ def display_user(user):
             "avatar_resource_id": user.avatar_resource_id}
 
 
-async def anonymous_text(db, task, text, hide_participants=True):
+def redact_with_uploaded_images(text, redact):
+    pattern = re.compile(
+        r"!\[((?:[^\[\]\r\n]|\[[^\[\]\r\n]*\])*)\]\("
+        r"(/api/tasks/files/[A-Za-z0-9_-]+/spec-doc/images/[0-9a-f]{32}\.(?:png|jpg|jpeg|gif|webp|bmp))\)"
+    )
+    parts = []
+    start = 0
+    for image in pattern.finditer(text):
+        parts.append(redact(text[start:image.start()]))
+        parts.append(f"![{redact(image.group(1))}]({image.group(2)})")
+        start = image.end()
+    parts.append(redact(text[start:]))
+    return "".join(parts)
+
+
+async def anonymous_text(db, task, text, hide_participants=True, preserve_uploaded_images=False):
     identities = [task.archived_by]
     reports = (await db.execute(select(ArchiveReport).where(ArchiveReport.task_id == task.id))).scalars().all()
     identities += [report.reviewer for report in reports]
@@ -94,13 +109,17 @@ async def anonymous_text(db, task, text, hide_participants=True):
         user = users.get(identity)
         terms += [identity, user.id if user else None, user.name if user else None,
                   user.username if user else None, user.wechat_openid if user else None]
-    value = text or ""
-    for term in sorted({str(term) for term in terms if term and len(str(term)) > 1}, key=len, reverse=True):
-        value = re.sub(re.escape(term), "（已匿名）", value, flags=re.IGNORECASE)
-    value = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "[附件链接已隐藏]", value)
-    value = re.sub(r"https?://\S+", "[链接已隐藏]", value)
-    value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[邮箱已隐藏]", value)
-    return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[联系方式已隐藏]", value)
+    sensitive_terms = sorted({str(term) for term in terms if term and len(str(term)) > 1}, key=len, reverse=True)
+
+    def redact(value):
+        for term in sensitive_terms:
+            value = re.sub(re.escape(term), "（已匿名）", value, flags=re.IGNORECASE)
+        value = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "[附件链接已隐藏]", value)
+        value = re.sub(r"https?://\S+", "[链接已隐藏]", value)
+        value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[邮箱已隐藏]", value)
+        return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[联系方式已隐藏]", value)
+
+    return redact_with_uploaded_images(text or "", redact) if preserve_uploaded_images else redact(text or "")
 
 
 async def publish_report(db, task, report, now=None):

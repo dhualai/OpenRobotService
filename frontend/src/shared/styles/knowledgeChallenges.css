@@ -25,6 +25,13 @@
 .challenge-content { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9; font-size: 14px; }
 .challenge-answer { margin-top: 14px; padding-top: 16px; border-top: 1px solid var(--border); }
 .challenge-answer-editor { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.challenge-answer-composer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.challenge-answer-composer > label { grid-template-rows: auto 1fr; }
+.challenge-answer-composer textarea { min-height: 240px; resize: vertical; }
+.challenge-answer-preview { min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow-wrap: anywhere; }
+.challenge-answer-preview > strong { display: block; margin-bottom: 12px; font-size: 13px; color: var(--muted-foreground); }
+.challenge-answer-body { overflow-wrap: anywhere; }
+.challenge-answer-body .md-paragraph { white-space: pre-wrap; }
 .challenge-answer-images { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; }
 .challenge-answer-images__item { display: grid; gap: 6px; justify-items: center; }
 .challenge-answer-images__preview { padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); cursor: pointer; }
@@ -34,3 +41,4 @@
 .challenge-notice { font-size: 12px; color: var(--muted-foreground); line-height: 1.8; }
 .challenge-preview .challenge-summary { gap: 6px; }
 @media (max-width: 480px) { .challenge-form__grid { grid-template-columns: 1fr; } .challenge-preview .knowledge-ranking-prize { font-size: 12px; } }
+@media (max-width: 640px) { .challenge-answer-composer { grid-template-columns: 1fr; } }
