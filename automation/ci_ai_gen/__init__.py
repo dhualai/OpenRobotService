@@ -1,1 +1,1 @@
-"""CI AI test generation module (see automation/docs/archive/ci-ai-test-pipeline.md)."""
+"""CI AI test generation module (ticket-driven; see automation/docs/TICKET_PIPELINE.md)."""

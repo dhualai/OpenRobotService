@@ -441,6 +441,443 @@ jobs:
         if: ${{ needs.plan.outputs.components == 'ai' }}
         run: echo "::notice::AI 组件无自动门禁（ai/tests 依赖外部服务），本次跳过测试，请确认已人工验证"
 
+  # ---------------- 自动化质量门禁（框架自测 + 业务回归 Mock） ----------------
+  # 原 test.yml 的 test-infra + test-api 合并而来；与 build 并行，非阻断
+  #（沿用 gate 哲学：结果写入 Summary，不拦部署）。
+  quality-gate:
+    name: Automation quality gate
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: openrobot
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      qdrant:
+        image: qdrant/qdrant:v1.18.3
+        ports:
+          - "6333:6333"
+          - "6334:6334"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -e automation/
+
+      - name: Init test DB schema
+        env:
+          DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/openrobot
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          python -c "from app.core.db import engine; from app.models import Base; Base.metadata.create_all(engine)"
+
+      - name: Run automation framework tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AUTOMATION_ENV: local
+        run: |
+          pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/ai_metrics/tests/ automation/src/runtime/tests/ automation/src/client/tests/ automation/src/contract/tests/ automation/src/remote/tests/ automation/src/ticket_pipeline/tests/ automation/src/reporting/tests/ automation/ci_ai_gen/tests/ automation/mcp_server/tests/ automation/tests/infrastructure/ automation/src/mocks/tests/ -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-infra.xml
+
+      - name: Run API mock tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          pytest automation/tests/ -m api -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-api.xml
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-quality
+          path: automation/output/allure-results
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------- 真实后端冒烟 + 契约冒烟 ----------------
+  # 原 test.yml 的 test-real 合并而来；非阻断。
+  real-smoke:
+    name: Real backend smoke + contract
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/openrobot
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: openrobot
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      qdrant:
+        image: qdrant/qdrant:v1.18.3
+        ports:
+          - "6333:6333"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -e automation/
+
+      - name: Init test DB schema
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          python -c "from app.core.db import engine; from app.models import Base; Base.metadata.create_all(engine)"
+
+      - name: Start backend
+        run: |
+          cd backend
+          nohup python -m uvicorn app:app --host 0.0.0.0 --port 8400 > backend.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8400/api/health >/dev/null 2>&1; then
+              echo "backend healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend did not become healthy"
+          cat backend.log
+          exit 1
+
+      - name: Run real backend smoke tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AUTOMATION_ENV: local
+          USE_MOCK: "0"
+          REAL_API_BASE_URL: http://localhost:8400
+          REAL_ADMIN_USERNAME: admin
+          REAL_ADMIN_PASSWORD: usp2026@EP
+        run: |
+          pytest automation/tests/real -m smoke -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-real.xml
+
+      - name: Run OpenAPI contract smoke
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AUTOMATION_ENV: local
+          CONTRACT_TEST_ENABLED: "1"
+          OPENAPI_SCHEMA_URL: http://localhost:8400/api/openapi.json
+          OPENAPI_BASE_URL: http://localhost:8400
+          # 只保留匿名可访问的公开接口：Schemathesis 不带凭据模糊测试，
+          # /api/auth/login 对随机凭据返回 401 属正确行为，会造成
+          # "Authentication failed" 误报（历史遗留，PR #419 起持续红）
+          CONTRACT_INCLUDE_PATH_REGEX: ^/api/health$
+          CONTRACT_MAX_EXAMPLES: "5"
+        run: |
+          pytest automation/tests/contract -m contract -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-contract.xml
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-real-smoke
+          path: automation/output/allure-results
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------- AI 单测（观察性，非阻断） ----------------
+  # 原 test.yml 的 test-ai 合并而来。
+  ai-tests:
+    name: AI unit tests (non-blocking)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          # ai/requirements.txt 自身要求 Python >= 3.12
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-test.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r ai/requirements.txt
+
+      - name: Prepare AI env
+        run: |
+          if [ ! -f ai/.env ]; then
+            cp ai/.env.example ai/.env
+          fi
+
+      - name: Run AI unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AI_PLAN_EXECUTE: "1"
+          HF_HUB_OFFLINE: "1"
+        run: |
+          pytest ai/tests ai/agents/AiTaskPlatform ai/agents/AiDiagnosisPlatform/assigner/tests ai/core -q -p no:cacheprovider --junitxml=ai-junit.xml
+
+      - name: Upload AI test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-junit
+          path: ai-junit.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------- 工单验收（部署范围，非阻断） ----------------
+  # 原 ticket-gate.yml 合并而来：工单号改为从「上次成功部署点 → 本次部署点」
+  # 的提交范围提取（Deployments API 记录滚动范围）。
+  ticket-acceptance:
+    name: Ticket functional cases (deploy range)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # 非阻断：LLM 生成的候选用例断言不权威，失败只标注不拦部署（沿用 ticket-gate 哲学）
+    continue-on-error: true
+    permissions:
+      contents: read
+      deployments: read
+    env:
+      DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/openrobot
+      SEED_PROJECT_ID: "Leo_test"
+      SEED_PROJECT_NAME: "摇人吧服务号-测试"
+      SEED_BOT_USERNAME: "automation_bot"
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: openrobot
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      qdrant:
+        image: qdrant/qdrant:v1.18.3
+        ports:
+          - "6333:6333"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -e automation/
+
+      - name: Init test DB schema
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          python -c "from app.core.db import engine; from app.models import Base; Base.metadata.create_all(engine)"
+
+      - name: Seed automation environment
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+          SEED_BOT_PASSWORD: ${{ secrets.SEED_BOT_PASSWORD || vars.SEED_BOT_PASSWORD || 'Automation@2026' }}
+        run: |
+          python backend/scripts/seed_automation_env.py
+
+      - name: Start backend
+        run: |
+          cd backend
+          nohup python -m uvicorn app:app --host 0.0.0.0 --port 8400 > backend.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8400/api/health >/dev/null 2>&1; then
+              echo "backend healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend did not become healthy"
+          cat backend.log
+          exit 1
+
+      - name: Prepare SSH key
+        env:
+          PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$PROD_TICKET_SSH_PRIVATE_KEY"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$PROD_TICKET_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/prod_ticket_key"
+          chmod 600 "$HOME/.ssh/prod_ticket_key"
+          echo "PROD_TICKET_SSH_KEY=$HOME/.ssh/prod_ticket_key" >> "$GITHUB_ENV"
+
+      - name: Resolve previous deployment sha
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENV_NAME: ${{ needs.plan.outputs.environment }}
+        run: |
+          set -uo pipefail
+          prev=""
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$ENV_NAME&per_page=8" --jq '.[].id' 2>/dev/null || true); do
+            ok=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --jq '[.[] | select(.state == "success")] | length' 2>/dev/null || echo 0)
+            if [ "${ok:-0}" != "0" ]; then
+              prev=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id" --jq '.sha' 2>/dev/null || true)
+              break
+            fi
+          done
+          echo "prev_sha=$prev" >> "$GITHUB_OUTPUT"
+          if [ -n "$prev" ]; then
+            echo "上次成功部署 sha: ${prev:0:8}"
+          else
+            echo "::warning::没取到上次部署 sha，退化为最近 30 条提交"
+          fi
+
+      - name: Capture commit messages (deploy range)
+        run: |
+          set -uo pipefail
+          prev="${{ steps.prev.outputs.prev_sha }}"
+          cur="${{ needs.plan.outputs.git_sha }}"
+          if [ -n "$prev" ] && [ "$prev" != "$cur" ]; then
+            if git log --pretty=%B "$prev..$cur" > commit-message.txt 2>/dev/null; then
+              echo "范围: $prev..$cur"
+            else
+              git log -30 --pretty=%B > commit-message.txt
+              echo "范围不可用，退化为最近 30 条提交"
+            fi
+          else
+            git log -30 --pretty=%B > commit-message.txt
+            echo "无上次部署记录，使用最近 30 条提交"
+          fi
+          cat commit-message.txt
+
+      - name: Run ticket acceptance gate
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AUTOMATION_ENV: local
+          USE_MOCK: "0"
+          TEST_BASE_URL: "http://localhost:8400"
+          TEST_USERNAME: ${{ env.SEED_BOT_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.SEED_BOT_PASSWORD || vars.SEED_BOT_PASSWORD || 'Automation@2026' }}
+          PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
+          PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
+          PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
+          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
+          PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
+        run: |
+          python automation/scripts/cli-ticket-gate.py \
+            --message-file commit-message.txt \
+            --require-resolved \
+            --no-regression
+
+      - name: Upload ticket gate results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticket-gate-results
+          path: |
+            automation/output/junit-ticket-gate-functional.xml
+            automation/output/ticket-gate-notification.json
+            automation/output/allure-results
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ---------------- Allure 汇总发布 ----------------
+  allure-report:
+    name: Allure report
+    if: ${{ always() && needs.plan.result == 'success' }}
+    needs: [plan, quality-gate, real-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      # Pages 发布需要写权限（推送 gh-pages 分支）
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Allure results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: allure-results-*
+          merge-multiple: true
+          path: automation/output/allure-results
+
+      - name: Generate Allure report
+        uses: simple-elf/allure-report-action@v1.15
+        with:
+          allure_results: automation/output/allure-results
+          allure_history: allure-history
+          keep_reports: 20
+
+      - name: Deploy report to GitHub Pages
+        if: needs.plan.outputs.environment == 'test'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: allure-history
+
   # ---------------- 构建 + 上传 artifact（托管 runner） ----------------
   # 与 gate 并行：build 只依赖 plan（产物与测试无数据依赖，串行纯浪费 ~100s 墙钟）。
   # gate 失败时这里已跑完 = 白跑一次 hosted 构建（public 仓分钟免费），换取墙钟；
@@ -594,9 +1031,11 @@ jobs:
     runs-on: [self-hosted, ors-verify]
     timeout-minutes: 30
     environment: ${{ needs.plan.outputs.environment }}
-    # 仅 Save release notes 用到写权限（滚存发行说明到 Release）；写失败不阻断部署
+    # Save release notes 用 contents 写权限（滚存发行说明到 Release）；
+    # Record deployment 用 deployments 写权限（为下次部署的工单验收提供范围起点）。
     permissions:
       contents: write
+      deployments: write
     outputs:
       deploy_log: ${{ steps.export_log.outputs.deploy_log }}
     steps:
@@ -970,9 +1409,27 @@ jobs:
             payload=$(jq -Rs --arg tag "prod-release-notes" \
                         '{tag_name: $tag, name: "上次成功的生产发行说明", body: .}' "$f")
             curl -fsS -X POST -H "$auth" -H "Accept: application/vnd.github+json" \
-                 -H "Content-Type: application/json" -d "$payload" "$api" > /dev/null
+                  -H "Content-Type: application/json" -d "$payload" "$api" > /dev/null
             echo "已创建发行说明 Release（tag=prod-release-notes，$(wc -c < "$f") 字节）"
           fi
+
+      - name: Record deployment
+        # 为「下次部署」的工单验收提供范围起点：ticket-acceptance 用
+        # Deployments API 找最近一次 success 部署的 sha。失败不阻断部署。
+        if: ${{ steps.apply.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: '${{ needs.plan.outputs.git_ref }}',
+              environment: '${{ needs.plan.outputs.environment }}',
+              auto_merge: false,
+              required_contexts: [],
+              transient_environment: true,
+            });
 
   # ---------------- 回滚（自托管 runner，复用上次缓存的部署脚本） ----------------
   rollback:

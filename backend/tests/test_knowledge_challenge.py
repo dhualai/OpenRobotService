@@ -29,9 +29,9 @@ def admin():
     return {**actor("reviewer"), "is_admin": True}
 
 
-async def published(db, key="first", task_id=None):
+async def published(db, key="first", task_id=None, bounty_fen=10000):
     body = CreateChallenge(request_key=key, task_id=task_id, title="复杂定位问题",
-        content="请协助排查长期定位漂移", bounty_fen=10000,
+        content="请协助排查长期定位漂移", bounty_fen=bounty_fen,
         ends_at=(service.utcnow() + timedelta(days=1)).replace(tzinfo=timezone.utc))
     draft = await service.create(db, admin(), body)
     return await service.publish(db, admin(), draft["id"], draft["version"])
@@ -61,7 +61,8 @@ async def test_inline_answer_images_keep_positions_through_draft_publication_and
     db.session.commit()
     challenge = await published(db, task_id=task_id)
     figure = f"![helpdesk]({IMAGE})"
-    content = f"第一步\n\n{figure}\n\n第二步\nhelpdesk 13800138000 secret@example.com https://internal.example.com/task/1"
+    reference = "[排查手册](https://docs.example.com/robot-manual)"
+    content = f"第一步\n\n{figure}\n\n第二步\n{reference}\nhelpdesk 13800138000 secret@example.com http://192.168.1.1/task/1"
     draft = await service.write_answer(db, actor("alice"), challenge["id"], content, 0, images=[])
     assert draft["content"] == content
     assert (await service.detail(db, actor("voter"), challenge["id"]))["answers"] == []
@@ -70,11 +71,12 @@ async def test_inline_answer_images_keep_positions_through_draft_publication_and
     answer = (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]
     public_content = answer["content"]
     assert IMAGE in public_content
+    assert reference in public_content
     assert public_content.index("第一步") < public_content.index(IMAGE) < public_content.index("第二步")
     assert "![helpdesk]" not in public_content
     assert "13800138000" not in public_content
     assert "secret@example.com" not in public_content
-    assert "https://internal.example.com" not in public_content
+    assert "192.168.1.1" not in public_content
     assert answer["images"] == []
     assert (await service.my_answer(db, actor("alice"), challenge["id"]))["content"] == public_content
 
@@ -86,7 +88,7 @@ async def test_inline_answer_images_keep_positions_through_draft_publication_and
 
 
 @pytest.mark.asyncio
-async def test_task_answer_preserves_only_uploaded_inline_images_not_internal_or_external_links(db):
+async def test_task_answer_preserves_uploaded_images_and_external_references_not_private_links(db):
     task, _ = seed(db, 1)
     challenge = await published(db, task_id=1)
     content = (f"开始\n\n![截图]({IMAGE})\n\n结束\n"
@@ -96,7 +98,8 @@ async def test_task_answer_preserves_only_uploaded_inline_images_not_internal_or
     await service.write_answer(db, actor("alice"), challenge["id"], content, 0, submit=True)
     answer = (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]
     assert f"![截图]({IMAGE})" in answer["content"]
-    assert "external.example.com" not in answer["content"]
+    assert "[外部图](https://external.example.com/a.png)" in answer["content"]
+    assert "![外部图]" not in answer["content"]
     assert "/api/tasks/1/private-file" not in answer["content"]
     assert ".svg" not in answer["content"]
     assert IMAGE not in await knowledge.anonymous_text(db, task, content)
@@ -188,6 +191,27 @@ async def test_standalone_full_lifecycle_without_creating_tasks(db, monkeypatch)
     assert reward.status == "pending_audit"
     assert len(db.session.scalars(select(RewardRecord)).all()) == 1
     assert not db.session.scalars(select(Task)).all()
+
+
+@pytest.mark.asyncio
+async def test_zero_bounty_still_selects_best_answer_without_granting_reward(db, monkeypatch):
+    challenge = await published(db, bounty_fen=0)
+    answer = await submitted(db, challenge["id"])
+    after_deadline(monkeypatch)
+    assert await service.settle(db, challenge["id"]) is True
+    assert await service.settle(db, challenge["id"]) is False
+    result = await service.community_result(db, actor("alice"), challenge["id"])
+    assert result["bounty_fen"] == 0
+    assert result["best_answer"]["id"] == answer.id
+    assert result["my_reward_status"] is None
+    assert not db.session.scalars(select(RewardRecord)).all()
+
+
+@pytest.mark.parametrize("amount", [-1, 1.5, "0", True, 2147483648])
+def test_bounty_rejects_negative_noninteger_and_overflow_amounts(amount):
+    with pytest.raises(ValueError):
+        CreateChallenge(request_key="invalid", title="问题", content="内容", bounty_fen=amount,
+            ends_at=datetime(2026, 11, 21, tzinfo=timezone.utc))
 
 
 @pytest.mark.asyncio
@@ -391,17 +415,78 @@ async def test_pause_still_settles_and_ordinary_users_cannot_manage(db, monkeypa
 @pytest.mark.asyncio
 async def test_public_payloads_show_author_but_redact_sensitive_content_and_do_not_leak_drafts(db):
     challenge = await published(db)
-    await submitted(db, challenge["id"], content="提单甲 alice-account 联系13800138000 https://private.example/a")
+    await submitted(db, challenge["id"], content="提单甲 alice-account 联系13800138000 http://192.168.1.20/private")
     await service.write_answer(db, actor("bob"), challenge["id"], "未发布的私人草稿", 0)
     result = await service.detail(db, actor("voter"), challenge["id"])
     assert len(result["answers"]) == 1
     assert result["answers"][0]["author"] == "提单甲"
-    for secret in ("提单甲", "alice-account", "13800138000", "private.example"):
+    for secret in ("提单甲", "alice-account", "13800138000", "192.168.1.20"):
         assert secret not in result["answers"][0]["content"]
     serialized = json.dumps(result, ensure_ascii=False)
     for secret in ("未发布的私人草稿", "author_id", "publisher_id", "questioner_id"):
         assert secret not in serialized
     assert result["can_manage_state"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", [None, 1])
+async def test_answer_public_links_survive_draft_publish_edit_and_settlement(db, monkeypatch, task_id):
+    if task_id is not None:
+        seed(db, task_id)
+    challenge = await published(db, task_id=task_id)
+    manual = "https://docs.example.com/robot/manual.pdf?version=2&lang=zh"
+    guide = "https://mp.weixin.qq.com/s?__biz=example&mid=123&idx=1&sn=public-article"
+    content = f"使用手册 {manual}，操作方法参考[排障指南]({guide})。提单甲 电话13800138000 邮箱user@example.com"
+    draft = await service.write_answer(db, actor("alice"), challenge["id"], content, 0)
+    assert draft["content"] == content
+    assert (await service.detail(db, actor("voter"), challenge["id"]))["answers"] == []
+    answer = await service.write_answer(db, actor("alice"), challenge["id"], content, draft["version"], submit=True)
+    public = (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]["content"]
+    assert manual in public
+    assert f"[排障指南]({guide})" in public
+    for secret in ("提单甲", "13800138000", "user@example.com"):
+        assert secret not in public
+    updated_manual = "https://docs.example.com/robot/manual-v3.pdf"
+    edited = await service.write_answer(db, actor("alice"), challenge["id"], updated_manual, answer["version"], submit=True)
+    assert edited["content"] == updated_manual
+    row = db.session.scalar(select(KnowledgeChallengeAnswer))
+    assert manual in row.history[0]["content"]
+    after_deadline(monkeypatch)
+    await service.settle(db, challenge["id"])
+    result = await service.detail(db, actor("voter"), challenge["id"])
+    assert result["best_answer"]["content"] == updated_manual
+    assert db.session.get(KnowledgeChallenge, challenge["id"]).snapshot["answers"][0]["content"] == updated_manual
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", [None, 1])
+async def test_answer_links_do_not_expose_internal_tickets_or_credentials(db, monkeypatch, task_id):
+    if task_id is not None:
+        seed(db, task_id)
+    monkeypatch.setattr(service.settings, "FRONTEND_BASE_URL", "https://service.example.com/p/app")
+    challenge = await published(db, task_id=task_id)
+    content = (
+        "公开 https://docs.example.com/manual 内网 http://192.168.1.2/robot "
+        "内部[工单](https://service.example.com/p/app/tasks/12) "
+        "凭据[附件](https://docs.example.com/a?access_token=do-not-leak) "
+        "联系人 https://docs.example.com/13800138000"
+    )
+    answer = await service.write_answer(db, actor("alice"), challenge["id"], content, 0, submit=True)
+    assert "https://docs.example.com/manual" in answer["content"]
+    for secret in ("192.168.1.2", "/tasks/12", "do-not-leak", "13800138000"):
+        assert secret not in answer["content"]
+    assert answer["content"].count("[链接已隐藏]") == 4
+
+
+@pytest.mark.asyncio
+async def test_public_links_are_enabled_only_for_answers_not_question_or_knowledge_text(db):
+    seed(db, 1)
+    challenge = await published(db)
+    row = db.session.get(KnowledgeChallenge, challenge["id"])
+    url = "https://docs.example.com/manual"
+    assert await service.public_text(db, row, url) == "[链接已隐藏]"
+    task = db.session.get(Task, 1)
+    assert await knowledge.anonymous_text(db, task, f"[手册]({url})") == "[附件链接已隐藏]"
 
 
 @pytest.mark.asyncio

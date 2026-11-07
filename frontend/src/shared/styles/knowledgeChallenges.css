@@ -23,6 +23,9 @@
 .knowledge-like.challenge-question-action { color: var(--blue-1); border-color: var(--blue-4); }
 .challenge-actions .knowledge-select { flex: 1; min-width: 100px; }
 .challenge-content { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9; font-size: 14px; }
+.challenge-answer-content > :first-child { margin-top: 0; }
+.challenge-answer-content > :last-child { margin-bottom: 0; }
+.challenge-answer-content a { color: var(--blue-1); text-decoration: underline; overflow-wrap: anywhere; }
 .challenge-answer { margin-top: 14px; padding-top: 16px; border-top: 1px solid var(--border); }
 .challenge-answer-editor { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
 .challenge-answer-composer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
@@ -32,12 +35,19 @@
 .challenge-answer-preview > strong { display: block; margin-bottom: 12px; font-size: 13px; color: var(--muted-foreground); }
 .challenge-answer-body { overflow-wrap: anywhere; }
 .challenge-answer-body .md-paragraph { white-space: pre-wrap; }
+.challenge-answer-inline-image { max-width: 100%; padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); cursor: pointer; }
+.challenge-answer-inline-image img { display: block; max-width: 100%; max-height: 360px; object-fit: contain; }
 .challenge-answer-images { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0; }
+.challenge-answer-attachments ul { display: grid; gap: 10px; padding: 0; margin: 12px 0; list-style: none; }
+.challenge-answer-attachments li { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.challenge-answer-attachments__download { min-width: 0; overflow-wrap: anywhere; text-align: left; }
 .challenge-answer-images__item { display: grid; gap: 6px; justify-items: center; }
 .challenge-answer-images__preview { padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); cursor: pointer; }
 .challenge-answer-images__preview img { display: block; width: 96px; height: 96px; object-fit: cover; }
 .challenge-answer--best { padding: 16px; background: var(--sky-soft); border: 1px solid var(--blue-4); border-radius: 12px; }
 .challenge-prize { color: var(--blue-1); font-size: 24px; font-weight: 650; }
+.challenge-publisher { display: block; margin-top: 6px; color: var(--muted-foreground); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.challenge-summary .challenge-publisher { max-width: 140px; white-space: normal; }
 .challenge-notice { font-size: 12px; color: var(--muted-foreground); line-height: 1.8; }
 .challenge-preview .challenge-summary { gap: 6px; }
 @media (max-width: 480px) { .challenge-form__grid { grid-template-columns: 1fr; } .challenge-preview .knowledge-ranking-prize { font-size: 12px; } }

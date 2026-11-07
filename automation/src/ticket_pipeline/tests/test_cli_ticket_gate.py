@@ -17,3 +17,12 @@ def test_status_lookup_is_disabled_when_production_credentials_are_missing(monke
 
     assert statuses is None
     assert "disabled" in error
+
+
+def test_no_regression_flag_skips_regression_group():
+    """--no-regression 时应返回空回归目标（部署时回归由 quality-gate 承担）。"""
+    module = runpy.run_path(str(CLI_PATH))
+    parser = module["build_parser"]()
+    args = parser.parse_args(["--text", "fix ORS-837", "--no-regression"])
+
+    assert args.no_regression is True

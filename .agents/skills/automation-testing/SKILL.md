@@ -29,7 +29,7 @@ automation/
 ├── src/            # 框架库:runner(数据驱动) clients(API/MySQL/Redis/Qdrant) fixtures assertions logger mocks(MockBackend) ai_metrics utils
 ├── config/         # 环境配置 local/sit/uat
 ├── tests/          # call(我要摇人) tasks(系统任务) admin(后台管理) auth(认证) ai(AI 评估)
-├── ci_ai_gen/      # AI 测试生成流水线(prompts/ + run_pipeline.py + extract_api.py + gates.py)
+├── ci_ai_gen/      # AI 测试生成流水线(工单驱动: ticket_pipeline.py + prompts/ + extract_api.py + gates.py)
 ├── testdata/cases/api-test-cases.xlsx   # ★ 用例唯一权威,数据驱动核心
 ├── scripts/        # cli-*.py 工具
 ├── docs/           # testing/analysis(7要素分析) testing/scenarios(8覆盖场景) archive/ 历史归档
@@ -56,10 +56,6 @@ cd automation; allure generate output/allure-results -o output/allure-report --c
 python scripts/cli-import-cases.py <cases.yaml>        # YAML 用例 → Excel
 python scripts/cli-generate-test-modules.py            # Excel sheet → pytest 模块
 python scripts/cli-generate-report.py                  # 用例 Excel → 报表 xlsx
-
-# AI 用例转正合并(AI 产物 → 正式 Excel,半自动闭环最后一环)
-python scripts/cli-merge-ai-cases.py --run-id demo-008 --dry-run   # 预览合并计划
-python scripts/cli-merge-ai-cases.py --run-id demo-008             # 合并(自动备份 .bak)
 ```
 
 > 注意:`cli-init-cases.py` 无参数直接运行会重建/覆盖 Excel,仅用于初始化,勿在生产用例上执行。
@@ -82,20 +78,29 @@ python scripts/cli-merge-ai-cases.py --run-id demo-008             # 合并(自�
 
 ## 5. AI 生成流水线(ci_ai_gen)
 
-两种驱动模式,从仓库根执行:
+工单驱动测试生成(完整 7 步工作流见 `.agents/skills/ticket-test-gen/SKILL.md`,本 skill 只讲命令),从仓库根执行:
 
 ```powershell
-# PRD 驱动(当前初版):PRD → 功能点(REQ) → 用例(cases.json/xlsx) → pytest 脚本 → gate 门禁
-python -m automation.ci_ai_gen.run_pipeline --spec-dir <openapi目录> --out-dir <输出目录> --run-id <id> --prd <prd路径>
+# 按工单号直查生产库取需求(只读,无视扫描过滤)
+python automation/scripts/cli-ticket-pipeline.py get --ticket-id <工单号>
 
-# 接口驱动(后期目标):OpenAPI → 分析 → 用例 → 脚本
-python -m automation.ci_ai_gen.run_pipeline --spec-dir <openapi目录> --out-dir <输出目录> --run-id <id>
+# 扫描未解决需求/bug 工单(过滤口径由 PROD_TICKET_STATUSES/TASK_TYPES/EXCLUDE_SOURCES 环境变量驱动)
+python automation/scripts/cli-ticket-pipeline.py scan --limit 20
+
+# 生成候选用例(需先提取接口规格)
+python automation/ci_ai_gen/extract_api.py --out automation/references/spec --backend-path backend
+python automation/scripts/cli-ticket-pipeline.py run --limit 20 --spec-dir automation/references/spec
+
+# 人工 review 通过(manifest.review_status=approved)后转正
+python automation/scripts/cli-ticket-pipeline.py promote --ticket-id <工单号>
 ```
 
-- 四角色:`analyzer`(分析)→ `case-gen`(用例)→ `script-gen`(脚本)→ `gate`(门禁审阅,2 轮修复上限)
-- 产物归档:`automation/references/generated-cases/{run_id}/`(含 cases.xlsx 已映射平台格式)
-- **闭环规则**:AI 产物不直接入库;审阅确认后再将 `cases.xlsx` 内容合并进 `testdata/cases/api-test-cases.xlsx` 转正
-- 设计文档:`automation/docs/archive/ci-ai-test-pipeline.md`;CI 触发:`.github/workflows/ai-test.yml`
+- 两次 LLM:`ticket_analysis`(工单分析)→ `ticket_case_gen`(用例生成,按 REQ 分批防截断);脚本由 `script_renderer` **确定性渲染**,不用 LLM 写码
+- 产物:`references/generated-cases/tickets/{id}/`(候选,gitignored)→ review → `references/promoted-cases/{id}/`(转正,提交仓库)
+- 门禁:`ticket-gate.yml` 在 push 到 test 时按 commit 工单号执行转正功能用例(真实后端)+ 回归(Mock)
+- 设计文档:`automation/docs/TICKET_LOOP.md`、`TICKET_PIPELINE.md`、`TICKET_GATE.md`
+
+> 历史:PRD 驱动流水线(run_pipeline.py + analyzer/case_gen/script_gen/gate 四角色)与 `.github/workflows/ai-test.yml` 已废弃删除,工单驱动流水线为其继任。
 
 ## 6. 文档要求
 

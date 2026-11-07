@@ -2,12 +2,13 @@ from datetime import datetime
 import re
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
 from app.modules.admin.services import knowledge_challenge as service
+from app.modules.admin.services import knowledge_challenge_attachments as attachments
 
 
 router = APIRouter(prefix="/knowledge/challenges", tags=["高价值问题"])
@@ -18,7 +19,7 @@ class CreateChallenge(BaseModel):
     task_id: int | None = Field(default=None, gt=0)
     title: str = Field(min_length=1, max_length=255)
     content: str = Field(min_length=1, max_length=20000)
-    bounty_fen: int = Field(gt=0, le=2147483647, strict=True)
+    bounty_fen: int = Field(ge=0, le=2147483647, strict=True)
     ends_at: datetime
 
     @field_validator("title", "content", "request_key")
@@ -37,6 +38,14 @@ class AnswerBody(BaseModel):
     content: str = Field(max_length=20000)
     version: int = Field(ge=0)
     images: list[str] | None = None
+    attachments: list[str] | None = None
+
+    @field_validator("attachments")
+    @classmethod
+    def uploaded_attachments(cls, value):
+        if value is not None and any(not re.fullmatch(r"[0-9a-f]{32}", attachment_id) for attachment_id in value):
+            raise ValueError("请使用上传成功的附件")
+        return list(dict.fromkeys(value)) if value is not None else None
 
     @field_validator("images")
     @classmethod
@@ -126,13 +135,27 @@ async def my_answer(challenge_id: int, db=Depends(get_async_db), actor=Depends(g
 @router.put("/{challenge_id}/my-answer")
 async def save_answer(challenge_id: int, body: AnswerBody, db=Depends(get_async_db),
                       actor=Depends(get_current_active_user_from_token)):
-    return await service.write_answer(db, actor, challenge_id, body.content, body.version, images=body.images)
+    return await service.write_answer(db, actor, challenge_id, body.content, body.version,
+        images=body.images, attachments=body.attachments)
 
 
 @router.post("/{challenge_id}/my-answer/submit")
 async def submit_answer(challenge_id: int, body: AnswerBody, db=Depends(get_async_db),
                         actor=Depends(get_current_active_user_from_token)):
-    return await service.write_answer(db, actor, challenge_id, body.content, body.version, submit=True, images=body.images)
+    return await service.write_answer(db, actor, challenge_id, body.content, body.version,
+        submit=True, images=body.images, attachments=body.attachments)
+
+
+@router.post("/{challenge_id}/answer-attachments", status_code=201)
+async def upload_attachment(challenge_id: int, file: UploadFile = File(...), db=Depends(get_async_db),
+                            actor=Depends(get_current_active_user_from_token)):
+    return await attachments.upload(db, actor, challenge_id, file)
+
+
+@router.get("/{challenge_id}/answer-attachments/{attachment_id}")
+async def download_attachment(challenge_id: int, attachment_id: str, db=Depends(get_async_db),
+                              actor=Depends(get_current_active_user_from_token)):
+    return await attachments.download(db, actor, challenge_id, attachment_id)
 
 
 @router.put("/{challenge_id}/like")

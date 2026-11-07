@@ -141,7 +141,7 @@ from app.models.usp_env import UspEnv
 # 企业微信表格数据源 + 记录镜像
 from app.models.wecom_sheet import WecomSheetSource, ExternalRecord
 from app.models.knowledge_challenge import (
-    KnowledgeChallenge, KnowledgeChallengeAnswer, KnowledgeChallengeLike,
+    KnowledgeChallenge, KnowledgeChallengeAnswer, KnowledgeChallengeAttachment, KnowledgeChallengeLike,
     KnowledgeChallengeLikeEvent, KnowledgeChallengeAudit,
 )
 
@@ -159,7 +159,7 @@ from app.models.wxpay import (
 )
 
 __all__ = [
-    "KnowledgeChallenge", "KnowledgeChallengeAnswer", "KnowledgeChallengeLike",
+    "KnowledgeChallenge", "KnowledgeChallengeAnswer", "KnowledgeChallengeAttachment", "KnowledgeChallengeLike",
     "KnowledgeChallengeLikeEvent", "KnowledgeChallengeAudit",
     "KnowledgePublication", "KnowledgeLike", "KnowledgeLikeEvent",
     "ArchiveReviewDecision", "KnowledgeSettlement", "KnowledgeDiscussion",

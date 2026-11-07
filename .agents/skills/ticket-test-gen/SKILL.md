@@ -96,8 +96,7 @@ collect-only，直到通过。修不动时把问题如实报告用户，不要�
 
 - 跳过人工确认直接 promote / 改 review_status
 - 编造接口路径、字段名、工单内容
-- 把生成产物直接合入 testdata/cases/api-test-cases.xlsx
-  （转正必须走 cli-merge-ai-cases.py 且人工确认）
+- 把生成产物直接合入 testdata/cases/api-test-cases.xlsx（Excel 是人工维护的权威数据源）
 - 修改 ai/ backend/ frontend/ 业务代码（边界见 .claude/SKILLS/代码修改约束/）
 - 把密钥、生产库密码写进对话或文件
 
