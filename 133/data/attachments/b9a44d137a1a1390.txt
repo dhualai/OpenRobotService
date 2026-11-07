@@ -1,0 +1,5 @@
+2026-11-07 09:00:47 | [32mINFO | automation.clients.ApiClient | Connected to API: http://mock.local
+2026-11-07 09:00:47 | [32mINFO | httpx | HTTP Request: POST http://mock.local/api/auth/login "HTTP/1.1 200 OK"
+2026-11-07 09:00:48 | [32mINFO | httpx | HTTP Request: POST http://mock.local/api/auth/login "HTTP/1.1 200 OK"
+2026-11-07 09:00:48 | [32mINFO | httpx | HTTP Request: GET http://mock.local/api/admin/users "HTTP/1.1 403 Forbidden"
+2026-11-07 09:00:48 | [32mINFO | automation.clients.ApiClient | API client disconnected

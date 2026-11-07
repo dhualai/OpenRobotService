@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/call/messages/99999",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQwNDU2NDguMzcyNjg3MywgImlhdCI6IDE3OTQwNDIwNDguMzcyNjg3Nn0.bW9jay1zaWc"
+  },
+  "body": {
+    "content": "x"
+  }
+}

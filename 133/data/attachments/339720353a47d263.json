@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/tasks/assignable-users?project_id=abc",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQwNDU2NDguNDUzMTcxLCAiaWF0IjogMTc5NDA0MjA0OC40NTMxNzEzfQ.bW9jay1zaWc"
+  }
+}

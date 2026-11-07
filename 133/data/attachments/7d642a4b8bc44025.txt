@@ -1,0 +1,4 @@
+2026-11-07 09:00:46 | [32mINFO | httpx | HTTP Request: GET http://test/api/wechat/permissions "HTTP/1.1 200 OK"
+2026-11-07 09:00:46 | [32mINFO | httpx | HTTP Request: GET http://test/api/wechat/get-openid?code=test "HTTP/1.1 200 OK"
+2026-11-07 09:00:46 | [32mINFO | httpx | HTTP Request: GET http://test/api/wechat/config/js-sdk-config "HTTP/1.1 200 OK"
+2026-11-07 09:00:46 | [32mINFO | httpx | HTTP Request: POST http://test/api/wechat/broadcast_message "HTTP/1.1 200 OK"

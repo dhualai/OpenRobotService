@@ -1,0 +1,16 @@
+{
+  "status_code": 201,
+  "url": "http://mock.local/api/tasks/1/comments",
+  "reason": "Created",
+  "headers": {
+    "content-length": "100",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": 1,
+    "task_id": 1,
+    "content": "Checking...",
+    "author": "testadmin",
+    "created_at": "2026-11-07T09:00:48"
+  }
+}

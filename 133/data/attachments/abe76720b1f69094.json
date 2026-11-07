@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQwNDU2NDguNjY5MjM4OCwgImlhdCI6IDE3OTQwNDIwNDguNjY5MjM5fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "Bug 任务",
+    "description": "Bug 描述",
+    "ticket_type": "bug"
+  }
+}
