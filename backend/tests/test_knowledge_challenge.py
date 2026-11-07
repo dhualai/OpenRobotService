@@ -53,6 +53,59 @@ OTHER_IMAGE = "/api/tasks/files/helpdesk-comment/spec-doc/images/" + "b" * 32 + 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", [None, 1])
+async def test_inline_answer_images_keep_positions_through_draft_publication_and_settlement(db, monkeypatch, task_id):
+    if task_id:
+        seed(db, task_id)
+    db.session.get(UserDB, "alice").name = "helpdesk"
+    db.session.commit()
+    challenge = await published(db, task_id=task_id)
+    figure = f"![helpdesk]({IMAGE})"
+    reference = "[排查手册](https://docs.example.com/robot-manual)"
+    content = f"第一步\n\n{figure}\n\n第二步\n{reference}\nhelpdesk 13800138000 secret@example.com http://192.168.1.1/task/1"
+    draft = await service.write_answer(db, actor("alice"), challenge["id"], content, 0, images=[])
+    assert draft["content"] == content
+    assert (await service.detail(db, actor("voter"), challenge["id"]))["answers"] == []
+
+    await service.write_answer(db, actor("alice"), challenge["id"], content, draft["version"], submit=True, images=[])
+    answer = (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]
+    public_content = answer["content"]
+    assert IMAGE in public_content
+    assert reference in public_content
+    assert public_content.index("第一步") < public_content.index(IMAGE) < public_content.index("第二步")
+    assert "![helpdesk]" not in public_content
+    assert "13800138000" not in public_content
+    assert "secret@example.com" not in public_content
+    assert "192.168.1.1" not in public_content
+    assert answer["images"] == []
+    assert (await service.my_answer(db, actor("alice"), challenge["id"]))["content"] == public_content
+
+    after_deadline(monkeypatch)
+    await service.settle(db, challenge["id"])
+    result = await service.detail(db, actor("voter"), challenge["id"])
+    assert result["best_answer"]["content"] == public_content
+    assert db.session.get(KnowledgeChallenge, challenge["id"]).snapshot["answers"][0]["content"] == public_content
+
+
+@pytest.mark.asyncio
+async def test_task_answer_preserves_uploaded_images_and_external_references_not_private_links(db):
+    task, _ = seed(db, 1)
+    challenge = await published(db, task_id=1)
+    content = (f"开始\n\n![截图]({IMAGE})\n\n结束\n"
+        "![外部图](https://external.example.com/a.png)\n"
+        "[内部附件](/api/tasks/1/private-file)\n"
+        f"![非法图]({IMAGE.replace('.png', '.svg')})")
+    await service.write_answer(db, actor("alice"), challenge["id"], content, 0, submit=True)
+    answer = (await service.detail(db, actor("voter"), challenge["id"]))["answers"][0]
+    assert f"![截图]({IMAGE})" in answer["content"]
+    assert "[外部图](https://external.example.com/a.png)" in answer["content"]
+    assert "![外部图]" not in answer["content"]
+    assert "/api/tasks/1/private-file" not in answer["content"]
+    assert ".svg" not in answer["content"]
+    assert IMAGE not in await knowledge.anonymous_text(db, task, content)
+
+
+@pytest.mark.asyncio
 async def test_answer_images_follow_private_draft_published_edit_and_snapshot(db, monkeypatch):
     seed(db, 1)
     challenge = await published(db, task_id=1)
