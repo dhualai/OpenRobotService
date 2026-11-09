@@ -28,11 +28,23 @@
 .challenge-answer-content a { color: var(--blue-1); text-decoration: underline; overflow-wrap: anywhere; }
 .challenge-answer { margin-top: 14px; padding-top: 16px; border-top: 1px solid var(--border); }
 .challenge-answer-editor { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
-.challenge-answer-composer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.challenge-answer-composer > label { grid-template-rows: auto 1fr; }
-.challenge-answer-composer textarea { min-height: 240px; resize: vertical; }
-.challenge-answer-preview { min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow-wrap: anywhere; }
-.challenge-answer-preview > strong { display: block; margin-bottom: 12px; font-size: 13px; color: var(--muted-foreground); }
+.challenge-answer-document { min-width: 0; }
+.challenge-answer-document__label { display: block; margin-bottom: 8px; font-size: 13px; }
+.challenge-answer-format { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border: 1px solid var(--border); border-bottom: 0; border-radius: 10px 10px 0 0; background: var(--card); }
+.challenge-answer-format button { border: 0; border-radius: 6px; padding: 6px 9px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.challenge-answer-format button[aria-pressed="true"] { background: var(--sky-soft); color: var(--blue-1); }
+.challenge-answer-format button:disabled { opacity: .45; cursor: default; }
+.challenge-answer-rich-editor { box-sizing: border-box; min-height: 260px; padding: 14px; border: 1px solid var(--border); border-radius: 0 0 10px 10px; background: var(--card); color: var(--foreground); font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; white-space: pre-wrap; outline: none; }
+.challenge-answer-rich-editor:focus { border-color: var(--blue-2); }
+.challenge-answer-rich-editor[aria-disabled="true"] { opacity: .65; }
+.challenge-answer-rich-editor p { margin: 0 0 10px; }
+.challenge-answer-rich-editor p:last-child { margin-bottom: 0; }
+.challenge-answer-rich-editor img { display: block; max-width: 100%; max-height: 480px; margin: 12px 0; border-radius: 8px; object-fit: contain; }
+.challenge-answer-rich-editor .ProseMirror-selectednode { outline: 2px solid var(--blue-2); }
+.challenge-answer-rich-editor a { color: var(--blue-1); text-decoration: underline; }
+.challenge-answer-rich-editor table { border-collapse: collapse; width: 100%; }
+.challenge-answer-rich-editor th, .challenge-answer-rich-editor td { border: 1px solid var(--border); padding: 6px 10px; }
+.challenge-answer-rich-editor pre { white-space: pre-wrap; padding: 10px; background: var(--sky-soft); border-radius: 8px; }
 .challenge-answer-body { overflow-wrap: anywhere; }
 .challenge-answer-body .md-paragraph { white-space: pre-wrap; }
 .challenge-answer-inline-image { max-width: 100%; padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); cursor: pointer; }
@@ -51,4 +63,3 @@
 .challenge-notice { font-size: 12px; color: var(--muted-foreground); line-height: 1.8; }
 .challenge-preview .challenge-summary { gap: 6px; }
 @media (max-width: 480px) { .challenge-form__grid { grid-template-columns: 1fr; } .challenge-preview .knowledge-ranking-prize { font-size: 12px; } }
-@media (max-width: 640px) { .challenge-answer-composer { grid-template-columns: 1fr; } }

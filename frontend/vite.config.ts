@@ -99,6 +99,7 @@ export default defineConfig(({ command, mode }) => {
             if (id.includes('/echarts') || id.includes('/zrender')) return 'echarts';
             if (id.includes('/tdesign-mobile-react') || id.includes('/tdesign-icons-react')) return 'tdesign';
             if (id.includes('/pdfjs-dist')) return 'pdfjs';
+            if (id.includes('/@tiptap/') || id.includes('/prosemirror-')) return 'rich-editor';
             if (
               id.includes('/react/') ||
               id.includes('/react-dom/') ||

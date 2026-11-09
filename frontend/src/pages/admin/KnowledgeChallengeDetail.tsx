@@ -13,6 +13,7 @@ import { localDateInput } from './KnowledgeChallenges';
 import { KnowledgeEmpty, KnowledgeState, knowledgeMoney, knowledgeTime, useKnowledgeResource } from './knowledgeShared';
 import ChallengeAnswerImages from './ChallengeAnswerImages';
 import ChallengeAnswerContent from './ChallengeAnswerContent';
+import ChallengeAnswerRichEditor, { type ChallengeAnswerRichEditorHandle } from './ChallengeAnswerRichEditor';
 import ChallengeAnswerAttachments from './ChallengeAnswerAttachments';
 import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
@@ -87,18 +88,17 @@ export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted, onCancel, em
   const version = useRef(0);
   const saved = useRef('');
   const savedImages = useRef('[]');
-  const textarea = useRef<HTMLTextAreaElement>(null);
+  const richEditor = useRef<ChallengeAnswerRichEditorHandle>(null);
   const uploadInProgress = useRef(false);
-  const insertionEnd = useRef<number | null>(null);
+  const focusAfterUpload = useRef(false);
   const savedAttachments = useRef('[]');
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
-    if (uploading || insertionEnd.current === null || !textarea.current) return;
-    textarea.current.focus();
-    textarea.current.setSelectionRange(insertionEnd.current, insertionEnd.current);
-    insertionEnd.current = null;
+    if (uploading || !focusAfterUpload.current) return;
+    richEditor.current?.focus();
+    focusAfterUpload.current = false;
   }, [uploading, content]);
   useEffect(() => {
     if (resource.data && !ready) {
@@ -140,24 +140,17 @@ export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted, onCancel, em
     if (!canSubmit || busy || uploadInProgress.current || !files.length) return;
     if (files.some((file) => !/\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name))) { setError('仅支持 PNG、JPG、GIF、WEBP、BMP 图片'); return; }
     if (files.some((file) => file.size > 10 * 1024 * 1024)) { setError('单张图片不能超过10MB'); return; }
-    let start = textarea.current?.selectionStart ?? content.length;
-    let end = textarea.current?.selectionEnd ?? start;
-    let nextContent = content;
+    const composer = richEditor.current;
+    if (!composer) return;
+    let selection = composer.selection();
     uploadInProgress.current = true;
     setUploading(true); setError('');
     try {
       for (const file of files) {
         const url = await uploadChallengeAnswerImage(file);
         if (!mounted.current) return;
-        const alt = file.name.replace(/[\\[\]\r\n]/g, '_');
-        const markdown = `\n\n![${alt}](${url})\n\n`;
-        const updated = nextContent.slice(0, start) + markdown + nextContent.slice(end);
-        if (updated.length > 20000) throw new Error('插入图片后答案内容不能超过20000字，请缩短内容后重试');
-        nextContent = updated;
-        start += markdown.length;
-        end = start;
-        insertionEnd.current = start;
-        setContent(nextContent);
+        selection = composer.insertImage(selection, url, file.name);
+        focusAfterUpload.current = true;
       }
     } catch (failure) { if (mounted.current) setError(failure instanceof Error ? failure.message : '图片上传失败，请重试'); }
     finally { uploadInProgress.current = false; if (mounted.current) setUploading(false); }
@@ -186,20 +179,11 @@ export function ChallengeAnswerEditor({ id, canAnswer, onSubmitted, onCancel, em
     finally { uploadInProgress.current = false; if (mounted.current) setUploading(false); }
   }
   return <section className={embedded ? 'challenge-answer-editor' : 'mac-card mac-card--pad'}><h3>{isEditing ? '编辑我的解答' : '我的解答'}</h3><KnowledgeState loading={resource.loading && !ready} error={resource.error} retry={resource.reload} />
-    {ready && <form className="challenge-form" onSubmit={publish}><p className="challenge-notice">回答将展示你的用户名，请勿填写电话、客户信息或原工单内部链接。每人每天最多点赞5条不同答案，不能给自己的答案点赞。</p>
-      <p role="note" className="knowledge-note">{editExhausted ? '本题解答已修改过一次，不能再次编辑。' : isEditing ? '每个问题的已发布解答仅可修改一次。提交修改后不能再次编辑；保存草稿或取消编辑不消耗修改次数。' : '首次发布后，每个问题的解答仅可再修改一次，请确认内容后发布。'}</p>
-      <p className="challenge-notice">支持 Markdown。上传或粘贴图片后将插入光标位置，预览中可查看图文排版。单张图片不超过10MB，请勿上传客户隐私、账号口令等敏感信息。</p>
+    {ready && <form className="challenge-form" onSubmit={publish}>
+      {isEditing && <p role="note" className="knowledge-note">{editExhausted ? '本题解答已修改过一次，不能再次编辑。' : '每个问题的已发布解答仅可修改一次。提交修改后不能再次编辑；保存草稿或取消编辑不消耗修改次数。'}</p>}
       <label>上传解答图片<input type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.bmp" multiple disabled={busy || uploading || !canSubmit} onChange={(event) => { const files = Array.from(event.target.files || []); event.target.value = ''; void uploadImages(files); }} /></label>
       {uploading && <p className="knowledge-muted" role="status">附件上传中…</p>}
-      <div className="challenge-answer-composer">
-        <label>答案内容<textarea ref={textarea} className="knowledge-textarea" value={content} onChange={(event) => setContent(event.target.value)} onPaste={(event) => {
-          const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith('image/'));
-          if (!files.length) return;
-          event.preventDefault();
-          void uploadImages(files);
-        }} required maxLength={20000} disabled={busy || uploading || !canSubmit} /></label>
-        <section className="challenge-answer-preview" aria-label="答案预览"><strong>答案预览</strong><div className="challenge-answer-body"><ChallengeAnswerContent content={content} /></div></section>
-      </div>
+      <ChallengeAnswerRichEditor ref={richEditor} content={content} disabled={busy || uploading || !canSubmit} onChange={setContent} onUploadImages={(files) => void uploadImages(files)} onError={setError} />
       <ChallengeAnswerImages images={images} disabled={busy || uploading || !canSubmit} onRemove={(index) => setImages((previous) => previous.filter((_, position) => position !== index))} />
       <label>上传解答文档<input type="file" accept=".doc,.docx,.md,.markdown,.xls,.xlsx,.pdf,.ppt,.pptx,.txt,.csv,.rtf,.odt,.ods,.odp" multiple disabled={busy || uploading || !canSubmit} onChange={(event) => { const files = Array.from(event.target.files || []); event.target.value = ''; void uploadFiles(files); }} /></label>
       <p className="knowledge-muted">已上传{attachments.length}个文档，数量不限，单个不超过20MB。文档随答案公开，请勿包含客户隐私、账号口令等敏感信息。</p>
