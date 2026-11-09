@@ -51,6 +51,11 @@ class FakeDB:
         sql = str(stmt)
         self.executed.append((sql, params))
         if sql.lstrip().upper().startswith("SELECT"):
+            # ORS-1035 之后归档流会额外查 task_comments 收集现场图片，若与归档
+            # 报告共用同一份 select_rows，会把 7 列的报告字典塞进
+            # `for atts, created_by in rows` → ValueError: too many values to unpack。
+            if "task_comments" in sql:
+                return FakeResult(mappings_rows=())
             return FakeResult(mappings_rows=self._select_rows)
         return FakeResult(rowcount=self._update_rowcount)
 
@@ -114,8 +119,9 @@ async def test_generate_happy_path_writes_and_emits(patch_db, monkeypatch):
 
     class LLM:
         async def stream(self, prompt, **kw):
-            assert "问题背景" in prompt  # 结构约定
-            for c in ["# 标题行\n", "## 问题背景\n", "内容"]:
+            # 报告结构已收敛为「问题描述 + 解决方案」两节（见 archive_flow._REPORT_PROMPT）
+            assert "问题描述" in prompt  # 结构约定
+            for c in ["# 标题行\n", "## 问题描述\n", "内容"]:
                 yield c
     monkeypatch.setattr("ai.core.solution_distiller._get_distill_llm",
                         async_stub(LLM()))
