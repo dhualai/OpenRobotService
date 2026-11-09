@@ -22,6 +22,7 @@ import json
 import os
 import re
 import time
+from typing import Optional
 
 from ai.core.logging import get_logger
 
