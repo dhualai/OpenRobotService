@@ -14,6 +14,8 @@
     SEED_PROJECT_NAME   项目显示名（默认 摇人吧服务号-测试）
     SEED_BOT_USERNAME   生成用例登录用的账号（默认 automation_bot）
     SEED_BOT_PASSWORD   该账号的密码（默认 Automation@2026，仅用于一次性 CI 库）
+    SEED_PLAIN_USERNAME 非管理员普通用户账号（默认 plain_user，供权限类场景用例使用）
+    SEED_PLAIN_PASSWORD 普通用户的密码（默认 Passw0rd!，仅用于一次性 CI 库）
 """
 from __future__ import annotations
 
@@ -33,6 +35,8 @@ DEFAULT_PROJECT_ID = "Leo_test"
 DEFAULT_PROJECT_NAME = "摇人吧服务号-测试"
 DEFAULT_BOT_USERNAME = "automation_bot"
 DEFAULT_BOT_PASSWORD = "Automation@2026"
+DEFAULT_PLAIN_USERNAME = "plain_user"
+DEFAULT_PLAIN_PASSWORD = "Passw0rd!"
 
 
 def seed_project(project_id: str, project_name: str) -> dict:
@@ -52,8 +56,8 @@ def seed_project(project_id: str, project_name: str) -> dict:
     }
 
 
-def seed_user(user_id: str, username: str, password: str, name: str) -> dict:
-    """Create the automation account with full permissions when it is missing."""
+def seed_user(user_id: str, username: str, password: str, name: str, permissions: list[str]) -> dict:
+    """Create the automation account with the given permissions when it is missing."""
     existing = db_manager.get_user(username)
     if existing:
         return {"username": username, "status": "exists"}
@@ -61,7 +65,7 @@ def seed_user(user_id: str, username: str, password: str, name: str) -> dict:
         user_id=user_id,
         username=username,
         hashed_password=get_password_hash(password),
-        permissions=["admin"],
+        permissions=permissions,
         name=name,
         status="active",
     )
@@ -73,19 +77,24 @@ def main() -> int:
     project_name = os.getenv("SEED_PROJECT_NAME", DEFAULT_PROJECT_NAME)
     username = os.getenv("SEED_BOT_USERNAME", DEFAULT_BOT_USERNAME)
     password = os.getenv("SEED_BOT_PASSWORD", DEFAULT_BOT_PASSWORD)
+    plain_username = os.getenv("SEED_PLAIN_USERNAME", DEFAULT_PLAIN_USERNAME)
+    plain_password = os.getenv("SEED_PLAIN_PASSWORD", DEFAULT_PLAIN_PASSWORD)
 
     project = seed_project(project_id, project_name)
-    user = seed_user(f"user_{username}", username, password, "自动化机器人")
+    user = seed_user(f"user_{username}", username, password, "自动化机器人", ["admin"])
+    plain_user = seed_user(f"user_{plain_username}", plain_username, plain_password, "普通用户", ["user"])
 
     summary = {
         "project": project,
         "user": user,
+        "plain_user": plain_user,
         "username": username,
+        "plain_username": plain_username,
         "password_configured": bool(password),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    if project["status"] == "failed" or user["status"] == "failed":
+    if project["status"] == "failed" or user["status"] == "failed" or plain_user["status"] == "failed":
         return 1
     return 0
 
