@@ -2,7 +2,10 @@
 #
 # 运行 automation/tests 下 -m db 标记的真实库用例：
 #   - mysql:8.0 service container 预建独立测试库 helpdesk_test（不碰任何环境库）
-#   - schema 由 alembic upgrade head 生成（顺带验证迁移链路，而非 create_all 近似）
+#   - schema 用 Base.metadata.create_all 生成（与 deploy-split quality-gate 相同模式）。
+#     注意：本项目已废弃 alembic（迁移链分叉未合并，见 automation/docs/
+#     bug-p0-alembic-empty-db.md），迁移职责由部署流水线 schema_sync 承担，
+#     CI 禁用 alembic 初始化——本 workflow 首跑已实际验证该决策（失败于 alembic 步骤）
 #   - 连接配置与 automation/config/local/config.yaml 对齐（root:123456@localhost:3306）
 #
 # 当前 continue-on-error: true（观察期）。转绿稳定后（建议观察 2 周）
@@ -18,8 +21,8 @@ on:
       - "automation/tests/**"
       - "automation/src/clients/**"
       - "automation/config/**"
-      - "backend/alembic/**"
       - "backend/app/models/**"
+      - "backend/app/core/**"
       - ".github/workflows/db-tests.yml"
 
 concurrency:
@@ -57,12 +60,12 @@ jobs:
           pip install -r backend/requirements.txt
           pip install -e automation/
 
-      - name: Alembic upgrade head（验证迁移链路）
+      - name: Init test DB schema（create_all，同 quality-gate 模式）
         env:
           DATABASE_URL: mysql+pymysql://root:123456@127.0.0.1:3306/helpdesk_test
           PYTHONPATH: ${{ github.workspace }}/backend
-        working-directory: backend
-        run: alembic upgrade head
+        run: |
+          python -c "from app.core.db import engine; from app.models import Base; Base.metadata.create_all(engine)"
 
       - name: Run DB integration tests
         env:
