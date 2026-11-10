@@ -1,0 +1,92 @@
+# P1 数据库集成测试门禁（task-54 后续，先非阻塞观察）
+#
+# 运行 automation/tests 下 -m db 标记的真实库用例：
+#   - mysql:8.0 service container 预建独立测试库 helpdesk_test（不碰任何环境库）
+#   - schema 由 alembic upgrade head 生成（顺带验证迁移链路，而非 create_all 近似）
+#   - 连接配置与 automation/config/local/config.yaml 对齐（root:123456@localhost:3306）
+#
+# 当前 continue-on-error: true（观察期）。转绿稳定后（建议观察 2 周）
+# 移除该开关升级为阻塞门禁，并在 deploy-split.yml 的 allure-report job
+# 中补充 allure-results-db artifact 聚合。
+name: db-tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [test]
+    paths:
+      - "automation/tests/**"
+      - "automation/src/clients/**"
+      - "automation/config/**"
+      - "backend/alembic/**"
+      - "backend/app/models/**"
+      - ".github/workflows/db-tests.yml"
+
+concurrency:
+  group: db-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  db-integration:
+    name: DB integration (knowledge)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true # 观察期：非阻塞，稳定后移除
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: "123456" # 与 automation/config/local/config.yaml 对齐
+          MYSQL_DATABASE: helpdesk_test # 独立测试库约定名
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -e automation/
+
+      - name: Alembic upgrade head（验证迁移链路）
+        env:
+          DATABASE_URL: mysql+pymysql://root:123456@127.0.0.1:3306/helpdesk_test
+          PYTHONPATH: ${{ github.workspace }}/backend
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Run DB integration tests
+        env:
+          AUTOMATION_ENV: local
+          AUTOMATION_DB_NAME: helpdesk_test
+        run: |
+          pytest automation/tests/ -m db -q \
+            --alluredir=automation/output/allure-results \
+            --junitxml=automation/output/junit-db.xml
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-db
+          path: automation/output/allure-results
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-db
+          path: automation/output/junit-db.xml
+          if-no-files-found: warn
+          retention-days: 7
