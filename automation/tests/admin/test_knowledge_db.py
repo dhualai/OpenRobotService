@@ -13,6 +13,9 @@ import pymysql
 
 pytestmark = [pytest.mark.db]
 
+# 与 automation/tests/conftest.py 的跟踪前缀一致（conftest 不可 import，此处自带一份）
+AUTO_T_PREFIX = "AUTO_T_"
+
 SETTLEMENT_DEFAULTS = {"rankings": [], "audit": []}
 
 
@@ -189,8 +192,8 @@ class TestKnowledgeSettlementDb:
         month = "2026-11"
         c.track_month(month)
         c.client.execute(
-            "INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at)"
-            " VALUES (%s, %s, %s, %s)",
+            "INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at, revision)"
+            " VALUES (%s, %s, %s, %s, 1)",
             (month, json.dumps([{"user_id": AUTO_T_PREFIX + "u1"}]), json.dumps([]), "2026-11-10 12:00:00"),
         )
         row = c.client.fetch_one(
@@ -208,8 +211,9 @@ class TestKnowledgeSettlementDb:
         rankings = [{"user_id": AUTO_T_PREFIX + "u1", "valid_like_count": 3, "entries": ["a", "b"]}]
         audit = [{"action": "freeze", "at": "2026-11-10T12:00:00", "by": AUTO_T_PREFIX + "admin"}]
         c.client.execute(
-            "INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at)"
-            " VALUES (%s, %s, %s, %s)", (month, json.dumps(rankings), json.dumps(audit), "2026-11-10 12:00:00"))
+            "INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at, revision)"
+            " VALUES (%s, %s, %s, %s, 1)",
+            (month, json.dumps(rankings), json.dumps(audit), "2026-11-10 12:00:00"))
         row = c.client.fetch_one(
             "SELECT rankings, audit FROM knowledge_settlements WHERE month = %s", (month,))
 
@@ -226,8 +230,8 @@ class TestKnowledgeSettlementDb:
         c = knowledge_db
         month = "2026-11"
         c.track_month(month)
-        insert = ("INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at)"
-                  " VALUES (%s, %s, %s, %s)")
+        insert = ("INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at, revision)"
+                  " VALUES (%s, %s, %s, %s, 1)")
         base = (month, json.dumps([]), json.dumps([]), "2026-11-10 12:00:00")
         c.client.execute(insert, base)
         with pytest.raises(pymysql.err.IntegrityError):
