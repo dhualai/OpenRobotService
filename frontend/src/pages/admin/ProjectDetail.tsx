@@ -11,6 +11,7 @@ import { Input, Textarea } from 'tdesign-mobile-react';
 import { createRequest, ApiError, clearCache } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { STATUS_OPTIONS, PROJECT_ABORTED, calcLifecycleProgress } from '@/shared/utils/projectLifecycle';
+import type { ProjectInfoNode } from '@/shared/utils/projectInfoTree';
 import {
   MacCheck, MacChevronRight, MacChevronDown, MacChevronUp, MacPencil, MacRefreshCw,
   MacSparkles, MacBarChart3,
@@ -104,9 +105,8 @@ export default function ProjectDetail() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [activePicker, setActivePicker] = useState<PickerKey | null>(null);
-  // 项目概况里后端 Project 表暂无对应列的三项：客户信息 / AGV 数量 / USP 版本。
-  // 按要求先置空、保留就地编辑能力；编辑结果暂存在本页 state，待后端补列后再改为 saveField。
-  const [overviewDraft, setOverviewDraft] = useState({ client: '', agvCount: '', uspVersion: '' });
+  const [overviewDraft, setOverviewDraft] = useState({ client: '' });
+  const [projectInfoNodes, setProjectInfoNodes] = useState<ProjectInfoNode[]>([]);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   // AI 项目摘要：存 ext_info.overview.ai_summary，由 POST /projects/{id}/ai-summary 生成
   // （后端读取「项目信息管理」整棵信息树 + 项目基础字段，与文件导入同一大模型），
@@ -184,9 +184,7 @@ export default function ProjectDetail() {
     }
   };
 
-  // 项目概况中暂无后端列的三项（客户信息 / AGV 数量 / USP 版本）：控件可本地编辑，
-  // 但明确提示尚未保存到后端（待接入），不伪装成已落库。
-  const saveOverviewDraft = (key: 'client' | 'agvCount' | 'uspVersion', label: string) => (value: string) => {
+  const saveOverviewDraft = (key: 'client', label: string) => (value: string) => {
     setOverviewDraft((draft) => ({ ...draft, [key]: value }));
     Toast({ message: `「${label}」暂存在本页，后端字段接入后才会保存`, theme: 'warning' });
   };
@@ -387,24 +385,22 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {/* AGV 数量 / USP 版本（Project 表暂无对应列：先置空，可就地编辑）+ 搬运效率分析入口（对照原型：从右上标签移到底部按钮） */}
           <div className="mac-ov-actions">
-            <EditableField
-              variant="cell"
-              pending
-              label="AGV 数量"
-              value={overviewDraft.agvCount}
-              placeholder="未填写"
-              onSave={saveOverviewDraft('agvCount', 'AGV 数量')}
-            />
-            <EditableField
-              variant="cell"
-              pending
-              label="USP 版本"
-              value={overviewDraft.uspVersion}
-              placeholder="未填写"
-              onSave={saveOverviewDraft('uspVersion', 'USP 版本')}
-            />
+            {[
+              { label: 'AGV 数量', nodeKey: 'hardware.vehicle.total_count' },
+              { label: 'USP 版本', nodeKey: 'dispatch_software.version.number' },
+            ].map(({ label, nodeKey }) => {
+              const value = projectInfoNodes.find((node) => node.node_key === nodeKey)?.value;
+              const text = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+              return (
+                <div key={nodeKey} className="mac-ov-cell">
+                  <div className="mac-ov-cell__label">{label}</div>
+                  <span className={`mac-ov-cell__value${text ? '' : ' is-empty'}`} style={{ cursor: 'default' }}>
+                    <span>{text || '未填写'}</span>
+                  </span>
+                </div>
+              );
+            })}
             <button
               type="button"
               className="mac-btn mac-btn--primary mac-ov-cta"
@@ -455,6 +451,7 @@ export default function ProjectDetail() {
         <ProjectInfoCard
           projectId={id}
           canEdit={!isNew}
+          onNodesChange={setProjectInfoNodes}
           onMarkChange={() => setActivityToken((value) => value + 1)}
         />
 
