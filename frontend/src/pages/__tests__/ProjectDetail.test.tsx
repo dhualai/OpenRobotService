@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
-const { mockCreateRequest } = vi.hoisted(() => ({
+const { mockCreateRequest, mockFetchInfoTree } = vi.hoisted(() => ({
   mockCreateRequest: vi.fn(),
+  mockFetchInfoTree: vi.fn(() => new Promise<import('@/api/infoNodes').ApiInfoNode[]>(() => {})),
 }));
 const mockToast = vi.fn();
 
@@ -22,7 +23,7 @@ vi.mock('@/api/ai', () => ({ aiGet: () => new Promise(() => {}) }));
 // 既不触发 act 警告，也不占用下面 mockCreateRequest 的请求桩与调用次数断言
 vi.mock('@/api/infoNodes', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/infoNodes')>()),
-  fetchInfoTree: () => new Promise(() => {}),
+  fetchInfoTree: mockFetchInfoTree,
   fetchInfoNodeMarksApi: () => new Promise(() => {}),
   fetchProjectActivityApi: () => new Promise(() => {}),
   fetchInfoNodeChangeSummaryApi: () => new Promise(() => {}),
@@ -91,6 +92,12 @@ vi.mock('tdesign-mobile-react', () => {
 import ProjectDetail from '../admin/ProjectDetail';
 import { ApiError } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
+import type { ApiInfoNode } from '@/api/infoNodes';
+
+const infoNode = (partial: Partial<ApiInfoNode> & { id: string }): ApiInfoNode => ({
+  project_id: null, parent_id: null, title: '节点', content_type: 'text',
+  value: null, sort_order: 0, created_at: '', updated_at: '', ...partial,
+});
 
 /** 真路由进页面：id 来自地址（新建走 'new'），不替身 useParams —— 换路由参数来源时用例跟着真实行为走 */
 const renderView = (id = 'new') =>
@@ -163,6 +170,68 @@ describe('ProjectDetail（卡片裁剪）', () => {
     useAuthStore.setState({ username: 'admin', permissions: ['admin'] });
     mockCreateRequest.mockReset();
     mockCreateRequest.mockResolvedValue({ ...baseProject });
+    mockFetchInfoTree.mockReset();
+    mockFetchInfoTree.mockImplementation(() => new Promise(() => {}));
+  });
+
+  it.each([
+    ['12', 'v3.2.1', '12', 'v3.2.1'],
+    ['0', 'v0.0.0', '0', 'v0.0.0'],
+    [null, '', '未填写', '未填写'],
+  ])('概况从信息树读取车总数 %s 和调度版本 %s，且只读展示', async (count, version, expectedCount, expectedVersion) => {
+    mockFetchInfoTree.mockResolvedValueOnce([
+      infoNode({ id: 'hardware', title: '硬件', children: [
+        infoNode({ id: 'vehicle', title: '车型信息', children: [
+          infoNode({ id: 'count', title: '总车数', node_key: 'hardware.vehicle.total_count', value: count }),
+        ] }),
+      ] }),
+      infoNode({ id: 'dispatch', title: '调度软件', children: [
+        infoNode({ id: 'version', title: '版本', children: [
+          infoNode({ id: 'number', title: '版本号', node_key: 'dispatch_software.version.number', value: version }),
+        ] }),
+      ] }),
+    ]);
+    renderView('p1');
+    const overview = (await screen.findByText('项目概况')).closest('section')!;
+    await waitFor(() => expect(mockFetchInfoTree).toHaveBeenCalledWith('p1'));
+    for (const [label, expected] of [['AGV 数量', expectedCount], ['USP 版本', expectedVersion]]) {
+      const cell = within(overview).getByText(label!).closest('.mac-ov-cell') as HTMLElement;
+      expect(within(cell).getByText(expected!)).toBeTruthy();
+      expect(within(cell).queryByRole('button')).toBeNull();
+      expect(within(cell).queryByText('待接入')).toBeNull();
+    }
+    expect(mockFetchInfoTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('信息节点缺失时不回退到项目表旧值或其他同名节点', async () => {
+    mockCreateRequest.mockResolvedValueOnce({ ...baseProject, total_vehicle_count: 99, deployment_version: 'old' });
+    mockFetchInfoTree.mockResolvedValueOnce([
+      infoNode({ id: 'other-count', title: '总车数', node_key: 'custom.count', value: '88' }),
+      infoNode({ id: 'other-version', title: '版本号', node_key: 'custom.version', value: 'other' }),
+    ]);
+    renderView('p1');
+    const overview = (await screen.findByText('项目概况')).closest('section')!;
+    for (const label of ['AGV 数量', 'USP 版本']) {
+      const cell = within(overview).getByText(label).closest('.mac-ov-cell') as HTMLElement;
+      expect(within(cell).getByText('未填写')).toBeTruthy();
+      expect(within(cell).queryByRole('button')).toBeNull();
+    }
+    expect(within(overview).queryByText('99')).toBeNull();
+    expect(within(overview).queryByText('old')).toBeNull();
+  });
+
+  it('信息树加载失败后重试，概况使用重试成功的数据', async () => {
+    mockFetchInfoTree.mockRejectedValueOnce(new Error('network'));
+    renderView('p1');
+    const retry = await screen.findByRole('button', { name: '重新加载' });
+    mockFetchInfoTree.mockResolvedValueOnce([
+      infoNode({ id: 'count', node_key: 'hardware.vehicle.total_count', value: '24' }),
+      infoNode({ id: 'version', node_key: 'dispatch_software.version.number', value: 'v4.0' }),
+    ]);
+    fireEvent.click(retry);
+    const overview = screen.getByText('项目概况').closest('section')!;
+    expect(await within(overview).findByText('24')).toBeTruthy();
+    expect(within(overview).getByText('v4.0')).toBeTruthy();
   });
 
   it('只保留项目概况 / 项目信息管理 / 项目工单 / 项目动态四张卡，其余卡片不再渲染', async () => {
