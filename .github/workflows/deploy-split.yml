@@ -746,6 +746,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/backend
           SEED_BOT_PASSWORD: ${{ secrets.SEED_BOT_PASSWORD || vars.SEED_BOT_PASSWORD || 'Automation@2026' }}
+          SEED_PLAIN_PASSWORD: ${{ secrets.SEED_PLAIN_PASSWORD || vars.SEED_PLAIN_PASSWORD || 'Passw0rd!' }}
         run: |
           python backend/scripts/seed_automation_env.py
 
@@ -789,6 +790,8 @@ jobs:
             automation/output/junit-scenarios.xml
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Prepare SSH key
         env:
           PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
         run: |
