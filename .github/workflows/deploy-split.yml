@@ -694,6 +694,7 @@ jobs:
       SEED_PROJECT_ID: "Leo_test"
       SEED_PROJECT_NAME: "摇人吧服务号-测试"
       SEED_BOT_USERNAME: "automation_bot"
+      SEED_PLAIN_USERNAME: "plain_user"
     services:
       mysql:
         image: mysql:8.0
@@ -763,7 +764,31 @@ jobs:
           cat backend.log
           exit 1
 
-      - name: Prepare SSH key
+      - name: Run real scenario tests（业务场景 ③④⑦，依赖 plain_user 种子）
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AUTOMATION_ENV: local
+          USE_MOCK: "0"
+          REAL_API_BASE_URL: http://localhost:8400
+          REAL_U1_USERNAME: admin
+          REAL_U1_PASSWORD: ${{ secrets.REAL_ADMIN_PASSWORD || vars.REAL_ADMIN_PASSWORD || 'usp2026@EP' }}
+          REAL_U2_USERNAME: ${{ env.SEED_BOT_USERNAME }}
+          REAL_U2_PASSWORD: ${{ secrets.SEED_BOT_PASSWORD || vars.SEED_BOT_PASSWORD || 'Automation@2026' }}
+          REAL_U3_USERNAME: ${{ env.SEED_PLAIN_USERNAME }}
+          REAL_U3_PASSWORD: ${{ secrets.SEED_PLAIN_PASSWORD || vars.SEED_PLAIN_PASSWORD || 'Passw0rd!' }}
+        run: |
+          pytest automation/tests/real/test_ticket_scenarios.py -q --alluredir=automation/output/allure-results-scenarios --junitxml=automation/output/junit-scenarios.xml
+
+      - name: Upload scenario test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-test-results
+          path: |
+            automation/output/allure-results-scenarios
+            automation/output/junit-scenarios.xml
+          if-no-files-found: ignore
+          retention-days: 7
         env:
           PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
         run: |
