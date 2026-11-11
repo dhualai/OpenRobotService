@@ -9,7 +9,8 @@ import json
 
 import allure
 import pytest
-import pymysql
+
+from automation.src.clients.exceptions import QueryError
 
 pytestmark = [pytest.mark.db]
 
@@ -49,7 +50,8 @@ class TestKnowledgePublicationDb:
         """数据库：数据校验 缺 report_id -> IntegrityError"""
         c = knowledge_db
         task_id = c.new_task_id()
-        with pytest.raises(pymysql.err.IntegrityError):
+        # MySQLClient.execute 会把 pymysql 异常统一包装为 QueryError（errno 1364 语义保留在 message 中）
+        with pytest.raises(QueryError, match="doesn't have a default value"):
             c.client.execute(
                 "INSERT INTO knowledge_publications (task_id, questioner_id, answerer_id,"
                 " title, problem, content, review_comment, value_point, first_approved_at, active)"
@@ -102,7 +104,7 @@ class TestArchiveReviewDecisionDb:
     @allure.story("审核决策")
     @allure.title("数据库：同 report 重复 version 触发唯一约束")
     def test_review_decision_duplicate_version(self, knowledge_db):
-        """数据库：数据库 重复 (report_id, version) -> IntegrityError(uq_archive_review_version)"""
+        """数据库：数据库 重复 (report_id, version) -> QueryError(uq_archive_review_version 冲突)"""
         c = knowledge_db
         task_id = c.new_task_id()
         insert = (
@@ -111,7 +113,8 @@ class TestArchiveReviewDecisionDb:
         )
         params = (task_id, task_id + 1, AUTO_T_PREFIX + "reviewer", "approved", "通过", "正文", "2026-11-10 12:00:00")
         c.client.execute(insert, params)
-        with pytest.raises(pymysql.err.IntegrityError):
+        # 重复 (report_id, version) -> 1062 Duplicate entry（经 client 包装为 QueryError）
+        with pytest.raises(QueryError, match="uq_archive_review_version"):
             c.client.execute(insert, params)
 
 
@@ -126,13 +129,14 @@ class TestKnowledgeLikeDb:
         c = knowledge_db
         task_id = c.new_task_id()
         user = AUTO_T_PREFIX + "liker"
+        # risk_status 为 ORM 侧默认（"valid"），create_all 建表无 DB 默认值，裸 INSERT 须显式写入
         insert = (
-            "INSERT INTO knowledge_question_likes (task_id, user_id, active, updated_at)"
-            " VALUES (%s, %s, %s, %s)"
+            "INSERT INTO knowledge_question_likes (task_id, user_id, active, risk_status, updated_at)"
+            " VALUES (%s, %s, %s, %s, %s)"
         )
-        c.client.execute(insert, (task_id, user, 1, "2026-11-10 12:00:00"))
-        with pytest.raises(pymysql.err.IntegrityError):
-            c.client.execute(insert, (task_id, user, 1, "2026-11-10 12:00:01"))
+        c.client.execute(insert, (task_id, user, 1, "valid", "2026-11-10 12:00:00"))
+        with pytest.raises(QueryError, match="Duplicate entry"):
+            c.client.execute(insert, (task_id, user, 1, "valid", "2026-11-10 12:00:01"))
         c.client.execute(
             "UPDATE knowledge_question_likes SET active = %s WHERE task_id = %s AND user_id = %s",
             (0, task_id, user),
@@ -151,8 +155,8 @@ class TestKnowledgeLikeDb:
         task_id = c.new_task_id()
         user = AUTO_T_PREFIX + "liker"
         c.client.execute(
-            "INSERT INTO knowledge_question_likes (task_id, user_id, active, updated_at)"
-            " VALUES (%s, %s, 1, %s)", (task_id, user, "2026-11-10 12:00:00"))
+            "INSERT INTO knowledge_question_likes (task_id, user_id, active, risk_status, updated_at)"
+            " VALUES (%s, %s, 1, %s, %s)", (task_id, user, "valid", "2026-11-10 12:00:00"))
         c.client.execute(
             "INSERT INTO knowledge_like_events (task_id, user_id, active, created_at)"
             " VALUES (%s, %s, 0, %s)", (task_id, user, "2026-11-10 12:00:01"))
@@ -185,16 +189,18 @@ class TestKnowledgeSettlementDb:
     """knowledge_settlements：月度结算快照（month 主键 + JSON）"""
 
     @allure.story("月度结算")
-    @allure.title("数据库：新建快照落库默认 reviewing/revision=1")
+    @allure.title("数据库：新建快照落库 status=reviewing/revision=1 写读一致")
     def test_settlement_create_reviewing_defaults(self, knowledge_db):
-        """数据库：正常流程 月份主键 + DDL 默认值生效"""
+        """数据库：正常流程 month 主键 + status/revision 显式写入回读一致"""
         c = knowledge_db
         month = "2026-11"
         c.track_month(month)
+        # status="reviewing"、revision=1 为 ORM 侧默认，create_all 建表无 DB 默认值，须显式写入
         c.client.execute(
-            "INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at, revision)"
-            " VALUES (%s, %s, %s, %s, 1)",
-            (month, json.dumps([{"user_id": AUTO_T_PREFIX + "u1"}]), json.dumps([]), "2026-11-10 12:00:00"),
+            "INSERT INTO knowledge_settlements (month, status, rankings, audit, frozen_at, revision)"
+            " VALUES (%s, %s, %s, %s, %s, 1)",
+            (month, "reviewing", json.dumps([{"user_id": AUTO_T_PREFIX + "u1"}]), json.dumps([]),
+             "2026-11-10 12:00:00"),
         )
         row = c.client.fetch_one(
             "SELECT status, revision FROM knowledge_settlements WHERE month = %s", (month,))
@@ -211,8 +217,8 @@ class TestKnowledgeSettlementDb:
         rankings = [{"user_id": AUTO_T_PREFIX + "u1", "valid_like_count": 3, "entries": ["a", "b"]}]
         audit = [{"action": "freeze", "at": "2026-11-10T12:00:00", "by": AUTO_T_PREFIX + "admin"}]
         c.client.execute(
-            "INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at, revision)"
-            " VALUES (%s, %s, %s, %s, 1)",
+            "INSERT INTO knowledge_settlements (month, status, rankings, audit, frozen_at, revision)"
+            " VALUES (%s, 'reviewing', %s, %s, %s, 1)",
             (month, json.dumps(rankings), json.dumps(audit), "2026-11-10 12:00:00"))
         row = c.client.fetch_one(
             "SELECT rankings, audit FROM knowledge_settlements WHERE month = %s", (month,))
@@ -230,11 +236,12 @@ class TestKnowledgeSettlementDb:
         c = knowledge_db
         month = "2026-11"
         c.track_month(month)
-        insert = ("INSERT INTO knowledge_settlements (month, rankings, audit, frozen_at, revision)"
-                  " VALUES (%s, %s, %s, %s, 1)")
+        insert = ("INSERT INTO knowledge_settlements (month, status, rankings, audit, frozen_at, revision)"
+                  " VALUES (%s, 'reviewing', %s, %s, %s, 1)")
         base = (month, json.dumps([]), json.dumps([]), "2026-11-10 12:00:00")
         c.client.execute(insert, base)
-        with pytest.raises(pymysql.err.IntegrityError):
+        # 同 month 二次 INSERT -> 1062 Duplicate entry（PK 冲突，经 client 包装为 QueryError）
+        with pytest.raises(QueryError, match="Duplicate entry"):
             c.client.execute(insert, base)
         c.client.execute(
             "UPDATE knowledge_settlements SET revision = revision + 1, status = %s WHERE month = %s",
