@@ -1,0 +1,12 @@
+{
+  "status_code": 400,
+  "url": "http://mock.local/api/tasks",
+  "reason": "Bad Request",
+  "headers": {
+    "content-length": "116",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Invalid ticket_type: invalid. Allowed: {'feature', 'problem', 'other', 'support', 'requirement', 'bug'}"
+  }
+}

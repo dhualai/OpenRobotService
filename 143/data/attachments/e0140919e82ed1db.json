@@ -1,0 +1,12 @@
+{
+  "status_code": 400,
+  "url": "http://mock.local/api/tasks/assignable-users?project_id=abc",
+  "reason": "Bad Request",
+  "headers": {
+    "content-length": "31",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Invalid project_id"
+  }
+}

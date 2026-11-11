@@ -1,0 +1,14 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/admin/daily-reports",
+  "reason": "OK",
+  "headers": {
+    "content-length": "44",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": 1,
+    "type": "daily",
+    "status": "generated"
+  }
+}

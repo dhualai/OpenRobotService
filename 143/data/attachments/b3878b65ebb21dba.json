@@ -1,0 +1,13 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/wechat/health",
+  "reason": "OK",
+  "headers": {
+    "content-length": "43",
+    "content-type": "application/json"
+  },
+  "body": {
+    "code": 200,
+    "message": "服务运行正常"
+  }
+}

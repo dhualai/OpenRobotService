@@ -1,0 +1,4 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/wechat/health"
+}

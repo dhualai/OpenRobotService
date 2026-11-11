@@ -1,0 +1,15 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/tasks/1/ai-assign",
+  "reason": "OK",
+  "headers": {
+    "content-length": "75",
+    "content-type": "application/json"
+  },
+  "body": {
+    "task_id": 1,
+    "assigned_to": "engineer-01",
+    "method": "auto",
+    "confidence": 0.85
+  }
+}

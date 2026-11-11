@@ -1,0 +1,7 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/ai/qa/submit",
+  "body": {
+    "conversation_id": 1
+  }
+}

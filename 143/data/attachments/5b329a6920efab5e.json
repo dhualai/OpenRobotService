@@ -1,0 +1,10 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/ai/qa/ask/stream",
+  "reason": "OK",
+  "headers": {
+    "content-type": "text/event-stream",
+    "content-length": "508"
+  },
+  "body": "event: status\ndata: {\"stage\": \"draft_ready\", \"draft\": {\"type\": \"problem\", \"ticket_type\": \"problem\", \"title\": \"自动化链路验证-Mock\", \"description\": \"[指定处理人：自动化处理人] 机器人无法启动，故障码 E1001，已尝试重启仍无效。\", \"priority\": \"中\", \"project\": \"摇人吧服务号-测试\", \"project_id\": \"Leo_test\", \"requested_assignee\": \"自动化处理人\", \"curr_step_id\": 1, \"curr_step_name\": \"初步诊断\"}, \"ticket_ready\": true}\n\nevent: done\ndata: {\"total_ms\": 10}\n\n"
+}

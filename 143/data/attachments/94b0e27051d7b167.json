@@ -1,0 +1,31 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/ai/qa/ticket/steps?type=problem",
+  "reason": "OK",
+  "headers": {
+    "content-length": "176",
+    "content-type": "application/json"
+  },
+  "body": {
+    "code": 0,
+    "data": {
+      "steps": [
+        {
+          "id": 1,
+          "step_name": "初步诊断",
+          "sequence": 1
+        },
+        {
+          "id": 2,
+          "step_name": "临时解决",
+          "sequence": 2
+        },
+        {
+          "id": 3,
+          "step_name": "最终解决",
+          "sequence": 3
+        }
+      ]
+    }
+  }
+}

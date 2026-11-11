@@ -1,0 +1,18 @@
+{
+  "status_code": 200,
+  "url": "http://localhost:8400/api/health",
+  "reason": "OK",
+  "headers": {
+    "date": "Wed, 11 Nov 2026 08:31:12 GMT",
+    "server": "uvicorn",
+    "content-length": "118",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": {
+    "status": "healthy",
+    "service": "用户认证与权限管理服务",
+    "version": "1.0.0",
+    "timestamp": "2026-11-11 08:31:12"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/tasks/stats/overview",
+  "reason": "OK",
+  "headers": {
+    "content-length": "64",
+    "content-type": "application/json"
+  },
+  "body": {
+    "total": 1,
+    "by_status": {
+      "pending": 1
+    },
+    "by_priority": {
+      "medium": 1
+    }
+  }
+}

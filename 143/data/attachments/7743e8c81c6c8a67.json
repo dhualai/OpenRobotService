@@ -1,0 +1,7 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/projects/risks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQzODk0NzAuMTEyODY1NywgImlhdCI6IDE3OTQzODU4NzAuMTEyODY2Mn0.bW9jay1zaWc"
+  }
+}

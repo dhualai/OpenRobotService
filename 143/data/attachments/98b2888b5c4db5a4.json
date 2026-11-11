@@ -1,0 +1,15 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/ai/qa/submit",
+  "reason": "OK",
+  "headers": {
+    "content-length": "79",
+    "content-type": "application/json"
+  },
+  "body": {
+    "ticket_id": 2,
+    "conversation_id": 1,
+    "status": "created",
+    "created_by": "testadmin"
+  }
+}

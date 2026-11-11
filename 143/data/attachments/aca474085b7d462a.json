@@ -1,0 +1,16 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/admin/projects",
+  "reason": "OK",
+  "headers": {
+    "content-length": "68",
+    "content-type": "application/json"
+  },
+  "body": [
+    {
+      "id": 1,
+      "name": "Default Project",
+      "description": "Seeded for tests"
+    }
+  ]
+}

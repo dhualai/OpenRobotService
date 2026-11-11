@@ -1,0 +1,12 @@
+{
+  "status_code": 404,
+  "url": "http://mock.local/api/admin/roles/999",
+  "reason": "Not Found",
+  "headers": {
+    "content-length": "27",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Role not found"
+  }
+}

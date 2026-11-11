@@ -1,0 +1,12 @@
+{
+  "status_code": 401,
+  "url": "http://mock.local/api/auth/login",
+  "reason": "Unauthorized",
+  "headers": {
+    "content-length": "32",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Invalid credentials"
+  }
+}

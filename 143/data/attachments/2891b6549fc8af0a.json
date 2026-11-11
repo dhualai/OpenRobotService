@@ -1,0 +1,12 @@
+{
+  "status_code": 404,
+  "url": "http://mock.local/api/admin/projects/risks/R999",
+  "reason": "Not Found",
+  "headers": {
+    "content-length": "27",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Risk not found"
+  }
+}

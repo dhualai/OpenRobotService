@@ -1,0 +1,27 @@
+{
+  "status_code": 422,
+  "url": "http://mock.local/api/tasks",
+  "reason": "Unprocessable Entity",
+  "headers": {
+    "content-length": "114",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": [
+      {
+        "loc": [
+          "body",
+          "title"
+        ],
+        "msg": "field required"
+      },
+      {
+        "loc": [
+          "body",
+          "description"
+        ],
+        "msg": "field required"
+      }
+    ]
+  }
+}

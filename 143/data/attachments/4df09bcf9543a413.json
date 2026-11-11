@@ -1,0 +1,30 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/ai/qa/ticket/prepare",
+  "reason": "OK",
+  "headers": {
+    "content-length": "497",
+    "content-type": "application/json"
+  },
+  "body": {
+    "code": 0,
+    "data": {
+      "stage": "draft_ready",
+      "draft": {
+        "type": "problem",
+        "ticket_type": "problem",
+        "title": "自动化链路验证-Mock",
+        "description": "[指定处理人：自动化处理人] 机器人无法启动，故障码 E1001，已尝试重启仍无效。",
+        "priority": "中",
+        "project": "摇人吧服务号-测试",
+        "project_id": "Leo_test",
+        "requested_assignee": "自动化处理人",
+        "curr_step_id": 1,
+        "curr_step_name": "初步诊断"
+      },
+      "missing_fields": [],
+      "prompt": "工单草稿已生成",
+      "ticket_ready": true
+    }
+  }
+}
