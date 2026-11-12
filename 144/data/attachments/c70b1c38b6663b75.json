@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/cuiban-notification",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ0NTYwODcuMTgyNzk0OCwgImlhdCI6IDE3OTQ0NTI0ODcuMTgyNzk1fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "task_id": 1,
+    "note": "催办提醒"
+  }
+}

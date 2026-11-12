@@ -1,0 +1,2 @@
+INFO     httpx:_client.py:1740 HTTP Request: PUT http://test/api/tasks/1/spec-doc "HTTP/1.1 422 Unprocessable Entity"
+INFO     httpx:_client.py:1025 HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"

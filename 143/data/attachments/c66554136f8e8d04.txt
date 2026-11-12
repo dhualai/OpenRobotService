@@ -1,4 +1,0 @@
-2026-11-11 08:31:10 | [32mINFO | automation.clients.ApiClient | Connected to API: http://mock.local
-2026-11-11 08:31:10 | [32mINFO | httpx | HTTP Request: POST http://mock.local/api/auth/login "HTTP/1.1 200 OK"
-2026-11-11 08:31:10 | [32mINFO | httpx | HTTP Request: DELETE http://mock.local/api/call/messages/99999 "HTTP/1.1 404 Not Found"
-2026-11-11 08:31:10 | [32mINFO | automation.clients.ApiClient | API client disconnected

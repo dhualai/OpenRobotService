@@ -1,2 +1,0 @@
-2026-11-11 08:31:07 | [32mINFO | httpx | HTTP Request: POST http://test/api/tasks/spec-doc/image "HTTP/1.1 200 OK"
-2026-11-11 08:31:07 | [32mINFO | httpx | HTTP Request: POST http://test/api/tasks/spec-doc/parse "HTTP/1.1 200 OK"

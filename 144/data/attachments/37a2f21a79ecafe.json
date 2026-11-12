@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/auth/me",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ0NTYwODcuMjE4NDc5NCwgImlhdCI6IDE3OTQ0NTI0ODcuMjE4NDc5OX0.bW9jay1zaWc"
+  }
+}

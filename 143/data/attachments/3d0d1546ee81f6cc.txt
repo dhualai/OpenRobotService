@@ -1,1 +1,0 @@
-2026-11-11 08:31:07 | [32mINFO | httpx | HTTP Request: GET http://test/api/tasks/1/operation-logs "HTTP/1.1 200 OK"

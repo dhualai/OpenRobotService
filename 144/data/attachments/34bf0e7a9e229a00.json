@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/filter",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidTJfYXV0byIsICJleHAiOiAxNzk0NDU2MDg2Ljk4NDE0NiwgImlhdCI6IDE3OTQ0NTI0ODYuOTg0MTQ2Nn0.bW9jay1zaWc"
+  },
+  "body": {
+    "status": "new",
+    "assigned_to": "u2_auto"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/cuiban-notification",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ0NTYwODcuMTc2MzEzMiwgImlhdCI6IDE3OTQ0NTI0ODcuMTc2MzEzNH0.bW9jay1zaWc"
+  },
+  "body": {
+    "task_id": 1
+  }
+}

@@ -1,0 +1,3 @@
+2026-11-12 03:01:26 | [32mINFO | automation.clients.ApiClient | Connected to API: http://mock.local
+2026-11-12 03:01:26 | [32mINFO | httpx | HTTP Request: GET http://mock.local/api/wechat/health "HTTP/1.1 200 OK"
+2026-11-12 03:01:26 | [32mINFO | automation.clients.ApiClient | API client disconnected

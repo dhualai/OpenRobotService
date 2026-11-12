@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://localhost:8400/api/auth/me",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsIm5hbWUiOiJhZG1pbiIsImV4cCI6MTc5NDQ1NDI4N30.8fvmA1RkKzO6vK6cwanVecVs4TmfxeeM1ahf2NE7KCQ"
+  }
+}

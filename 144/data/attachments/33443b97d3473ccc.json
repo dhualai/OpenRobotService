@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ0NTYwODcuMzUwMDgxNywgImlhdCI6IDE3OTQ0NTI0ODcuMzUwMDgyNH0.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "支持任务",
+    "description": "支持描述",
+    "ticket_type": "support"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/export/project/P001",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ0NTYwODYuODI5NTgxNywgImlhdCI6IDE3OTQ0NTI0ODYuODI5NTgyNX0.bW9jay1zaWc"
+  },
+  "body": {
+    "format": "xlsx"
+  }
+}

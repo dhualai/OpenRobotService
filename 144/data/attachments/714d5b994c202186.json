@@ -1,0 +1,14 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/call/messages",
+  "reason": "OK",
+  "headers": {
+    "content-length": "344",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": 2,
+    "content": "我要在项目 Leo_test（摇人吧服务号-测试）提一个 problem 工单。指定处理人：自动化处理人。标题：自动化链路验证-Mock。问题：机器人无法启动，故障码 E1001，已尝试重启仍无效。请直接生成工单草稿，不要继续追问。",
+    "created_at": "2026-11-12T03:01:26"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/99999/comments",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ0NTYwODcuNDc5NjU2NywgImlhdCI6IDE3OTQ0NTI0ODcuNDc5NjU3Mn0.bW9jay1zaWc"
+  },
+  "body": {
+    "content": "x"
+  }
+}

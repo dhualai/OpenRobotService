@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ0NTYwODcuMzQzNjQ1LCAiaWF0IjogMTc5NDQ1MjQ4Ny4zNDM2NDU4fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "需求任务",
+    "description": "需求描述",
+    "ticket_type": "requirement"
+  }
+}
