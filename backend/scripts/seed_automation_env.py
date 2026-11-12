@@ -1,10 +1,10 @@
-"""种子脚本：为工单门禁准备项目、机器人账号与权限。
+"""种子脚本：为工单门禁准备项目、机器人账号、权限与工单步骤模板。
 
 工单门禁把 AI 生成的功能用例跑在真实后端上。真实后端必须有一个已知的项目和
 一个已知的账号，否则生成用例里的「登录 → 调接口」必然失败（CI 里是一个全新的
 空库，连默认管理员都不存在）。
 
-本脚本幂等：已存在的项目/账号不会被重复创建。
+本脚本幂等：已存在的项目/账号/步骤模板不会被重复创建。
 
 用法：
     python backend/scripts/seed_automation_env.py
@@ -29,7 +29,9 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.core.database import db_manager  # noqa: E402
+from app.core.db import SessionLocal  # noqa: E402
 from app.core.security import get_password_hash  # noqa: E402
+from app.models.task import TaskStep, TaskType  # noqa: E402
 
 DEFAULT_PROJECT_ID = "Leo_test"
 DEFAULT_PROJECT_NAME = "摇人吧服务号-测试"
@@ -37,6 +39,11 @@ DEFAULT_BOT_USERNAME = "automation_bot"
 DEFAULT_BOT_PASSWORD = "Automation@2026"
 DEFAULT_PLAIN_USERNAME = "plain_user"
 DEFAULT_PLAIN_PASSWORD = "Passw0rd!"
+
+# 场景用例（automation/tests/real/test_ticket_scenarios.py）固定用 problem 类型提单，
+# 处理人 respond 需要 task_steps 模板提供协商节点；空库无模板会导致 steps 接口返回空列表。
+SCENARIO_TASK_TYPE = TaskType.PROBLEM
+SCENARIO_STEPS = ("接单处理", "阶段确认", "完成归档")
 
 
 def seed_project(project_id: str, project_name: str) -> dict:
@@ -72,6 +79,29 @@ def seed_user(user_id: str, username: str, password: str, name: str, permissions
     return {"username": username, "status": "created" if created else "failed"}
 
 
+def seed_task_steps(task_type: TaskType, step_names: tuple[str, ...]) -> dict:
+    """Seed the TaskStep templates for one task type when it has none."""
+    db = SessionLocal()
+    try:
+        existing = (
+            db.query(TaskStep)
+            .filter(TaskStep.task_type == task_type)
+            .order_by(TaskStep.sequence.asc())
+            .all()
+        )
+        if existing:
+            return {"task_type": task_type.value, "status": "exists", "steps": len(existing)}
+        for sequence, name in enumerate(step_names, start=1):
+            db.add(TaskStep(task_type=task_type, step_name=name, sequence=sequence))
+        db.commit()
+        return {"task_type": task_type.value, "status": "created", "steps": len(step_names)}
+    except Exception:
+        db.rollback()
+        return {"task_type": task_type.value, "status": "failed", "steps": 0}
+    finally:
+        db.close()
+
+
 def main() -> int:
     project_id = os.getenv("SEED_PROJECT_ID", DEFAULT_PROJECT_ID)
     project_name = os.getenv("SEED_PROJECT_NAME", DEFAULT_PROJECT_NAME)
@@ -83,18 +113,25 @@ def main() -> int:
     project = seed_project(project_id, project_name)
     user = seed_user(f"user_{username}", username, password, "自动化机器人", ["admin"])
     plain_user = seed_user(f"user_{plain_username}", plain_username, plain_password, "普通用户", ["user"])
+    task_steps = seed_task_steps(SCENARIO_TASK_TYPE, SCENARIO_STEPS)
 
     summary = {
         "project": project,
         "user": user,
         "plain_user": plain_user,
+        "task_steps": task_steps,
         "username": username,
         "plain_username": plain_username,
         "password_configured": bool(password),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    if project["status"] == "failed" or user["status"] == "failed" or plain_user["status"] == "failed":
+    if (
+        project["status"] == "failed"
+        or user["status"] == "failed"
+        or plain_user["status"] == "failed"
+        or task_steps["status"] == "failed"
+    ):
         return 1
     return 0
 
