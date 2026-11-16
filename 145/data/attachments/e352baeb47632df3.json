@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/qa/ask",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ4MzI0MTIuNTA0ODMyLCAiaWF0IjogMTc5NDgyODgxMi41MDQ4MzI1fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "question": "How to reset?"
+  }
+}

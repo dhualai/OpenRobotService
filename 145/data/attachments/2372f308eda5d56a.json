@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://localhost:8400/api/tasks/1",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsIm5hbWUiOiJhZG1pbiIsImV4cCI6MTc5NDgzMDYxOH0.jc9WFwO6wMkzSLG12SAUgiUe5DsxP5th3b7I2yT1IXk"
+  }
+}

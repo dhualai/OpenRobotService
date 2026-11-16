@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/ai/qa/submit",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ4MzI0MTIuNjI3NzQ4MywgImlhdCI6IDE3OTQ4Mjg4MTIuNjI3NzQ5fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "conversation_id": 1
+  }
+}
