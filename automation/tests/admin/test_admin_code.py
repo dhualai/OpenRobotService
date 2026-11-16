@@ -7,12 +7,11 @@ import allure
 import pytest
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
-
-_ROLE_CREDENTIALS = {'customer': ('customer', 'cust123'), 'engineer': ('engineer', 'eng123')}
+from automation.src.config.credentials import role_credentials
 
 
 async def _auth_for_role(client, role: str) -> dict:
-    username, password = _ROLE_CREDENTIALS[role]
+    username, password = role_credentials(role)
     r = await client.post('/api/auth/login', json={'username': username, 'password': password})
     return {'Authorization': f"Bearer {r.json()['access_token']}"}
 
@@ -39,6 +38,7 @@ class TestTickets:
     @pytest.mark.api
     async def test_tickets_list(self, mock_api_client, mock_auth_header):
         """正常流程：工单列表"""
+        # 响应 {items,total}，total 随测试数据动态变化，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/tickets', headers=mock_auth_header,
                    expected_status=200)
 
@@ -47,6 +47,7 @@ class TestTickets:
     @pytest.mark.api
     async def test_tickets_stats(self, mock_api_client, mock_auth_header):
         """正常流程：工单统计"""
+        # 响应 {total,by_status}，total 随测试数据动态变化，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/tickets/stats', headers=mock_auth_header,
                    expected_status=200)
 
@@ -55,6 +56,7 @@ class TestTickets:
     @pytest.mark.api
     async def test_tickets_stats_again(self, mock_api_client, mock_auth_header):
         """正常流程：工单统计"""
+        # 响应 {total,by_status}，total 随测试数据动态变化，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/tickets/stats', headers=mock_auth_header,
                    expected_status=200)
 
@@ -68,6 +70,7 @@ class TestProjects:
     @pytest.mark.api
     async def test_projects_list(self, mock_api_client, mock_auth_header):
         """正常流程：项目列表"""
+        # 响应为顶层 list，expected_fields 仅支持 dict 子集，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/projects', headers=mock_auth_header,
                    expected_status=200)
 
@@ -131,6 +134,7 @@ class TestRisks:
     @pytest.mark.api
     async def test_risks_list(self, mock_api_client, mock_auth_header):
         """正常流程：风险列表"""
+        # 响应为顶层 list（mock 初始化为空），expected_fields 仅支持 dict，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/projects/risks', headers=mock_auth_header,
                    expected_status=200)
 
@@ -194,6 +198,7 @@ class TestDashboard:
     @pytest.mark.api
     async def test_dashboard_summary(self, mock_api_client, mock_auth_header):
         """正常流程：看板汇总"""
+        # 响应 {total_tickets,by_status}，total_tickets 随测试数据动态变化，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/dashboard/tickets/summary', headers=mock_auth_header,
                    expected_status=200)
 
@@ -207,6 +212,7 @@ class TestUsers:
     @pytest.mark.api
     async def test_users_list(self, mock_api_client, mock_auth_header):
         """正常流程：用户列表"""
+        # 响应为顶层 list，expected_fields 仅支持 dict 子集，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/users/', headers=mock_auth_header,
                    expected_status=200)
 
@@ -215,6 +221,7 @@ class TestUsers:
     @pytest.mark.api
     async def test_users_list_cache(self, mock_api_client, mock_auth_header):
         """Redis：用户列表缓存"""
+        # 响应为顶层 list，expected_fields 仅支持 dict 子集，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/users', headers=mock_auth_header,
                    expected_status=200)
 
@@ -302,6 +309,7 @@ class TestRoles:
     @pytest.mark.api
     async def test_roles_list(self, mock_api_client, mock_auth_header):
         """正常流程：角色列表"""
+        # 响应为顶层 list，expected_fields 仅支持 dict 子集，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/roles/', headers=mock_auth_header,
                    expected_status=200)
 
@@ -310,6 +318,7 @@ class TestRoles:
     @pytest.mark.api
     async def test_roles_list_cache(self, mock_api_client, mock_auth_header):
         """Redis：角色缓存失效"""
+        # 响应为顶层 list，expected_fields 仅支持 dict 子集，状态码即断言
         await _api(mock_api_client, 'get', '/api/admin/roles', headers=mock_auth_header,
                    expected_status=200)
 
@@ -429,7 +438,7 @@ class TestResources:
     async def test_resources_list(self, mock_api_client, mock_auth_header):
         """正常流程：资源列表"""
         await _api(mock_api_client, 'get', '/api/admin/resource-manager/resources', headers=mock_auth_header,
-                   expected_status=200)
+                   expected_status=200, expected_fields={'total': 0})
 
     @allure.story('资源')
     @allure.title('正常：创建资源')
