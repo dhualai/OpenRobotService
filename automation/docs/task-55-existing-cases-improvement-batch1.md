@@ -1,7 +1,8 @@
 # Task 55：存量用例改善第一批（弱断言 + 凭据收敛）
 
 - **日期**：2026-11-16
-- **状态**：完成（本地验证通过，待 CI workflow_dispatch 预验证）
+- **状态**：✅ 完成并已 CI 预验证通过（本地 + workflow_dispatch 双绿）
+- **提交**：分支 `ci/improve-existing-cases-batch1` @ `18205675`（父 0547c497，12 文件 +845/-25）
 - **遵循流程**：分析 → 设计 → 确认 → 实现 → 测试 → 文档（用户 19:06 确认方案）
 
 ## 本次目标
@@ -69,14 +70,25 @@ Report successfully generated to output\allure-report
 - ✅ 新增字段断言 65 处（含原有），注释说明 17 处
 - ✅ 只改 6 个测试/源文件，未超 10 文件阈值
 
+## CI 预验证（2026-11-16）
+
+分支推送后 workflow_dispatch 触发两条工作流，均 success：
+
+| 工作流 | Run | 结果 |
+|---|---|---|
+| `db-tests.yml` | #9（43858595047） | ✅ success；DB integration (knowledge) job：**12 passed / 5 skipped / 180 deselected** |
+| `deploy-split.yml` | #145（43858599136） | ✅ success（11 jobs）；Automation quality gate：**311 passed / 3 skipped** + **131 passed / 17 skipped / 49 deselected**；Ticket functional cases、Real backend smoke + contract、Allure report 均 success |
+
+- AI unit tests (non-blocking) 仍 failure（已知遗留，属 `ai/` 业务代码，不拦截）。
+- 提交方式：因新仓库 index/stat 缓存异常 + 本地分支 ref 被吞，采用 `write-tree` + `commit-tree` 基于 test 构建提交，按 SHA 直接推送远端分支（未依赖本地 ref）。
+
 ## 风险
 
 - 全量 `pytest tests/ -m api` 在本地因 `playwright` 未安装导致 UI 目录收集报错（与本批改动无关）；按 AGENTS.md 规范只跑四个 API 模块 + business_chain，全绿。
-- 本地无 MySQL，12 条 DB 用例 skip；真实验证依赖 CI db-tests。
-- 新增字段断言在本地 Mock 全通过；真实后端契约是否一致需 workflow_dispatch 预验证。
+- 本地无 MySQL，12 条 DB 用例 skip；CI db-tests 已验证 12 passed / 5 skipped。
+- 新增字段断言在本地 Mock 与 CI 真实车道均通过，契约一致。
 
 ## 下一步计划
 
-1. 提交改动到分支，走 workflow_dispatch 预验证（ci-guard + db-tests + deploy-split）。
-2. 若 CI 全绿，刷新领导版报告的"断言改善"状态。
-3. 第二批：P1-3 business_chain allure.step 结构化、P1-4 AI skip 防假绿、P1-5 契约车道。
+1. 分支 `ci/improve-existing-cases-batch1` 待 review / 合入 test。
+2. 第二批：P1-3 business_chain allure.step 结构化、P1-4 AI skip 防假绿、P1-5 契约车道。

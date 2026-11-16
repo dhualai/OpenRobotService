@@ -287,21 +287,12 @@ class TestReminder:
                    json={'task_id': 999}, expected_status=404)
 
     @allure.story('催办')
-    @allure.title('正常：催办（mock 暂不实现限流）')
-    @pytest.mark.api
-    async def test_cuiban_no_ratelimit(self, mock_api_client, mock_auth_header):
-        """正常流程：催办（mock 暂不实现限流）"""
-        await _api(mock_api_client, 'post', '/api/tasks/cuiban-notification', headers=mock_auth_header,
-                   json={'task_id': 1}, expected_status=200, expected_fields={'success': True})
-
-    @allure.story('催办')
     @allure.title('数据校验：催办备注超长')
     @pytest.mark.api
     async def test_cuiban_long_note(self, mock_api_client, mock_auth_header):
-        """数据校验：催办备注超长"""
+        """数据校验：催办备注超长（>10000 字应被拒绝）"""
         await _api(mock_api_client, 'post', '/api/tasks/cuiban-notification', headers=mock_auth_header,
-                   json={'task_id': 1, 'note': '催办提醒'}, expected_status=200,
-                   expected_fields={'success': True, 'task_id': 1})
+                   json={'task_id': 1, 'note': '催' * 10001}, expected_status=422)
 
 
 @allure.feature('我要摇人')
@@ -318,31 +309,12 @@ class TestEscalation:
                    expected_status=200)
 
     @allure.story('升级选人')
-    @allure.title('正常：返回可选人员')
-    @pytest.mark.api
-    async def test_assignable_users_available(self, mock_api_client, mock_auth_header):
-        """正常流程：返回可选人员"""
-        # 响应为顶层 list，expected_fields 仅支持 dict 子集，状态码即断言
-        await _api(mock_api_client, 'get', '/api/tasks/assignable-users', headers=mock_auth_header,
-                   expected_status=200)
-
-    @allure.story('升级选人')
     @allure.title('数据校验：project_id 非法')
     @pytest.mark.api
     async def test_assignable_users_invalid_project(self, mock_api_client, mock_auth_header):
         """数据校验：project_id 非法"""
         await _api(mock_api_client, 'get', '/api/tasks/assignable-users?project_id=abc',
                    headers=mock_auth_header, expected_status=400)
-
-    @allure.story('升级选人')
-    @allure.title('正常：无可用人员')
-    @pytest.mark.api
-    async def test_assignable_users_empty(self, mock_api_client, mock_auth_header):
-        """正常流程：无可用人员"""
-        # 响应为顶层 list，expected_fields 仅支持 dict 子集，状态码即断言
-        await _api(mock_api_client, 'get', '/api/tasks/assignable-users', headers=mock_auth_header,
-                   expected_status=200)
-
 
 @allure.feature('我要摇人')
 class TestAuth:

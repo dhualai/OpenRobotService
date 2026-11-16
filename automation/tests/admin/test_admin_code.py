@@ -51,16 +51,6 @@ class TestTickets:
         await _api(mock_api_client, 'get', '/api/admin/tickets/stats', headers=mock_auth_header,
                    expected_status=200)
 
-    @allure.story('工单总览')
-    @allure.title('正常：工单统计（重复）')
-    @pytest.mark.api
-    async def test_tickets_stats_again(self, mock_api_client, mock_auth_header):
-        """正常流程：工单统计"""
-        # 响应 {total,by_status}，total 随测试数据动态变化，状态码即断言
-        await _api(mock_api_client, 'get', '/api/admin/tickets/stats', headers=mock_auth_header,
-                   expected_status=200)
-
-
 @allure.feature('后台管理')
 class TestProjects:
     """项目管理"""
@@ -394,16 +384,6 @@ class TestDailyReports:
         await _api(mock_api_client, 'post', '/api/admin/daily-reports', headers=mock_auth_header,
                    json={'type': 'weekly'}, expected_status=200,
                    expected_fields={'type': 'weekly'})
-
-    @allure.story('日报')
-    @allure.title('正常：生成日报（重复）')
-    @pytest.mark.api
-    async def test_daily_report_again(self, mock_api_client, mock_auth_header):
-        """正常流程：生成日报"""
-        await _api(mock_api_client, 'post', '/api/admin/daily-reports', headers=mock_auth_header,
-                   json={'type': 'daily'}, expected_status=200,
-                   expected_fields={'status': 'generated'})
-
 
 @allure.feature('后台管理')
 class TestExport:

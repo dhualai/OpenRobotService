@@ -358,6 +358,9 @@ cd automation; pytest src/ config/ -v   # 快速验证框架库，不带 --allur
 
 Mock 后端位于 `automation/src/mocks/backend_mock.py`。
 
+> **设计原理**：为什么需要 Mock、Mock 车道与真实后端车道（`USE_MOCK` 开关）如何分工、
+> Mock 的边界与防假绿规则，详见 `automation/docs/design-mock-vs-real-lanes.md`。
+
 ### 目标切换（Mock ↔ 真实后端）
 
 同一套用例可通过环境变量切换测试目标：
