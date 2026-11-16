@@ -211,17 +211,10 @@ export default function ProjectDetail() {
 
   const handleCreate = async () => {
     if (!project) return;
-    // 必填字段：项目名称 / 项目编号 / 项目状态
+    // 与后端契约对齐：仅项目名称为硬性必填；
+    // project_code 留空由后端自动生成，status 后端有默认值「售前方案」
     if (!project.name.trim()) {
       Toast({ message: '请填写项目名称', theme: 'warning' });
-      return;
-    }
-    if (!project.project_code.trim()) {
-      Toast({ message: '请填写项目编号', theme: 'warning' });
-      return;
-    }
-    if (!project.status.trim()) {
-      Toast({ message: '请选择项目状态', theme: 'warning' });
       return;
     }
     setCreating(true);
@@ -297,7 +290,7 @@ export default function ProjectDetail() {
             <div className="mac-summary-head__main">
               <EditableField label="项目名称" value={project.name || '未命名项目'} placeholder="未命名项目" onSave={(v) => saveField('name', v)} title required={isNew} />
               <div className="mac-summary-head__code">
-                <EditableField label="项目编号" value={project.project_code || '未填写'} placeholder="未填写" onSave={(v) => saveField('project_code', v)} inlineLabel="项目编号" required={isNew} meta plain />
+                <EditableField label="项目编号" value={project.project_code || '未填写'} placeholder="未填写（留空自动生成）" onSave={(v) => saveField('project_code', v)} inlineLabel="项目编号" meta plain />
                 {project.system_id ? ` · 企业微信记录ID: ${project.system_id}` : ''}
               </div>
             </div>
@@ -334,7 +327,7 @@ export default function ProjectDetail() {
               进度与项目进度列表同一口径（按生命周期阶段线性计算；仅「项目中止」隐藏） */}
           <div className="mac-ov-divider">
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
+              <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} />
               {/* 在线状态：绿点=在线，灰点=离线，不显示=从未心跳 */}
               {project.online_status && project.online_status !== 'unknown' && (
                 <span
