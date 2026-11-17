@@ -147,7 +147,7 @@ def _split_template(project_type: Optional[str] = None) -> tuple[dict, list]:
 _PROJECT_COLUMNS = {c.key for c in inspect(Project).mapper.column_attrs}
 
 # 项目在线状态阈值（秒）：超过此时间未收到心跳视为离线
-def _compute_online_status(last_heartbeat_at: float | None) -> str:
+def _compute_online_status(last_heartbeat_at: int | None) -> str:
     """根据最近心跳时间戳计算在线状态。
 
     - online: 最近心跳在阈值内
@@ -1029,7 +1029,7 @@ class ProjectService:
         try:
             db.query(Project).filter(Project.code == project_code).update({
                 Project.export_version: Project.export_version + 1,
-                Project.export_version_updated_at: _time.time(),
+                Project.export_version_updated_at: int(_time.time()),
             })
             db.commit()
         except Exception:
