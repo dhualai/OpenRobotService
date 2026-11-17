@@ -2920,8 +2920,9 @@ async def complete_task_step(
 
     if ticket.status != TicketStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="仅处理中的工单可完成当前阶段")
-    if not getattr(ticket, 'curr_step_agreed', False):
-        raise HTTPException(status_code=400, detail="当前节点尚未协商一致，无法推进到下一阶段")
+    # 协商一致检查已移除：允许处理人跳过对方确认直接推进到下一阶段
+    # if not getattr(ticket, 'curr_step_agreed', False):
+    #     raise HTTPException(status_code=400, detail="当前节点尚未协商一致，无法推进到下一阶段")
     if ticket.curr_step_id is None:
         raise HTTPException(status_code=400, detail="当前节点不存在，无法推进")
 
