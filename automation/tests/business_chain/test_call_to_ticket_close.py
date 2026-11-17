@@ -7,12 +7,13 @@ import pytest
 
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
+from automation.src.config.credentials import role_credentials
 
 
 pytestmark = [pytest.mark.api, pytest.mark.e2e, pytest.mark.mock]
 
-U1 = ("u1_auto", "123456")
-U2 = ("u2_auto", "123456")
+U1 = role_credentials('u1')
+U2 = role_credentials('u2')
 FIXED_QUESTION = (
     "我要在项目 Leo_test（摇人吧服务号-测试）提一个 problem 工单。"
     "指定处理人：自动化处理人。"

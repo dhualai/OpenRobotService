@@ -7,10 +7,10 @@ import allure
 import pytest
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
-_ROLE_CREDENTIALS = {'customer': ('customer', 'cust123'), 'engineer': ('engineer', 'eng123')}
+from automation.src.config.credentials import role_credentials
 
 async def _auth_for_role(client, role: str) -> dict:
-    username, password = _ROLE_CREDENTIALS[role]
+    username, password = role_credentials(role)
     r = await client.post('/api/auth/login', json={'username': username, 'password': password})
     return {'Authorization': f"Bearer {r.json()['access_token']}"}
 
@@ -90,21 +90,25 @@ class TestTaskCrud:
     @pytest.mark.api
     async def test_list_tasks(self, mock_api_client, mock_auth_header):
         """正常流程：任务列表"""
-        r = await _api(mock_api_client, 'get', '/api/tasks', headers=mock_auth_header, expected_status=200)
+        r = await _api(mock_api_client, 'get', '/api/tasks', headers=mock_auth_header, expected_status=200,
+                       expected_fields={'page': 1, 'size': 10})
 
     @allure.story('查询工单')
     @allure.title('正常：分页列表')
     @pytest.mark.api
     async def test_list_tasks_pagination(self, mock_api_client, mock_auth_header):
         """正常流程：分页列表"""
-        r = await _api(mock_api_client, 'get', '/api/tasks', headers=mock_auth_header, expected_status=200)
+        # 注：本用例未传分页参数（沿用原实现），mock 默认 page=1/size=10
+        r = await _api(mock_api_client, 'get', '/api/tasks', headers=mock_auth_header, expected_status=200,
+                       expected_fields={'page': 1, 'size': 10})
 
     @allure.story('查询工单')
     @allure.title('正常：分页 size=200')
     @pytest.mark.api
     async def test_list_tasks_size_200(self, mock_api_client, mock_auth_header):
         """正常流程：分页 size=200（mock 暂不校验）"""
-        r = await _api(mock_api_client, 'get', '/api/tasks?size=200', headers=mock_auth_header, expected_status=200)
+        r = await _api(mock_api_client, 'get', '/api/tasks?size=200', headers=mock_auth_header, expected_status=200,
+                       expected_fields={'size': 200})
 
     @allure.story('查询工单')
     @allure.title('正常：任务详情')
@@ -241,6 +245,7 @@ class TestTaskFilterStats:
     @pytest.mark.api
     async def test_filter_keyword(self, mock_api_client, mock_auth_header):
         """正常流程：关键词筛选"""
+        # 响应 {items,total}，total 随测试数据动态变化，状态码即断言
         r = await _api(mock_api_client, 'post', '/api/tasks/filter', headers=mock_auth_header, json={'keyword': 'error'}, expected_status=200)
 
     @allure.story('统计')
@@ -248,6 +253,7 @@ class TestTaskFilterStats:
     @pytest.mark.api
     async def test_stats_overview(self, mock_api_client, mock_auth_header):
         """正常流程：状态统计"""
+        # 响应 {total,by_status,by_priority}，total 随测试数据动态变化，状态码即断言
         r = await _api(mock_api_client, 'get', '/api/tasks/stats/overview', headers=mock_auth_header, expected_status=200)
 
 @allure.feature('系统任务')
@@ -259,7 +265,8 @@ class TestTaskAi:
     @pytest.mark.api
     async def test_ai_assign(self, mock_api_client, mock_auth_header):
         """AI：AI 自动指派"""
-        r = await _api(mock_api_client, 'post', '/api/tasks/1/ai-assign', headers=mock_auth_header, expected_status=200)
+        r = await _api(mock_api_client, 'post', '/api/tasks/1/ai-assign', headers=mock_auth_header, expected_status=200,
+                       expected_fields={'task_id': 1, 'assigned_to': 'engineer-01', 'method': 'auto'})
 
     @allure.story('AI 分析')
     @allure.title('Redis：AI 分析缓存')
@@ -277,7 +284,7 @@ class TestTaskFlow:
     @pytest.mark.api
     async def test_full_flow_create_to_closed(self, mock_api_client, mock_auth_header):
         """正常流程：建单→处理中→已解决→已关闭 全链路"""
-        r = await _api(mock_api_client, 'post', '/api/tasks', step='Step 1: 创建工单', headers=mock_auth_header, json={'title': '全链路验证任务', 'description': 'flow demo', 'ticket_type': 'bug'}, expected_status=200)
+        r = await _api(mock_api_client, 'post', '/api/tasks', step='Step 1: 创建工单', headers=mock_auth_header, json={'title': '全链路验证任务', 'description': 'flow demo', 'ticket_type': 'bug'}, expected_status=200, expected_fields={'title': '全链路验证任务'})
         task_id = r.json()['id']
         r = await _api(mock_api_client, 'patch', f'/api/tasks/{task_id}/status', step='Step 2: 流转为处理中', headers=mock_auth_header, json={'status': 'in_progress'}, expected_status=200)
         r = await _api(mock_api_client, 'patch', f'/api/tasks/{task_id}/status', step='Step 3: 流转为已解决', headers=mock_auth_header, json={'status': 'resolved'}, expected_status=200)

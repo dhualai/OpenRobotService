@@ -365,6 +365,16 @@ export default function DataImport() {
       Toast({ message: '请先选择项目', theme: 'warning' });
       return;
     }
+    // 非微信浏览器（iOS Safari / PC 浏览器）没有 wx 对象，扫码必然调不起来：
+    // 提前拦截并自动展开手动粘贴框，避免走失败分支报「导入失败」误导用户
+    if (typeof navigator === 'undefined' || !/MicroMessenger/i.test(navigator.userAgent)) {
+      setQrManualOpen(true);
+      Toast({
+        message: '当前环境不是微信浏览器，无法调起相机扫码，请粘贴二维码内容，或用微信打开本页',
+        theme: 'warning',
+      });
+      return;
+    }
     setQrScanning(true);
     try {
       const text = await scanQrViaWechat();

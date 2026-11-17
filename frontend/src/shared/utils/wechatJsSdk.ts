@@ -77,10 +77,37 @@ async function fetchJsSdkConfig(pageUrl: string): Promise<WxJsSdkConfig> {
 let configChain: Promise<boolean> = Promise.resolve(true);
 let wxConfigured = false;
 let lastConfigUrl = '';
+/** 最近一次 wx.config 成功时注入的 JS 接口列表（iOS 同 URL 复用校验用） */
+let lastApiList: string[] = [];
+
+// ── iOS 微信签名 URL 兼容 ───────────────────────────────────────────
+// iOS 微信校验 JS-SDK 签名用「进入页面时的初始 URL」，SPA 内路由跳转不会更新它；
+// Android/PC 则用「当前 URL」。若统一按当前 location.href 签名，iOS 上从其他页面
+// SPA 跳入（如 首页 → 后台管理 → 数据导入）后签名必然失败，表现为 wx.config 报错、
+// 所有 JS 接口（含 scanQRCode）无法调起。
+// 处理：iOS 上把「进入页面时的 URL」缓存到 sessionStorage，签名始终用它。
+// 缓存写入放在模块顶层——整页加载/刷新才会重新执行模块代码（覆盖为最新进入 URL），
+// SPA 跳转不重新执行，正好符合 iOS 微信「以首次进入 URL 为准」的语义。
+const IOS_UA_REG = /iPhone|iPad|iPod/i;
+const ENTRY_URL_KEY = '__wx_entry_url__';
+
+try {
+  if (typeof window !== 'undefined' && IOS_UA_REG.test(navigator.userAgent)) {
+    sessionStorage.setItem(ENTRY_URL_KEY, window.location.href.split('#')[0]);
+  }
+} catch {
+  /* sessionStorage 不可用时退回实时 URL */
+}
 
 /** 取参与签名的页面 URL（去掉 #hash；本项目用 BrowserRouter，无 hash 截断问题） */
 function getPageUrl(): string {
-  return window.location.href.split('#')[0];
+  const href = window.location.href.split('#')[0];
+  if (!IOS_UA_REG.test(navigator.userAgent)) return href;
+  try {
+    return sessionStorage.getItem(ENTRY_URL_KEY) || href;
+  } catch {
+    return href;
+  }
 }
 
 /**
@@ -136,15 +163,18 @@ async function doConfigOnce(pageUrl: string, jsApiList: string[]): Promise<boole
     if (ok) {
       wxConfigured = true;
       lastConfigUrl = pageUrl;
+      lastApiList = jsApiList;
     } else {
       wxConfigured = false;
       lastConfigUrl = '';
+      lastApiList = [];
     }
     return ok;
   } catch (e) {
     console.warn('[wechatJsSdk] doConfigOnce 异常:', e);
     wxConfigured = false;
     lastConfigUrl = '';
+    lastApiList = [];
     return false;
   }
 }
@@ -152,7 +182,9 @@ async function doConfigOnce(pageUrl: string, jsApiList: string[]): Promise<boole
 /**
  * 初始化微信 JS-SDK（串行、按 URL 重签）。
  * 默认关闭（VITE_WECHAT_JSSDK_ENABLED !== 'true' 时直接返回 false），便于测试环境跳过。
- * 行为：同一 URL 仅 config 一次；URL 变化（SPA 切工单）自动用新 URL 重新签名。
+ * 行为：同一 URL 仅 config 一次（且已注入接口覆盖本次所需才复用）；URL 变化自动用新 URL 重新签名。
+ * iOS 微信按「进入页面时的初始 URL」校验签名，本函数在 iOS 上始终用该 URL（见 getPageUrl），
+ * 因此 iOS 上 SPA 跳转后不会触发重签，而是按需合并 jsApiList 重签。
  * 调用方在「打开/切换详情页」时直接调用即可，会按当前页 URL 重新注册分享链接。
  * @param jsApiList 需要使用的 JS 接口列表，如 ['chooseImage', 'scanQRCode']
  * @returns 是否初始化成功
@@ -162,14 +194,17 @@ export async function initWechatJsSdk(jsApiList: string[] = []): Promise<boolean
     return false;
   }
   const pageUrl = getPageUrl();
+  // wx.config 重签会覆盖 jsApiList，必须把此前已授权的接口一并带上，
+  // 否则 iOS 上同 URL 重签后旧接口（如分享）会失效。
+  const mergedApiList = Array.from(new Set([...lastApiList, ...jsApiList]));
 
   // 串行：把本次配置追加到链尾，保证最终以「最新 URL」收尾，且不并行 wx.config
   configChain = configChain.then(async () => {
-    // 同 URL 已成功配置过则跳过（避免 PC 重复 config 失败），直接复用
-    if (wxConfigured && lastConfigUrl === pageUrl) {
+    // 同 URL 已成功配置过、且已注入接口覆盖本次所需 → 跳过（避免 PC 重复 config 失败），直接复用
+    if (wxConfigured && lastConfigUrl === pageUrl && jsApiList.every((api) => lastApiList.includes(api))) {
       return true;
     }
-    return doConfigOnce(pageUrl, jsApiList);
+    return doConfigOnce(pageUrl, mergedApiList);
   });
   return configChain;
 }

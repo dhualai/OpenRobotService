@@ -62,6 +62,12 @@ let scanQueue: ScanOpts[] = [];
 beforeEach(() => {
   vi.clearAllMocks();
   scanQueue = [];
+  // 默认模拟微信内置浏览器（iPhone）：扫码用例依赖 window.wx 可用；
+  // 非微信环境用例内部再覆盖 UA 为 Safari
+  Object.defineProperty(navigator, 'userAgent', {
+    value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0) MicroMessenger/8.0.40',
+    configurable: true,
+  });
   // window.wx 上挂 scanQRCode：initWechatJsSdk 被 mock 成恒成功，组件随后取用该 API
   (window as unknown as { wx?: { scanQRCode?: (opts: ScanOpts) => void } }).wx = {
     scanQRCode: (opts: ScanOpts) => {
@@ -183,6 +189,28 @@ describe('数据导入页 · 二维码导入', () => {
       payload: QRV1_PAYLOAD,
       fragments: null,
     });
+  });
+
+  it('非微信浏览器点扫码：提示改用微信/手动粘贴并自动展开粘贴框，不报导入失败', async () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      value:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+      configurable: true,
+    });
+    render(<DataImport />);
+    await pickProject();
+    fireEvent.click(screen.getByRole('button', { name: '二维码导入' }));
+    fireEvent.click(screen.getByRole('button', { name: '扫描二维码' }));
+
+    await waitFor(() => expect(vi.mocked(Toast)).toHaveBeenCalled());
+    expect(vi.mocked(Toast).mock.calls[0][0]).toMatchObject({
+      theme: 'warning',
+    });
+    // 自动展开手动粘贴框；不调起 wx.scanQRCode / 不发签名请求；不展示「导入失败」错误卡
+    expect(screen.getByPlaceholderText(/粘贴扫码得到的文本/)).toBeTruthy();
+    expect(scanQueue.length).toBe(0);
+    expect(initWechatJsSdk).not.toHaveBeenCalled();
+    expect(screen.queryByText(/导入失败/)).toBeNull();
   });
 
   it('后端解码失败时展示错误卡，不谎报成功', async () => {
