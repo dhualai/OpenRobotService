@@ -30,6 +30,10 @@ export interface QrcodeItem {
   /** 车型（录入信息行） */
   vehicle_model?: string | null;
   redirect_url?: string;
+  /** 扫码卡片标题（特殊码自定义；留空走原有分支） */
+  card_title?: string | null;
+  /** 扫码卡片描述（特殊码自定义；留空走原有分支） */
+  card_description?: string | null;
   created_by?: string;
   published_by?: string;
   deprecated_by?: string;
@@ -151,6 +155,8 @@ export async function createQrcode(data: {
   description?: string;
   qrcode_type?: QrcodeType;
   redirect_url?: string;
+  card_title?: string;
+  card_description?: string;
 }): Promise<QrcodeItem> {
   return request('/qrcodes', { method: 'POST', body: JSON.stringify(data) });
 }
@@ -160,6 +166,8 @@ export async function batchCreateQrcodes(data: {
   name_prefix?: string;
   qrcode_type?: QrcodeType;
   redirect_url?: string;
+  card_title?: string;
+  card_description?: string;
 }): Promise<{ batch_id: string; created: number[]; created_count: number; skipped_count: number }> {
   return request('/qrcodes/batch', { method: 'POST', body: JSON.stringify(data) });
 }
@@ -180,6 +188,8 @@ export async function updateQrcode(id: number, data: {
   name?: string;
   description?: string;
   redirect_url?: string;
+  card_title?: string;
+  card_description?: string;
 }): Promise<QrcodeItem> {
   return request(`/qrcodes/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 }
