@@ -1,7 +1,0 @@
-{
-  "method": "GET",
-  "url": "http://mock.local/api/tasks/assignable-users",
-  "headers": {
-    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTQ4OTkyNDguODM1NjU5NSwgImlhdCI6IDE3OTQ4OTU2NDguODM1NjZ9.bW9jay1zaWc"
-  }
-}

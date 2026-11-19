@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/my-tasks/",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUwNzE4NjguMzE1MDQyNywgImlhdCI6IDE3OTUwNjgyNjguMzE1MDQzfQ.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "My task"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/conversations",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidTFfYXV0byIsICJleHAiOiAxNzk1MDcxODY4LjEzMTY2MzYsICJpYXQiOiAxNzk1MDY4MjY4LjEzMTY2Mzh9.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "自动化链路验证",
+    "user_id": "",
+    "service_ticket_id": "sess_auto_mock_001",
+    "scene_type": "chat",
+    "metadata_": "{\"ai_session_id\": \"sess_auto_mock_001\"}"
+  }
+}
