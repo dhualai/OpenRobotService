@@ -1,7 +1,8 @@
-import { FormEvent, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, api, type Me } from "../api";
+import { useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, type Me } from "../api";
+import { orsLoginUrl, orsToken } from "../ors-session";
 import { resetSession } from "../session";
 
 const ROLE: Record<string, string> = {
@@ -18,10 +19,8 @@ const PRODUCT: Record<string, string> = { usp: "USP", ors: "ORS" };
 
 export function AccountPage() {
   const { product = "usp" } = useParams();
-  const nav = useNavigate();
   const qc = useQueryClient();
   const [help, setHelp] = useState(false);
-  const [pwMsg, setPwMsg] = useState<{ t: string; ok?: boolean } | null>(null);
   const [packMsg, setPackMsg] = useState("");
   const me = useQuery({ queryKey: ["me"], queryFn: () => api<Me>("/api/v1/me") });
   const inbox = useQuery({
@@ -33,40 +32,14 @@ export function AccountPage() {
     queryFn: () =>
       api<{ items: { product: string; id: string; title: string }[]; count: number }>("/api/v1/inbox/pending-links"),
   });
-  const pw = useMutation({
-    mutationFn: (body: { old_password: string; new_password: string }) =>
-      api("/api/v1/account/password", { method: "POST", body: JSON.stringify(body) }),
-  });
   const u = me.data?.user;
   const role = u?.role || "";
   const products = (u?.products || []).map((p) => PRODUCT[p] || p).join("、") || "—";
-  function onPw(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setPwMsg(null);
-    const fd = new FormData(e.currentTarget);
-    const neu = String(fd.get("neu") || "");
-    if (neu !== String(fd.get("neu2") || "")) {
-      setPwMsg({ t: "两次新密码不一致" });
-      return;
-    }
-    pw.mutate(
-      { old_password: String(fd.get("old") || ""), new_password: neu },
-      {
-        onSuccess: () => {
-          setPwMsg({ t: "密码已更新", ok: true });
-          e.currentTarget.reset();
-        },
-        onError: (err) => {
-          setPwMsg({ t: err instanceof ApiError ? err.detail : "修改失败" });
-        },
-      }
-    );
-  }
   async function downloadPack() {
     setPackMsg("");
     const r = await fetch("/api/v1/account/auth-pack", {
       credentials: "include",
-      headers: { "X-Topo-Origin": window.location.origin },
+      headers: { "X-Topo-Origin": window.location.origin, Authorization: `Bearer ${orsToken()}` },
     });
     if (!r.ok) {
       setPackMsg("下载失败");
@@ -180,21 +153,10 @@ export function AccountPage() {
         </section>
       ) : null}
       <section className="panel">
-        <h2 className="card-h">修改密码</h2>
-        <form onSubmit={onPw}>
-          <label htmlFor="acc-old">原密码</label>
-          <input id="acc-old" name="old" type="password" autoComplete="current-password" required />
-          <label htmlFor="acc-neu">新密码</label>
-          <input id="acc-neu" name="neu" type="password" autoComplete="new-password" required minLength={8} />
-          <label htmlFor="acc-neu2">确认新密码</label>
-          <input id="acc-neu2" name="neu2" type="password" autoComplete="new-password" required minLength={8} />
-          <div className="actions">
-            <button type="submit" className="btn primary" disabled={pw.isPending}>
-              保存密码
-            </button>
-            {pwMsg ? <span className={pwMsg.ok ? "muted" : "err"}>{pwMsg.t}</span> : null}
-          </div>
-        </form>
+        <h2 className="card-h">账号</h2>
+        <p className="muted">
+          账号与密码统一由摇人吧管理，本页不再提供改密；如需修改请到摇人吧账号设置操作。
+        </p>
       </section>
       <section className="panel">
         <h2 className="card-h">会话</h2>
@@ -202,10 +164,10 @@ export function AccountPage() {
           <button
             type="button"
             className="btn danger"
-            onClick={async () => {
-              await api("/api/v1/auth/logout", { method: "POST" });
+            onClick={() => {
               resetSession(qc);
-              nav("/login");
+              // 登出交回摇人吧：清本地缓存后回摇人吧登录页
+              window.location.assign(orsLoginUrl());
             }}
           >
             退出登录

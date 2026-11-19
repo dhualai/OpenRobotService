@@ -1,3 +1,5 @@
+import { gotoOrsLogin, orsToken, refreshOrsToken } from "./ors-session";
+
 export class ApiError extends Error {
   status: number;
   detail: string;
@@ -79,9 +81,20 @@ function parseDetail(raw: string): string {
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const r = await fetch(path, { ...init, headers, credentials: "include" });
+  // 账号统一：带摇人吧 token（同源共享 localStorage）
+  const token = orsToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  let r = await fetch(path, { ...init, headers, credentials: "include" });
   if (r.status === 401 && !path.includes("/auth/login")) {
-    if (window.location.pathname !== "/login") window.location.assign("/login");
+    // access token 只有 30 分钟，先试一次续期再重放，避免用户被反复踢
+    if (await refreshOrsToken()) {
+      const t2 = orsToken();
+      if (t2) headers.set("Authorization", `Bearer ${t2}`);
+      r = await fetch(path, { ...init, headers, credentials: "include" });
+    }
+  }
+  if (r.status === 401 && !path.includes("/auth/login")) {
+    gotoOrsLogin();
     throw new ApiError(401, "未登录");
   }
   if (!r.ok) {
