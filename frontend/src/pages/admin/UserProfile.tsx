@@ -458,6 +458,15 @@ export default function UserProfile() {
         project_name: matched.name,
         project_id: matched.project_code,
         assigned_to: contactPersonId,
+        // 扩展元数据：标识为"项目加入审核单"，审核人点通过时自动触发角色授权
+        metadata_info: {
+          approval_kind: 'project_join_request',
+          applicant_username: username,
+          applicant_name: name || username,
+          target_project_id: matched.id,        // admin 主键（assign-roles API 要用）
+          target_project_code: matched.project_code,
+          target_project_name: matched.name,
+        },
       });
       setAppCheckStep('apply-done');
       setApplyResult({

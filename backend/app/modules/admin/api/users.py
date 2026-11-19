@@ -1401,6 +1401,46 @@ async def batch_assign_project_roles(
             for uid in affected_user_ids:
                 project_service.bump_export_version_for_user(uid)
             logger.info(f"[batch_assign] ✅ 全部成功: project_id={project_id!r} 新增 {assigned_count} 个角色，已 bump 版本")
+
+            # ── 可选：发送"账号授权通过提醒"微信模板消息（模板 12）
+            # 由前端 TaskDetailPage 审核通过时触发（send_notify=true）
+            # ProjectPeople 手动分配不传或传 false → 不发，避免干扰
+            if role_data.send_notify:
+                try:
+                    from app.utils.notification_utils import NotificationUtils
+                    from app.core.database import db_manager as _dbm
+
+                    project_display = (
+                        role_data.notify_project_name
+                        or role_data.notify_project_code
+                        or project_id
+                        or "项目"
+                    )
+                    logger.info(f"[batch_assign] 📨 send_notify=true → 准备推送授权提醒，project={project_display}")
+
+                    notified = []
+                    for item in role_data.organization_ids:
+                        user_name = item.get("user_name", "").strip()
+                        if not user_name:
+                            continue
+                        u = _dbm.get_user(user_name)
+                        if not u:
+                            logger.warning(f"[batch_assign] send_notify 跳过: 用户 {user_name} 不存在")
+                            continue
+                        open_id = u.get("id", "").strip()
+                        if not open_id:
+                            logger.warning(f"[batch_assign] send_notify 跳过: 用户 {user_name}({u.get('name')}) 无 openid")
+                            continue
+                        success, _ = NotificationUtils.send_project_join_approved_notification(
+                            open_id, project_display, ticket_id=role_data.notify_ticket_id
+                        )
+                        if success:
+                            notified.append(user_name)
+
+                    if notified:
+                        logger.info(f"[batch_assign] 📨 授权提醒推送汇总: 成功 {len(notified)} 人 {notified}")
+                except Exception as notify_setup_err:
+                    logger.warning(f"[batch_assign] send_notify 初始化失败（不阻塞主流程）: {notify_setup_err}")
         else:
             logger.info(f"[batch_assign] 完成但无新增: project_id={project_id!r} (可能全部已存在)")
 

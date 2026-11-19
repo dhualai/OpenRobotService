@@ -350,6 +350,12 @@ export default function TaskDetailPage() {
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
+  // 项目加入审核单（metadata_info.approval_kind === 'project_join_request'）
+  const [joinApprovalRole, setJoinApprovalRole] = useState<string | null>(null);
+  const [joinApproving, setJoinApproving] = useState(false);
+  const [joinApprovalRoles, setJoinApprovalRoles] = useState<{ id: string; name: string }[]>([]);
+  const [joinRolePopupVisible, setJoinRolePopupVisible] = useState(false);
+
   // ── 归档流程 state ──
   const [archiveEditorVisible, setArchiveEditorVisible] = useState(false);
   const [archiveReportContent, setArchiveReportContent] = useState('');
@@ -1157,6 +1163,97 @@ export default function TaskDetailPage() {
     new_project: '项目',
   };
 
+  // ===== 项目加入审核单（扫码注册用户申请加入项目） =====
+  // metadata_info.approval_kind = 'project_join_request' 时识别；与 approval_type 独立不冲突
+  const joinApprovalInfo = (() => {
+    const meta = detail?.metadata_info || {};
+    if (meta.approval_kind !== 'project_join_request') return null;
+    return {
+      applicantUsername: String(meta.applicant_username || ''),
+      applicantName: String(meta.applicant_name || ''),
+      targetProjectId: String(meta.target_project_id || ''),
+      targetProjectCode: String(meta.target_project_code || ''),
+      targetProjectName: String(meta.target_project_name || ''),
+    };
+  })();
+
+  // 拉项目角色列表（role_type === 'project'），供审核人点"通过"时选择角色
+  const fetchJoinRoles = async () => {
+    try {
+      const data = await adminRequest<{ id: string; name: string; role_type?: string }[]>('/roles/');
+      const roles = (Array.isArray(data) ? data : []).filter((r) => r.role_type === 'project');
+      setJoinApprovalRoles(roles);
+    } catch {
+      Toast({ message: '加载角色列表失败', theme: 'error' });
+    }
+  };
+
+  // 审核通过：先调 assign-roles 给申请人授角色，再关单
+  const handleJoinApprove = async () => {
+    if (!joinApprovalInfo) return;
+    if (!joinApprovalRole) { Toast({ message: '请选择项目角色', theme: 'warning' }); return; }
+    if (!joinApprovalInfo.targetProjectId) { Toast({ message: '项目信息缺失，无法授权', theme: 'error' }); return; }
+    setJoinApproving(true);
+    try {
+      // 1. 给用户授项目角色（复用 ProjectPeople 里的 assign-roles API）
+      //    send_notify=true 会让后端在成功后自动发模板 12 微信通知
+      //    ProjectPeople 手动分配默认 send_notify=false → 不发，互不干扰
+      await adminRequest('/users/project/assign-roles', {
+        method: 'POST',
+        body: JSON.stringify({
+          project_id: joinApprovalInfo.targetProjectId,
+          organization_ids: [{
+            user_name: joinApprovalInfo.applicantUsername,
+            role_id: joinApprovalRole,
+          }],
+          send_notify: true,
+          notify_project_name: joinApprovalInfo.targetProjectName,
+          notify_project_code: joinApprovalInfo.targetProjectCode,
+          notify_ticket_id: detail!.id,
+        }),
+      });
+      // 2. 关单（通知已由 assign-roles 后端自动发出，前端无需二次发送）
+      await request(`/${detail!.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'closed' }),
+      });
+      Toast({ message: '已通过并授予项目角色', theme: 'success' });
+      setJoinApprovalRole(null);
+      setJoinRolePopupVisible(false);
+      await refreshDetail();
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setJoinApproving(false);
+    }
+  };
+
+  // 驳回：只关单 + 可选写评论，不调 admin reject API（join 审核无对应 admin 实体）
+  const handleJoinReject = async () => {
+    if (!joinApprovalInfo) return;
+    if (!rejectReason.trim()) { Toast({ message: '请填写驳回原因', theme: 'warning' }); return; }
+    setApproving(true);
+    try {
+      // 驳回原因作为评论写入，保留审计痕迹
+      await request(`/${detail!.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content: `【审核驳回】${rejectReason.trim()}`, is_public: true, attachments: [] }),
+      });
+      await request(`/${detail!.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'closed' }),
+      });
+      Toast({ message: '已驳回', theme: 'success' });
+      setShowRejectPopup(false);
+      setRejectReason('');
+      await refreshDetail();
+    } catch (err) {
+      Toast({ message: `驳回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setApproving(false);
+    }
+  };
+
   const handleApprove = async () => {
     if (!approvalInfo) return;
     setApproving(true);
@@ -1212,6 +1309,11 @@ export default function TaskDetailPage() {
   };
 
   const handleReject = async () => {
+    // 项目加入审核单用独立驳回逻辑（不调 admin reject API，只关单 + 写评论）
+    if (!approvalInfo && joinApprovalInfo) {
+      await handleJoinReject();
+      return;
+    }
     if (!approvalInfo) return;
     if (!rejectReason.trim()) {
       Toast({ message: '请填写驳回原因', theme: 'warning' });
@@ -2051,8 +2153,8 @@ export default function TaskDetailPage() {
         </div>
 
         {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用。
-            审核型工单（metadata_info 含 approval_type）不展示，走下方专门的审核卡片。 */}
-        {!approvalInfo && (
+            审核型工单（approval_type 或 approval_kind=project_join_request）不展示，走下方专门的审核卡片。 */}
+        {!approvalInfo && !joinApprovalInfo && (
           <StepNegotiationCard
             negotiation={negotiation}
             detail={detail}
@@ -2159,6 +2261,69 @@ export default function TaskDetailPage() {
                       variant="outline"
                       disabled={approving}
                       onClick={() => setShowRejectPopup(true)}
+                      style={{ borderRadius: '999px' }}
+                    >
+                      驳回
+                    </Button>
+                  </div>
+                );
+              }
+              return (
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
+                  审核操作由工单处理人或管理员完成
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* 项目加入审核单：扫码注册用户申请加入指定项目
+            metadata_info.approval_kind === 'project_join_request' 时识别；与 approval_type 独立不冲突
+            审核人点"通过"→弹角色选择→调 assign-roles API 给用户授项目角色 →关单
+            点"驳回"→复用现有驳回弹窗（handleReject 自动分支到 handleJoinReject） */}
+        {joinApprovalInfo && (
+          <div className="detail-card" style={{ border: '1.5px solid #22c55e' }}>
+            <h4 className="detail-card__h" style={{ color: '#16a34a', display: 'flex', alignItems: 'center', gap: 6 }}>
+              👥 项目加入审核
+            </h4>
+            <div style={{ fontSize: 13, color: 'var(--foreground)', lineHeight: 1.8, marginBottom: 16 }}>
+              <div><strong>申请人：</strong>{joinApprovalInfo.applicantName}（{joinApprovalInfo.applicantUsername}）</div>
+              <div><strong>申请项目：</strong>{joinApprovalInfo.targetProjectName}（{joinApprovalInfo.targetProjectCode}）</div>
+              <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
+                请选择项目角色后点"通过"，系统将自动为申请人完成项目授权
+              </div>
+            </div>
+            {(() => {
+              const isClosed = ['closed'].includes((detail.status || '').toLowerCase());
+              if (isClosed) {
+                return (
+                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
+                    该审核单已处理完毕
+                  </div>
+                );
+              }
+              if (getCurrentUserRoles().isAssignee || hasPermission('backend:tasks:operate')) {
+                return (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button
+                      block
+                      theme="primary"
+                      loading={joinApproving}
+                      onClick={async () => {
+                        // 打开角色选择弹窗前先拉一次最新角色列表
+                        await fetchJoinRoles();
+                        setJoinRolePopupVisible(true);
+                      }}
+                      style={{ borderRadius: '999px', backgroundColor: '#16a34a', color: '#fff', border: 'none' }}
+                    >
+                      通过并授权角色
+                    </Button>
+                    <Button
+                      block
+                      theme="danger"
+                      variant="outline"
+                      disabled={joinApproving}
+                      onClick={() => { setRejectReason(''); setShowRejectPopup(true); }}
                       style={{ borderRadius: '999px' }}
                     >
                       驳回
@@ -2890,17 +3055,91 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 驳回原因弹窗 */}
+      {/* 角色选择弹窗（项目加入审核单通过时弹出，让审核人选择授予申请人的项目角色） */}
+      <Popup
+        visible={joinRolePopupVisible}
+        onClose={() => { if (!joinApproving) { setJoinRolePopupVisible(false); } }}
+        placement="bottom"
+        showOverlay
+      >
+        <div style={{ width: '100%', padding: 20, boxSizing: 'border-box', maxHeight: '70vh', overflowY: 'auto', background: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20 }}>
+          {/* 顶部拖拽指示条 */}
+          <div style={{ width: 36, height: 4, background: '#ddd', borderRadius: 2, margin: '0 auto 12px' }} />
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4, textAlign: 'center' }}>
+            选择项目角色
+          </div>
+          {joinApprovalInfo && (
+            <div style={{ fontSize: 12, color: '#999', marginBottom: 16, textAlign: 'center' }}>
+              为「{joinApprovalInfo.applicantName}」选择在「{joinApprovalInfo.targetProjectName}」中的角色
+            </div>
+          )}
+          {joinApprovalRoles.length === 0 ? (
+            <div style={{ padding: 20, textAlign: 'center', color: '#999', fontSize: 13 }}>
+              暂无可选的项目角色，请在用户管理中先创建项目角色
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {joinApprovalRoles.map((role) => (
+                <div
+                  key={role.id}
+                  onClick={() => setJoinApprovalRole(role.id)}
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: joinApprovalRole === role.id ? '#16a34a' : '#f9f9f9',
+                    color: joinApprovalRole === role.id ? '#fff' : '#333',
+                    fontWeight: joinApprovalRole === role.id ? 600 : 400,
+                    border: joinApprovalRole === role.id ? '2px solid #16a34a' : '2px solid transparent',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <span>{role.name}</span>
+                  {joinApprovalRole === role.id && <span>✓</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+            <Button
+              block
+              theme="default"
+              variant="outline"
+              disabled={joinApproving}
+              onClick={() => { setJoinRolePopupVisible(false); }}
+            >
+              取消
+            </Button>
+            <Button
+              block
+              theme="primary"
+              loading={joinApproving}
+              disabled={!joinApprovalRole || joinApprovalRoles.length === 0}
+              onClick={handleJoinApprove}
+            >
+              确认通过
+            </Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 驳回原因弹窗（公司/部门审核 + 项目加入审核 共用） */}
       <Popup
         visible={showRejectPopup}
-        onClose={() => { if (!approving) { setShowRejectPopup(false); setRejectReason(''); } }}
+        onClose={() => { if (!approving && !joinApproving) { setShowRejectPopup(false); setRejectReason(''); } }}
         placement="bottom"
         showOverlay
       >
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">驳回审核</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            确定要驳回{approvalInfo ? approvalLabelMap[approvalInfo.type] : '该对象'}「{approvalInfo?.targetName}」的录入申请吗？
+            {joinApprovalInfo
+              ? <>确定要驳回用户「{joinApprovalInfo.applicantName}（{joinApprovalInfo.applicantUsername}）」加入项目「{joinApprovalInfo.targetProjectName}」的申请吗？</>
+              : <>确定要驳回{approvalInfo ? approvalLabelMap[approvalInfo.type] : '该对象'}「{approvalInfo?.targetName}」的录入申请吗？</>
+            }
           </p>
           <Form initialData={{}}>
             <FormItem label="驳回原因" name="rejectReason" labelAlign="top" requiredMark>
@@ -2914,8 +3153,8 @@ export default function TaskDetailPage() {
             </FormItem>
           </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" disabled={approving} onClick={() => { setShowRejectPopup(false); setRejectReason(''); }}>取消</Button>
-            <Button theme="danger" loading={approving} onClick={handleReject} disabled={!rejectReason.trim()}>确认驳回</Button>
+            <Button theme="default" disabled={approving || joinApproving} onClick={() => { setShowRejectPopup(false); setRejectReason(''); }}>取消</Button>
+            <Button theme="danger" loading={approving || joinApproving} onClick={handleReject} disabled={!rejectReason.trim()}>确认驳回</Button>
           </div>
         </div>
       </Popup>
