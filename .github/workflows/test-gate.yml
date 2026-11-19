@@ -400,6 +400,9 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      # 发布到 gh-pages 分支需要写权限
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -426,6 +429,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Publish report to gh-pages
+        # 推到 gh-pages/test-gate 子目录，keep_files 保留 deploy-split 的根目录报告，
+        # 两者互不覆盖。GitHub Pages 启用前该步骤只写分支、不产生可访问 URL。
+        continue-on-error: true
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: allure-history
+          destination_dir: test-gate
+          keep_files: true
+
       - name: Job summary
         run: |
           echo "## Test gate results" >> $GITHUB_STEP_SUMMARY
@@ -434,4 +448,6 @@ jobs:
           echo "- real-smoke: ${{ needs.real-smoke.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- scenarios: ${{ needs.scenarios.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "下载 Artifact **allure-report-html**，解压后打开 \`latest/index.html\` 查看用例级报告。" >> $GITHUB_STEP_SUMMARY
+          echo "用例级报告二选一：" >> $GITHUB_STEP_SUMMARY
+          echo "1. 下载 Artifact **allure-report-html**，解压后打开 latest/index.html" >> $GITHUB_STEP_SUMMARY
+          echo "2. 已发布到 gh-pages 分支的 test-gate/ 目录（GitHub Pages 启用后可直接访问）" >> $GITHUB_STEP_SUMMARY
