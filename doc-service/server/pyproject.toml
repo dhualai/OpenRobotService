@@ -1,0 +1,39 @@
+[project]
+name = "topo-portal"
+version = "0.1.0"
+description = "USP/ORS capability topology portal"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "sqlalchemy>=2.0.36",
+  "alembic>=1.14",
+  "psycopg[binary]>=3.2",
+  "pydantic-settings>=2.6",
+  "cryptography>=44",
+  "python-multipart>=0.0.17",
+  "markdown>=3.7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "httpx>=0.28",
+  "pytest-cov>=6",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["data/metrics/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
