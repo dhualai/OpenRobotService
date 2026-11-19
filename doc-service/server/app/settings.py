@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     week_soft_cap: float = 40.0
     week_hard_cap: float = 40.0
     default_expected_hours: float = 24.0
-    bootstrap_admin_password: str | None = None
     topo_public_url: str = ""
     topo_migrated_url: str = ""
     usp_test_base_url: str = "http://10.10.10.202:9200"

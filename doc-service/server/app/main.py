@@ -21,7 +21,7 @@ async def lifespan(_app: FastAPI):
     configure(s.database_url)
     from app.infra import db as dbmod
     from app.infra.schema import apply_schema
-    from app.services.bootstrap import apply_directory, upsert_dev_admin
+    from app.services.bootstrap import apply_directory
 
     assert dbmod.engine is not None and dbmod.SessionLocal is not None
     try:
@@ -34,7 +34,7 @@ async def lifespan(_app: FastAPI):
     db = dbmod.SessionLocal()
     try:
         apply_directory(db)
-        upsert_dev_admin(db, s)
+        # 账号统一由摇人吧登录态提供，本服务不再本地建号
         from app.services.audit import purge_expired
         from app.services.doc_views import purge_visits
 
