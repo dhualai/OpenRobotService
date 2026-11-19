@@ -26,7 +26,7 @@
 
 - `framework-design.md`、`directory-structure.md`、`naming-conventions.md`、`quick-reference.md`、`review-checklist.md`、`template-test-case.md`、`test-data.md`、`utilities.md`、`fixture-and-mock.md`、`index.md` 等
 - `analysis/` — 各模块 7 要素业务分析
-- `scenarios/` — 各模块 8 覆盖类型场景设计
+- `scenarios/` — 各模块 8 覆盖类型场景设计（含 `design-gap-filling.md`：缺口补强方案，待确认）
 
 ## archive/ - 历史归档（勿在正式导航中引用）
 
