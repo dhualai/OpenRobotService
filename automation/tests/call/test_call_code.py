@@ -7,12 +7,11 @@ import allure
 import pytest
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
-
-_ROLE_CREDENTIALS = {'customer': ('customer', 'cust123'), 'engineer': ('engineer', 'eng123')}
+from automation.src.config.credentials import role_credentials
 
 
 async def _auth_for_role(client, role: str) -> dict:
-    username, password = _ROLE_CREDENTIALS[role]
+    username, password = role_credentials(role)
     r = await client.post('/api/auth/login', json={'username': username, 'password': password})
     return {'Authorization': f"Bearer {r.json()['access_token']}"}
 
@@ -48,6 +47,7 @@ class TestConversation:
     @pytest.mark.api
     async def test_list_conversations(self, mock_api_client, mock_auth_header):
         """正常流程：会话列表"""
+        # 响应为 {items,total}，total 随前置用例动态变化，状态码即断言
         await _api(mock_api_client, 'get', '/api/call/conversations', headers=mock_auth_header,
                    expected_status=200)
 
@@ -135,6 +135,7 @@ class TestQa:
     @pytest.mark.api
     async def test_ask_stream(self, mock_api_client, mock_auth_header):
         """AI：流式问答"""
+        # SSE 流式响应不宜用 expected_fields 解析，状态码即断言
         await _api(mock_api_client, 'post', '/api/call/qa/ask/stream', headers=mock_auth_header,
                    json={'question': 'Tell me'}, expected_status=200)
 
@@ -158,7 +159,8 @@ class TestMessages:
     async def test_send_message(self, mock_api_client, mock_auth_header):
         """正常流程：发送消息"""
         await _api(mock_api_client, 'post', '/api/call/messages', headers=mock_auth_header,
-                   json={'content': 'Test message'}, expected_status=200)
+                   json={'content': 'Test message'}, expected_status=200,
+                   expected_fields={'content': 'Test message'})
 
     @allure.story('消息')
     @allure.title('正常：消息列表')
@@ -236,7 +238,7 @@ class TestMyTasks:
     async def test_my_tasks_list(self, mock_api_client, mock_auth_header):
         """正常流程：我的任务列表"""
         await _api(mock_api_client, 'get', '/api/call/my-tasks/', headers=mock_auth_header,
-                   expected_status=200)
+                   expected_status=200, expected_fields={'total': 0})
 
     @allure.story('我的任务')
     @allure.title('正常：创建我的任务')
@@ -244,7 +246,8 @@ class TestMyTasks:
     async def test_my_tasks_create(self, mock_api_client, mock_auth_header):
         """正常流程：创建我的任务"""
         await _api(mock_api_client, 'post', '/api/call/my-tasks/', headers=mock_auth_header,
-                   json={'title': 'My task'}, expected_status=200)
+                   json={'title': 'My task'}, expected_status=200,
+                   expected_fields={'title': 'My task'})
 
     @allure.story('我的任务')
     @allure.title('正常：我的任务详情')
@@ -284,20 +287,12 @@ class TestReminder:
                    json={'task_id': 999}, expected_status=404)
 
     @allure.story('催办')
-    @allure.title('正常：催办（mock 暂不实现限流）')
-    @pytest.mark.api
-    async def test_cuiban_no_ratelimit(self, mock_api_client, mock_auth_header):
-        """正常流程：催办（mock 暂不实现限流）"""
-        await _api(mock_api_client, 'post', '/api/tasks/cuiban-notification', headers=mock_auth_header,
-                   json={'task_id': 1}, expected_status=200, expected_fields={'success': True})
-
-    @allure.story('催办')
     @allure.title('数据校验：催办备注超长')
     @pytest.mark.api
     async def test_cuiban_long_note(self, mock_api_client, mock_auth_header):
-        """数据校验：催办备注超长"""
+        """数据校验：催办备注超长（>10000 字应被拒绝）"""
         await _api(mock_api_client, 'post', '/api/tasks/cuiban-notification', headers=mock_auth_header,
-                   json={'task_id': 1, 'note': '催办提醒'}, expected_status=200)
+                   json={'task_id': 1, 'note': '催' * 10001}, expected_status=422)
 
 
 @allure.feature('我要摇人')
@@ -309,14 +304,7 @@ class TestEscalation:
     @pytest.mark.api
     async def test_assignable_users(self, mock_api_client, mock_auth_header):
         """正常流程：升级选人列表"""
-        await _api(mock_api_client, 'get', '/api/tasks/assignable-users', headers=mock_auth_header,
-                   expected_status=200)
-
-    @allure.story('升级选人')
-    @allure.title('正常：返回可选人员')
-    @pytest.mark.api
-    async def test_assignable_users_available(self, mock_api_client, mock_auth_header):
-        """正常流程：返回可选人员"""
+        # 响应为顶层 list，expected_fields 仅支持 dict 子集，状态码即断言
         await _api(mock_api_client, 'get', '/api/tasks/assignable-users', headers=mock_auth_header,
                    expected_status=200)
 
@@ -327,15 +315,6 @@ class TestEscalation:
         """数据校验：project_id 非法"""
         await _api(mock_api_client, 'get', '/api/tasks/assignable-users?project_id=abc',
                    headers=mock_auth_header, expected_status=400)
-
-    @allure.story('升级选人')
-    @allure.title('正常：无可用人员')
-    @pytest.mark.api
-    async def test_assignable_users_empty(self, mock_api_client, mock_auth_header):
-        """正常流程：无可用人员"""
-        await _api(mock_api_client, 'get', '/api/tasks/assignable-users', headers=mock_auth_header,
-                   expected_status=200)
-
 
 @allure.feature('我要摇人')
 class TestAuth:

@@ -234,6 +234,9 @@ class ProjectResponse(ProjectBase):
     # 项目扩展信息（递归嵌套 JSON 列）与乐观锁版本号
     ext_info: Optional[Dict[str, Any]] = None
     version: int = 1
+    # 在线状态（心跳判定，见 /api/health?project_code=xxx）
+    online_status: Optional[str] = None           # "online" | "offline" | "unknown"
+    last_heartbeat_at: Optional[int] = None       # Unix 秒(整数)，最近心跳时间戳
 
     class Config:
         from_attributes = True

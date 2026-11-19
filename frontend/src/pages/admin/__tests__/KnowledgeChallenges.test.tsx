@@ -1,5 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { createPortal } from 'react-dom';
+import type { Editor } from '@tiptap/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChallengeAnswer, ChallengeAttachment, ChallengeDetail } from '@/api/knowledgeChallenges';
 
@@ -12,7 +15,7 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock('@/api/knowledgeChallenges', () => api);
 vi.mock('@/shared/components/UserAvatarMenu', () => ({ default: () => null }));
-vi.mock('@/shared/components/ImageLightbox', () => ({ default: ({ open, src, onClose }: { open: boolean; src?: string; onClose: () => void }) => open ? <div role="dialog" aria-label="图片预览"><img src={src} alt="预览大图" /><button type="button" onClick={onClose}>关闭预览</button></div> : null }));
+vi.mock('@/shared/components/ImageLightbox', () => ({ default: ({ open, src, onClose }: { open: boolean; src?: string; onClose: () => void }) => open ? createPortal(<div role="dialog" aria-label="图片预览"><img src={src} alt="预览大图" /><button type="button" onClick={onClose}>关闭预览</button></div>, document.body) : null }));
 vi.mock('tdesign-mobile-react', () => ({ Navbar: ({ title }: { title: string }) => <div>{title}</div> }));
 
 import HighValueQuestionCard, { ChallengeSummary } from '../HighValueQuestionCard';
@@ -29,6 +32,22 @@ function challenge(id = 1): ChallengeDetail {
 }
 
 function wrapped(element: React.ReactNode) { return render(<MemoryRouter>{element}</MemoryRouter>); }
+
+function richEditor(element: HTMLElement): Editor {
+  return (element as HTMLElement & { editor: Editor }).editor;
+}
+
+function answerMarkdown(element: HTMLElement): string {
+  return richEditor(element).getMarkdown().trimEnd();
+}
+
+function setAnswerContent(element: HTMLElement, content: string) {
+  act(() => { richEditor(element).commands.setContent(content, { contentType: 'markdown' }); });
+}
+
+function selectAnswerText(element: HTMLElement, start: number, end = start) {
+  act(() => { richEditor(element).commands.setTextSelection({ from: start + 1, to: end + 1 }); });
+}
 
 function documentAttachment(name = '排查说明.pdf', index = 1): ChallengeAttachment {
   return { id: index.toString(16).padStart(32, '0'), name, size: 5120, content_type: 'application/pdf' };
@@ -47,8 +66,132 @@ function detailPage() {
 }
 
 describe('高价值问题交互', () => {
-  beforeEach(() => { vi.resetAllMocks(); });
+  beforeEach(() => {
+    vi.resetAllMocks();
+    if (!Range.prototype.getBoundingClientRect) Range.prototype.getBoundingClientRect = () => new DOMRect();
+    if (!Range.prototype.getClientRects) Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+    if (!document.elementFromPoint) document.elementFromPoint = () => null;
+  });
   afterEach(cleanup);
+  it.each(['', '尚未发布的草稿'])('首次作答或继续编辑未发布草稿时不展示修改机会提醒，内容：%s', async (content) => {
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content, version: content ? 1 : 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    expect(await screen.findByLabelText('答案内容')).toHaveTextContent(content);
+    expect(screen.queryByRole('note')).toBeNull();
+    expect(screen.queryByText(/首次发布后，每个问题的解答仅可再修改一次/)).toBeNull();
+  });
+  it('旧图文答案直接回填到可编辑文档，不显示源码或独立预览栏', async () => {
+    const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'a'.repeat(32) + '.png';
+    const content = `**第一步**\n\n![现场图](${url})\n\n第二步\n\n| 项目 | 结果 |\n| --- | --- |\n| 供电 | 正常 |`;
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content, version: 1, submitted_at: null, remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByRole('textbox', { name: '答案内容' });
+    expect(editor).toHaveAttribute('contenteditable', 'true');
+    expect(within(editor).getByAltText('现场图')).toHaveAttribute('src', url);
+    expect(editor.querySelector('strong')).toHaveTextContent('第一步');
+    expect(within(editor).getByRole('table')).toHaveTextContent('供电正常');
+    expect(editor).not.toHaveTextContent('![现场图]');
+    expect(editor).not.toHaveTextContent('**第一步**');
+    expect(screen.queryByRole('region', { name: '答案预览' })).toBeNull();
+    expect(document.querySelector('textarea')).toBeNull();
+    expect(api.saveChallengeAnswer).not.toHaveBeenCalled();
+  });
+  it('直接在文档中输入文字并加粗，发布时保留排版且不显示格式代码', async () => {
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.saveChallengeAnswer.mockResolvedValue({ content: '**检查供电**', version: 1, submitted_at: new Date().toISOString(), remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByRole('textbox', { name: '答案内容' });
+    await userEvent.type(editor, '检查供电');
+    expect(editor).toHaveTextContent('检查供电');
+    selectAnswerText(editor, 0, 4);
+    fireEvent.click(screen.getByRole('button', { name: '加粗' }));
+    expect(editor.querySelector('strong')).toHaveTextContent('检查供电');
+    expect(editor).not.toHaveTextContent('**');
+    fireEvent.click(screen.getByRole('button', { name: '发布答案' }));
+    await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenLastCalledWith('1', '**检查供电**', expect.any(Number), true, [], []));
+  });
+  it('插图后可继续在图片后输入，支持撤销重做及直接删除图片', async () => {
+    const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'b'.repeat(32) + '.png';
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '第一步', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.uploadChallengeAnswerImage.mockResolvedValue(url);
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByRole('textbox', { name: '答案内容' });
+    selectAnswerText(editor, 3);
+    fireEvent.change(screen.getByLabelText('上传解答图片'), { target: { files: [new File(['image'], '截图.png', { type: 'image/png' })] } });
+    expect(await within(editor).findByAltText('截图.png')).toHaveAttribute('src', url);
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }));
+    expect(within(editor).queryByAltText('截图.png')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '重做' }));
+    expect(within(editor).getByAltText('截图.png')).toHaveAttribute('src', url);
+    await userEvent.keyboard('图片之后继续补充');
+    expect(editor).toHaveTextContent('图片之后继续补充');
+    richEditor(editor).state.doc.descendants((node, position) => {
+      if (node.type.name === 'image') act(() => { richEditor(editor).commands.setNodeSelection(position); });
+    });
+    fireEvent.keyDown(editor, { key: 'Backspace', code: 'Backspace' });
+    expect(within(editor).queryByAltText('截图.png')).toBeNull();
+    expect(editor).toHaveTextContent('第一步');
+    expect(editor).toHaveTextContent('图片之后继续补充');
+  });
+  it('选中已有图片后上传新图片可原位替换，保留前后文字', async () => {
+    const oldUrl = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'a'.repeat(32) + '.png';
+    const newUrl = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'b'.repeat(32) + '.png';
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: `前文\n\n![旧图](${oldUrl})\n\n后文`, version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.uploadChallengeAnswerImage.mockResolvedValue(newUrl);
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByRole('textbox', { name: '答案内容' });
+    richEditor(editor).state.doc.descendants((node, position) => {
+      if (node.type.name === 'image') act(() => { richEditor(editor).commands.setNodeSelection(position); });
+    });
+    fireEvent.change(screen.getByLabelText('上传解答图片'), { target: { files: [new File(['image'], '新图.png', { type: 'image/png' })] } });
+    expect(await within(editor).findByAltText('新图.png')).toHaveAttribute('src', newUrl);
+    expect(within(editor).queryByAltText('旧图')).toBeNull();
+    expect(answerMarkdown(editor)).toBe(`前文\n\n![新图.png](${newUrl})\n\n后文`);
+  });
+  it('拖入图片在拖放位置直接插入正文', async () => {
+    const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'c'.repeat(32) + '.png';
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '前文后文', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.uploadChallengeAnswerImage.mockResolvedValue(url);
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByRole('textbox', { name: '答案内容' });
+    vi.spyOn(richEditor(editor).view, 'posAtCoords').mockReturnValue({ pos: 3, inside: 0 });
+    fireEvent.drop(editor, { clientX: 10, clientY: 10, dataTransfer: { files: [new File(['image'], '拖入.png', { type: 'image/png' })] } });
+    expect(await within(editor).findByAltText('拖入.png')).toHaveAttribute('src', url);
+    expect(answerMarkdown(editor)).toBe(`前文\n\n![拖入.png](${url})\n\n后文`);
+  });
+  it('粘贴富文本时保留文字，不自动加载外部图片或危险链接', async () => {
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByRole('textbox', { name: '答案内容' });
+    fireEvent.paste(editor, { clipboardData: { files: [], getData: (format: string) => format === 'text/html'
+      ? '<p><strong>检查结果</strong></p><img src="https://external.example.com/track.png" onerror="alert(1)"><a href="javascript:alert(1)">危险链接</a>'
+      : format === 'text/plain' ? '检查结果 危险链接' : '' } });
+    expect(editor).toHaveTextContent('检查结果');
+    expect(editor.querySelector('strong')).toHaveTextContent('检查结果');
+    expect(editor.querySelector('img')).toBeNull();
+    expect(editor.querySelector('[onerror]')).toBeNull();
+    expect(editor.querySelector('a[href^="javascript:"]')).toBeNull();
+  });
+  it('正文长度限制仍拦截过长粘贴并保留原文', async () => {
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '原文', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByRole('textbox', { name: '答案内容' });
+    fireEvent.paste(editor, { clipboardData: { files: [], getData: (format: string) => format === 'text/plain' ? '文'.repeat(20001) : '' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('答案内容不能超过20000字');
+    expect(editor).toHaveTextContent('原文');
+    expect(answerMarkdown(editor)).toBe('原文');
+  });
+  it('只读答案不能通过粘贴图片或格式工具绕过修改次数限制', async () => {
+    const mine = publishedAnswer();
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: mine.content, version: 2, submitted_at: mine.submitted_at, remaining_edits: 0, can_submit: false });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByRole('textbox', { name: '答案内容' });
+    expect(editor).toHaveAttribute('contenteditable', 'false');
+    fireEvent.paste(editor, { clipboardData: { files: [new File(['image'], '截图.png', { type: 'image/png' })] } });
+    expect(api.uploadChallengeAnswerImage).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '加粗' })).toBeDisabled();
+    expect(editor.querySelector('img')).toBeNull();
+  });
   it('零元悬赏可以正常发布', async () => {
     api.createChallenge.mockResolvedValue({ ...challenge(), bounty_fen: 0, state: 'draft', version: 1 });
     api.publishChallenge.mockResolvedValue({ ...challenge(), bounty_fen: 0 });
@@ -104,6 +247,29 @@ describe('高价值问题交互', () => {
     fireEvent.click(screen.getByRole('button', { name: '发布答案' }));
     await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', '排查步骤', 0, true, [], [attachment.id]));
   });
+  it('图文插入与公开资料链接、文档附件可同时预览并发布', async () => {
+    const attachment = documentAttachment();
+    const image = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'a'.repeat(32) + '.png';
+    const manual = 'https://docs.example.com/robot-manual';
+    const original = `第一步\n\n[资料手册](${manual})\n\n第二步`;
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: original, images: [], attachments: [attachment], version: 3, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.uploadChallengeAnswerImage.mockResolvedValue(image);
+    api.saveChallengeAnswer.mockResolvedValue({ content: original, attachments: [attachment], version: 4, submitted_at: new Date().toISOString(), remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByLabelText('答案内容');
+    richEditor(editor).state.doc.descendants((node, position) => {
+      if (node.isText && node.text === '第二步') act(() => { richEditor(editor).commands.setTextSelection(position); });
+    });
+    fireEvent.change(screen.getByLabelText('上传解答图片'), { target: { files: [new File(['image'], '现场.png', { type: 'image/png' })] } });
+    const preview = within(editor);
+    expect(await preview.findByAltText('现场.png')).toHaveAttribute('src', image);
+    expect(preview.getByRole('link', { name: '资料手册' })).toHaveAttribute('href', manual);
+    expect(screen.getByRole('button', { name: `下载附件 ${attachment.name}` })).toBeVisible();
+    const expected = `第一步\n\n[资料手册](${manual})\n\n![现场.png](${image})\n\n第二步`;
+    expect(answerMarkdown(editor)).toBe(expected);
+    fireEvent.click(screen.getByRole('button', { name: '发布答案' }));
+    await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', expected, 3, true, [], [attachment.id]));
+  });
   it('草稿附件回填并可删除，附件变化触发自动保存', async () => {
     const attachment = documentAttachment();
     api.fetchMyChallengeAnswer.mockResolvedValue({ content: '排查步骤', attachments: [attachment], version: 3, submitted_at: null, remaining_edits: 1, can_submit: true });
@@ -132,7 +298,7 @@ describe('高价值问题交互', () => {
     wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
     fireEvent.change(await screen.findByLabelText('上传解答文档'), { target: { files: [new File(['# guide'], '新文件.md')] } });
     expect(await screen.findByRole('alert')).toHaveTextContent('文档上传失败');
-    expect(screen.getByLabelText('答案内容')).toHaveValue('不能丢失的文字');
+    expect(screen.getByLabelText('答案内容')).toHaveTextContent('不能丢失的文字');
     expect(screen.getByRole('button', { name: `下载附件 ${attachment.name}` })).toBeVisible();
     expect(screen.getByLabelText('上传解答文档')).toBeEnabled();
   });
@@ -208,11 +374,15 @@ describe('高价值问题交互', () => {
     expect(view.container.querySelector('script')).toBeNull();
     expect(view.container.querySelector('img[src="https://docs.example.com/track.png"]')).toBeNull();
   });
-  it('发布答案前提示展示用户名，不再提示匿名展示', async () => {
-    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+  it.each([false, true])('答案编辑不展示用户名、点赞规则及Markdown图片说明，已发布：%s', async (isPublished) => {
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '', version: isPublished ? 1 : 0, submitted_at: isPublished ? new Date().toISOString() : null, remaining_edits: 1, can_submit: true });
     wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
     await screen.findByLabelText('答案内容');
-    expect(screen.getByText(/回答将展示你的用户名/)).toBeVisible();
+    expect(screen.queryByText(/回答将展示你的用户名/)).toBeNull();
+    expect(screen.queryByText(/每人每天最多点赞5条不同答案/)).toBeNull();
+    expect(screen.queryByText(/支持 Markdown/)).toBeNull();
+    expect(screen.queryByText(/上传或粘贴图片后将插入光标位置/)).toBeNull();
+    expect(screen.queryByText(/单张图片不超过10MB/)).toBeNull();
     expect(screen.queryByText(/匿名展示/)).toBeNull();
   });
   it.each(['高价值问题1', '按问题点赞排序 · 到期按答案有效赞选出最佳解答'])('首页最多展示三题及奖金，点击%s进入完整榜单', async (content) => {
@@ -358,7 +528,7 @@ describe('高价值问题交互', () => {
     api.fetchMyChallengeAnswer.mockResolvedValue({ content: '尚未发布的私有草稿', version: 1, submitted_at: null, remaining_edits: 1, can_submit: true });
     detailPage();
     fireEvent.click(await screen.findByRole('button', { name: '我来解答' }));
-    expect(await screen.findByLabelText('答案内容')).toHaveValue('尚未发布的私有草稿');
+    expect(await screen.findByLabelText('答案内容')).toHaveTextContent('尚未发布的私有草稿');
     expect(screen.getByRole('button', { name: '收起我的解答' })).toBeVisible();
     expect(screen.queryByRole('article')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '取消编辑' }));
@@ -374,7 +544,7 @@ describe('高价值问题交互', () => {
     api.saveChallengeAnswer.mockResolvedValue({ content: mine.content, version: 1, submitted_at: mine.submitted_at, remaining_edits: 1, can_submit: true });
     detailPage();
     fireEvent.click(await screen.findByRole('button', { name: '我来解答' }));
-    fireEvent.change(await screen.findByLabelText('答案内容'), { target: { value: mine.content } });
+    setAnswerContent(await screen.findByLabelText('答案内容'), mine.content);
     fireEvent.click(screen.getByRole('button', { name: '发布答案' }));
     expect(await screen.findByRole('button', { name: '编辑' })).toBeEnabled();
     expect(screen.queryByRole('button', { name: '我来解答' })).toBeNull();
@@ -407,7 +577,7 @@ describe('高价值问题交互', () => {
     api.saveChallengeAnswer.mockImplementation(async (_id, content, version) => ({ content, version: version + 1, submitted_at: null, remaining_edits: 1, can_submit: true }));
     const submitted = vi.fn();
     wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={submitted} />);
-    fireEvent.change(await screen.findByLabelText('答案内容'), { target: { value: '先检查供电' } });
+    setAnswerContent(await screen.findByLabelText('答案内容'), '先检查供电');
     await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', '先检查供电', 0, false, [], []), { timeout: 2500 });
     expect(submitted).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText('发布答案'));
@@ -424,14 +594,16 @@ describe('高价值问题交互', () => {
     expect(screen.queryByRole('button', { name: '查看/编辑我的解答' })).toBeNull();
     expect(screen.queryByRole('button', { name: '我来解答' })).toBeNull();
     const card = editButton.closest('article');
+    expect(screen.queryByRole('note')).toBeNull();
     fireEvent.click(editButton);
     const editor = await screen.findByLabelText('答案内容');
-    expect(editor).toHaveValue(mine.content);
+    expect(editor).toHaveTextContent(mine.content);
     expect(editor.closest('article')).toBe(card);
     expect(screen.getByRole('note')).toHaveTextContent('每个问题的已发布解答仅可修改一次');
     expect(screen.getByRole('button', { name: '提交修改' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: '取消编辑' }));
     expect(screen.queryByLabelText('答案内容')).toBeNull();
+    expect(screen.queryByRole('note')).toBeNull();
     expect(screen.getByRole('button', { name: '编辑' })).toBeEnabled();
     expect(api.saveChallengeAnswer).not.toHaveBeenCalled();
   });
@@ -446,8 +618,9 @@ describe('高价值问题交互', () => {
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }));
     const editor = await screen.findByLabelText('答案内容');
     expect(editor.closest('article')).toBe(screen.getAllByRole('article')[0]);
-    fireEvent.change(editor, { target: { value: updated.content } });
+    setAnswerContent(editor, updated.content);
     fireEvent.click(screen.getByRole('button', { name: '提交修改' }));
+    await waitFor(() => expect(screen.queryByLabelText('答案内容')).toBeNull());
     expect(await screen.findByText(updated.content, { selector: 'p' })).toBeVisible();
     expect(screen.queryByLabelText('答案内容')).toBeNull();
     expect(screen.getByRole('button', { name: '编辑' })).toBeDisabled();
@@ -461,11 +634,11 @@ describe('高价值问题交互', () => {
     api.saveChallengeAnswer.mockResolvedValue({ content: '补充后的完整解答', version: 2, submitted_at: mine.submitted_at, remaining_edits: 0, can_submit: false });
     const submitted = vi.fn();
     wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={submitted} />);
-    fireEvent.change(await screen.findByLabelText('答案内容'), { target: { value: '补充后的完整解答' } });
+    setAnswerContent(await screen.findByLabelText('答案内容'), '补充后的完整解答');
     fireEvent.click(screen.getByRole('button', { name: '提交修改' }));
     await waitFor(() => expect(submitted).toHaveBeenCalledOnce());
     expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', '补充后的完整解答', 1, true, [], []);
-    expect(screen.getByLabelText('答案内容')).toBeDisabled();
+    expect(screen.getByLabelText('答案内容')).toHaveAttribute('contenteditable', 'false');
     expect(screen.getByRole('note')).toHaveTextContent('本题解答已修改过一次，不能再次编辑');
     expect(screen.getByRole('button', { name: '提交修改' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled();
@@ -516,7 +689,7 @@ describe('高价值问题交互', () => {
     expect(parseBountyFen('10.20')).toBe(1020);
     for (const value of ['-1', '1.001', 'NaN', '', '21474836.48']) expect(() => parseBountyFen(value)).toThrow();
   });
-  it('上传图片预览后随答案发布，上传中禁止提前提交', async () => {
+  it('图片上传后插入原光标位置，预览及发布保持图文顺序，上传中禁止编辑和提交', async () => {
     const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'a'.repeat(32) + '.png';
     let resolveUpload!: (value: string) => void;
     api.uploadChallengeAnswerImage.mockReturnValue(new Promise<string>((resolve) => { resolveUpload = resolve; }));
@@ -524,19 +697,33 @@ describe('高价值问题交互', () => {
     api.saveChallengeAnswer.mockResolvedValue({ content: '排查步骤', images: [url], version: 1, submitted_at: new Date().toISOString(), remaining_edits: 1, can_submit: true });
     wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
     const input = await screen.findByLabelText('上传解答图片');
+    const editor = screen.getByLabelText('答案内容');
+    selectAnswerText(editor, 2);
     const file = new File(['image'], '现场截图.png', { type: 'image/png' });
     fireEvent.change(input, { target: { files: [file] } });
     expect(api.uploadChallengeAnswerImage).toHaveBeenCalledWith(file);
     expect(screen.getByRole('button', { name: '发布答案' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled();
+    expect(editor).toHaveAttribute('contenteditable', 'false');
+    selectAnswerText(editor, 4);
     await act(async () => { resolveUpload(url); });
-    expect(await screen.findByAltText('解答图片1')).toHaveAttribute('src', url);
+    const markdown = `\n\n![现场截图.png](${url})\n\n`;
+    const content = `排查${markdown}步骤`;
+    expect(answerMarkdown(editor)).toBe(content);
+    expect(richEditor(editor).state.selection.$from.parent.textContent).toBe('步骤');
+    expect(editor).toHaveFocus();
+    const preview = within(editor);
+    const image = await preview.findByAltText('现场截图.png');
+    expect(image).toHaveAttribute('src', url);
+    expect(preview.getByText('排查').compareDocumentPosition(image) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(image.compareDocumentPosition(preview.getByText('步骤')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByLabelText('解答图片')).toBeNull();
     await waitFor(() => expect(screen.getByRole('button', { name: '发布答案' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: '预览解答图片1' }));
+    fireEvent.doubleClick(image);
     expect(screen.getByRole('dialog', { name: '图片预览' })).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '关闭预览' }));
     fireEvent.click(screen.getByRole('button', { name: '发布答案' }));
-    await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', '排查步骤', 0, true, [url], []));
+    await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', content, 0, true, [], []));
   });
   it('草稿图片回填后可删除，删除也触发自动保存', async () => {
     const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'a'.repeat(32) + '.png';
@@ -554,9 +741,90 @@ describe('高价值问题交互', () => {
     wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
     fireEvent.change(await screen.findByLabelText('上传解答图片'), { target: { files: [new File(['image'], '截图.png', { type: 'image/png' })] } });
     expect(await screen.findByRole('alert')).toHaveTextContent('图片上传失败');
-    expect(screen.getByLabelText('答案内容')).toHaveValue('不能丢失的文字');
+    expect(screen.getByLabelText('答案内容')).toHaveTextContent('不能丢失的文字');
     expect(screen.queryByAltText('解答图片1')).toBeNull();
     expect(screen.getByLabelText('上传解答图片')).toBeEnabled();
+  });
+  it('粘贴图片替换选区，按正文位置自动保存草稿', async () => {
+    const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'b'.repeat(32) + '.png';
+    const content = `前文\n\n![粘贴.png](${url})\n\n后文`;
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '前文选区后文', version: 3, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.uploadChallengeAnswerImage.mockResolvedValue(url);
+    api.saveChallengeAnswer.mockResolvedValue({ content, images: [], version: 4, submitted_at: null, remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByLabelText('答案内容');
+    selectAnswerText(editor, 2, 4);
+    const file = new File(['image'], '粘贴.png', { type: 'image/png' });
+    expect(fireEvent.paste(editor, { clipboardData: { files: [file] } })).toBe(false);
+    expect(await screen.findByAltText('粘贴.png')).toHaveAttribute('src', url);
+    expect(answerMarkdown(editor)).toBe(content);
+    await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', content, 3, false, [], []), { timeout: 2500 });
+  });
+  it('普通文字粘贴不被图片处理拦截', async () => {
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '原文', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByLabelText('答案内容');
+    fireEvent.paste(editor, { clipboardData: { files: [], getData: (format: string) => format === 'text/plain' ? '复制文字' : '' } });
+    expect(editor).toHaveTextContent('复制文字');
+    expect(api.uploadChallengeAnswerImage).not.toHaveBeenCalled();
+  });
+  it('多图上传部分失败仍保留已插入图片和后续文字，允许重试', async () => {
+    const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'c'.repeat(32) + '.png';
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content: '前文后文', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.uploadChallengeAnswerImage.mockResolvedValueOnce(url).mockRejectedValueOnce(new Error('第二张上传失败'));
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    const editor = await screen.findByLabelText('答案内容');
+    selectAnswerText(editor, 2);
+    const input = screen.getByLabelText('上传解答图片');
+    fireEvent.change(input, { target: { files: ['第一张.png', '第二张.png'].map((name) => new File(['image'], name, { type: 'image/png' })) } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('第二张上传失败');
+    expect(answerMarkdown(editor)).toBe(`前文\n\n![第一张.png](${url})\n\n后文`);
+    expect(await screen.findByAltText('第一张.png')).toHaveAttribute('src', url);
+    expect(screen.queryByAltText('第二张.png')).toBeNull();
+    expect(input).toBeEnabled();
+    expect(editor).toHaveAttribute('contenteditable', 'true');
+    const secondUrl = url.replace('c'.repeat(32), 'd'.repeat(32));
+    api.uploadChallengeAnswerImage.mockResolvedValue(secondUrl);
+    fireEvent.change(input, { target: { files: [new File(['image'], '第二张.png', { type: 'image/png' })] } });
+    expect(await screen.findByAltText('第二张.png')).toHaveAttribute('src', secondUrl);
+    expect(answerMarkdown(editor)).toBe(`前文\n\n![第一张.png](${url})\n\n![第二张.png](${secondUrl})\n\n后文`);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('插入图片超出正文长度限制时保留原文', async () => {
+    const content = '文'.repeat(20000);
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content, version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.uploadChallengeAnswerImage.mockResolvedValue('/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'd'.repeat(32) + '.png');
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    fireEvent.change(await screen.findByLabelText('上传解答图片'), { target: { files: [new File(['image'], '截图.png', { type: 'image/png' })] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('不能超过20000字');
+    expect(screen.getByLabelText('答案内容')).toHaveTextContent(content);
+    expect(screen.queryByAltText('截图.png')).toBeNull();
+  });
+  it('正文图片草稿重新打开后仍在原位置，删除图片标记会自动保存', async () => {
+    const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'e'.repeat(32) + '.png';
+    const content = `第一步\n\n![已有截图](${url})\n\n第二步`;
+    api.fetchMyChallengeAnswer.mockResolvedValue({ content, images: [], version: 2, submitted_at: null, remaining_edits: 1, can_submit: true });
+    api.saveChallengeAnswer.mockResolvedValue({ content: '第一步\n\n第二步', images: [], version: 3, submitted_at: null, remaining_edits: 1, can_submit: true });
+    wrapped(<ChallengeAnswerEditor id="1" canAnswer onSubmitted={vi.fn()} />);
+    expect(await screen.findByAltText('已有截图')).toHaveAttribute('src', url);
+    expect(answerMarkdown(screen.getByLabelText('答案内容'))).toBe(content);
+    expect(screen.queryByLabelText('解答图片')).toBeNull();
+    setAnswerContent(screen.getByLabelText('答案内容'), '第一步\n\n第二步');
+    expect(screen.queryByAltText('已有截图')).toBeNull();
+    await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', '第一步\n\n第二步', 2, false, [], []), { timeout: 2500 });
+  });
+  it.each([false, true])('已发布答案按正文顺序渲染图片且不在末尾重复，最佳答案：%s', async (isBest) => {
+    const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'f'.repeat(32) + '.png';
+    const answer = publishedAnswer({ content: `排查开始\n\n![现场图](${url})\n\n排查结束`, images: [], is_best: isBest });
+    api.fetchChallenge.mockResolvedValue({ ...challenge(), answers: [answer], best_answer: isBest ? answer : null });
+    detailPage();
+    const card = within(await screen.findByRole('article'));
+    const image = await card.findByAltText('现场图');
+    expect(image).toHaveAttribute('src', url);
+    expect(card.getByText('排查开始').compareDocumentPosition(image) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(image.compareDocumentPosition(card.getByText('排查结束')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.queryByLabelText('解答图片')).toBeNull();
+    expect(card.getAllByRole('img')).toHaveLength(1);
   });
   it('非图片和超过10MB的图片在上传前拦截', async () => {
     api.fetchMyChallengeAnswer.mockResolvedValue({ content: '排查步骤', version: 0, submitted_at: null, remaining_edits: 1, can_submit: true });
@@ -579,13 +847,17 @@ describe('高价值问题交互', () => {
     const input = await screen.findByLabelText('上传解答图片');
     expect(input).toBeEnabled();
     const files = Array.from({ length: 10 }, (_, index) => new File(['image'], `${index + 9}.png`, { type: 'image/png' }));
+    selectAnswerText(screen.getByLabelText('答案内容'), 4);
     fireEvent.change(input, { target: { files } });
-    expect(await screen.findByAltText('解答图片19')).toHaveAttribute('src', images[18]);
+    expect(await screen.findByAltText('18.png')).toHaveAttribute('src', images[18]);
     await waitFor(() => expect(input).toBeEnabled());
     expect(api.uploadChallengeAnswerImage).toHaveBeenCalledTimes(10);
-    expect(screen.getByText(/已上传19张，数量不限/)).toBeVisible();
+    const content = '排查步骤' + images.slice(9).map((url, index) => `\n\n![${index + 9}.png](${url})`).join('');
+    expect(answerMarkdown(screen.getByLabelText('答案内容'))).toBe(content);
+    expect(screen.getByLabelText('答案内容').querySelectorAll('img')).toHaveLength(10);
+    expect(screen.getByLabelText('解答图片').querySelectorAll('img')).toHaveLength(9);
     fireEvent.click(screen.getByRole('button', { name: '发布答案' }));
-    await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', '排查步骤', expect.any(Number), true, images, []));
+    await waitFor(() => expect(api.saveChallengeAnswer).toHaveBeenCalledWith('1', content, expect.any(Number), true, images.slice(0, 9), []));
   });
   it('答案及最佳解答显示图片，修改次数用完后禁止上传和删除', async () => {
     const url = '/api/tasks/files/helpdesk-comment/spec-doc/images/' + 'a'.repeat(32) + '.png';

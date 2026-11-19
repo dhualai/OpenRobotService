@@ -13,12 +13,16 @@ def test_report_prompts_use_knowledge_capture_terminology():
         assert '归档报告' not in prompt
 
 
-def test_prompt_requires_eight_report_sections_and_no_invented_facts():
-    headings = ('问题概述', '问题场景', '复现条件', '原因分析', '解决方案', '验证结果', '适用范围', '遗留问题')
-    for heading in headings:
+def test_prompt_requires_two_report_sections_and_no_invented_facts():
+    """报告结构已收敛为「问题描述 + 解决方案」两节（与 _REPORT_PROMPT 模板一致）。
+
+    原八节标准 MD 结构由「审核改稿 + 机械映射知识卡」承接（solution_sink
+    的 _card_from_standard_report），AI 初稿只产出两节。
+    """
+    for heading in ('问题描述', '解决方案'):
         assert f'## {heading}' in archive_flow._REPORT_PROMPT
+    assert '不编造' in archive_flow._REPORT_PROMPT
     assert '禁止编造' in archive_flow._SYSTEM_PROMPT
-    assert '不写人员姓名' in archive_flow._REPORT_PROMPT
 
 
 def test_background_writeback_does_not_overwrite_submitted_report(monkeypatch):

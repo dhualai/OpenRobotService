@@ -154,12 +154,12 @@ class Project(Base):
 
     # 项目在线状态：项目服务定期调 /api/health?project_code=xxx 心跳，
     # 后端以此时间戳判定在线/离线（超过 PROJECT_ONLINE_THRESHOLD_SECONDS 未更新视为离线）。
-    last_heartbeat_at = Column(Float, nullable=True, comment='最近一次心跳时间戳(Unix秒)')
+    last_heartbeat_at = Column(BigInteger, nullable=True, comment='最近一次心跳时间戳(Unix秒,整数)')
 
     # 导出授权包版本号（project_code + license_code + user_list 的快照版本）：
     # 新增/撤销 licence 或增删项目人员时自动 +1，导出时携带以便识别是否需要重新拉取。
     export_version = Column(Integer, nullable=False, default=0, server_default='0', comment='导出授权包版本号')
-    export_version_updated_at = Column(Float, nullable=True, comment='export_version 最后一次变更时间戳(Unix秒)')
+    export_version_updated_at = Column(BigInteger, nullable=True, comment='export_version 最后一次变更时间戳(Unix秒,整数)')
 
     # 审核流字段：新申请项目以 status='pending' 入库，管理员审核通过后置为 'approved'（或保留 'active'），
     # 驳回则置为 'rejected'。已存在的 'active'/'已删除' 项目不受此审核流影响。

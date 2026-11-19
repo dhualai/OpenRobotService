@@ -10795,6 +10795,15 @@ button.dispatch-dev__rate-row { cursor: pointer; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.announcement-bar__title--scrolling { text-overflow: clip; }
+.announcement-bar__title-text { display: inline-block; width: max-content; vertical-align: top; }
+.announcement-bar__title--scrolling .announcement-bar__title-text {
+  animation: announcement-title-scroll var(--announcement-scroll-duration) linear var(--announcement-scroll-delay) forwards;
+}
+@keyframes announcement-title-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(var(--announcement-scroll-distance)); }
+}
 .announcement-bar__more {
   flex-shrink: 0;
   display: inline-flex;

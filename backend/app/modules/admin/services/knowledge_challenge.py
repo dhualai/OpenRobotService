@@ -92,26 +92,25 @@ async def public_text(db, challenge, text, author_id=None, preserve_public_links
     if challenge.task_id is not None:
         task = await db.get(Task, challenge.task_id)
         if task:
-            text = await knowledge.anonymous_text(db, task, text, preserve_public_links=preserve_public_links)
+            text = await knowledge.anonymous_text(
+                db, task, text, preserve_uploaded_images=True, preserve_public_links=preserve_public_links,
+            )
     identities.discard(None)
     users = (await db.execute(select(UserDB).where(UserDB.id.in_(identities)))).scalars().all()
-    if preserve_public_links:
-        def redact(value):
-            for user in users:
-                for term in (user.name, user.username, user.id, user.wechat_openid):
-                    if term and len(term) >= 2:
-                        value = value.replace(term, "[匿名]")
-            value = re.sub(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", "[邮箱已隐藏]", value)
-            return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[电话已隐藏]", value)
+    def redact(value):
+        for user in users:
+            for term in (user.name, user.username, user.id, user.wechat_openid):
+                if term and len(term) >= 2:
+                    value = value.replace(term, "[匿名]")
+        value = re.sub(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", "[邮箱已隐藏]", value)
+        return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[电话已隐藏]", value)
 
-        return redact_with_public_links(text, redact)
-    for user in users:
-        for term in (user.name, user.username, user.id, user.wechat_openid):
-            if term and len(term) >= 2:
-                text = text.replace(term, "[匿名]")
-    text = re.sub(r"https?://\S+", "[链接已隐藏]", text)
-    text = re.sub(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", "[邮箱已隐藏]", text)
-    return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[电话已隐藏]", text)
+    def redact_content(value):
+        if preserve_public_links:
+            return redact_with_public_links(value, redact)
+        return re.sub(r"https?://\S+", "[链接已隐藏]", redact(value))
+
+    return knowledge.redact_with_uploaded_images(text, redact_content)
 
 
 def audit(db, challenge, operator_id, action, reason, before):

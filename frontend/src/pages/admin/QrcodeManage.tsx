@@ -178,6 +178,8 @@ export default function QrcodeManage() {
     const [namePrefix, setNamePrefix] = useState('');
     const [qtype, setQtype] = useState<QrcodeType>('permanent');
     const [redirectUrl, setRedirectUrl] = useState('');
+    const [cardTitle, setCardTitle] = useState('');
+    const [cardDesc, setCardDesc] = useState('');
     const [busy, setBusy] = useState(false);
     const [result, setResult] = useState<null | { batchId: string; created: number }>(null);
 
@@ -188,6 +190,8 @@ export default function QrcodeManage() {
         const res = await batchCreateQrcodes({
           count, name_prefix: namePrefix,
           qrcode_type: qtype, redirect_url: redirectUrl || undefined,
+          card_title: cardTitle.trim() || undefined,
+          card_description: cardDesc.trim() || undefined,
         });
         setResult({ batchId: res.batch_id, created: res.created_count });
       } catch (e: any) { showToast(e?.message || '创建失败'); }
@@ -229,6 +233,12 @@ export default function QrcodeManage() {
               前端不预填域名，也不写死地址：带 id 的 path 才扛得住微信 OAuth 回跳丢 query */}
           <label className="qr-field" style={{ marginTop: 12 }}>扫码跳转 URL（选填，留空则默认跳转到录入信息页面）</label>
           <input className="qr-input" value={redirectUrl} onChange={(e) => setRedirectUrl(e.target.value)} placeholder="留空默认：录入信息页" />
+
+          {/* 自定义卡片（特殊码如「新用户注册」「忘记密码」用；留空走原有分支） */}
+          <label className="qr-field" style={{ marginTop: 12 }}>扫码卡片标题（选填；留空按项目信息自动生成）</label>
+          <input className="qr-input" value={cardTitle} onChange={(e) => setCardTitle(e.target.value)} placeholder="如：新用户注册 / 忘记密码" maxLength={128} />
+          <label className="qr-field">扫码卡片描述（选填；留空按项目信息自动生成）</label>
+          <input className="qr-input" value={cardDesc} onChange={(e) => setCardDesc(e.target.value)} placeholder="如：点击前往完成账号注册 / 重置密码" />
 
           {result && (
             <div className="qr-batch-result">
@@ -313,6 +323,12 @@ export default function QrcodeManage() {
           <h4>{qr.name}</h4>
           <div className="qr-preview-scene">scene_str = <code>{qr.scene_str}</code></div>
           {/* 录入信息行：项目名就是码记录名（见上方 h4），这里列出登记的项目字段 */}
+          {qr.card_title && (
+            <>
+              <div className="qr-preview-scene">📋 卡片标题：{qr.card_title}</div>
+              {qr.card_description && <div className="qr-preview-scene">📋 卡片描述：{qr.card_description}</div>}
+            </>
+          )}
           {qr.project_code && <div className="qr-preview-scene">项目编号：{qr.project_code}</div>}
           {qr.project_location && <div className="qr-preview-scene">项目地点：{qr.project_location}</div>}
           {qr.customer_name && <div className="qr-preview-scene">客户名称：{qr.customer_name}</div>}

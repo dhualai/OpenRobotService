@@ -7,6 +7,7 @@ import allure
 import pytest
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
+from automation.src.config.credentials import role_credentials
 
 
 async def _api(client, method: str, path: str, step: str = '', headers=None,
@@ -31,8 +32,9 @@ class TestLogin:
     @pytest.mark.api
     async def test_login_admin(self, mock_api_client):
         """正常流程：登录成功"""
+        user, pwd = role_credentials('admin')
         await _api(mock_api_client, 'post', '/api/auth/login',
-                   json={'username': 'testadmin', 'password': 'admin123'},
+                   json={'username': user, 'password': pwd},
                    expected_status=200, expected_fields={'token_type': 'bearer'})
 
     @allure.story('登录')
@@ -48,8 +50,9 @@ class TestLogin:
     @pytest.mark.api
     async def test_login_engineer(self, mock_api_client):
         """正常流程：工程师登录"""
+        user, pwd = role_credentials('engineer')
         await _api(mock_api_client, 'post', '/api/auth/login',
-                   json={'username': 'engineer', 'password': 'eng123'},
+                   json={'username': user, 'password': pwd},
                    expected_status=200, expected_fields={'token_type': 'bearer'})
 
     @allure.story('登录')
@@ -57,8 +60,9 @@ class TestLogin:
     @pytest.mark.api
     async def test_login_customer(self, mock_api_client):
         """正常流程：客户登录"""
+        user, pwd = role_credentials('customer')
         await _api(mock_api_client, 'post', '/api/auth/login',
-                   json={'username': 'customer', 'password': 'cust123'},
+                   json={'username': user, 'password': pwd},
                    expected_status=200, expected_fields={'token_type': 'bearer'})
 
     @allure.story('登录')
@@ -122,7 +126,8 @@ class TestWechat:
     @pytest.mark.api
     async def test_wechat_tags(self, mock_api_client):
         """正常流程：微信标签列表"""
-        await _api(mock_api_client, 'get', '/api/wechat', expected_status=200)
+        await _api(mock_api_client, 'get', '/api/wechat', expected_status=200,
+                   expected_fields={'tags': []})
 
     @allure.story('微信')
     @allure.title('正常：微信回调 POST')
@@ -130,4 +135,4 @@ class TestWechat:
     async def test_wechat_callback(self, mock_api_client):
         """正常流程：微信回调 POST"""
         await _api(mock_api_client, 'post', '/api/wechat', json={'xml': '<xml/>'},
-                   expected_status=200)
+                   expected_status=200, expected_fields={'tag': {'name': ''}})

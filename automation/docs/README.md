@@ -19,6 +19,8 @@
 | `LOCAL_ENV_SETUP.md` | 本地环境搭建 |
 | `prompt-template-generate-cases.md` | 用例生成提示词模板 |
 | `design-openrobot-test-runtime.md` | 测试运行时设计（现行） |
+| `design-mock-vs-real-lanes.md` | Mock 快车道与真实后端双轨体系设计原理（现行） |
+| `design-ci-pipeline-consolidation.md` | CI 流水线收敛方案（待确认，回归 push test 一条主线） |
 
 ## testing/ - 框架规范与场景
 

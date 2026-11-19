@@ -1202,14 +1202,18 @@ def _send_scan_redirect_card(openid: str, scene_str: str):
             redirect_url = f"{settings.FRONTEND_BASE_URL}/call?{urlencode({'scene': scene_str, 'openid': openid})}"
 
         # ── 3. 卡片标题/描述/图片 ──
-        # 分支核心：先拦截 deprecated → 再按「是否录入项目信息」分流。
+        # 分支核心：先拦截 deprecated → 再优先使用自定义卡片 → 最后按「是否录入项目信息」分流。
         # 自动生成的码 name 形如 test-1、test-2 可读性差，未录入时直接用固定文案引导用户。
         picurl = qr_cfg.qrcode_image_url if qr_cfg and qr_cfg.qrcode_image_url else ''
 
         if qr_cfg and qr_cfg.status == 'deprecated':
-            # 已弃用：扫码直接告知停用，不再引导跳转
+            # 已弃用：扫码直接告知停用，不再引导跳转（优先级最高，不可被自定义覆盖）
             title = "二维码已停用"
             description = "此二维码已停止使用，请联系管理员"
+        elif qr_cfg and qr_cfg.card_title:
+            # 自定义卡片（特殊码如「新用户注册」「忘记密码」：card_title/card_description 由管理员配置）
+            title = qr_cfg.card_title
+            description = qr_cfg.card_description or ""
         elif qr_cfg and qr_cfg.project_code:
             # 已录入：标题取「客户名称 - 车型」，描述放项目名 / 地点
             title_parts = [p for p in [qr_cfg.customer_name, qr_cfg.vehicle_model] if p]

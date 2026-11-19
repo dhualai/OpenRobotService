@@ -18,6 +18,7 @@ from app.models.knowledge import (
 from app.models.task import ArchiveReport, Task, TaskStatus
 from app.models.wxpay import RewardRecord, RewardStatus
 from app.modules.admin.services.knowledge_like_quota import check_question_quota
+from app.modules.admin.services.knowledge_public_links import redact_with_public_links
 
 
 BEIJING = timezone(timedelta(hours=8))
@@ -78,7 +79,22 @@ def display_user(user):
             "avatar_resource_id": user.avatar_resource_id}
 
 
-async def anonymous_text(db, task, text, hide_participants=True, preserve_public_links=False):
+def redact_with_uploaded_images(text, redact):
+    pattern = re.compile(
+        r"!\[((?:[^\[\]\r\n]|\[[^\[\]\r\n]*\])*)\]\("
+        r"(/api/tasks/files/[A-Za-z0-9_-]+/spec-doc/images/[0-9a-f]{32}\.(?:png|jpg|jpeg|gif|webp|bmp))\)"
+    )
+    parts = []
+    start = 0
+    for image in pattern.finditer(text):
+        parts.append(redact(text[start:image.start()]))
+        parts.append(f"![{redact(image.group(1))}]({image.group(2)})")
+        start = image.end()
+    parts.append(redact(text[start:]))
+    return "".join(parts)
+
+
+async def anonymous_text(db, task, text, hide_participants=True, preserve_uploaded_images=False, preserve_public_links=False):
     identities = [task.archived_by]
     reports = (await db.execute(select(ArchiveReport).where(ArchiveReport.task_id == task.id))).scalars().all()
     identities += [report.reviewer for report in reports]
@@ -94,24 +110,22 @@ async def anonymous_text(db, task, text, hide_participants=True, preserve_public
         user = users.get(identity)
         terms += [identity, user.id if user else None, user.name if user else None,
                   user.username if user else None, user.wechat_openid if user else None]
-    value = text or ""
     sensitive_terms = sorted({str(term) for term in terms if term and len(str(term)) > 1}, key=len, reverse=True)
-    if preserve_public_links:
-        from app.modules.admin.services.knowledge_public_links import redact_with_public_links
 
-        def redact(value):
-            for term in sensitive_terms:
-                value = re.sub(re.escape(term), "（已匿名）", value, flags=re.IGNORECASE)
-            value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[邮箱已隐藏]", value)
-            return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[联系方式已隐藏]", value)
+    def redact(value):
+        for term in sensitive_terms:
+            value = re.sub(re.escape(term), "（已匿名）", value, flags=re.IGNORECASE)
+        value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[邮箱已隐藏]", value)
+        return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[联系方式已隐藏]", value)
 
-        return redact_with_public_links(value, redact)
-    for term in sensitive_terms:
-        value = re.sub(re.escape(term), "（已匿名）", value, flags=re.IGNORECASE)
-    value = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "[附件链接已隐藏]", value)
-    value = re.sub(r"https?://\S+", "[链接已隐藏]", value)
-    value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[邮箱已隐藏]", value)
-    return re.sub(r"(?<!\d)1[3-9]\d{9}(?!\d)", "[联系方式已隐藏]", value)
+    def redact_content(value):
+        if preserve_public_links:
+            return redact_with_public_links(value, redact)
+        value = redact(value)
+        value = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "[附件链接已隐藏]", value)
+        return re.sub(r"https?://\S+", "[链接已隐藏]", value)
+
+    return redact_with_uploaded_images(text or "", redact_content) if preserve_uploaded_images else redact_content(text or "")
 
 
 async def publish_report(db, task, report, now=None):

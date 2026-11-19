@@ -9,6 +9,10 @@ export interface ProjectItem {
   project_code: string; // 项目业务编码（作为工单 project_id 绑定）
   name: string;
   status?: string;
+  /** 项目对接人姓名（后端 ProjectResponse 自带，`include_analysis=false` 也会返回） */
+  contact_person?: string | null;
+  /** 项目对接人 ID（users.username），用于发工单给对接人 */
+  contact_person_id?: string | null;
 }
 
 // 模糊搜索项目（keyword 为空时返回全量，默认 200 条）。

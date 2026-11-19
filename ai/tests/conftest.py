@@ -153,6 +153,9 @@ def mock_retriever():
     mock.retrieve_usp_diagnosis = AsyncMock(return_value=[])
     mock.retrieve_troubleshooting = AsyncMock(return_value=[])
     mock._extract_error_codes = MagicMock(return_value=[])
+    # 检索链路里三路召回后还会 await _rerank_results（精排），
+    # 缺这个 AsyncMock 会让走主循环的用例在 await MagicMock 上炸掉
+    mock._rerank_results = AsyncMock(side_effect=lambda q, docs, top_k=8: list(docs or [])[:top_k])
     return mock
 
 

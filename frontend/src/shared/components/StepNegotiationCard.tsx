@@ -428,8 +428,12 @@ export default function StepNegotiationCard({
                     </TestMarkedButton>
                   )
                 )}
-                {/* 处理人侧 · 对方待确认：允许修改之前设置的节点时间 */}
-                {isAssignee && !reachedMax && !stepAgreed && !myTurn && (
+                {/* 已达成一致：双方均可随时重新协商节点时间；
+                     未达成一致：处理人侧·对方待确认时仍可修改之前设置的节点时间 */}
+                {canNegotiate && !reachedMax && (
+                  (stepAgreed && canOperate)
+                  || (!stepAgreed && isAssignee && !myTurn)
+                ) && (
                   <Button
                     block
                     size="small"

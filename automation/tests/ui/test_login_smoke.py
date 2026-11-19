@@ -16,6 +16,9 @@ pytestmark = [pytest.mark.ui, pytest.mark.smoke]
 
 _BASE_URL = os.getenv("PLAYWRIGHT_BASE_URL", "").rstrip("/")
 _HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "1").strip().lower() not in {"0", "false", "no", "off"}
+# Vite dev server 首屏要现场编译，domcontentloaded 时 React 往往还没挂载，
+# 断言必须走自动等待，不能依赖 count()（非重试 API）。
+_UI_TIMEOUT_MS = 15_000
 
 
 @pytest.fixture
@@ -51,10 +54,12 @@ def test_login_page_loads(login_page):
 @allure.feature("UI Smoke")
 @allure.story("登录页")
 def test_login_form_controls_visible(login_page):
+    from playwright.sync_api import expect
+
     username = login_page.get_by_placeholder("请输入账号")
     password = login_page.get_by_placeholder("请输入密码")
     submit = login_page.get_by_text("登录", exact=True)
 
-    assert username.count() > 0 and username.first.is_visible()
-    assert password.count() > 0 and password.first.is_visible()
-    assert submit.count() > 0 and submit.first.is_visible()
+    expect(username.first).to_be_visible(timeout=_UI_TIMEOUT_MS)
+    expect(password.first).to_be_visible(timeout=_UI_TIMEOUT_MS)
+    expect(submit.first).to_be_visible(timeout=_UI_TIMEOUT_MS)

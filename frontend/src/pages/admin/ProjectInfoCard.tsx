@@ -36,9 +36,10 @@ import {
   type ProjectInfoSelectValue,
 } from '@/shared/utils/projectInfoTree';
 
-export default function ProjectInfoCard({ projectId, canEdit, onMarkChange }: {
+export default function ProjectInfoCard({ projectId, canEdit, onMarkChange, onNodesChange }: {
   projectId: string;
   canEdit: boolean;
+  onNodesChange?: (nodes: ProjectInfoNode[]) => void;
   /** 关注状态变化后通知外层（「项目动态」卡刷新用） */
   onMarkChange?: () => void;
 }) {
@@ -58,12 +59,13 @@ export default function ProjectInfoCard({ projectId, canEdit, onMarkChange }: {
     let cancelled = false;
     setLoading(true);
     setLoadError(false);
+    onNodesChange?.([]);
     loadInfoNodes(projectId)
-      .then((data) => { if (!cancelled) setNodes(data); })
+      .then((data) => { if (!cancelled) { setNodes(data); onNodesChange?.(data); } })
       .catch(() => { if (!cancelled) { setNodes([]); setLoadError(true); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [projectId, reloadToken]);
+  }, [projectId, reloadToken, onNodesChange]);
 
   // 关注列表单独拉取：失败只影响星标显示（按未关注渲染），不挡正文
   useEffect(() => {
