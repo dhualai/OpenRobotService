@@ -49,6 +49,6 @@ tests/tasks/test_tasks_negative_code.py     4 passed
 
 ## 下一步
 
-1. 随分支提交并 workflow_dispatch 预验证（quality-gate）。
-2. 确认是否授权第二批（扩 mock 补状态机）。
-3. PR #461 仍待合入（与本批改动独立）。
+1. 已提交 PR #466（`ci/gap-filling-batch1` → test，7 文件 +448/-9），待合入。
+2. 第二批（G1 状态机）：用户 2026-11-19 决定**不授权扩 mock**，暂缓；状态机流转由真实后端场景用例验收。
+3. 第三批（G5/G6/G7）依赖真实环境/AI 服务，待决策。

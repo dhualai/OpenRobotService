@@ -97,7 +97,7 @@ push 到 test
 | `ai-eval` | **保留+修分支** | 把 push 分支从 hxg/develop 改 test，或纯定时 | 低 |
 | `deploy` | **冻结→归档** | 与 deploy-split 重复，确认无引用后删除 | 中（需确认无外部调用） |
 | `rollback` | **保留但归属 deploy-split** | deploy-split 已有 rollback job，独立版可归档 | 中 |
-| main `test` / `ai-test` | **归档** | 连败 6×、非 test 分支，无维护价值；先 disable workflow 文件保留 30 天 | 低 |
+| main `test` / `ai-test` | **不维护** | 用户 2026-11-19 明确「main 分支不用」——main 的 Deploy 失败与这两条流水线均不纳入跟进，保持现状不动 | 低 |
 
 ---
 
@@ -119,7 +119,7 @@ push 到 test
 5. 观察一周：确认主线 + ui-smoke 覆盖全部原能力。
 
 ### 第三批：归档僵尸
-1. main 的 `test.yml` / `ai-test.yml`：先 `workflow_dispatch` 之外全部去掉，30 天后删文件。
+1. main 的 `test.yml` / `ai-test.yml`：**用户 2026-11-19 决定 main 分支不维护**，不改动、不跟进其失败。
 2. `deploy.yml` / `rollback.yml`：确认无外部调用后归档（deploy-split 已含）。
 3. 更新 `docs/README.md` 与领导版报告的流水线清单。
 
