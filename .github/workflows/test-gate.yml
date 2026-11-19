@@ -440,14 +440,58 @@ jobs:
           destination_dir: test-gate
           keep_files: true
 
+      - name: Case-level summary from Allure results
+        # 直接解析 Allure result JSON，把用例级统计写进 run 页面 Summary，
+        # 无需下载 artifact 即可看到通过/失败数量与失败用例名。
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib, collections
+          root = pathlib.Path('automation/output/allure-results')
+          cnt = collections.Counter()
+          bad = []
+          if root.is_dir():
+              for f in root.rglob('*-result.json'):
+                  try:
+                      d = json.loads(f.read_text(encoding='utf-8'))
+                  except Exception:
+                      continue
+                  st = str(d.get('status') or 'unknown')
+                  cnt[st] += 1
+                  if st in ('failed', 'broken'):
+                      bad.append((st, d.get('fullName') or d.get('name') or '?'))
+          print('')
+          print('### 用例统计（来自 Allure 结果）')
+          print('')
+          print(f'- 合计：{sum(cnt.values())}')
+          for k in ('passed', 'failed', 'broken', 'skipped', 'unknown'):
+              if cnt.get(k):
+                  print(f'- {k}：{cnt[k]}')
+          if bad:
+              print('')
+              print('### 失败用例')
+              print('')
+              for st, name in bad[:40]:
+                  print(f'- `{name}`（{st}）')
+              if len(bad) > 40:
+                  print(f'- …另有 {len(bad) - 40} 条，见下方 Allure 报告')
+          else:
+              print('')
+              print('无失败用例 ✓')
+          PY
+
       - name: Job summary
         run: |
           echo "## Test gate results" >> $GITHUB_STEP_SUMMARY
-          echo "- quality-gate: ${{ needs.quality-gate.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- db-integration: ${{ needs.db-integration.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- real-smoke: ${{ needs.real-smoke.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- scenarios: ${{ needs.scenarios.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "用例级报告二选一：" >> $GITHUB_STEP_SUMMARY
-          echo "1. 下载 Artifact **allure-report-html**，解压后打开 latest/index.html" >> $GITHUB_STEP_SUMMARY
-          echo "2. 已发布到 gh-pages 分支的 test-gate/ 目录（GitHub Pages 启用后可直接访问）" >> $GITHUB_STEP_SUMMARY
+          echo "| job | result |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| quality-gate | ${{ needs.quality-gate.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| db-integration | ${{ needs.db-integration.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| real-smoke | ${{ needs.real-smoke.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| scenarios | ${{ needs.scenarios.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 报告在哪看" >> $GITHUB_STEP_SUMMARY
+          echo "1. **概要**：本页面（上方用例统计与失败清单）" >> $GITHUB_STEP_SUMMARY
+          echo "2. **详细报告**：本页底部 Artifacts → 下载 \`allure-report-html\` → 解压打开 \`latest/index.html\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. **在线地址**：已发布至 \`gh-pages\` 的 \`test-gate/\` 目录，仓库启用 GitHub Pages 后可直接访问" >> $GITHUB_STEP_SUMMARY
