@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     topo_migrated_url: str = ""
     usp_test_base_url: str = "http://10.10.10.202:9200"
     usp_test_admin_license: str = ""
+    # 摇人吧后端地址：账号统一校验（GET {ors_base_url}/api/auth/me）
+    ors_base_url: str = "http://127.0.0.1:9400"
 
     @field_validator("debug", "openapi_enabled", mode="before")
     @classmethod
@@ -34,7 +36,14 @@ class Settings(BaseSettings):
             return v.strip().lower() in {"1", "true", "yes", "on"}
         return bool(v)
 
-    @field_validator("usp_test_base_url", "usp_test_admin_license", "topo_migrated_url", "topo_public_url", mode="before")
+    @field_validator(
+        "usp_test_base_url",
+        "usp_test_admin_license",
+        "topo_migrated_url",
+        "topo_public_url",
+        "ors_base_url",
+        mode="before",
+    )
     @classmethod
     def _strip(cls, v):
         return (v or "").strip().rstrip("/") if isinstance(v, str) else v

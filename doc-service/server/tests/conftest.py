@@ -226,6 +226,43 @@ def client(seed, db_engine):
 
 
 def login(client, user: str, password: str):
-    r = client.post("/api/v1/auth/login", json={"username": user, "password": password})
+    """统一账号通道：带摇人吧 token（测试期由下面的 fake 校验，不连外部服务）。"""
+    client.headers.update({"Authorization": f"Bearer test-token-{user}"})
+    r = client.get("/api/v1/me")
     assert r.status_code == 200, r.text
     return r
+
+
+# ---- 账号统一：测试期 mock 摇人吧 /api/auth/me ----
+# 真实环境由 app.services.ors_auth.verify_ors_token 调摇人吧后端校验；
+# 单测在此按 token 内的用户名返回权限，避免依赖外部服务。
+# 注意：conftest 的 seed/各用例若已预建 User 行，provision 会原样沿用其 role/Grant
+# （A 方案），所以这里的权限只影响「首次登录的新用户」。
+_ORS_TEST_PERMS = {
+    "admin": ("admin",),
+    "eng": ("frontend:kb:write",),
+    "pm1": ("frontend:kb:write",),
+    "guest": (),
+}
+
+
+def _install_fake_ors_auth() -> None:
+    from app.services import ors_auth
+
+    # 保留真实实现，供 tests/test_ors_auth.py 恢复后单测
+    ors_auth._real_verify_ors_token = ors_auth.verify_ors_token
+
+    def _fake(token: str):
+        username = (token or "").removeprefix("test-token-").strip()
+        if not username:
+            return None
+        return ors_auth.OrsUser(
+            username=username,
+            name=username,
+            permissions=_ORS_TEST_PERMS.get(username, ("frontend:kb:write",)),
+        )
+
+    ors_auth.verify_ors_token = _fake
+
+
+_install_fake_ors_auth()

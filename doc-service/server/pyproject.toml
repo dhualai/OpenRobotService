@@ -10,6 +10,7 @@ dependencies = [
   "alembic>=1.14",
   "psycopg[binary]>=3.2",
   "pydantic-settings>=2.6",
+  "httpx>=0.28",
   "cryptography>=44",
   "python-multipart>=0.0.17",
   "markdown>=3.7",
