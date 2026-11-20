@@ -1,6 +1,0 @@
-{
-  "status_code": 401,
-  "url": "<MagicMock name='mock.request().url' id='136437917925840'>",
-  "reason": "<MagicMock name='mock.request().reason_phrase' id='136437917936976'>",
-  "body": "<MagicMock name='mock.request().json()' id='136437917953424'>"
-}

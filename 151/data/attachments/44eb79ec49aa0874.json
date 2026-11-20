@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/conversations",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTU0NDEuMzI3ODA2NSwgImlhdCI6IDE3OTUxNTE4NDEuMzI3ODA2N30.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "New conversation"
+  }
+}
