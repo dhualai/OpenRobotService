@@ -145,6 +145,74 @@ async def test_redacts_before_model_and_preserves_candidate_until_adopted(learni
 
 
 @pytest.mark.asyncio
+async def test_article_generation_sends_exact_output_schema(learning_db, monkeypatch):
+    article = await new_article(learning_db)
+    client = SimpleNamespace(complete=AsyncMock(return_value=content().model_dump_json()))
+    monkeypatch.setattr(service, "get_llm_client", lambda: client)
+    job = await service.generate(learning_db, administrator(), article["id"], Generate(
+        request_id="article-schema-request", revision=article["revision"], kind="article"))
+    assert job["state"] == "succeeded"
+    instruction = client.complete.call_args.kwargs["system_prompt"]
+    schema = json.loads(instruction.split("\n输出JSON Schema：\n", 1)[1])
+    assert schema == ArticleContent.model_json_schema()
+    assert schema["properties"]["method"]["type"] == "string"
+    assert schema["$defs"]["KnowledgePoint"]["properties"]["source_markers"]["type"] == "array"
+    assert "不要返回null" in instruction
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_field, invalid_value, expected_path, expected_reason", [
+    ("method", ["检查供电", "password=private-ai-value"], "method", "应为文本"),
+    ("warnings", None, "warnings", "应为数组"),
+    ("summary", "排查" * 2001, "summary", "超过长度上限"),
+    ("key_points", [{"id": "KP0", "text": "检查供电", "source_markers": ["S1"],
+        "source_excerpt": "检查供电"}], "key_points.0.id", "格式不符合要求"),
+    ("key_points", [{"id": "KP1", "text": "检查供电", "source_markers": "S1",
+        "source_excerpt": "检查供电"}], "key_points.0.source_markers", "应为数组"),
+], ids=["text-array", "null-array", "too-long", "point-id", "source-marker-type"])
+async def test_article_validation_reports_safe_field_details_and_preserves_draft(
+        learning_db, monkeypatch, caplog, invalid_field, invalid_value, expected_path, expected_reason):
+    article = await new_article(learning_db)
+    payload = {**content().model_dump(), invalid_field: invalid_value}
+    client = SimpleNamespace(complete=AsyncMock(return_value=json.dumps(payload, ensure_ascii=False)))
+    monkeypatch.setattr(service, "get_llm_client", lambda: client)
+    job = await service.generate(learning_db, administrator(), article["id"], Generate(
+        request_id="invalid-fields-request", revision=article["revision"], kind="article"))
+    assert job["state"] == "failed"
+    assert expected_path in job["error"]
+    assert expected_reason in job["error"]
+    assert len(job["error"]) <= 255
+    assert "private-ai-value" not in json.dumps(job) + caplog.text
+    assert "检查供电" not in caplog.text
+    assert expected_path in caplog.text
+    assert client.complete.await_count == 1
+    assert (await service.detail(learning_db, administrator(), article["id"]))["draft"] == article["draft"]
+    client.complete.return_value = content().model_dump_json()
+    recovered = await service.generate(learning_db, administrator(), article["id"], Generate(
+        request_id="valid-fields-request", revision=article["revision"], kind="article"))
+    assert recovered["state"] == "succeeded"
+    assert (await service.detail(learning_db, administrator(), article["id"]))["draft"] == article["draft"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload, expected_path, expected_reason", [
+    ({"content": content().model_dump()}, "title", "缺少必填字段"),
+    ([content().model_dump()], "整体结构", "应为JSON对象"),
+], ids=["wrapped-object", "root-array"])
+async def test_article_validation_explains_missing_fields_and_wrong_root(
+        learning_db, monkeypatch, payload, expected_path, expected_reason):
+    article = await new_article(learning_db)
+    client = SimpleNamespace(complete=AsyncMock(return_value=json.dumps(payload, ensure_ascii=False)))
+    monkeypatch.setattr(service, "get_llm_client", lambda: client)
+    job = await service.generate(learning_db, administrator(), article["id"], Generate(
+        request_id="invalid-root-request", revision=article["revision"], kind="article"))
+    assert job["state"] == "failed"
+    assert expected_path in job["error"]
+    assert expected_reason in job["error"]
+    assert (await service.detail(learning_db, administrator(), article["id"]))["draft"] == article["draft"]
+
+
+@pytest.mark.asyncio
 async def test_generation_failure_preserves_draft_and_hides_upstream_error(learning_db, monkeypatch):
     article = await new_article(learning_db)
     client = SimpleNamespace(complete=AsyncMock(side_effect=RuntimeError("token=super-secret 192.168.1.1")))

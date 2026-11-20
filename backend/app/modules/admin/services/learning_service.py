@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
@@ -16,11 +17,13 @@ from app.modules.admin.api.auth import has_permission_code
 from app.modules.admin.services.knowledge_service import actor_identities
 from app.modules.admin.services.learning_content import (
     ArticleContent, article_text, parse_json, reading_article, redact, sanitize, validate_article, validate_question,
+    validation_error_message,
 )
 from app.services.permission_service import PERM_LEARNING
 
 
 SOURCE_STATES = (TaskStatus.CLOSED, TaskStatus.ARCHIVING, TaskStatus.ARCHIVED)
+logger = logging.getLogger(__name__)
 
 
 def utcnow():
@@ -302,6 +305,10 @@ async def generate(db, actor, article_id, body):
             "只返回JSON对象，字段为title,category,tags,summary,applicability,key_points,method,cautions,example,warnings。"
             "key_points为1至5项，每项为{id:KP1等,text,source_markers:[S1等],source_excerpt:材料原文摘录}。"
             "信息不足或有矛盾时写入warnings，不把未知编成事实。正文不得包含来源标记、项目或客户身份。"
+            "必须严格遵守下方JSON Schema的字段类型、必填项、长度及数量限制，不要额外包裹content或article字段。"
+            "summary、applicability、method、cautions、example均为文本，多条内容用换行连接，不得返回数组。"
+            "tags、warnings、source_markers必须为字符串数组；没有内容时文本用空字符串、数组用空数组，不要返回null。"
+            "\n输出JSON Schema：\n" + json.dumps(ArticleContent.model_json_schema(), ensure_ascii=False)
         )
         bound_content = None
     else:
@@ -367,10 +374,14 @@ async def generate(db, actor, article_id, body):
         audit(db, actor, article_id, f"generate.{body.kind}", {"request_id": job.id})
         await db.commit()
     except (HTTPException, ValidationError) as error:
+        if isinstance(error, ValidationError):
+            message = validation_error_message(error)
+            logger.warning("Learning AI output validation failed: %s", message)
+        else:
+            message = str(error.detail)[:255]
         await db.rollback()
         job = await db.get(LearningGeneration, body.request_id)
-        job.state, job.error, job.updated_at = "failed", (str(error.detail)[:255] if isinstance(error, HTTPException)
-            else "AI返回字段不合法，请重试或调整材料"), utcnow()
+        job.state, job.error, job.updated_at = "failed", message, utcnow()
         await db.commit()
     except Exception:
         await db.rollback()
