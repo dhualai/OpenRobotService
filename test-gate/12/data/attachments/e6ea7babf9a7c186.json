@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/admin/users/testadmin",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTc1NjAuMDI0ODQyNywgImlhdCI6IDE3OTUxNTM5NjAuMDI0ODQzMn0.bW9jay1zaWc"
+  },
+  "body": {
+    "name": "Admin Renamed"
+  }
+}

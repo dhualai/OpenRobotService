@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/1/relations",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTc1NjAuNjQxODI4OCwgImlhdCI6IDE3OTUxNTM5NjAuNjQxODI5fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "target_task_id": 999,
+    "relation_type": "predecessor"
+  }
+}

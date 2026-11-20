@@ -1,0 +1,4 @@
+{
+  "method": "GET",
+  "url": "http://localhost:8400/api/health"
+}
