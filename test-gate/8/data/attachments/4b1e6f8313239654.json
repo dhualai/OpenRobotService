@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/resource-manager/resources",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNDkzNjcuOTExNTg3NSwgImlhdCI6IDE3OTUxNDU3NjcuOTExNTg4Mn0.bW9jay1zaWc"
+  },
+  "body": {
+    "name": "file.docx",
+    "type": "file"
+  }
+}

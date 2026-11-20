@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/admin/roles/1",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNDkzNjcuODcxMjM5NCwgImlhdCI6IDE3OTUxNDU3NjcuODcxMjM5N30.bW9jay1zaWc"
+  },
+  "body": {
+    "name": "superadmin"
+  }
+}
