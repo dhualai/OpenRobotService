@@ -1,0 +1,9 @@
+base: base  (pass=1, fail=0, skip=0)
+new : new  (pass=0, fail=1, skip=0)
+
+REGRESSION (1): B
+
+metric-level regressions:
+  B: l3:veto (regression)
+
+[gate] REGRESSIONS DETECTED (exit 1)

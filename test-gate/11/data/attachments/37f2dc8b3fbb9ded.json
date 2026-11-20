@@ -1,0 +1,12 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/wechat",
+  "reason": "OK",
+  "headers": {
+    "content-length": "11",
+    "content-type": "application/json"
+  },
+  "body": {
+    "tags": []
+  }
+}
