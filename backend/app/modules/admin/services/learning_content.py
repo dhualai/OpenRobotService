@@ -106,6 +106,26 @@ def parse_json(raw):
         raise HTTPException(422, "AI返回的内容不是有效JSON，请重试") from None
 
 
+def validation_error_message(error):
+    reasons = {
+        "missing": "缺少必填字段",
+        "string_type": "应为文本",
+        "list_type": "应为数组",
+        "model_type": "应为JSON对象",
+        "dict_type": "应为JSON对象",
+        "string_too_long": "超过长度上限",
+        "string_too_short": "文本长度不足",
+        "too_long": "超过数量上限",
+        "too_short": "数量不足",
+        "string_pattern_mismatch": "格式不符合要求",
+    }
+    details = []
+    for issue in error.errors(include_input=False, include_context=False, include_url=False)[:3]:
+        field = ".".join(str(part) for part in issue["loc"]) or "整体结构"
+        details.append(f"{field}：{reasons.get(issue['type'], '值不符合约定')}")
+    return ("AI返回字段格式不正确：" + "；".join(details) + "。请重新生成，已保存内容保留")[:255]
+
+
 def article_text(content):
     return "\n".join([content.get(key, "") for key in ("summary", "applicability", "method", "cautions", "example")]
         + [point["text"] for point in content.get("key_points", [])])
