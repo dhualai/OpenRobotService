@@ -1,0 +1,957 @@
+from typing import Dict, List, Optional, Any
+import hashlib
+import json
+import logging
+import uuid
+from sqlalchemy.orm import Session
+from sqlalchemy import select, text
+from app.core.db import SessionLocal
+from app.models import UserDB, Role, Permission, Project, role_permissions, user_project_roles
+from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
+from app.models.organization import Company, Department
+from app.core.security import get_password_hash, verify_password
+from app.services.permission_service import invalidate_user_roles_cache
+
+logger = logging.getLogger(__name__)
+
+# 角色名 -> role.id 的进程内缓存（仅缓存命中结果，未命中不缓存以便后续重试）
+_ROLE_NAME_ID_CACHE: Dict[str, str] = {}
+
+# ---- 拼接 ID 的安全上限 ----
+# 列宽已扩到 VARCHAR(255)，拼接 ID 整体预留 250 字符（留 5 字符余量）
+# 单段（user_id / project_id / role_id / permission_id）上限 60，已远超真实值
+_UPR_MAX_TOTAL = 250
+_SEG_MAX = 60
+
+
+def _seg(s: Any, name: str) -> str:
+    """对拼接 ID 中的一个业务段做 strip + 长度兜底裁剪 + 唯一性 hash 后缀。
+
+    - 短段（≤ _SEG_MAX）原样返回
+    - 长段（> _SEG_MAX）：保留前 50 + 后 4 + 中间 __ + 8 位 md5 指纹，
+      既保留可读性前缀，又保证裁剪后的结果全局唯一
+    """
+    s = str(s or "").strip()
+    if len(s) <= _SEG_MAX:
+        return s
+    digest = hashlib.md5(s.encode()).hexdigest()[:8]
+    trimmed = f"{s[:50]}__{s[-4:]}__{digest}"
+    logger.warning(
+        f"[id_builder] 段超长已裁剪: name={name} len={len(s)} raw={s!r} → {trimmed!r}"
+    )
+    return trimmed
+
+
+def build_upr_id(user_id: str, project_id: str, role_id: str) -> str:
+    """拼接 user_project_roles 主键 id，各段 strip + 兜底裁剪 + 整体长度限制。
+
+    原模式：f"upr_{user_id}_{project_id}_{role_id}"
+    各调用点必须统一使用本函数，否则会出现"INSERT 进新格式但已有老格式记录"
+    导致按字段查询时行为不一致（但不影响查询本身，因为查询都是按 (user_id,
+    project_id, role_id) 三字段 join，不重拼 id）。
+    """
+    uid = _seg(user_id, "user_id")
+    pid = _seg(project_id if project_id else "global", "project_id")
+    rid = _seg(role_id, "role_id")
+    raw = f"upr_{uid}_{pid}_{rid}"
+    if len(raw) <= _UPR_MAX_TOTAL:
+        return raw
+    digest = hashlib.md5(raw.encode()).hexdigest()[:12]
+    fallback = f"upr_{digest}"
+    logger.warning(
+        f"[id_builder] upr_id 整体超长已兜底: len={len(raw)} raw={raw!r} → {fallback!r}"
+    )
+    return fallback
+
+
+def build_rp_id(role_id: str, perm_id: str, extra_suffix: str = "") -> str:
+    """拼接 role_permissions 主键 id，同理。
+
+    原模式：f"rp_{role_id}_{perm_id}_{uuid4hex[:4]}"
+    """
+    rid = _seg(role_id, "role_id")
+    pid = _seg(perm_id, "permission_id")
+    suffix = extra_suffix.strip() if extra_suffix else uuid.uuid4().hex[:4]
+    raw = f"rp_{rid}_{pid}_{suffix}"
+    if len(raw) <= _UPR_MAX_TOTAL:
+        return raw
+    digest = hashlib.md5(raw.encode()).hexdigest()[:12]
+    fallback = f"rp_{digest}"
+    logger.warning(
+        f"[id_builder] rp_id 整体超长已兜底: len={len(raw)} raw={raw!r} → {fallback!r}"
+    )
+    return fallback
+
+
+def normalize_external_credentials(ec: Any) -> Dict[str, Dict[str, Any]]:
+    """清洗 external_credentials 中嵌套的 None 值（service 层单一拦截点）。
+
+    历史存量数据可能包含 {"usp": {"username": null}} 之类的脏值；
+    所有从 DB 读/写 external_credentials 的路径都应经过此函数。
+    """
+    if not isinstance(ec, dict):
+        return {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for provider, creds in ec.items():
+        if not isinstance(creds, dict):
+            continue
+        normalized[provider] = {
+            k: v for k, v in creds.items() if v is not None
+        }
+    return normalized
+
+
+class IdentityService:
+    @staticmethod
+    def _get_db() -> Session:
+        db = SessionLocal()
+        try:
+            return db
+        except:
+            db.close()
+            raise
+
+    @staticmethod
+    def _resolve_org_names(db: Session, company_id: Optional[str], department_id: Optional[str]) -> Dict[str, Optional[str]]:
+        """通过 company_id/department_id join 主数据表获取名称。
+        优先使用 ID 关联；若 ID 为空则回退到旧字符串列（迁移过渡期）。
+        """
+        company_name = None
+        department_name = None
+        if company_id:
+            comp = db.query(Company).filter(Company.id == company_id).first()
+            if comp:
+                company_name = comp.name
+        if department_id:
+            dept = db.query(Department).filter(Department.id == department_id).first()
+            if dept:
+                department_name = dept.name
+        return {"company": company_name, "department": department_name}
+
+    @staticmethod
+    def _user_dict(db_user: UserDB, org_names: Dict[str, Optional[str]]) -> Dict[str, Any]:
+        """UserDB → 对外 dict（含 wechat_openid，供 identity_keys 互认）。"""
+        ec = {}
+        if hasattr(db_user, "external_credentials") and db_user.external_credentials:
+            try:
+                ec = normalize_external_credentials(json.loads(db_user.external_credentials))
+            except Exception:
+                ec = {}
+        rm = getattr(db_user, "responsibility_modules", None)
+        # 历史数据可能因 add_user 包装层参数错位被写入非法值（如 int 1 / 字符串 "1"），
+        # 此处强制归一为 dict，避免 Pydantic Dict 校验失败导致接口 500
+        if not isinstance(rm, dict):
+            rm = {}
+        return {
+            "id": db_user.id,
+            "username": db_user.username,
+            "password_hash": db_user.password_hash,
+            "name": getattr(db_user, "name", None),
+            "status": getattr(db_user, "status", "inactive"),
+            "external_credentials": ec,
+            "avatar_resource_id": getattr(db_user, "avatar_resource_id", None),
+            "permissions": ["admin"] if db_user.username == "admin" else ["user"],
+            "company_id": getattr(db_user, "company_id", None),
+            "department_id": getattr(db_user, "department_id", None),
+            "company": org_names["company"],
+            "department": org_names["department"],
+            "responsibility_modules": rm,
+            "job_level": getattr(db_user, "job_level", 1) or 1,
+            "duty_text": getattr(db_user, "duty_text", None),
+            "supervisor_id": getattr(db_user, "supervisor_id", None),
+            "phone": getattr(db_user, "phone", None),
+            "wechat_openid": getattr(db_user, "wechat_openid", None),
+            # 接收人时区：工单提醒按此人本地工作时间排程（见 working_time_service）
+            "timezone": getattr(db_user, "timezone", None),
+            "timezone_locked": bool(getattr(db_user, "timezone_locked", 0)),
+            "timezone_source": getattr(db_user, "timezone_source", None),
+            "timezone_updated_at": getattr(db_user, "timezone_updated_at", None),
+        }
+
+    @staticmethod
+    def add_user(
+        user_id: str, username: str, hashed_password: str, permissions: List[str],
+        name: Optional[str] = None, status: str = "inactive",
+        external_credentials: Optional[Dict[str, Dict[str, Any]]] = None,
+        company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, Dict[str, List[str]]]] = None,
+        job_level: Optional[int] = 1, duty_text: Optional[str] = None,
+        supervisor_id: Optional[str] = None,
+    ) -> bool:
+        db = IdentityService._get_db()
+        try:
+            existing_user = db.query(UserDB).filter(UserDB.username == username).first()
+            if existing_user:
+                return False
+            external_credentials_json = json.dumps(external_credentials) if external_credentials else None
+            db_user = UserDB(
+                id=user_id, username=username, password_hash=hashed_password,
+                name=name, status=status, external_credentials=external_credentials_json,
+                company=company, department=department, responsibility_modules=responsibility_modules or {},
+                job_level=job_level if job_level is not None else 1, duty_text=duty_text,
+                supervisor_id=supervisor_id,
+            )
+            db.add(db_user)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"添加用户失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_user(username: str) -> Optional[Dict[str, Any]]:
+        db = IdentityService._get_db()
+        try:
+            db_user = db.query(UserDB).filter(UserDB.username == username).first()
+            if db_user:
+                org_names = IdentityService._resolve_org_names(
+                    db, getattr(db_user, 'company_id', None), getattr(db_user, 'department_id', None)
+                )
+                return IdentityService._user_dict(db_user, org_names)
+            return None
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+        db = IdentityService._get_db()
+        try:
+            db_user = db.query(UserDB).filter(UserDB.id == user_id).first()
+            if not db_user:
+                # 业务账号绑定微信后，工单字段可能直接写 openid
+                db_user = (
+                    db.query(UserDB)
+                    .filter(UserDB.wechat_openid == user_id)
+                    .first()
+                )
+            if db_user:
+                org_names = IdentityService._resolve_org_names(
+                    db, getattr(db_user, 'company_id', None), getattr(db_user, 'department_id', None)
+                )
+                return IdentityService._user_dict(db_user, org_names)
+            return None
+        finally:
+            db.close()
+
+    @staticmethod
+    def update_user(user_id: str, **kwargs) -> bool:
+        db = IdentityService._get_db()
+        try:
+            db_user = db.query(UserDB).filter(UserDB.id == user_id).first()
+            if not db_user:
+                return False
+            for key, value in kwargs.items():
+                if key == 'external_credentials' and value is not None:
+                    setattr(db_user, key, json.dumps(normalize_external_credentials(value)))
+                elif hasattr(db_user, key):
+                    setattr(db_user, key, value)
+            db.commit()
+            invalidate_user_roles_cache()
+            from app.services.user_service import UserService
+            UserService.invalidate_cache()
+            # 若改到 AI 派单画像相关字段，通知 AI 失效画像缓存（下次派单重拉最新）
+            if _changes_personnel_profile(kwargs):
+                _notify_ai_personnel_reload()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"更新用户失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def delete_user(user_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            db_user = db.query(UserDB).filter(UserDB.id == user_id).first()
+            if db_user:
+                db.delete(db_user)
+                db.commit()
+                return True
+            return False
+        except Exception as e:
+            db.rollback()
+            print(f"删除用户失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def add_role(role_id: str, role_name: str, role_type: str = 'project') -> bool:
+        db = IdentityService._get_db()
+        try:
+            if db.query(Role).filter((Role.id == role_id) | (Role.name == role_name)).first():
+                return False
+            db.add(Role(id=role_id, name=role_name, role_type=role_type))
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"添加角色失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_role(role_id: str) -> Optional[Dict[str, str]]:
+        db = IdentityService._get_db()
+        try:
+            role = db.query(Role).filter(Role.id == role_id).first()
+            return {'id': role.id, 'name': role.name, 'role_type': role.role_type} if role else None
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_roles() -> List[Dict[str, str]]:
+        db = IdentityService._get_db()
+        try:
+            return [{'id': r.id, 'name': r.name, 'role_type': r.role_type} for r in db.query(Role).all()]
+        finally:
+            db.close()
+
+    @staticmethod
+    def update_role(role_id: str, name: Optional[str] = None, role_type: Optional[str] = None) -> bool:
+        db = IdentityService._get_db()
+        try:
+            role = db.query(Role).filter(Role.id == role_id).first()
+            if not role:
+                return False
+            if name is not None:
+                role.name = name
+            if role_type is not None:
+                role.role_type = role_type
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"更新角色失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    # 按角色名称关键词自动判断类型：系统角色（跨项目/平台级）优先匹配，其次项目角色；
+    # 未命中任何关键词的角色保持原有分类不变，避免误判。
+    _SYSTEM_ROLE_KEYWORDS = [
+        '管理员', '超级', '超管', 'admin', '运维', '系统', '平台', 'devops', '技术支持', '后台',
+    ]
+    _PROJECT_ROLE_KEYWORDS = [
+        '项目经理', '项目负责人', '现场', '实施', '工程师', '客户', '售后', '组长', '专员', '项目', 'pm',
+    ]
+
+    @staticmethod
+    def classify_role_type(name: str) -> Optional[str]:
+        lowered = (name or '').lower()
+        for kw in IdentityService._SYSTEM_ROLE_KEYWORDS:
+            if kw.lower() in lowered:
+                return 'system'
+        for kw in IdentityService._PROJECT_ROLE_KEYWORDS:
+            if kw.lower() in lowered:
+                return 'project'
+        return None
+
+    @staticmethod
+    def auto_classify_roles() -> List[Dict[str, str]]:
+        """按名称关键词批量重新分类所有角色，返回发生变更的角色列表（含 old_type/new_type）。"""
+        db = IdentityService._get_db()
+        changed: List[Dict[str, str]] = []
+        try:
+            for role in db.query(Role).all():
+                suggested = IdentityService.classify_role_type(role.name)
+                if suggested and suggested != role.role_type:
+                    changed.append({
+                        'id': role.id, 'name': role.name,
+                        'old_type': role.role_type, 'new_type': suggested,
+                    })
+                    role.role_type = suggested
+            if changed:
+                db.commit()
+            return changed
+        except Exception as e:
+            db.rollback()
+            print(f"自动分类角色失败: {str(e)}")
+            return []
+        finally:
+            db.close()
+
+    @staticmethod
+    def delete_role(role_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            role = db.query(Role).filter(Role.id == role_id).first()
+            if not role:
+                return False
+            db.delete(role)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"删除角色失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_projects() -> List[Dict[str, str]]:
+        db = IdentityService._get_db()
+        try:
+            # 只列已承接项目：待定项目仅供仪表盘月柱图统计，不参与授权/选择等业务
+            projects = db.query(Project).filter(
+                Project.undertake_status == UNDERTAKE_YES,
+                Project.status != PROJECT_DELETED,
+            ).all()
+            return [{'id': p.id, 'code': p.code, 'name': p.name} for p in projects]
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_project(project_id: str) -> Optional[Dict[str, Any]]:
+        db = IdentityService._get_db()
+        try:
+            p = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
+            return {'id': p.id, 'code': p.code, 'name': p.name} if p else None
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_user_roles_all_projects(user_id: str) -> Dict[str, List[str]]:
+        db = IdentityService._get_db()
+        try:
+            roles = db.execute(user_project_roles.select().where(
+                user_project_roles.c.user_id == user_id)).fetchall()
+            rbp = {}
+            for r in roles:
+                pid = r.project_id or 'global'
+                rbp.setdefault(pid, []).append(r.role_id)
+            return rbp
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_users_roles_all_projects(user_ids: List[str]) -> Dict[str, Dict[str, List[str]]]:
+        db = IdentityService._get_db()
+        try:
+            roles = db.execute(user_project_roles.select().where(
+                user_project_roles.c.user_id.in_(user_ids))).fetchall()
+            ar = {}
+            for r in roles:
+                ar.setdefault(r.user_id, {}).setdefault(r.project_id or 'global', []).append(r.role_id)
+            for uid in user_ids:
+                ar.setdefault(uid, {})
+            return ar
+        finally:
+            db.close()
+
+    @staticmethod
+    def add_user_project_role(upid, uid, pid, rid, report_to_id=None) -> bool:
+        """为单个 user_project_role 执行 INSERT。
+
+        - 已存在（id 命中）→ 返回 False（幂等，不是错误）
+        - INSERT 执行异常 → rollback + 抛出 RuntimeError，不静默吞
+        - 插入成功 → 返回 True
+        """
+        # 防御：strip 掉 project_id / user_id / role_id 两端空白，避免 URL 编码残留或前端拼串错误
+        pid = (pid.strip() if isinstance(pid, str) else pid) or pid
+        uid = (uid.strip() if isinstance(uid, str) else uid) or uid
+        rid = (rid.strip() if isinstance(rid, str) else rid) or rid
+
+        db = IdentityService._get_db()
+        try:
+            logger.info(f"[upr_insert] 准备插入 upid={upid!r} uid={uid!r} pid={pid!r} rid={rid!r} report_to={report_to_id!r}")
+            existing = db.execute(user_project_roles.select().where(
+                (user_project_roles.c.id == upid))).first()
+            if existing:
+                logger.info(f"[upr_insert] 已存在，跳过: upid={upid!r}")
+                return False
+            vals = {"id": upid, "user_id": uid, "project_id": pid, "role_id": rid}
+            if report_to_id:
+                vals["report_to_id"] = report_to_id
+            db.execute(user_project_roles.insert().values(**vals))
+            db.commit()
+            logger.info(f"[upr_insert] ✅ 插入成功: upid={upid!r}")
+            return True
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[upr_insert] ❌ 插入失败: upid={upid!r} uid={uid!r} pid={pid!r} rid={rid!r} → {e}", exc_info=True)
+            raise RuntimeError(f"添加用户项目角色失败: {e}") from e
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_role_id_by_name(name: str) -> Optional[str]:
+        """按角色名查 roles 表返回 role.id，命中结果进程内缓存。未命中返回 None（不缓存，便于后续重试）。"""
+        if not name:
+            return None
+        if name in _ROLE_NAME_ID_CACHE:
+            return _ROLE_NAME_ID_CACHE[name]
+        db = IdentityService._get_db()
+        try:
+            role = db.query(Role).filter(Role.name == name).first()
+            if role:
+                _ROLE_NAME_ID_CACHE[name] = role.id
+                return role.id
+            return None
+        finally:
+            db.close()
+
+    @staticmethod
+    def ensure_user_project_role_by_name(project_id: str, user_id: str, role_name: str) -> bool:
+        """幂等地给 user_id 在 project_id 上赋予 role_name 角色。
+
+        使用确定性 upr id（与 PermissionService.assign_role 一致），重复调用不会产生重复授权行。
+        缺参 / 角色名未找到 / 已存在授权时返回 False；本次新增返回 True。
+        """
+        if not project_id or not user_id or not role_name:
+            return False
+        role_id = IdentityService.get_role_id_by_name(role_name)
+        if not role_id:
+            logger.warning(f"未找到角色，跳过授权: role_name={role_name!r}")
+            return False
+        upr_id = build_upr_id(user_id, project_id, role_id)
+        return IdentityService.add_user_project_role(upr_id, user_id, project_id, role_id)
+
+    @staticmethod
+    def batch_add_user_project_roles(roles_data: List[dict]) -> int:
+        """为 user_project_roles 批量 INSERT。
+
+        每行独立事务：已存在则跳过，失败不阻塞其他行。
+        全部成功返回 int 计数；存在任意失败行时，除返回成功数外还抛出 RuntimeError
+        供上层决定是否回滚（已落库的行不会因这个异常被自动撤销，调用方如需整体
+        原子性应自行组织业务回滚）。
+        """
+        # 防御：对每条记录里的 project_id / user_id / role_id 做 strip
+        cleaned: List[dict] = []
+        for rd in roles_data:
+            item = dict(rd)
+            for k in ('project_id', 'user_id', 'role_id'):
+                v = item.get(k)
+                if isinstance(v, str):
+                    item[k] = v.strip()
+            cleaned.append(item)
+
+        logger.info(f"[upr_batch] 开始批量插入，共 {len(cleaned)} 条: {cleaned!r}")
+
+        success_count = 0
+        failures: List[str] = []
+        for rd in cleaned:
+            db = IdentityService._get_db()
+            try:
+                existing = db.execute(user_project_roles.select().where(
+                    user_project_roles.c.id == rd["id"])).first()
+                if existing:
+                    logger.info(f"[upr_batch] 已存在，跳过 id={rd['id']!r}")
+                    continue
+                db.execute(user_project_roles.insert().values(**rd))
+                db.commit()
+                logger.info(f"[upr_batch] ✅ 插入成功 id={rd['id']!r}")
+                success_count += 1
+            except Exception as e:
+                db.rollback()
+                err_msg = f"id={rd.get('id')} user={rd.get('user_id')} project={rd.get('project_id')} role={rd.get('role_id')}: {e}"
+                logger.error(f"[upr_batch] ❌ 单行失败 ({err_msg})", exc_info=True)
+                failures.append(err_msg)
+            finally:
+                db.close()
+
+        logger.info(f"[upr_batch] 批量插入结束: 成功 {success_count}, 失败 {len(failures)}")
+        if failures:
+            err = RuntimeError(
+                f"批量添加用户项目角色部分失败 (成功 {success_count}, 失败 {len(failures)}): "
+                + "; ".join(failures)
+            )
+            err.success_count = success_count  # type: ignore[attr-defined]
+            raise err
+        return success_count
+
+    @staticmethod
+    def remove_user_project_role(user_id, project_id, role_id) -> bool:
+        db = IdentityService._get_db()
+        try:
+            db.execute(user_project_roles.delete().where(
+                (user_project_roles.c.user_id == user_id) &
+                (user_project_roles.c.project_id == project_id) &
+                (user_project_roles.c.role_id == role_id)))
+            db.commit()
+            return True
+        except:
+            db.rollback()
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_reporters(username: str, project_id: str) -> List[Dict[str, Any]]:
+        from app.services.permission_service import permission_service
+        return permission_service.get_all_reporters(username, project_id)
+
+    @staticmethod
+    def add_project(project_id: str, project_code: str, project_name: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            existing_project = db.query(Project).filter(
+                (Project.id == project_id) | (Project.code == project_code) | (Project.name == project_name)
+            ).first()
+            if existing_project:
+                return False
+
+            project = Project(id=project_id, code=project_code, name=project_name)
+            db.add(project)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"添加项目失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def update_project(project_id: str, project_name: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
+            if not project:
+                return False
+
+            existing_project = db.query(Project).filter(
+                Project.name == project_name, Project.id != project_id
+            ).first()
+            if existing_project:
+                return False
+
+            project.name = project_name
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"更新项目失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def delete_project(project_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project or project.status == PROJECT_DELETED:
+                return False
+
+            # 清理 user_project_roles 中引用本项目的关联记录（外键约束）
+            db.execute(user_project_roles.delete().where(
+                user_project_roles.c.project_id == project_id
+            ))
+
+            # 软删除：保留 project 记录，仅标记为已删除，供后续创建项目去重
+            project.status = PROJECT_DELETED
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"删除项目失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def add_role_permission(role_permission_id: str, role_id: str, permission_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            existing_perm = db.execute(role_permissions.select().where(
+                (role_permissions.c.role_id == role_id) &
+                (role_permissions.c.permission_id == permission_id)
+            )).first()
+
+            if existing_perm:
+                return False
+
+            db.execute(role_permissions.insert().values(
+                id=role_permission_id,
+                role_id=role_id,
+                permission_id=permission_id
+            ))
+            db.commit()
+            invalidate_user_roles_cache()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"添加角色权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def remove_role_permission(role_id: str, permission_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            result = db.execute(role_permissions.delete().where(
+                (role_permissions.c.role_id == role_id) &
+                (role_permissions.c.permission_id == permission_id)
+            ))
+            db.commit()
+            invalidate_user_roles_cache()
+            return result.rowcount > 0
+        except Exception as e:
+            db.rollback()
+            print(f"删除角色权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_permissions() -> List[Dict[str, Any]]:
+        db = IdentityService._get_db()
+        try:
+            permissions = db.query(Permission).all()
+            return [{
+                'id': permission.id,
+                'code': permission.code,
+                'name': permission.name,
+                'description': permission.description,
+                'resource_type': permission.resource_type,
+                'action': permission.action,
+                'enabled': permission.enabled == "true"
+            } for permission in permissions]
+        finally:
+            db.close()
+
+    @staticmethod
+    def add_permission(
+        permission_id: str,
+        code: str,
+        name: str,
+        resource_type: str,
+        action: str,
+        description: Optional[str] = None
+    ) -> bool:
+        db = IdentityService._get_db()
+        try:
+            existing_permission = db.query(Permission).filter(
+                (Permission.id == permission_id) | (Permission.code == code)
+            ).first()
+            if existing_permission:
+                return False
+
+            permission = Permission(
+                id=permission_id,
+                code=code,
+                name=name,
+                resource_type=resource_type,
+                action=action,
+                description=description
+            )
+            db.add(permission)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"添加权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def delete_permission(permission_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            permission = db.query(Permission).filter(Permission.id == permission_id).first()
+            if not permission:
+                return False
+
+            db.execute(role_permissions.delete().where(
+                role_permissions.c.permission_id == permission_id
+            ))
+
+            db.delete(permission)
+            db.commit()
+            invalidate_user_roles_cache()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"删除权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def update_permission(permission_id: str, **kwargs) -> bool:
+        db = IdentityService._get_db()
+        try:
+            permission = db.query(Permission).filter(Permission.id == permission_id).first()
+            if not permission:
+                return False
+
+            update_fields = {}
+            for key, value in kwargs.items():
+                if key in ['code', 'name', 'description', 'resource_type', 'action', 'enabled'] and value is not None:
+                    if key == 'enabled':
+                        update_fields[key] = "true" if value else "false"
+                    else:
+                        update_fields[key] = value
+
+            if not update_fields:
+                return True
+
+            db.query(Permission).filter(Permission.id == permission_id).update(update_fields)
+            db.commit()
+            invalidate_user_roles_cache()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"更新权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_project_members(project_id: str, include_usp: bool = False) -> List[Dict[str, Any]]:
+        # 防御：strip 掉 project_id 两端空白，避免 URL 编码残留 / 前端拼串错误
+        raw_pid = project_id
+        project_id = project_id.strip() if isinstance(project_id, str) else project_id
+        if raw_pid != project_id:
+            logger.warning(f"[get_members] project_id 含空白字符，已 strip: raw={raw_pid!r} → cleaned={project_id!r}")
+
+        db = IdentityService._get_db()
+        try:
+            report_to_subquery = select(UserDB.username).where(
+                UserDB.username == user_project_roles.c.report_to_id
+            ).correlate(user_project_roles).scalar_subquery()
+
+            if include_usp:
+                stmt = select(
+                    Role.name.label('role_name'),
+                    UserDB.id.label('user_id'),
+                    UserDB.username,
+                    UserDB.name,
+                    UserDB.external_credentials,
+                    user_project_roles.c.project_id,
+                    user_project_roles.c.role_id,
+                    report_to_subquery.label('report_to_name')
+                ).select_from(user_project_roles).join(
+                    Role, user_project_roles.c.role_id == Role.id
+                ).join(
+                    UserDB, user_project_roles.c.user_id == UserDB.id
+                ).where(user_project_roles.c.project_id == project_id)
+            else:
+                stmt = select(
+                    Role.name.label('role_name'),
+                    UserDB.id.label('user_id'),
+                    UserDB.username,
+                    UserDB.name,
+                    user_project_roles.c.project_id,
+                    user_project_roles.c.role_id,
+                    report_to_subquery.label('report_to_name')
+                ).select_from(user_project_roles).join(
+                    Role, user_project_roles.c.role_id == Role.id
+                ).join(
+                    UserDB, user_project_roles.c.user_id == UserDB.id
+                ).where(user_project_roles.c.project_id == project_id)
+
+            try:
+                results = db.execute(stmt).fetchall()
+            except Exception as e:
+                import traceback
+                logger.error(f"[get_members] SELECT 执行失败: project_id={project_id!r}\n{traceback.format_exc()}")
+                return []
+
+            logger.info(f"[get_members] project_id={project_id!r} include_usp={include_usp} → 命中 {len(results)} 行")
+
+            members = []
+            for result in results:
+                member = {
+                    'user_id': result.user_id,
+                    'role_name': result.role_name,
+                    'username': result.username,
+                    'name': result.name,
+                    'project_id': result.project_id,
+                    'role_id': result.role_id,
+                    'report_to_name': result.report_to_name,
+                    'external_credentials': json.loads(result.external_credentials) if hasattr(result, 'external_credentials') and result.external_credentials else []
+                }
+                members.append(member)
+
+            return members
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_report_to_map(project_id: str) -> Dict[str, str]:
+        """批量查询项目成员的 report_to_id 映射 {user_id: report_to_id}。
+
+        get_project_members 的 report_to_name 子查询用 username 匹配 user_id 存在 bug，
+        此方法直接取 user_project_roles.report_to_id 列，供路由层覆盖 report_to_name 字段。
+        """
+        db = IdentityService._get_db()
+        try:
+            stmt = select(
+                user_project_roles.c.user_id,
+                user_project_roles.c.report_to_id,
+            ).where(
+                user_project_roles.c.project_id == project_id,
+                user_project_roles.c.report_to_id.isnot(None),
+            )
+            results = db.execute(stmt).fetchall()
+            return {r.user_id: r.report_to_id for r in results}
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_users_by_role(role_id: str) -> List[Dict[str, str]]:
+        db = IdentityService._get_db()
+        try:
+            user_roles = db.execute(user_project_roles.select().where(
+                user_project_roles.c.role_id == role_id
+            )).fetchall()
+
+            unique_user_ids = set(ur.user_id for ur in user_roles)
+
+            users = []
+            for user_id in unique_user_ids:
+                user = IdentityService.get_user_by_id(user_id)
+                if user:
+                    users.append({
+                        'id': user_id,
+                        'username': user['username']
+                    })
+
+            return users
+        finally:
+            db.close()
+
+
+identity_service = IdentityService()
+
+
+# ── AI 派单画像缓存失效 ──
+# 用户资料写库后，若改到会进入 AI 派单画像的字段，通知 AI 失效其画像缓存，
+# 下次派单立即重拉最新画像（否则最长滞后 24h TTL）。
+_PERSONNEL_FIELDS = frozenset({
+    "name", "company_id", "department_id",
+    "responsibility_modules", "job_level", "duty_text",
+})
+
+
+def _changes_personnel_profile(kwargs: dict) -> bool:
+    """判断本次更新是否涉及 AI 派单画像相关字段。"""
+    return any(k in _PERSONNEL_FIELDS for k in (kwargs or {}))
+
+
+def _notify_ai_personnel_reload() -> None:
+    """通知 AI 失效派单画像缓存（尽力而为，失败不阻断写库）。"""
+    try:
+        import httpx
+        from app.core.config import settings
+        ai_url = getattr(settings, "AI_SERVICE_URL", "").rstrip("/")
+        if not ai_url:
+            return
+        httpx.post(f"{ai_url}/api/ai/assigner/reload", timeout=5.0)
+    except Exception as e:
+        logger.warning(f"通知 AI 失效派单画像失败: {e}")

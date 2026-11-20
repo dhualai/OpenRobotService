@@ -1,0 +1,138 @@
+# 直答率周流程工具链（dar）
+
+每周从服务器导对话数据 → 本地重放/LLM 批判 → 标注 → 周报的完整流水线。
+单入口 `dar_weekly.py`，七步按需组合，缺省跑本地全流程（除 export）。
+
+**推荐入口：直答率工作台（dar_studio）**，图形界面双页签——
+
+```bash
+python ai/scripts/dar_studio.py     # → http://127.0.0.1:9527
+```
+
+- **周流程 · 指标生成**：固定连生产库（数据从生产导）。点选步骤、实时日志流、
+  产物预览（周报/明细）、**人工标注入口**（打开标注工具新标签页）。
+- **在线测试**：固定打测试环境真实服务（代码/知识库先上测试验证）。
+  登录（测试环境账号）后发问题走线上全链路（意图→检索→回答→提单），
+  流式展示阶段/回答/结果详情；转工单可「生成草稿→确认提单」（落测试库）。
+  **检索探针**：单问题看知识库命中，源可选测试/生产（只读）/本地。
+
+## 环境要求
+
+- 本机 conda `ai` 环境（Python 3.14，`sentence-transformers` 等已装）
+- `HF_HUB_OFFLINE=1`（ai/.env 已配；embedding 离线，否则检索重放挂）
+- 本地 qdrant + redis 起着（本地源检索重放用）
+- ssh 免密到 `usp-a@125.122.97.107:8802`（export / 远程知识库指针用；凭据只在服务器端解析）
+
+## 用法（命令行）
+
+```bash
+# 全流程（test 环境数据，缺省）
+python ai/scripts/dar_weekly.py export prepare l1 retrieval l3 tool report
+
+# 只重出周报
+python ai/scripts/dar_weekly.py report
+
+# 连生产环境导数据（目录自动隔离到 export_dar/prod/）
+python ai/scripts/dar_weekly.py --env prod export
+
+# 附注随周报落盘
+python ai/scripts/dar_weekly.py --env test --note "本周上线了检索域保底" report
+
+# 检索探针（单问题看命中；test=测试服务在用的知识库，prod=生产）
+python ai/scripts/dar_probe.py --q "AGV 怎么上线部署" --qdrant prod
+```
+
+`--env test|prod` 影响所有子步骤（数据目录 `Desktop/export_dar/{env}/`、
+人工标注文件 `Downloads/manual_segmentation[_prod].json`、周报输出位置）。
+子脚本单独跑时用环境变量 `DAR_ENV=prod python ai/scripts/dar_l3.py --all`。
+
+**检索源**：`DAR_QDRANT`（缺省随数据环境：prod 数据→生产 qdrant，test→本地）。
+生产/测试远程知识库走 `dar_qdrant.py`：ssh 隧道（本地 16333→服务器 6333，
+测试生产同一 qdrant 实例、不同指针文件）+ 三域指针临时切换（company/industry/team，
+dispatch 不碰）+ 退出自动恢复。测试与生产 qdrant 指针当前一致，测试先更新后会分叉——
+这正是探针 test/prod 两个选项的意义。`retrieval` 与 `l3` 同按此规则选源
+（0909 对齐：l3 原固定用本地知识库，本地是 0901/0824/0903 旧快照，导致
+faithful/resolved 判据与「未覆盖」来自另一套知识库）；l3 起跑即建隧道/切指针，
+拿不到就直接退出并给排查指引，段内隧道掉线自动重连。
+
+## 七步
+
+| 步骤 | 做什么 | 产物（processed/ 下） |
+|---|---|---|
+| export | ssh 读服务器 .env 连接串导四表 csv.gz；记版本锚点 meta.json | ../{users,conversations,messages,tasks}.csv.gz |
+| prepare | 切分会话为回合（dar_prepare） | conversations_split.jsonl |
+| l1 | LLM 逐会话切话题+判咨询+**话题类型**（dar_l1） | conversations_classified.jsonl、direct_answer_review_*.csv、direct_answer_summary_*.json |
+| retrieval | 每段重放真实检索，LLM 判 KB 能否支撑直答；**chunks 落盘** | retrieval_check_*.json |
+| l3 | 三件套 judge（时间线+检索+成单信号+忠实性），--all 全段预标 | l3_judge_*.json（校准）/ l3_judge_all_*.json（预标） |
+| tool | 生成标注工具单 html（预标行+**检索命中折叠块**） | segmentation_tool.html |
+| report | 聚合周报 json + **Markdown** | weekly_YYYYMMDD.json / .md |
+
+增量：retrieval/l3 同日重跑只补新段；l1 有 `--replay` 读已落盘判定。
+人工标注：浏览器开 segmentation_tool.html，审完导出 manual_segmentation*.json
+放 `Downloads/`，重跑 `l1 --review` + `report` 让人工标签进周报。
+
+## 周报解读
+
+- **三口径**：L1=1−转工单率（上界，机器信号）；L2=人工六类标签（端到端）；
+  L3=AI judge（需校准）。三者同看，单看任何一个都会误判。
+  L2/L3 主显端到端（未覆盖计入分母，用户视角），副显确定口径
+  （直答正确/(直答正确+未直答)，回答层，不含知识库缺口）——0909 定调。
+- **同分母对比**：基准=人工已标真实组段，三口径同场——消除各自剔除规则的失真，
+  这是唯一可直接比较三口径的表。
+- **下钻矩阵**：用户×话题类型的 L1 段级直答率，定位「谁的问题没被直答」。
+- **失败清单**：L3 预标未直答/未覆盖段按类型分组=知识缺口清单（type 即聚类维度），
+  按它补知识库。
+- **KB 缺口率**：真实组检索重放 no 占比（资料层上界，含直接提单段）——**不等于 L3
+  「未覆盖」**（后者还要求 judge 判没解决；差集=直接提单段 + 重放未命中但答对了的段）。
+  与 L3「未直答」交叉可区分「没检索到」vs「检索到没答好」。
+- **L3 precision**：预标四类各自 precision（人工为基准）；总体 ≥90% 可放权
+  （预标直接采信，人工只抽检）。
+- **滚动校准**：本周 vs 上周校准集三分类对齐率走向。
+- **版本锚点**：export 时的 git HEAD + 当周 test 分支合入清单，周报可归因到部署。
+
+## 已知限制
+
+- 检索重放=知识库当前状态（prod 数据→服务器 qdrant，test/本地→本地 qdrant），
+  ≠线上当时检索（线上未留档 hits）；verdict 只作参考，重大结论以人工标注为准。
+- 判定资料=线上装配结果原样（每块 ≤1500 字、最多 6 块、整串不截断，与回答模型所见
+  一致；prod 414 段实测 86% 段都吃满 6 块上限）。此前 L3 另截 2500 字、检索判定另截
+  3500 字，判定模型比回答模型少看大半资料，偏向未直答/未覆盖——0909 已改为给全；
+  改口径后旧产物要重跑才生效。
+- 判定时间线：问句截 150 字，回答取该轮全部助手消息合并后截 1200 字（实测 99.4%
+  回答不超；一轮可能多条助手消息，只看首条会丢实质回答——26% 轮次多消息、11% 轮次
+  首条不足 100 字）。L3 检索问句=段内首个「有问题且有回答」的回合，与检索判定同源
+  （段首常是「你是谁」这类开场，此前两步骤问句不同的段占 3.3%）。
+- 入库倒挂修复（0909）：DB 里少数会话的 AI 回答行排在它回答的提问行之前（同秒、
+  id/seq 更小），按 seq 排序后回答会挂到上一轮——表现为某轮没人答、上一轮多一句
+  没头没尾的回答。prepare 只搬两类高置信情形：同秒 + 回答与提问有 ≥5 字连续公共
+  片段（回答引用了问题原文）、会话开头的孤儿回答（原逻辑直接丢弃，整体归第一条
+  用户消息）。只动助手消息、不动用户消息顺序，所以 astart 与人工标注锚点不变。
+  prod 506 会话实锤 8 个会话、11 条消息归位（无回答回合 59→51）。
+- 分母口径统一（0909）：L1 段级（segs_q）、检索判定（q_idx）、L3 预标、周报同分母表
+  四处统一为「段内至少一个『有提问且有回答』的回合」才进分母——AI 全程没回的段
+  （当时可能服务异常，不是回答质量问题）不进分母；纯问候/纯提单段同理剔除。
+  修倒挂 + 剔未答段后 prod 三方段集一致为 418 段（原 419）。
+- L1 切段规则统一（0909）：dar_l1 原按 topic 值归组（「0,1,0」这类回头话题并成一段），
+  与下游（dar_l3/检索判定/标注工具/工作台）的「topic 变化切段」不一致，真实组少
+  7 段（411 vs 418，涉及 5 个会话）；已改为同一规则。
+- 线上开了 AI_PLAN_EXECUTE（规划器 LLM 组检索词、可能多次检索或不检索），离线重放
+  用问句原文单次检索——检索资料是代理值，不是线上当时那一份。
+- L3 judge 用 DAR_MODEL（缺省 deepseek-v4.1-flash-expires-on-0910——已判的 prod
+  419 段 / test 231 段都是它判的，保持同模型）。该名不在网关受支持列表（只有
+  v4-pro/v4-flash/v4-flash-vision-exp），属未文档化别名，名字自带 expires-on-0910
+  但未获官方确认是否真失效；若某天失效，L3 起跑探活会明确报出模型名，用
+  DAR_MODEL=deepseek-v4-flash 切正式名即可（判定行带 model 字段，全量重判用
+  工作台「重判 L3」）。L1 切分/检索 no 判定同用此模型。flash 判定偏摇摆/偏宽是
+  已知倾向，precision 指标就是监控它的。
+  注意：已落盘判定按 cid+astart 增量复用，切模型/换知识库后旧结果不自动重判
+  （删对应 .json/.jsonl 才会）；每行带 model + kb（检索源指针）字段，复用非当前
+  模型/检索源的判定时启动日志会提示。
+- L3 起跑先做 LLM 探活（3 次失败即退，提示模型过期/网关），首轮异常段自动
+  降并发补跑一轮；并发可 DAR_L3_CONC 覆盖（缺省 8）。
+- 标注进度存 localStorage，换浏览器/清缓存会丢——审完及时导出。
+
+## 单测
+
+```bash
+python -m pytest ai/tests/test_dar_chunks.py -q
+```

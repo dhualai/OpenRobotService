@@ -1,0 +1,76 @@
+{
+  "total": 5,
+  "valid": 5,
+  "skipped_no_id": 0,
+  "hits": 0,
+  "accuracy": 0.0,
+  "avg_confidence": 0.528,
+  "avg_time_ms": 5178.0,
+  "decision_distribution": {
+    "auto": 1,
+    "fallback": 3,
+    "recommend": 1
+  },
+  "details": [
+    {
+      "ticket_id": 25,
+      "title": "地图编辑无法删除已有库位",
+      "gt_id": "wechat_oM1WF6okV8",
+      "gt_name": "吴佳秀",
+      "predicted_id": "wechat_5d7ceb03f51e",
+      "predicted_name": "姜钦阳",
+      "hit": false,
+      "confidence": 0.82,
+      "decision": "auto",
+      "elapsed_ms": 5998
+    },
+    {
+      "ticket_id": 47,
+      "title": "车子异常离线，遗留的障碍物标识无法清除，影响其他车运行",
+      "gt_id": "wechat_oM1WF6uT-u",
+      "gt_name": "徐浩南",
+      "predicted_id": "wechat_f39d805dca69",
+      "predicted_name": "刘青源",
+      "hit": false,
+      "confidence": 0.45,
+      "decision": "fallback",
+      "elapsed_ms": 7316
+    },
+    {
+      "ticket_id": 53,
+      "title": "北区食堂测试区附近有参与培训的人员吸烟被投诉",
+      "gt_id": "wechat_oM1WF6ljiq",
+      "gt_name": "耿洪秀",
+      "predicted_id": "wechat_c53c9e8a133a",
+      "predicted_name": "耿洪秀",
+      "hit": false,
+      "confidence": 0.45,
+      "decision": "fallback",
+      "elapsed_ms": 2959
+    },
+    {
+      "ticket_id": 62,
+      "title": "提升机外设事件丢失问题",
+      "gt_id": "wechat_oM1WF6rk0s",
+      "gt_name": "齐子谦",
+      "predicted_id": "wechat_f461c929be31",
+      "predicted_name": "陈连鑫",
+      "hit": false,
+      "confidence": 0.47,
+      "decision": "recommend",
+      "elapsed_ms": 3037
+    },
+    {
+      "ticket_id": 63,
+      "title": "算法优化",
+      "gt_id": "wechat_oM1WF6nKtD",
+      "gt_name": "夏泽龙",
+      "predicted_id": "wechat_2256f8a49215",
+      "predicted_name": "徐浩南",
+      "hit": false,
+      "confidence": 0.45,
+      "decision": "fallback",
+      "elapsed_ms": 6580
+    }
+  ]
+}

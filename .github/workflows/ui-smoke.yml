@@ -1,0 +1,75 @@
+name: UI Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [test, develop]
+    paths:
+      - 'frontend/**'
+      - 'automation/tests/ui/**'
+      - 'automation/src/runtime/**'
+      - 'automation/pyproject.toml'
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+
+jobs:
+  playwright-login:
+    name: Playwright login smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install automation dependencies
+        run: |
+          pip install -e automation/
+          python -m playwright install --with-deps chromium
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Start frontend dev server
+        run: |
+          cd frontend
+          nohup npm run dev -- --host 127.0.0.1 --port 5173 > ../frontend-dev.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:5173/login >/dev/null 2>&1; then
+              echo "frontend ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "frontend did not become ready"
+          cat ../frontend-dev.log
+          exit 1
+
+      - name: Run UI smoke tests
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+          PLAYWRIGHT_HEADLESS: "1"
+          PYTHONPATH: ${{ github.workspace }}
+          AUTOMATION_ENV: local
+        run: |
+          pytest automation/tests/ui -m ui -v \
+            --alluredir=automation/output/allure-results \
+            --junitxml=automation/output/junit-ui-smoke.xml
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-ui-smoke
+          path: automation/output/allure-results

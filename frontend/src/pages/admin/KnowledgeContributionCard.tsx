@@ -1,0 +1,13 @@
+import { fetchKnowledgeOverview } from '@/api/knowledge';
+import { useKnowledgeResource } from './knowledgeShared';
+import KnowledgeRankCard, { contributorPreviewEntries } from './KnowledgeRankCard';
+
+export default function KnowledgeContributionCard() {
+  const resource = useKnowledgeResource('overview', () => fetchKnowledgeOverview());
+  const overview = resource.data;
+  return <KnowledgeRankCard title="知识贡献榜" hideTitle showMore={false} kind="combined" className="knowledge-home-card"
+    subtitle={overview ? `${overview.month.replace('-', '年')}月 · 提单接单合并排名` : '提单接单合并排名'}
+    entries={contributorPreviewEntries(overview?.top_three || [], 'combined')} to="/admin/knowledge"
+    error={resource.error} loading={resource.loading && !overview} retry={resource.reload}
+    footer={overview && <span>{overview.campaign_status === 'ended' ? '本期统计已结束 · 查看贡献记录' : '按月统计 · 以有效知识沉淀贡献排名'}</span>} />;
+}

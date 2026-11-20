@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>错误</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            text-align: center;
+            background-color: #f5f5f5;
+        }
+        .error-container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+        }
+        .error-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .error-title {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .error-details {
+            font-size: 14px;
+            color: #999;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="error-icon">❌</div>
+        <div class="error-title">
+            {% if error == 'missing_code' %}缺少授权码{% endif %}
+            {% if error == 'invalid_code' %}授权码无效{% endif %}
+            {% if error == 'auth_failed' %}认证失败{% endif %}
+            {% if error == 'register_failed' %}注册失败{% endif %}
+            {% if error == 'no_permission' %}无权限访问{% endif %}
+            {% if error == 'system_error' %}系统错误{% endif %}
+        </div>
+        {% if error_details %}
+        <div class="error-details">{{ error_details }}</div>
+        {% endif %}
+    </div>
+</body>
+</html>

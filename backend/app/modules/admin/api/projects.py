@@ -1,0 +1,761 @@
+"""admin 项目管理 API（承接 DAS projects）。
+
+MIGRATION.md 阶段 3：从 `app/modules/das/api/projects.py` 搬迁而来，
+路由前缀从 `/api/DAS/projects` 迁移到 `/api/admin/projects`。
+"""
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional, Dict, List, Any
+from app.modules.admin.schemas_das.request_models import ProjectCreate, ProjectUpdate, ProjectResponse
+from app.modules.admin.services.project_service import project_service, ProjectConflictError, NO_TASK_EXECUTION_STATS
+from app.modules.admin.services.project_pin_service import project_pin_service
+from app.modules.admin.services.risk_service import risk_service
+from app.modules.admin.services import project_ai_summary_service
+from app.modules.admin.services.task_dashboard_service import task_dashboard_service
+from app.modules.admin.services.permission_service import PermissionService
+from app.modules.admin.utils_das.config import security, DEBUG_MODE
+from app.core.database import db_manager, get_async_db as get_db
+from app.modules.admin.api.auth import get_request_actor_optional, require_permission
+import logging
+
+logger = logging.getLogger("admin")
+
+project_router = APIRouter(prefix="/projects", tags=["admin-projects"])
+
+
+async def _attach_ticket_counts(db: AsyncSession, projects: List[Dict[str, Any]]) -> None:
+    """给项目列表补上 ticket_count（tasks 表按 project_id 批量统计，口径同仪表盘「总工单数」）。
+
+    项目进度管理页每张项目卡右上角展示该项目的工单数；一条 GROUP BY 覆盖整页项目，
+    不做逐项目查询。
+    """
+    counts = await task_dashboard_service.get_ticket_counts_by_project(
+        db, [str(project["id"]) for project in projects]
+    )
+    for project in projects:
+        project["ticket_count"] = counts.get(str(project["id"]), 0)
+
+
+@project_router.get("/", summary="获取项目列表")
+async def get_projects(
+    skip: int = Query(0, ge=0, description="跳过的项目数"),
+    limit: int = Query(999999999, ge=1, le=999999999, description="返回的项目数"),
+    keyword: Optional[str] = Query(None, description="搜索关键词"),
+    status: Optional[str] = Query(None, description="按状态过滤"),
+    execution_status: Optional[str] = Query(None, description="按执行状态过滤"),
+    contact_person_id: Optional[str] = Query(None, description="按对接人ID过滤"),
+    online_status: Optional[str] = Query(None, description="按在线状态过滤: online/offline/unknown"),
+    include_analysis: bool = Query(True, description="是否包含分析信息"),
+    # 默认口径不变（只返回已承接项目）；录入信息页的项目名选择器要能选到台账里的
+    # 「待定」项目，才显式传 include_pending=true（不传时与其它列表/统计完全一致）
+    include_pending: bool = Query(False, description="是否包含「待定」（未承接）项目"),
+    db: AsyncSession = Depends(get_db),
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> List[ProjectResponse]:
+    projects = []
+
+    if keyword:
+        projects = project_service.search_projects(keyword)
+    elif status or execution_status or contact_person_id:
+        projects = project_service.filter_projects(status, execution_status, contact_person_id)
+    else:
+        projects = project_service.get_projects(skip, limit, include_pending=include_pending)
+
+    # 在线状态后筛选（online_status 已由 _convert_to_dict 计算好）
+    if online_status and online_status in ("online", "offline", "unknown"):
+        projects = [p for p in projects if p.get("online_status") == online_status]
+
+    # 项目卡右上角工单数：与 include_analysis 无关，始终附带
+    await _attach_ticket_counts(db, projects)
+
+    if not include_analysis:
+        return projects
+    
+    project_codes = [project["project_code"] for project in projects]
+    
+    if project_codes:
+        detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
+        # 批量预取任务指标与切手动次数（此前在循环内逐项目查询，N 个项目为 3N 条 SQL；
+        # 切手动次数现随任务指标一起取自 collection_data，
+        # 见 get_task_execution_metrics_latest_batch——取各项目已导入的最新一天数据）
+        metrics_latest = project_service.get_task_execution_metrics_latest_batch(project_codes)
+
+        for project in projects:
+            project_code = project["project_code"]
+            project_risks = detailed_risks.get(project_code, [])
+            metric = metrics_latest.get(project_code)
+
+            project["risks"] = 0
+
+            custom_categories = {}
+            for risk in project_risks:
+                category = risk.get("custom_category") or "未分类"
+                if category not in custom_categories:
+                    custom_categories[category] = []
+                custom_categories[category].append(risk)
+            
+            risk_summary = []
+            
+            project["task_execution_status"] = metric["status"] if metric else "无数据"
+            project["task_execution_stats"] = metric["stats"] if metric else NO_TASK_EXECUTION_STATS
+            project["latest_manual_switch_count"] = metric["stats"].get("manual_switch_count") if metric else None
+
+            for category, risks in custom_categories.items():
+                risk_summary.append(f"\n{category} ：{len(risks)}项")
+                for risk in risks:
+                    if risk["status"] == "关闭":
+                        status_icon = "✅"
+                    else:
+                        status_icon = "❌"
+                        project["risks"] += 1
+
+                    risk_summary.append(f"- {risk['description']} - {risk.get('response_measure', '无')} {status_icon}")
+
+            if risk_summary:
+                project["project_summary"] = "\n".join(risk_summary)
+                risk_list_summary = []
+                for category, risks in custom_categories.items():
+                    risk_list_summary.append(f"{category}: {len(risks)}项")
+                project["risk_list"] = ", ".join(risk_list_summary)
+            else:
+                project["project_summary"] = "无风险"
+                project["risk_list"] = "无"
+
+    return projects
+
+
+@project_router.get("/me", summary="获取当前用户关联项目列表")
+async def get_my_projects(
+    request: Request,
+    include_analysis: bool = Query(True, description="是否包含分析信息"),
+    db: AsyncSession = Depends(get_db),
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> List[ProjectResponse]:
+    from app.core.security import decode_token
+    
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="未提供认证令牌")
+    
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="无效的认证令牌")
+    
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(status_code=401, detail="令牌中缺少用户信息")
+    
+    from app.core.database import db_manager
+    user = db_manager.get_user(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    
+    user_id = user.get("id")
+    
+    from app.services.permission_service import PermissionService
+    user_roles = PermissionService.get_user_roles_all_projects(user_id)
+    
+    project_ids = [pid for pid in user_roles.keys() if pid != 'global']
+    
+    if not project_ids:
+        return []
+    
+    projects = []
+    for project_id in project_ids:
+        project = project_service.get_project(project_id)
+        if project:
+            projects.append(project)
+
+    # 项目卡右上角工单数：与 include_analysis 无关，始终附带（口径同 GET /projects/）
+    await _attach_ticket_counts(db, projects)
+
+    if not include_analysis:
+        return projects
+    
+    project_codes = [project["project_code"] for project in projects]
+    
+    if project_codes:
+        detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
+        # 批量预取任务指标与切手动次数（与 GET /projects/ 同口径，避免循环内 3N 条 SQL）
+        metrics_latest = project_service.get_task_execution_metrics_latest_batch(project_codes)
+
+        for project in projects:
+            project_code = project["project_code"]
+            project_risks = detailed_risks.get(project_code, [])
+            metric = metrics_latest.get(project_code)
+
+            project["risks"] = 0
+            
+            custom_categories = {}
+            for risk in project_risks:
+                category = risk.get("custom_category") or "未分类"
+                if category not in custom_categories:
+                    custom_categories[category] = []
+                custom_categories[category].append(risk)
+            
+            risk_summary = []
+            
+            project["task_execution_status"] = metric["status"] if metric else "无数据"
+            project["task_execution_stats"] = metric["stats"] if metric else NO_TASK_EXECUTION_STATS
+            project["latest_manual_switch_count"] = metric["stats"].get("manual_switch_count") if metric else None
+
+            for category, risks in custom_categories.items():
+                risk_summary.append(f"\n{category} ：{len(risks)}项")
+                for risk in risks:
+                    if risk["status"] == "关闭":
+                        status_icon = "✅"
+                    else:
+                        status_icon = "❌"
+                        project["risks"] += 1
+
+                    risk_summary.append(f"- {risk['description']} - {risk.get('response_measure', '无')} {status_icon}")
+            
+            if risk_summary:
+                project["project_summary"] = "\n".join(risk_summary)
+                risk_list_summary = []
+                for category, risks in custom_categories.items():
+                    risk_list_summary.append(f"{category}: {len(risks)}项")
+                project["risk_list"] = ", ".join(risk_list_summary)
+            else:
+                project["project_summary"] = "无风险"
+                project["risk_list"] = "无"
+    
+    return projects
+
+
+@project_router.get("/me/relevance", summary="用户相关项目编码（提过单/名下）")
+async def get_my_project_relevance(
+    request: Request,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> dict:
+    """工单弹窗项目选择器的相关性信号（0907 需求：提过单 > 名下 > 其他）。
+    ticketed=该用户创建过工单的项目（tasks.project_id，含提单数，按提单数降序——
+    0908：提得多的排前），owned=名下项目（user_project_roles，DB id 经
+    project_service 转码）。ticketed 与 owned 有交集时只出现在 ticketed
+    （提过单优先）。任一信号查询失败静默降级为空，不影响另一个。"""
+    from app.core.security import decode_token
+
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="未提供认证令牌")
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="无效的认证令牌")
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(status_code=401, detail="令牌中缺少用户信息")
+
+    from app.core.database import db_manager
+    user = db_manager.get_user(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    user_id = user.get("id")
+
+    ticketed_counts: Dict[str, int] = {}
+    try:
+        from sqlalchemy import func
+        from app.core.db import SessionLocal
+        from app.models.task import Task
+        db = SessionLocal()
+        try:
+            rows = db.query(Task.project_id, func.count(Task.id)).filter(
+                Task.created_by == user_id,
+                Task.project_id.isnot(None),
+                Task.project_id != "",
+            ).group_by(Task.project_id).all()
+            ticketed_counts = {r[0]: int(r[1]) for r in rows if r[0]}
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[projects/me/relevance] 提过单项目查询失败: {e}")
+
+    owned: set = set()
+    try:
+        # 必须用 app.services 的 PermissionService（查 user_project_roles）；
+        # 模块顶部导入的 admin 版 PermissionService 没有此方法，
+        # AttributeError 会被下面 except 吞掉 → owned 永远空集（0908 生产实锤）
+        from app.services.permission_service import PermissionService
+        user_roles = PermissionService.get_user_roles_all_projects(user_id)
+        for pid in [p for p in user_roles.keys() if p != "global"]:
+            project = project_service.get_project(pid)
+            if project and project.get("project_code"):
+                owned.add(project["project_code"])
+    except Exception as e:
+        logger.warning(f"[projects/me/relevance] 名下项目查询失败: {e}")
+
+    owned -= ticketed_counts.keys()
+    # 提单数降序，同数按编码升序保证返回稳定（前端组内顺序以此为信号）
+    ticketed_sorted = sorted(
+        ({"code": c, "count": n} for c, n in ticketed_counts.items()),
+        key=lambda x: (-x["count"], x["code"]),
+    )
+    return {"ticketed": ticketed_sorted, "owned": sorted(owned)}
+
+
+# ── 项目置顶（个人置顶，项目进度管理页长按卡片） ──
+# 这三条必须注册在 GET /{project_id} 之前：路由按注册顺序匹配，
+# 否则 /projects/pins 会被贪婪的路径参数当成 project_id="pins" 吞掉
+# （与 /projects/me 同样的顺序约束）。
+
+def _require_pin_operator(actor: Dict[str, Optional[str]]) -> str:
+    """置顶是「每人一份」，识别不到操作人就无法读写个人列表 → 401。
+
+    正常前端请求带 Bearer token（JWT sub 即登录名）；401 会触发前端的
+    刷新重试链路，token 过期场景可自愈（与 info-nodes 的关注同一口径）。
+    """
+    username = actor.get("username")
+    if not username:
+        raise HTTPException(status_code=401, detail="无法识别当前用户，请重新登录后再操作")
+    return username
+
+
+@project_router.get("/pins", summary="当前用户置顶的项目ID列表")
+async def get_project_pins(
+    actor: Dict[str, Optional[str]] = Depends(get_request_actor_optional)
+) -> Dict[str, List[str]]:
+    """返回当前登录人置顶的项目 id（最近置顶的在前）。
+
+    置顶按人隔离：置顶列表只影响自己的项目列表顺序，别人看不到。
+    前端在项目列表加载后据此把置顶项目排到最前。
+    """
+    operator = _require_pin_operator(actor)
+    return {"project_ids": project_pin_service.list_for_operator(operator)}
+
+
+@project_router.post("/{project_id}/pin", summary="置顶项目")
+async def pin_project(
+    project_id: str,
+    actor: Dict[str, Optional[str]] = Depends(get_request_actor_optional)
+) -> Dict[str, bool]:
+    """把项目置顶到当前用户的列表最前（重复置顶幂等）。项目不存在返回 404。"""
+    operator = _require_pin_operator(actor)
+    if not project_service.get_project(project_id):
+        raise HTTPException(status_code=404, detail="项目不存在")
+    project_pin_service.pin(project_id, operator, operator_name=actor.get("name"))
+    return {"pinned": True}
+
+
+@project_router.delete("/{project_id}/pin", summary="取消置顶")
+async def unpin_project(
+    project_id: str,
+    actor: Dict[str, Optional[str]] = Depends(get_request_actor_optional)
+) -> Dict[str, bool]:
+    """取消当前用户对该项目的置顶（未置顶时为幂等空操作）。"""
+    operator = _require_pin_operator(actor)
+    project_pin_service.unpin(project_id, operator)
+    return {"pinned": False}
+
+
+@project_router.get("/{project_id}", summary="获取单个项目")
+async def get_project(
+    project_id: str,
+    include_risks: bool = Query(False, description="是否包含风险信息"),
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> ProjectResponse:
+    project = project_service.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    if not include_risks:
+        return project
+    
+    project_code = project["project_code"]
+    detailed_risks = risk_service.get_detailed_open_risks_by_project_codes([project_code])
+    project_risks = detailed_risks.get(project_code, [])
+    
+    project["risks"] = 0
+    
+    custom_categories = {}
+    for risk in project_risks:
+        category = risk.get("custom_category") or "未分类"
+        if category not in custom_categories:
+            custom_categories[category] = []
+        custom_categories[category].append(risk)
+    
+    risk_summary = []
+    
+    for category, risks in custom_categories.items():
+        risk_summary.append(f"\n{category} ：{len(risks)}项")
+        for risk in risks:
+            if risk["status"] == "已关闭":
+                status_icon = "✅"
+            else:
+                status_icon = "❌"
+                project["risks"] += 1
+
+            risk_summary.append(f"- {risk['description']} - {risk.get('response_measure', '无')} {status_icon}")
+
+    if risk_summary:
+        project["project_summary"] = "\n".join(risk_summary)
+        risk_list_summary = []
+        for category, risks in custom_categories.items():
+            risk_list_summary.append(f"{category}: {len(risks)}项")
+        project["risk_list"] = ", ".join(risk_list_summary)
+    else:
+        project["project_summary"] = "无风险"
+        project["risk_list"] = "无"
+    
+    return project
+
+
+@project_router.post("/{project_id}/ai-summary", summary="生成 AI 项目摘要")
+async def generate_project_ai_summary(
+    project_id: str,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> Dict[str, Any]:
+    """读取项目基础字段 +「项目信息管理」整棵信息树，大模型总结后写回 ext_info.overview.ai_summary。
+
+    大模型与「文件导入（AI 识别）」同一个（backend/.env 的 LLM_API_KEY，默认 DeepSeek flash，
+    接口走 app/core/llm_client.py 的 LLMClient）。响应返回 summary 与更新后的 ext_info。
+    """
+    project = project_service.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    try:
+        return await project_ai_summary_service.generate_for_project(project)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@project_router.get("/{project_id}/members", response_model=List[Dict[str, Any]], summary="获取项目已关联人员")
+async def get_project_members(
+    project_id: str,
+    include_usp: bool = Query(False, description="是否包含外部凭证(usp)信息"),
+    current_user: Dict[str, Any] = require_permission("backend:user:base:read")
+):
+    """返回指定项目下已关联的人员列表（含角色与汇报人信息）。
+
+    底层调用 db_manager.get_project_members：按 user_project_roles 表中 project_id 过滤，
+    关联 users 与 roles，逐行返回 role_name / username / name / project_id / role_id /
+    report_to_name（include_usp=True 时额外返回 external_credentials）。
+    一个用户在该项目下绑定多个角色时会出现多行。
+    """
+    # URL 解码后的 project_id 可能带尾随空格（如前端拼 "10.20.40.9:10901 "），必须 strip
+    raw_project_id = project_id
+    project_id = project_id.strip() if project_id else project_id
+    if raw_project_id != project_id:
+        logger.warning(f"[members] project_id 含空白字符，已 strip: raw={raw_project_id!r} → cleaned={project_id!r}")
+    logger.info(f"[members] GET project_id={project_id!r} include_usp={include_usp}")
+
+    try:
+        members = db_manager.get_project_members(project_id, include_usp=include_usp)
+        logger.info(f"[members] 返回 {len(members)} 行（project_id={project_id!r}）")
+        # get_project_members 的 report_to_name 子查询用 username 匹配 user_id 存在 bug 返回 null，
+        # 此处直接查 user_project_roles.report_to_id 列覆盖，前端用 user_id == report_to_id 建树。
+        report_to_map = db_manager.get_report_to_map(project_id)
+        for m in members:
+            m['report_to_id'] = report_to_map.get(m['user_id'])
+            m.pop('report_to_name', None)
+        return members
+    except Exception as e:
+        logger.error(f"获取项目已关联人员失败: project_id={project_id!r}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取项目已关联人员失败: {str(e)}")
+
+
+@project_router.post("/", summary="创建项目")
+async def create_project(
+    request: Request,
+    project_data: ProjectCreate,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> ProjectResponse:
+    # project_code 可选：先 strip，空则自动生成；非空则校验合法性
+    from app.modules.admin.services.project_service import project_service, gen_project_code, validate_project_code
+    raw_code = project_data.project_code
+    stripped = (project_data.project_code or "").strip()
+    if raw_code != stripped:
+        logger.warning(f"[create_project] project_code 含空白字符，已 strip: raw={raw_code!r} → cleaned={stripped!r}")
+    if not stripped:
+        project_data.project_code = gen_project_code()
+        logger.info(f"[create_project] project_code 未填写，已自动生成: {project_data.project_code}")
+    else:
+        try:
+            project_data.project_code = validate_project_code(stripped)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"项目编号不合法: {e}")
+
+    token = request.headers.get("Authorization", "")
+    token = token[7:]
+
+    # 项目编号/项目名称均为唯一 key：创建前比对库中已存在项目，命中即拒绝并提示用户重输。
+    duplicate_msg = project_service.check_project_duplicate(project_data.project_code, project_data.name)
+    if duplicate_msg:
+        raise HTTPException(status_code=409, detail=f"{duplicate_msg}，请重新输入")
+
+    if project_data.contact_person and project_data.contact_person_id:
+        try:
+            existing_projects = await PermissionService.get_projects(request, token)
+            project_exists = any(p.get("project_code") == project_data.project_code for p in existing_projects["projects"])
+
+            if not project_exists:
+                project_dict = project_data.model_dump()
+                await PermissionService.create_project(request, token, project_dict)
+
+            role_data = {
+                "project_id": project_data.project_code,
+                "role_ids": ["project_contact"]
+            }
+            # 同步创建一样：给对接人额外赋予"调度研发"角色（按角色名查 id，未找到则跳过）
+            from app.services.identity_service import IdentityService
+            diaoyan_role_id = IdentityService.get_role_id_by_name("调度研发")
+            if diaoyan_role_id and diaoyan_role_id not in role_data["role_ids"]:
+                role_data["role_ids"].append(diaoyan_role_id)
+            await PermissionService.assign_role(request, token, project_data.contact_person_id, role_data)
+
+            from app.core.security import decode_token
+            from app.modules.admin.services.wechat_service import WeChatService
+
+            current_user = decode_token(token)
+            current_username = current_user.get("sub", "系统") if current_user else "系统"
+
+            users = await PermissionService.get_users_list(request, token)
+            contact_user = next((u for u in users if u["username"] == project_data.contact_person_id), None)
+            if contact_user:
+                current_user_info = next((u for u in users if u["username"] == current_username), None)
+                current_user_name = current_user_info.get("name", current_username) if current_user_info else current_username
+                title = project_data.name
+                content = f"{current_user_name} 给您设置为项目 '{project_data.name}' 的对接人"
+                WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
+
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"权限服务操作失败: {str(e)}")
+
+    # 项目经理：自动关联「项目经理」角色（按角色名查 id，未找到则跳过）
+    if project_data.project_manager_id:
+        try:
+            from app.services.identity_service import IdentityService
+            pm_role_id = IdentityService.get_role_id_by_name("项目经理")
+            if pm_role_id:
+                pm_role_data = {
+                    "project_id": project_data.project_code,
+                    "role_ids": [pm_role_id],
+                }
+                await PermissionService.assign_role(request, token, project_data.project_manager_id, pm_role_data)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"项目经理角色关联失败: {str(e)}")
+    
+    try:
+        project = project_service.create_project(project_data.model_dump())
+    except IntegrityError:
+        # 并发提交兜底：唯一约束（项目编号）冲突时同样按“项目已存在”处理
+        raise HTTPException(status_code=409, detail="项目已存在，请重新输入")
+
+    # 自动把创建者关联为本项目成员：无「查看全部项目」权限的用户在“我的项目”（/projects/me）
+    # 中只能看到与自己关联的项目；若不关联，创建者将无法在任何项目列表中看到刚创建的项目。
+    try:
+        token = request.headers.get("Authorization", "")
+        token = token[7:]  # 去掉 "Bearer " 前缀，与下方 decode_token 约定一致
+        from app.core.security import decode_token
+        current_user = decode_token(token)
+        if current_user:
+            current_username = current_user.get("sub", "")
+            if current_username:
+                # 创建人默认只加「项目经理」角色（不再加 project_contact）
+                from app.services.identity_service import IdentityService
+                pm_role_id = IdentityService.get_role_id_by_name("项目经理")
+                creator_role_ids = []
+                if pm_role_id:
+                    creator_role_ids.append(pm_role_id)
+                if creator_role_ids:
+                    creator_role_data = {
+                        "project_id": project_data.project_code,
+                        "role_ids": creator_role_ids,
+                    }
+                    await PermissionService.assign_role(request, token, current_username, creator_role_data)
+    except Exception as e:
+        # 关联失败不影响创建成功，仅记录日志（例如项目已存在/当前用户异常）
+        logger.warning(f"自动关联创建者到项目失败: {e}", exc_info=True)
+
+    return project
+
+
+@project_router.put("/{project_id}", summary="更新项目")
+async def update_project(
+    request: Request,
+    project_id: str,
+    update_data: ProjectUpdate,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> ProjectResponse:
+    # 防御：project_id 可能带尾随空格（URL 编码或前端拼串残留）
+    raw_pid = project_id
+    project_id = (project_id or "").strip()
+    if raw_pid != project_id:
+        logger.warning(f"[update_project] project_id 含空白字符，已 strip: raw={raw_pid!r} → cleaned={project_id!r}")
+
+    existing_project = project_service.get_project(project_id)
+    if not existing_project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    
+    # update_data 里的 project_code 若被显式传入，校验合法性
+    if update_data.project_code is not None and update_data.project_code != "":
+        from app.modules.admin.services.project_service import validate_project_code
+        raw_code = update_data.project_code
+        try:
+            update_data.project_code = validate_project_code(raw_code)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"项目编号不合法: {e}")
+        if raw_code != update_data.project_code:
+            logger.warning(f"[update_project] project_code 含空白字符，已 strip: raw={raw_code!r} → cleaned={update_data.project_code!r}")
+    
+    if update_data.contact_person_id and update_data.contact_person_id != existing_project["contact_person_id"]:
+        token = request.headers.get("Authorization", "")
+        token = token[7:]
+
+        # 对接人变更时，"调度研发"角色随"project_contact"一并回收旧人、授予新人（与创建口径一致）
+        from app.services.identity_service import IdentityService
+        diaoyan_role_id = IdentityService.get_role_id_by_name("调度研发")
+
+        old_role_ids = ["project_contact"]
+        if diaoyan_role_id:
+            old_role_ids.append(diaoyan_role_id)
+        old_role_data = {
+            "project_id": existing_project["project_code"],
+            "role_ids": old_role_ids
+        }
+        await PermissionService.remove_role(request, token, existing_project["contact_person_id"], old_role_data)
+
+        new_role_ids = ["project_contact"]
+        if diaoyan_role_id:
+            new_role_ids.append(diaoyan_role_id)
+        new_role_data = {
+            "project_id": existing_project["project_code"],
+            "role_ids": new_role_ids
+        }
+        await PermissionService.assign_role(request, token, update_data.contact_person_id, new_role_data)
+        
+        from app.core.security import decode_token
+        from app.modules.admin.services.wechat_service import WeChatService
+        
+        current_user = decode_token(token)
+        current_username = current_user.get("sub", "系统") if current_user else "系统"
+        
+        users = await PermissionService.get_users_list(request, token)
+        contact_user = next((u for u in users if u["username"] == update_data.contact_person_id), None)
+        if contact_user:
+            current_user_info = next((u for u in users if u["username"] == current_username), None)
+            current_user_name = current_user_info.get("name", current_username) if current_user_info else current_username
+            title = existing_project["name"]
+            content = f"{current_user_name} 给您设置为项目 '{existing_project['name']}' 的对接人"
+            WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
+
+    # 项目经理变更时，回收旧人「项目经理」角色、授予新人（与对接人口径一致）
+    if update_data.project_manager_id and update_data.project_manager_id != existing_project.get("project_manager_id"):
+        token = request.headers.get("Authorization", "")
+        token = token[7:]
+        from app.services.identity_service import IdentityService
+        pm_role_id = IdentityService.get_role_id_by_name("项目经理")
+        if pm_role_id:
+            pm_role_data = {
+                "project_id": existing_project["project_code"],
+                "role_ids": [pm_role_id],
+            }
+            old_pm_id = existing_project.get("project_manager_id")
+            if old_pm_id:
+                await PermissionService.remove_role(request, token, old_pm_id, pm_role_data)
+            await PermissionService.assign_role(request, token, update_data.project_manager_id, pm_role_data)
+
+    # 项目编号/项目名称是唯一 key：更新时若改动这两个字段，同样校验库中是否已被其他项目占用
+    if update_data.project_code or update_data.name:
+        new_code = update_data.project_code or existing_project["project_code"]
+        new_name = update_data.name or existing_project["name"]
+        duplicate_msg = project_service.check_project_duplicate(new_code, new_name, exclude_id=project_id)
+        if duplicate_msg:
+            raise HTTPException(status_code=409, detail=f"{duplicate_msg}，请重新输入")
+
+    update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
+
+    try:
+        project = project_service.update_project(project_id, update_dict)
+    except ProjectConflictError as e:
+        # 乐观锁冲突：他人已先更新该项目，前端应刷新后重试
+        raise HTTPException(status_code=409, detail=str(e))
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return project
+
+
+@project_router.delete("/{project_id}", summary="删除项目")
+async def delete_project(
+    project_id: str,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> Dict[str, bool]:
+    # 防御：project_id 可能带尾随空格（URL 编码或前端拼串残留）
+    raw_pid = project_id
+    project_id = (project_id or "").strip()
+    if raw_pid != project_id:
+        logger.warning(f"[delete_project] project_id 含空白字符，已 strip: raw={raw_pid!r} → cleaned={project_id!r}")
+
+    try:
+        success = project_service.delete_project(project_id)
+    except IntegrityError as e:
+        # service 层已清理 user_project_roles；若仍有残留外键引用（如未来新增关联表），
+        # 避免裸 500，转成带原因的 500
+        logger.error(f"删除项目失败(外键约束): project_id={project_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"删除项目失败：存在关联数据，请先解除关联后再删除（{str(e)}）")
+    if not success:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {"success": True}
+
+
+@project_router.post("/licenses", summary="创建项目授权")
+async def create_project_license(
+    request: Request,
+    license_data: Dict,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> Dict:
+    required_fields = ["project_code", "apply_time", "expire_time", "license_code", "applicant", "applicant_id"]
+    for field in required_fields:
+        if field not in license_data:
+            raise HTTPException(status_code=400, detail=f"缺少必要字段: {field}")
+    
+    license_item = project_service.create_license(license_data)
+    return license_item
+
+
+@project_router.get("/licenses/{project_code}", summary="获取项目授权信息")
+async def get_project_licenses(
+    project_code: str,
+    request: Request,
+    type: str = Query("last", description="获取类型: last - 最新授权, all - 所有授权"),
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> List[Dict]:
+    logger.info(f"获取项目授权信息 - 项目代码: {project_code}, 类型: {type}")
+    
+    if type not in ["last", "all"]:
+        logger.warning(f"无效的type参数: {type}")
+        raise HTTPException(status_code=400, detail="type参数必须是 'last' 或 'all'")
+    
+    licenses = project_service.get_licenses_by_project_code(project_code, type)
+    logger.info(f"从数据库获取到 {len(licenses)} 条授权信息")
+    
+    from app.core.database import get_user_with_roles
+
+    # 将 applicant（DB 存的是 username）解析为用户真实姓名。
+    # 直接查库，避免服务间 HTTP 调用（原走 AUTH_SERVICE_BASE_URL）失败时回退为 username。
+    for license_item in licenses:
+        applicant_username = license_item.get("applicant")
+        if not applicant_username:
+            continue
+        try:
+            applicant_user = get_user_with_roles(applicant_username)
+            if applicant_user and applicant_user.get("name"):
+                license_item["applicant"] = applicant_user["name"]
+        except Exception as e:
+            logger.warning(f"解析申请人姓名失败 - username: {applicant_username}, 错误: {str(e)}")
+
+    logger.info(f"返回授权信息 - 项目代码: {project_code}, 授权数量: {len(licenses)}")
+    return licenses
+
+
+@project_router.delete("/licenses/{license_id}", summary="撤销项目授权")
+async def delete_project_license(
+    license_id: int,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> Dict[str, bool]:
+    """按授权记录 ID 删除（撤销）项目授权。"""
+    success = project_service.delete_license(license_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="授权记录不存在")
+    return {"success": True}

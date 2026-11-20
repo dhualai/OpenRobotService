@@ -1,0 +1,272 @@
+from typing import List, Dict, Optional, Any
+from app.core.database import db_manager, UserDB
+from app.schemas.user import User, UserInDB
+from app.services.permission_service import permission_service
+from app.models import role_permissions
+from app.models.organization import Company, Department
+import json
+import logging
+import threading
+import time
+
+logger = logging.getLogger(__name__)
+
+
+class UserService:
+    _user_cache: Optional[Dict[str, str]] = None
+    _cache_timestamp: Optional[float] = None
+    _CACHE_EXPIRE_SECONDS = 600
+    # 过期后后台刷新的防重入标志：同一时刻只允许一个线程去刷新，
+    # 其余请求拿旧缓存直接返回（stale-while-revalidate）
+    _refreshing = False
+
+    @classmethod
+    def get_user_list(cls, skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        db = db_manager.get_db()
+        try:
+            all_user_records = db.query(UserDB).all()
+            paginated_user_records = all_user_records[skip:skip + limit]
+            
+            result = []
+            user_ids = [user_record.id for user_record in paginated_user_records]
+            all_users_roles = db_manager.get_all_users_roles_all_projects(user_ids)
+            
+            for user_record in paginated_user_records:
+                user_roles = all_users_roles.get(user_record.id, {})
+
+                external_credentials = {}
+                if hasattr(user_record, 'external_credentials') and user_record.external_credentials:
+                    try:
+                        external_credentials = json.loads(user_record.external_credentials)
+                    except:
+                        external_credentials = {}
+
+                rm = getattr(user_record, 'responsibility_modules', None)
+                # 历史脏数据（非 dict）归一为 {}，避免 Pydantic 校验失败
+                if not isinstance(rm, dict):
+                    rm = {}
+
+                # 通过 company_id/department_id join 主数据表获取名称
+                company_name = None
+                department_name = None
+                cid = getattr(user_record, 'company_id', None)
+                did = getattr(user_record, 'department_id', None)
+                if cid:
+                    comp = db.query(Company).filter(Company.id == cid).first()
+                    if comp:
+                        company_name = comp.name
+                if did:
+                    dept = db.query(Department).filter(Department.id == did).first()
+                    if dept:
+                        department_name = dept.name
+
+                user_response = {
+                    'id': user_record.id,
+                    'username': user_record.username,
+                    'permissions': [],
+                    'roles': user_roles,
+                    'name': getattr(user_record, 'name', None),
+                    'status': getattr(user_record, 'status', 'inactive'),
+                    'external_credentials': external_credentials,
+                    'company_id': cid,
+                    'department_id': did,
+                    'company': company_name,
+                    'department': department_name,
+                    'responsibility_modules': rm,
+                    'job_level': getattr(user_record, 'job_level', 1) or 1,
+                    'duty_text': getattr(user_record, 'duty_text', None),
+                }
+                
+                result.append(user_response)
+            
+            return result
+        finally:
+            db.close()
+
+    @classmethod
+    def get_user_detail(cls, username: str) -> Optional[Dict[str, Any]]:
+        user_data = db_manager.get_user(username)
+        if not user_data:
+            return None
+        
+        user_with_roles = cls._get_user_with_roles(user_data)
+        
+        return {
+            'id': user_with_roles['id'],
+            'username': user_with_roles['username'],
+            'permissions': user_with_roles['permissions'],
+            'roles': user_with_roles['roles'],
+            'projectPermissions': user_with_roles.get('projectPermissions', {}),
+            'name': user_with_roles.get('name'),
+            'status': user_with_roles.get('status', 'inactive'),
+            'external_credentials': user_with_roles.get('external_credentials', {}),
+            'department': user_with_roles.get('department'),
+            'responsibility_modules': user_with_roles.get('responsibility_modules') or {},
+            'job_level': user_with_roles.get('job_level', 1),
+            'duty_text': user_with_roles.get('duty_text'),
+        }
+
+    @classmethod
+    def _get_user_with_roles(cls, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        user_data['roles'] = db_manager.get_user_roles_all_projects(user_data['id'])
+        
+        all_permissions = set(user_data.get('permissions', [])) if user_data.get('permissions') else set()
+        
+        project_permissions_dict = {}
+        
+        role_permissions_map = {}
+        permission_details_map = {}
+        
+        all_role_ids = set()
+        for role_ids in user_data['roles'].values():
+            all_role_ids.update(role_ids)
+        
+        if all_role_ids:
+            db = db_manager.get_db()
+            try:
+                from sqlalchemy import select
+                stmt = select(role_permissions).where(role_permissions.c.role_id.in_(all_role_ids))
+                role_permissions_results = db.execute(stmt).fetchall()
+                
+                for result in role_permissions_results:
+                    result_dict = result._asdict() if hasattr(result, '_asdict') else dict(result)
+                    role_id = result_dict['role_id']
+                    permission_id = result_dict['permission_id']
+                    if role_id not in role_permissions_map:
+                        role_permissions_map[role_id] = []
+                    role_permissions_map[role_id].append(permission_id)
+                
+                all_permission_ids = set()
+                for perm_ids in role_permissions_map.values():
+                    all_permission_ids.update(perm_ids)
+                
+                if all_permission_ids:
+                    from app.models import Permission
+                    permissions_results = db.query(Permission).filter(Permission.id.in_(all_permission_ids)).all()
+                    
+                    for perm in permissions_results:
+                        permission_details_map[perm.id] = {
+                            'id': perm.id,
+                            'code': perm.code,
+                            'name': perm.name,
+                            'description': perm.description,
+                            'resource_type': perm.resource_type,
+                            'action': perm.action
+                        }
+            finally:
+                db.close()
+        
+        for project_id, role_ids in user_data['roles'].items():
+            project_permissions = []
+            
+            for role_id in role_ids:
+                if role_id in role_permissions_map:
+                    for perm_id in role_permissions_map[role_id]:
+                        if perm_id in permission_details_map:
+                            project_permissions.append(permission_details_map[perm_id])
+            
+            for perm in project_permissions:
+                all_permissions.add(perm['code'])
+            
+            resource_perms = {}
+            for perm in project_permissions:
+                code = perm['code']
+                resource_type = code.split(':')[0]
+                if resource_type not in resource_perms:
+                    resource_perms[resource_type] = []
+                resource_perms[resource_type].append(code)
+            
+            if resource_perms:
+                project_permissions_dict[project_id] = resource_perms
+        
+        user_data['permissions'] = list(all_permissions)
+        user_data['projectPermissions'] = project_permissions_dict
+
+        if 'external_credentials' not in user_data:
+            user_data['external_credentials'] = {}
+
+        user_data.setdefault('department', None)
+        user_data.setdefault('responsibility_modules', {})
+        user_data.setdefault('job_level', 1)
+        user_data.setdefault('duty_text', None)
+
+        return user_data
+
+    @classmethod
+    def _load_user_map_from_db(cls) -> Dict[str, str]:
+        """轻量加载 id/username → 显示名 映射：单条 SQL 只取 3 列。
+
+        不走 get_user_list —— 那条路径会全量加载 UserDB（含 external_credentials、
+        responsibility_modules 等重列）并对每个用户单独查一次 Company/Department
+        （2N 条串行 SQL 的 N+1，是首屏请求 6s 的主因），而本映射只需要
+        id/username/name 三个字段。用户集合口径与 get_user_list 一致（全量用户，不过滤状态）。
+        """
+        db = db_manager.get_db()
+        try:
+            rows = db.query(UserDB.id, UserDB.username, UserDB.name).all()
+        finally:
+            db.close()
+
+        user_map: Dict[str, str] = {}
+        for user_id, username, name in rows:
+            display = name or username or user_id
+            if user_id:
+                user_map[user_id] = display
+            if username:
+                user_map[username] = display
+        return user_map
+
+    @classmethod
+    def _refresh_cache(cls) -> None:
+        """重新加载用户映射缓存；失败**或结果为空**时保留旧缓存且不更新时间戳（下次重试）。
+
+        空结果**不缓存**：否则一次异常读到的空表，会让这张映射在
+        `_CACHE_EXPIRE_SECONDS`（10 分钟）内稳定为空，期间所有依赖它的地方
+        （如讨论史还原真实姓名）都会退化成原始 ID —— 那正是 issues.md #4 那个 bug
+        换一种方式复现。宁可每次重查一次轻量 SQL，也不要把它锁住。
+        """
+        try:
+            loaded = cls._load_user_map_from_db()
+            if not loaded:
+                raise ValueError("用户映射为空（users 表读不到？）")
+            cls._user_cache = loaded
+            cls._cache_timestamp = time.time()
+        except Exception as e:
+            logger.warning(f"加载用户信息失败，保留旧缓存并稍后重试: {e}")
+        finally:
+            cls._refreshing = False
+
+    @classmethod
+    def get_user_map(cls) -> Dict[str, str]:
+        """id/username → 显示名 映射，进程内缓存 TTL 600s。
+
+        性能设计（stale-while-revalidate）：
+        - 未过期：直接返回内存 dict（微秒级）；
+        - 已过期：先返回旧缓存，同时起一个后台线程刷新 —— 消除"每 10 分钟
+          第一个请求同步等全量加载"的毛刺；
+        - 无缓存（进程首次调用或刚被 invalidate）：同步加载，单条轻量 SQL
+          几十 ms 量级；async 上下文须经 run_in_threadpool 调用本方法
+          （见 TicketService._get_user_map），避免阻塞事件循环；
+        - 加载失败：返回旧缓存或空 dict，时间戳不更新，下次调用自动重试。
+        """
+        cache = cls._user_cache
+        if cache is not None and cls._cache_timestamp is not None:
+            if time.time() - cls._cache_timestamp < cls._CACHE_EXPIRE_SECONDS:
+                return cache
+            # 过期：防重入地派发后台刷新，先返回旧值
+            if not cls._refreshing:
+                cls._refreshing = True
+                threading.Thread(target=cls._refresh_cache, daemon=True).start()
+            return cache
+
+        # 无缓存：同步加载（调用方为 async 上下文时应已在线程池中）
+        cls._refresh_cache()
+        return cls._user_cache or {}
+
+    @classmethod
+    def invalidate_cache(cls):
+        cls._user_cache = None
+        cls._cache_timestamp = None
+
+
+user_service = UserService()

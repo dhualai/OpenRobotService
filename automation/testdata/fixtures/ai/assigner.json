@@ -1,0 +1,114 @@
+{
+  "suite": "assigner",
+  "description": "AiDiagnosisPlatform assigner golden cases (L1). Executed via ai.agents...assign_ticket (requires AI runtime deps); skipped when unavailable. Engineer data referenced from engineers.json profiles.",
+  "cases": [
+    {
+      "id": "ASSIGN-001",
+      "title": "潜伏车无法移动",
+      "problem_description": "潜伏车上线后无法移动，MQTT 连接正常但调度系统下发任务无响应",
+      "expect": {
+        "l1": {
+          "decision_types": ["auto", "recommend", "fallback"],
+          "confidence_min": 0.0,
+          "schema": {
+            "engineer_name": "str",
+            "confidence_score": "float",
+            "decision_type": "str",
+            "reasoning": "str"
+          }
+        }
+      },
+      "note": "车端故障：应推荐车端/异常排查工程师（张工），confidence>=0.5 预期 auto/recommend"
+    },
+    {
+      "id": "ASSIGN-002",
+      "title": "地图加载失败",
+      "problem_description": "建图完成后地图无法加载，定位漂移严重",
+      "expect": {
+        "l1": {
+          "decision_types": ["auto", "recommend", "fallback"],
+          "confidence_min": 0.0,
+          "schema": {
+            "engineer_name": "str",
+            "confidence_score": "float",
+            "decision_type": "str",
+            "reasoning": "str"
+          }
+        }
+      },
+      "note": "地图/定位故障：应推荐地图编辑/定位工程师（李工）"
+    },
+    {
+      "id": "ASSIGN-003",
+      "title": "任务调度异常",
+      "problem_description": "多车任务冲突，订单派发顺序错乱，算法优化建议",
+      "expect": {
+        "l1": {
+          "decision_types": ["auto", "recommend", "fallback"],
+          "confidence_min": 0.0,
+          "schema": {
+            "engineer_name": "str",
+            "confidence_score": "float",
+            "decision_type": "str",
+            "reasoning": "str"
+          }
+        }
+      },
+      "note": "调度/算法：应推荐任务调度工程师（王工）"
+    },
+    {
+      "id": "ASSIGN-004",
+      "title": "微信服务号菜单不显示",
+      "problem_description": "服务号底部菜单异常，H5 页面样式错乱",
+      "expect": {
+        "l1": {
+          "decision_types": ["auto", "recommend", "fallback"],
+          "confidence_min": 0.0,
+          "schema": {
+            "engineer_name": "str",
+            "confidence_score": "float",
+            "decision_type": "str",
+            "reasoning": "str"
+          }
+        }
+      },
+      "note": "前端/微信：应推荐前端工程师（赵工）"
+    },
+    {
+      "id": "ASSIGN-005",
+      "title": "Docker 部署失败",
+      "problem_description": "docker compose 启动报错，容器无法拉起，充电桩对接异常",
+      "expect": {
+        "l1": {
+          "decision_types": ["auto", "recommend", "fallback"],
+          "confidence_min": 0.0,
+          "schema": {
+            "engineer_name": "str",
+            "confidence_score": "float",
+            "decision_type": "str",
+            "reasoning": "str"
+          }
+        }
+      },
+      "note": "部署/外设：应推荐部署运维工程师（陈工）"
+    },
+    {
+      "id": "ASSIGN-006",
+      "title": "模糊问题测试",
+      "problem_description": "系统有点问题，不太清楚是哪里坏了",
+      "expect": {
+        "l1": {
+          "decision_types": ["auto", "recommend", "fallback"],
+          "confidence_min": 0.0,
+          "schema": {
+            "engineer_name": "str",
+            "confidence_score": "float",
+            "decision_type": "str",
+            "reasoning": "str"
+          }
+        }
+      },
+      "note": "模糊描述：允许 fallback（规则回退），但必须输出结构化结果"
+    }
+  ]
+}

@@ -1,0 +1,329 @@
+"""Step6 仲裁：铁律 + 产品附录；失败 / can_decide=false / 名单外 id → None。
+
+不调 LLM、不连库。
+运行（仓库根）：
+    pytest ai/agents/AiDiagnosisPlatform/assigner/tests/test_step6.py -v
+"""
+
+from types import SimpleNamespace
+
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decision import LlmDecision
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.tags import match_engineer_id_strict
+from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
+from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
+
+
+def _cfg(**kwargs):
+    data = dict(
+        job_level_penalty={1: 1.0, 2: 0.90, 3: 0.90, 99: 0.90},
+        preferred_floor=0.9,
+        llm_decision_topk=0,
+        yaorenba_force_module_owner=True,
+        module_keywords={},
+        module_anchor_texts={},
+    )
+    data.update(kwargs)
+    return SimpleNamespace(**data)
+
+
+def _eng(eid: str, name: str, duty: str = "负责前端") -> EngineerProfile:
+    return EngineerProfile(
+        id=eid,
+        name=name,
+        department="智能规划研究院",
+        job_level=1,
+        responsibility_modules={"摇人吧服务号": {"前端": ["页面"], "我要摇人": ["入口"]}},
+        duty_text=duty,
+    )
+
+
+def _ticket(**kwargs) -> TicketContext:
+    data = {
+        "id": "t-step6",
+        "title": "现场报障",
+        "problem_description": "车子停了",
+        "status": "new",
+    }
+    data.update(kwargs)
+    return TicketContext(**data)
+
+
+def _ranked(*ids):
+    out = {}
+    for i, eid in enumerate(ids):
+        out[eid] = {
+            "total_score": 0.9 - 0.1 * i, "llm_score": 0.9 - 0.1 * i,
+            "semantic_score": 0.0, "history_score": 0.0,
+            "level_multiplier": 1.0, "dept_multiplier": 1.0,
+        }
+    return out
+
+
+class TestIronRulesPrompt:
+    """公共铁律必须写进 prompt。"""
+
+    def test_prompt_has_iron_rules_and_can_decide(self):
+        """正常流程：prompt 含铁律、can_decide:false，不含默认回 #1。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(), [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert "【公共铁律】" in prompt
+        assert "【反幻觉】" in prompt
+        assert "禁止编造" in prompt
+        assert "can_decide:false" in prompt or "can_decide\":false" in prompt
+        assert "精确复制" in prompt
+        assert "不要因为没把握就默认精排 #1" in prompt
+        assert "来源" in prompt
+        assert "三路并集" in prompt
+        assert "不要拒绝这一选择" in prompt
+        assert "应派给带该标签的人" in prompt
+        assert "另有非常合适" not in prompt
+        assert "页面/显示" not in prompt
+        assert "【用户重新派单意图】" not in prompt
+        assert "用户指定倾向处理人" not in prompt
+        assert "用户重派备注" not in prompt
+        assert "名单中带 [倾向接单人]" not in prompt
+        assert "【仅需求单·产品/研发分流】" in prompt
+        assert "待产品澄清" in prompt
+        assert "产品已对齐" in prompt
+        assert "不要只按精排分在产品和研发之间瞎猜" in prompt
+        assert "【咨询/支持/类型不清·项目对接人优先】" in prompt
+        assert "不必硬派功能工程师" in prompt
+        assert "项目对接人也逾越不过去" in prompt
+        assert "对接人不得逾越" in prompt or "对接人逾越不过去" in prompt
+        assert "配置类咨询" in prompt
+        assert "不要按部门" in prompt or "禁止按部门乱派" in prompt
+        assert "不要只因类型改选" not in prompt
+        assert "禁止写总分" in prompt
+        assert "正例：" in prompt
+        assert "反例：" in prompt
+        assert "decision_type 可填" in prompt
+        assert "auto(>=0.8)" not in prompt
+        assert "系统会按 confidence_score 校正" in prompt
+
+    def test_support_contact_priority_in_step6(self):
+        """正常流程：咨询单仲裁含对接人优先口径。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(ticket_type="support", title="怎么配置地图", problem_description="现场问怎么配"),
+            [_eng("u-a", "甲")],
+            RecallResult(),
+            _ranked("u-a"),
+        )
+        assert "【咨询/支持/类型不清·项目对接人优先】" in prompt
+        assert "优先派给该对接人" in prompt
+        assert "类型其它/未填/看不清" in prompt
+
+    def test_feature_stage_in_step6(self):
+        """正常流程：需求单阶段进入 Step6 分流，设计辅助偏向产品。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(ticket_type="feature", curr_step_name="设计"),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert "当前阶段：设计" in prompt
+        assert "当前阶段是「设计」，辅助偏向产品经理" in prompt
+        assert "不要只按阶段名硬派" in prompt
+
+
+class TestRedispatchRemarkOnly:
+    """重派身份看 Step2 标签；备注不与描述全文重复。"""
+
+    def test_remark_appended_when_not_in_description(self):
+        """正常流程：描述里还没有备注时，才单独带一句全文。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(
+                preferred_assignee="u-a",
+                prev_assignee="u-b",
+                preferred_assignee_remark="请换更熟现场的人",
+            ),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert "用户重派备注：请换更熟现场的人" in prompt
+        assert "名单中带 [倾向接单人] 的是用户勾选" in prompt
+        assert "正常情况不要拒绝这一选择" in prompt
+        assert "应派给带该标签的人" in prompt
+        assert "另有非常合适" not in prompt
+        assert "【用户重新派单意图】" not in prompt
+        assert "用户指定倾向处理人" not in prompt
+        assert "原处理人（用户重派前要换掉的）" not in prompt
+
+    def test_remark_not_duplicated_when_already_in_description(self):
+        """正常流程：assign_ticket 已把备注拼进描述时，Step6 只留一句提示。"""
+        remark = "请换更熟现场的人"
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(
+                problem_description=f"车子停了\n【重新派单备注】{remark}",
+                preferred_assignee="u-a",
+                preferred_assignee_remark=remark,
+            ),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert prompt.count(remark) == 1
+        assert "用户重派备注已写在工单描述末尾，按该意图换人。" in prompt
+        assert f"用户重派备注：{remark}" not in prompt
+        assert "【重新派单备注】" in prompt
+
+
+class TestProductAppendix:
+    """四个产品各有附录；认不出也出未识别附录。"""
+
+    def test_yaorenba_appendix_not_hard_frontend(self):
+        """正常流程：摇人吧项目出现产品附录，且写明不硬套前端/后端。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(project_name="摇人吧服务号提单", title="我要摇人页面打不开",
+                    problem_description="入口进不去"),
+            [_eng("u-a", "甲", duty="我要摇人总负责人")],
+            RecallResult(),
+            _ranked("u-a"),
+        )
+        assert "【产品附录 · 摇人吧服务号】" in prompt
+        assert "不要硬套前端/后端" in prompt
+        assert "不是强制派给" in prompt
+        assert "姓名:甲 ID:u-a" in prompt
+
+    def test_usp_has_own_appendix(self):
+        """正常流程：调度USP 用自己的附录，不再和车端揉成一句占位。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(project_name="某某调度USP现场"),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert "【产品附录 · 调度USP】" in prompt
+        assert "规划路径中" in prompt
+        assert "任务分配挑车" in prompt
+        assert "【任务相关·三档分流】" in prompt
+        assert "禁止因此一律选「任务分配」" in prompt
+        assert "已下发" in prompt
+        assert "本产品暂无额外规则" not in prompt
+        assert "【产品附录 · 摇人吧服务号】" not in prompt
+
+    def test_vehicle_software_and_hardware(self):
+        """正常流程：车端软件 / 车端硬件各出自己的附录。"""
+        soft = LlmDecision(_cfg())._build_prompt(
+            _ticket(project_name="某某车端软件现场"),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        hard = LlmDecision(_cfg())._build_prompt(
+            _ticket(project_name="某某车端硬件现场"),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert "【产品附录 · 车端软件】" in soft
+        assert "车上跑的" in soft
+        assert "【产品附录 · 车端硬件】" in hard
+        assert "能拧的" in hard
+
+    def test_unknown_still_has_appendix(self):
+        """正常流程：对不上已知产品也出附录，不再整块缺失。"""
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(project_name="内部测试"),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert "【产品附录 · 未识别产品】" in prompt
+        assert "不要硬套前端/后端" in prompt
+
+
+class TestParseExits:
+    """选中 / can_decide=false / 名单外 / 自造 id。"""
+
+    def test_select_by_id(self):
+        """正常流程：精确 id → AssignmentResult。"""
+        out = LlmDecision(_cfg())._parse(
+            '{"can_decide":true,"engineer_id":"u-a","engineer_name":"甲",'
+            '"confidence_score":0.9,"reasoning":"甲最合适","decision_type":"auto"}',
+            [_eng("u-a", "甲")],
+        )
+        assert out is not None
+        assert out.engineer_id == "u-a"
+        assert out.engineer_name == "甲"
+        assert out.decision_type == "auto"
+        assert "u-a" not in (out.reasoning or "")
+
+    def test_decision_type_from_confidence(self):
+        """正常流程：decision_type 按 confidence 校正，不信模型自填。"""
+        out = LlmDecision(_cfg())._parse(
+            '{"can_decide":true,"engineer_id":"u-a","engineer_name":"甲",'
+            '"confidence_score":0.6,"reasoning":"尚可","decision_type":"auto"}',
+            [_eng("u-a", "甲")],
+        )
+        assert out is not None
+        assert out.decision_type == "recommend"
+        low = LlmDecision(_cfg())._parse(
+            '{"can_decide":true,"engineer_id":"u-a","engineer_name":"甲",'
+            '"confidence_score":0.3,"reasoning":"勉强","decision_type":"auto"}',
+            [_eng("u-a", "甲")],
+        )
+        assert low is not None
+        assert low.decision_type == "fallback"
+
+    def test_usp_appendix_has_symptom_hints(self):
+        """正常流程：调度USP 附录用同一份链路说明。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.prompts.step6 import build_product_appendix
+        text = build_product_appendix("调度USP")
+        assert "【调度USP】" in text
+        assert "规划路径中" in text
+        assert "路径下发到车" in text
+        assert "【任务相关·三档分流】" in text
+        assert "禁止因此一律选「任务分配」" in text
+
+    def test_can_decide_false_is_none(self):
+        """异常流程：can_decide=false → None，即使填了人。"""
+        out = LlmDecision(_cfg())._parse(
+            '{"can_decide":false,"engineer_id":"u-a","reasoning":"不清楚"}',
+            [_eng("u-a", "甲")],
+        )
+        assert out is None
+
+    def test_unknown_id_is_none(self):
+        """异常流程：名单外 id → None。"""
+        out = LlmDecision(_cfg())._parse(
+            '{"engineer_id":"u-ghost","confidence_score":0.9,"decision_type":"auto"}',
+            [_eng("u-a", "甲")],
+        )
+        assert out is None
+
+    def test_name_as_id_is_none(self):
+        """数据校验：用姓名当 engineer_id → None。"""
+        assert match_engineer_id_strict("甲", [_eng("u-a", "甲")]) is None
+        out = LlmDecision(_cfg())._parse(
+            '{"engineer_id":"甲","confidence_score":0.9,"decision_type":"auto"}',
+            [_eng("u-a", "甲")],
+        )
+        assert out is None
+
+
+class TestRecallSourceOnPrompt:
+    """并集候选人要把命中哪几路带给仲裁。"""
+
+    def test_prompt_lists_path_hits_and_outside_tighten(self):
+        """正常流程：来源行含 画像 / 问题簇，以及历史捞回说明。"""
+        ranked = {
+            "u-a": {
+                "total_score": 0.9, "llm_score": 1.0, "similar_score": 0.0,
+                "cluster_score": 0.0, "hit_llm": True, "hit_similar": False,
+                "hit_cluster": False, "outside_tighten": False,
+                "level_multiplier": 1.0, "dept_multiplier": 1.0,
+            },
+            "u-c": {
+                "total_score": 0.15, "llm_score": 0.0, "similar_score": 0.0,
+                "cluster_score": 1.0, "hit_llm": False, "hit_similar": False,
+                "hit_cluster": True, "outside_tighten": True,
+                "level_multiplier": 1.0, "dept_multiplier": 1.0,
+            },
+        }
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(), [_eng("u-a", "甲"), _eng("u-c", "丙")], RecallResult(), ranked,
+        )
+        assert "来源: 画像" in prompt
+        assert "来源: 问题簇" in prompt
+        assert "不在部门/产品收紧名单，由历史捞回" in prompt
+        assert "画像未召回" in prompt
+
+
+class TestNoTop1Fallback:
+    """窗口空 / 调用失败 本层不造精排 #1。"""
+
+    def test_empty_window_returns_none(self):
+        """异常流程：窗口无人 → None。"""
+        import asyncio
+        out = asyncio.run(LlmDecision(_cfg()).adecide(
+            _ticket(), [_eng("u-a", "甲")], RecallResult(), {},
+        ))
+        assert out is None

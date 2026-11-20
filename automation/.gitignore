@@ -1,0 +1,19 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+
+# Test output (all generated artifacts)
+output/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
