@@ -1,0 +1,108 @@
+import { Suspense, useEffect, useRef } from 'react';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Navbar, Loading } from 'tdesign-mobile-react';
+import type { ReactNode } from 'react';
+import UserAvatarMenu from './UserAvatarMenu';
+import { useAuthStore, PERMISSION_RESOURCE_READ } from '@/stores/auth';
+import { PERM_ANNOUNCEMENT } from '@/api/announcement';
+
+interface AdminLayoutProps {
+  children?: ReactNode;
+}
+
+interface MenuItem {
+  path: string;
+  label: string;
+  emoji: string;
+  /** 可选：访问该入口所需的前缀权限码（与 stores/auth.hasPermission 配合） */
+  permission?: string;
+}
+
+const adminMenuItems: MenuItem[] = [
+  // === 仪表盘首页 ===
+  { path: '/admin', label: '仪表盘', emoji: '🏠' },
+
+  // === 三大核心功能 ===
+  { path: '/admin/ticket-monitor', label: '工单状态监测', emoji: '🎫' },
+  { path: '/admin/project-progress', label: '项目进度管理', emoji: '📊' },
+  { path: '/admin/daily-reports', label: '日报管理', emoji: '📋' },
+  { path: '/admin/daily-summary', label: '日报周报', emoji: '🤖' },
+
+  // === 次级功能 ===
+  { path: '/admin/project-manage', label: '项目管理', emoji: '📁' },
+  { path: '/admin/risks', label: '风险管理', emoji: '⚠️' },
+  { path: '/admin/reports', label: '报表分析', emoji: '📈' },
+
+  // === 项目管理操作入口 ===
+  { path: '/admin/project-edit', label: '新建/编辑项目', emoji: '✏️' },
+
+  // === 管理工具 ===
+  { path: '/admin/users', label: '用户管理', emoji: '👤' },
+  { path: '/admin/module-tree', label: '责任模块树', emoji: '🌳' },
+  { path: '/admin/dual-tree', label: '责任双树', emoji: '🌿' },
+  { path: '/admin/roles', label: '角色管理', emoji: '🏷️' },
+  { path: '/admin/assign-role', label: '分配角色', emoji: '👤' },
+  { path: '/admin/user-setup', label: '设置用户', emoji: '🔀' },
+  { path: '/admin/permissions', label: '权限管理', emoji: '🔑' },
+  { path: '/admin/wechat', label: '微信管理', emoji: '💬' },
+  { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
+  // 资源管理/文件浏览入口需 backend:resource:base:read 权限
+  { path: '/admin/resources', label: '资源管理', emoji: '🗂️', permission: PERMISSION_RESOURCE_READ },
+  { path: '/admin/file-explorer', label: '文件浏览', emoji: '📂', permission: PERMISSION_RESOURCE_READ },
+
+  // === 系统日志 ===
+  { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
+  // 公告管理：活动中心（首页公告条 + 优质问题榜）数据源，需公告管理权限
+  { path: '/admin/announcements', label: '公告管理', emoji: '📣', permission: PERM_ANNOUNCEMENT },
+  { path: '/admin/dispatch-dev', label: '开发者模式', emoji: '🧪' },
+];
+
+function matchMenuPath(items: MenuItem[], currentPath: string): string {
+  const exact = items.find((item) => item.path === currentPath);
+  if (exact) return exact.path;
+  // 取最长前缀匹配，避免「/admin」（仪表盘首页）作为短前缀误吞所有 /admin/* 子路径
+  const prefixMatches = items
+    .filter((item) => item.path !== '/admin' && currentPath.startsWith(item.path + '/'))
+    .sort((a, b) => b.path.length - a.path.length);
+  return prefixMatches[0]?.path || '';
+}
+
+export default function AdminLayout({ children }: AdminLayoutProps) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  // 按权限过滤菜单项：标记了 permission 的入口需持有对应权限码，
+  // 否则不参与路径匹配（避免无权限用户在 Navbar 看到「文件浏览」等标题）
+  const visibleMenuItems = adminMenuItems.filter(
+    (item) => !item.permission || hasPermission(item.permission),
+  );
+  // 内容滚动容器：路由切换时 React 复用同一个 div，scrollTop 会被保留，
+  // 导致从长页面跳到短页面（如数据导入）时仍停在底部，需要手动上滑。
+  // 这里在 pathname 变化时把滚动位置重置到顶部。
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [location.pathname]);
+
+  const activePath = matchMenuPath(visibleMenuItems, location.pathname);
+  const currentLabel = visibleMenuItems.find((item) => item.path === activePath)?.label || '后台管理';
+
+  return (
+    <div className="mobile-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <Navbar
+        title={currentLabel}
+        leftArrow
+        onLeftClick={() => navigate(-1)}
+        right={<UserAvatarMenu />}
+        fixed
+      />
+
+      <div ref={scrollRef} className="admin-scroll" style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
+        <Suspense fallback={<Loading text="加载中..." />}>
+          {children || <Outlet />}
+        </Suspense>
+      </div>
+    </div>
+  );
+}

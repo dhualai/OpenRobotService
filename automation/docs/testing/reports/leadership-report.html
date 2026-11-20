@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenRobotService 测试质量报告（管理摘要）</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px;
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    background: #f5f6f8; color: #1f2329; line-height: 1.6;
+  }
+  .page {
+    max-width: 920px; margin: 0 auto; background: #fff;
+    border: 1px solid #e5e6eb; border-radius: 12px; padding: 32px 36px;
+  }
+  .header { display: flex; justify-content: space-between; align-items: flex-start;
+    padding-bottom: 18px; border-bottom: 2px solid #1f2329; gap: 16px; }
+  .header h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: .5px; }
+  .header .sub { color: #86909c; font-size: 13px; margin-top: 6px; }
+  .verdict {
+    white-space: nowrap; font-size: 13px; font-weight: 600;
+    padding: 8px 14px; border-radius: 20px;
+    background: #fff7e8; color: #d46b08; border: 1px solid #ffd591;
+  }
+  .section { margin-top: 26px; }
+  .section h2 { font-size: 15px; font-weight: 600; margin: 0 0 12px;
+    padding-left: 10px; border-left: 3px solid #165dff; }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .metric { background: #f7f8fa; border-radius: 8px; padding: 16px; }
+  .metric .label { font-size: 12px; color: #86909c; }
+  .metric .value { font-size: 28px; font-weight: 600; margin: 6px 0 2px; line-height: 1.2; }
+  .metric .foot { font-size: 11px; color: #a9aeb8; }
+  .green { color: #00a870; } .red { color: #f53f3f; } .amber { color: #d46b08; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: #4e5969;
+    padding: 8px 10px; background: #f7f8fa; border-bottom: 1px solid #e5e6eb; }
+  td { padding: 8px 10px; border-bottom: 1px solid #f2f3f5; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
+  .dot.ok { background: #00a870; } .dot.bad { background: #f53f3f; }
+  .seq { font-family: monospace; letter-spacing: 3px; font-size: 13px; }
+  .seq .s-ok { color: #00a870; } .seq .s-bad { color: #f53f3f; }
+  .trend { display: flex; align-items: flex-end; gap: 10px; height: 150px;
+    padding: 10px 16px 0; background: #f7f8fa; border-radius: 8px; }
+  .bar-col { flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: flex-end; height: 100%; }
+  .bar { width: 100%; max-width: 46px; border-radius: 4px 4px 0 0; }
+  .bar.fail { background: #f53f3f; } .bar.pass { background: #00a870; }
+  .bar-label { font-size: 11px; color: #86909c; margin-top: 6px; }
+  .bar-run { font-size: 10px; color: #a9aeb8; }
+  .trend-note { font-size: 12px; color: #4e5969; margin-top: 10px; }
+  .risk { border: 1px solid #e5e6eb; border-radius: 8px;
+    padding: 12px 14px; margin-bottom: 10px; }
+  .risk-head { display: flex; align-items: center; gap: 10px; }
+  .risk-title { font-size: 14px; font-weight: 600; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: auto; white-space: nowrap; }
+  .tag.decide { background: #fff7e8; color: #d46b08; }
+  .tag.schedule { background: #e8f3ff; color: #165dff; }
+  .tag.next { background: #f2f3f5; color: #4e5969; }
+  .risk-desc { font-size: 12px; color: #4e5969; margin: 6px 0 0 18px; }
+  .footer { margin-top: 26px; padding-top: 14px; border-top: 1px solid #e5e6eb;
+    font-size: 11px; color: #a9aeb8; line-height: 1.8; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .page { border: none; padding: 10px; max-width: 100%; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .section { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <div>
+      <h1>OpenRobotService · 测试质量报告</h1>
+      <div class="sub">管理摘要 · 数据截至 2026-11-16（CI 最新运行 11-12）· 版本 0547c497</div>
+    </div>
+    <div class="verdict">核心链路可上线 · 3 项遗留需决策</div>
+  </div>
+
+  <div class="section">
+    <h2>核心指标</h2>
+    <div class="metrics">
+      <div class="metric">
+        <div class="label">核心链路通过率</div>
+        <div class="value green">100%</div>
+        <div class="foot">业务场景 6/6 · DB 12/12</div>
+      </div>
+      <div class="metric">
+        <div class="label">CI 门禁健康度</div>
+        <div class="value amber">6 / 9</div>
+        <div class="foot">9 条工作流中 6 条绿</div>
+      </div>
+      <div class="metric">
+        <div class="label">存量测试用例</div>
+        <div class="value">173</div>
+        <div class="foot">19 个文件 · 7 层覆盖</div>
+      </div>
+      <div class="metric">
+        <div class="label">待处理风险</div>
+        <div class="value amber">4</div>
+        <div class="foot">2 项需管理决策</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>CI 门禁状态（远端实测 · 右侧为最近 6 次运行结果）</h2>
+    <table>
+      <thead>
+        <tr><th style="width:34%">工作流</th><th style="width:16%">最新状态</th><th>最近 6 次</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="dot ok"></span>CI Guard</td><td class="green">通过 #23</td><td class="seq"><span class="s-ok">✓ ✓ ✓ ✓ ✓ ✓</span></td></tr>
+        <tr><td><span class="dot ok"></span>Ticket Gate（test 分支）</td><td class="green">通过 #303</td><td class="seq"><span class="s-ok">✓ ✓ ✓ ✓ ✓ ✓</span></td></tr>
+        <tr><td><span class="dot ok"></span>Deploy（split 部署）</td><td class="green">通过 #144</td><td class="seq"><span class="s-ok">✓ ✓</span> <span class="s-bad">× × × ×</span></td></tr>
+        <tr><td><span class="dot ok"></span>DB 集成测试</td><td class="green">通过 #8</td><td class="seq"><span class="s-ok">✓ ✓</span> — — — <span class="s-ok">✓</span></td></tr>
+        <tr><td><span class="dot ok"></span>UI Smoke</td><td class="green">通过 #206</td><td class="seq"><span class="s-ok">✓ ✓ ✓ ✓</span> <span class="s-bad">× ×</span></td></tr>
+        <tr><td><span class="dot ok"></span>Real 环境连通检查</td><td class="green">通过 #1</td><td class="seq"><span class="s-ok">✓</span> <span style="color:#a9aeb8">（仅 1 次）</span></td></tr>
+        <tr><td><span class="dot bad"></span>AI 测试生成</td><td class="red">失败 #153</td><td class="seq"><span class="s-bad">× × × × × ×</span></td></tr>
+        <tr><td><span class="dot bad"></span>Test（旧主测试）</td><td class="red">失败 #1211</td><td class="seq"><span class="s-bad">× × × × × ×</span></td></tr>
+        <tr><td><span class="dot bad"></span>UI Regression</td><td class="red">失败 #49</td><td class="seq"><span class="s-bad">× × × × × ×</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>核心链路修复趋势 · Deploy 工作流近 8 次</h2>
+    <div class="trend">
+      <div class="bar-col"><div class="bar fail" style="height:72%"></div><div class="bar-label">失败</div><div class="bar-run">#137</div></div>
+      <div class="bar-col"><div class="bar fail" style="height:72%"></div><div class="bar-label">失败</div><div class="bar-run">#138</div></div>
+      <div class="bar-col"><div class="bar fail" style="height:72%"></div><div class="bar-label">失败</div><div class="bar-run">#139</div></div>
+      <div class="bar-col"><div class="bar fail" style="height:72%"></div><div class="bar-label">失败</div><div class="bar-run">#140</div></div>
+      <div class="bar-col"><div class="bar fail" style="height:72%"></div><div class="bar-label">失败</div><div class="bar-run">#141</div></div>
+      <div class="bar-col"><div class="bar fail" style="height:72%"></div><div class="bar-label">失败</div><div class="bar-run">#142</div></div>
+      <div class="bar-col"><div class="bar pass" style="height:100%"></div><div class="bar-label">通过</div><div class="bar-run">#143</div></div>
+      <div class="bar-col"><div class="bar pass" style="height:100%"></div><div class="bar-label">通过</div><div class="bar-run">#144</div></div>
+    </div>
+    <div class="trend-note">
+      连续 6 次失败源于种子数据缺失与工作流配置缺陷，已通过 3 次 PR 修复；最近 2 次连续通过，业务场景用例 6/6 全绿，链路闭环。
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>需要你关注的风险</h2>
+
+    <div class="risk">
+      <div class="risk-head">
+        <span class="dot bad"></span>
+        <span class="risk-title">UI Regression 连续 6 次失败，且停更近 2 个月</span>
+        <span class="tag decide">需决策</span>
+      </div>
+      <div class="risk-desc">最后一次运行 09-24，失败点为「UI 链路与真实环境冒烟」。该门禁已失去守护价值，建议明确：投入修复，还是下线并由 UI Smoke + ticket-gate 替代。</div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-head">
+        <span class="dot bad"></span>
+        <span class="risk-title">旧 Test 工作流连续 6 次失败</span>
+        <span class="tag decide">需决策</span>
+      </div>
+      <div class="risk-desc">失败项含 AI 单测（非阻塞）、真实后端冒烟、Allure 报告生成。核心职责已由 deploy-split 承接，建议确认后归档下线，避免红灯干扰判断。</div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-head">
+        <span class="dot bad"></span>
+        <span class="risk-title">AI 测试生成工作流连续 6 次失败</span>
+        <span class="tag schedule">需排期</span>
+      </div>
+      <div class="risk-desc">发生在 develop 分支，失败点为「AI 生成并执行测试」。根因已有专项分析，属业务代码范畴，需 AI 团队排期；不阻塞当前 test 分支上线。</div>
+    </div>
+
+    <div class="risk">
+      <div class="risk-head">
+        <span class="dot ok"></span>
+        <span class="risk-title">31 处用例断言偏弱</span>
+        <span class="tag next">下迭代改善</span>
+      </div>
+      <div class="risk-desc">存在「接口异常但用例仍通过」的盲区，不影响当前上线结论。测试团队已列入改善清单，预计 1 人日，不新增用例。</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    数据来源：GitHub Actions API 实拉（2026-11-16），含 9 条远端工作流的运行记录与失败任务定位。<br>
+    指标口径：通过率取核心业务场景与 DB 集成用例；健康度为 9 条工作流中最近一次通过的条数。<br>
+    详细技术分析见 <b>automation/docs/testing/reports/existing-cases-quality-report.md</b> 与 <b>automation/docs/testing/analysis/</b>。
+  </div>
+
+</div>
+</body>
+</html>

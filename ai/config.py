@@ -1,0 +1,572 @@
+"""
+AI 模块配置
+
+所有配置的来源：
+    ai/.env  ← 独立配置，通过 load_dotenv() 注入环境变量
+
+运行时读取：
+    from ai.config import get_ai_config
+    config = get_ai_config()
+    print(config.deepseek_api_key)
+
+知识库热更新：
+    集合名通过 ai/kb/active_collection.txt 指针文件动态切换，
+    入库脚本写入新集合后更新指针，服务无需重启。
+"""
+import os
+from pathlib import Path
+from functools import lru_cache
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+
+
+# 配置模块可能被直接导入（绕过 ai.run），因此在首次读取前自行加载 ai/.env。
+# override=False 保证外部环境变量优先；不输出任何配置值。
+_ENV_FILE = Path(__file__).resolve().parent / ".env"
+load_dotenv(_ENV_FILE, override=False)
+
+
+# ── 热生效的环境变量读取 ───────────────────────────────────
+# load_dotenv 只在模块导入时跑一次，所以改 ai/.env 默认要**重启**才生效
+# （issues.md 基线里记着这条）。少数开关需要在运行中改，走 fresh_env：
+# 按 TTL 重读 .env 文件，省得每次都碰磁盘。
+_HOT_ENV_TTL = 5.0
+_hot_env_cache: dict[str, tuple[float, str]] = {}
+
+
+def fresh_env(key: str, default: str = "") -> str:
+    """读环境变量的**当前**值（带 TTL 缓存，改 .env 后最多 5 秒生效）。
+
+    优先读 ai/.env（改了不必重启）；文件里没有该键时退回进程环境变量
+    （部署时直接设 env、不放 .env 的情况）。
+    """
+    import time
+    now = time.time()
+    hit = _hot_env_cache.get(key)
+    if hit is not None and now - hit[0] < _HOT_ENV_TTL:
+        return hit[1]
+
+    value = None
+    try:
+        if _ENV_FILE.exists():
+            for line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, _, v = s.partition("=")
+                if k.strip() == key:
+                    value = v.strip().strip('"').strip("'")
+                    break
+    except Exception:
+        value = None
+    if value is None:
+        value = os.getenv(key, default)
+
+    _hot_env_cache[key] = (now, value)
+    return value
+
+
+def _hot_bool(key: str, default: bool) -> bool:
+    return fresh_env(key, "1" if default else "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _hot_int(key: str, default: int) -> int:
+    try:
+        return int(fresh_env(key, str(default)).strip())
+    except (TypeError, ValueError):
+        # 配置写成非数字不能让 get_ai_config 炸掉整条链路
+        return default
+
+
+# ── 工单 Agent 状态的运行时开关 ─────────────────────────────
+# ⚠️ 判断"现在开没开"请用下面这三个函数，**不要**读 cfg.enable_agent_state ——
+# `get_ai_config()` 是 @lru_cache 的，整份配置在进程内只构造一次，
+# 读字段拿到的是**启动快照**，改了 .env 也不会变（这正是本轮踩到的坑）。
+
+
+def agent_state_enabled() -> bool:
+    """工单 Agent 状态是否启用（热生效，最多 5 秒）。"""
+    return _hot_bool("ENABLE_AGENT_STATE", True)
+
+
+def agent_state_raw_window() -> int:
+    """进 prompt 的「最近讨论原文」条数（热生效）。"""
+    return _hot_int("AGENT_STATE_RAW_WINDOW", 10)
+
+
+def discuss_quoted_context_k() -> int:
+    """引用某条评论时前后各取几条（热生效）。"""
+    return _hot_int("DISCUSS_QUOTED_CONTEXT_K", 5)
+
+
+def supervisor_max_run_seconds() -> int:
+    """一次 Supervisor.run 的**墙上时钟硬上限**（热生效，默认 300 秒）。
+
+    注意它是**安全阀**，不是预算：只该在病态情况（某个能力卡住、多轮叠加）
+    兜住，不参与日常调优。超时后**不再开始新的一轮**，把已拿到的结果返回，
+    并在正文里说明是超时收束 —— 不打断已经在跑的能力（那会丢证据）。
+
+    真要把预算调紧，请先看 `[supervisor] 本轮耗时` 那条日志的分布再定，
+    别凭想象设一个数。
+    """
+    return _hot_int("SUPERVISOR_MAX_RUN_SECONDS", 300)
+
+
+def agent_state_debug_dump() -> bool:
+    """是否把状态块原文打进日志（热生效，**默认关**）。
+
+    排查用：想知道「状态到底写了什么、有没有进 prompt」时打开它，
+    日志里会出现 `[discuss] 状态块原文 task=...`。含工单讨论内容，别长期开着。
+    """
+    return _hot_bool("AGENT_STATE_DEBUG_DUMP", False)
+
+# .md 源文件目录（OpenRobotService_Data/kb/）
+_KB_DIR = (Path(__file__).resolve().parent.parent.parent / "OpenRobotService_Data" / "kb").resolve()
+
+# 活跃集合指针目录（ai/kb/）
+_POINTER_DIR = (Path(__file__).resolve().parent / "kb").resolve()
+
+# 五层 domain 架构：industry / company / team / project / personal
+# 另加 "dispatch"：派单模块历史工单向量库（L3-A 路，独立集合，避免与诊断方案混用）
+# 车型知识不建独立域：kb/company/{车型}/（如 XQE）平铺入库归 company 域，payload
+# sub_domain="{车型}"；检索按会话 vehicle_mode 以 sub_domain 过滤（0930，1010 平铺去 manual 层）
+KB_DOMAINS = ["industry", "company", "team", "project", "personal", "dispatch"]
+
+_KB_POINTERS = {
+    d: _POINTER_DIR / f"active_{d}_collection.txt"
+    for d in KB_DOMAINS
+}
+
+
+class AIConfig(BaseModel):
+    """AI 模块配置（值全部来自环境变量，即 .env）"""
+
+    # ========== 服务端口（run.py 启动时读取，优先来自 ai/.env）==========
+    port: int = Field(default=8401, description="AI 服务监听端口")
+
+    # ========== DeepSeek LLM ==========
+    deepseek_api_key: str = Field(default="", description="DeepSeek API Key")
+    deepseek_base_url: str = Field(default="https://api.deepseek.com", description="API 地址")
+    deepseek_model: str = Field(default="deepseek-v4-flash", description="模型名")
+    llm_reasoning_effort: str = Field(default="low", description="思考强度: low/high/max/off")
+    llm_connect_timeout: float = Field(default=3.0)
+    llm_read_timeout: float = Field(default=30.0)  # Agent 回复可能较长
+    llm_stream_first_timeout: float = Field(default=30.0, description="流式首块业务数据超时(秒)")
+
+    # ========== 备用模型（中转站，OpenAI 兼容接口）==========
+    # 全局切换开关：llm_backend=deepseek（默认）/ relay。切到 relay 后，
+    # get_llm_client() 单例会改用下面这套 relay_* 配置，全平台统一生效
+    # （所有走 get_llm_client() 的模块，如提单工具循环、诊断、派单打分等）。
+    llm_backend: str = Field(default="deepseek", description="激活的 LLM 后端: deepseek/relay")
+    relay_api_key: str = Field(default="", description="中转站 API Key")
+    relay_base_url: str = Field(default="https://yitongapi.com/v1", description="中转站 API 地址")
+    relay_model: str = Field(default="gpt-5.6-sol", description="中转站模型名")
+    relay_fallback_models: str = Field(
+        default="claude-opus-4-8,claude-sonnet-5",
+        description="relay 主模型 HTTP 非200失败后依次降级尝试的模型，逗号分隔，空=禁用降级")
+    relay_thinking: bool = Field(
+        default=False,
+        description="中转站 Claude 是否传 thinking 字段（实测中转站该字段支持不稳，默认关闭）")
+
+    # ========== Vision LLM（图片分析，OpenAI 兼容接口）==========
+    vision_api_key: str = Field(default="", description="视觉 API Key")
+    vision_base_url: str = Field(default="", description="视觉 API 地址")
+    vision_model: str = Field(default="gpt-4o", description="视觉模型名")
+
+    # ========== Qdrant 向量库 ==========
+    qdrant_host: str = Field(default="localhost")
+    qdrant_port: int = Field(default=6333)
+    qdrant_collection_name: str = Field(default="operation_docs")
+    qdrant_timeout: float = Field(default=5.0)
+    qdrant_local_path: str = Field(default="", description="本地模式路径，非空时忽略 host/port")
+
+    ticket_card_collection: str = Field(
+        default="", description="工单卡独立集合（测试环境隔离，如 test_ticket_resolutions；"
+        "空=随 company 域指针。非空时工单卡读写全部走该集合，与 company_* 指针脱钩——"
+        "carry_over 只扫 company_ 前缀，测试卡物理上不可能被搬进生产集合）")
+
+    # ========== Redis ==========
+    redis_url: str = Field(default="redis://localhost:6379/0")
+    redis_max_context_turns: int = Field(default=3)
+    redis_ttl: int = Field(default=0, description="0=永久，>0=秒")
+
+    # ========== Embedding ==========
+    embedding_model_name: str = Field(default="BAAI/bge-base-zh-v1.5")
+    embedding_model_local: str = Field(
+        default="",
+        description="本机 embedding 目录；服务器路径不存在时用",
+    )
+    embedding_device: str = Field(default="cpu")
+    embedding_batch_size: int = Field(default=32)
+    embedding_cache_size: int = Field(default=10000)
+
+    # ========== Reranker ==========
+    reranker_model_path: str = Field(default="", description="Cross-encoder reranker 本地路径，空=禁用")
+
+    # ========== 检索 ==========
+    retrieval_top_k: int = Field(default=3)
+    retrieval_score_threshold: float = Field(default=0.65)
+
+    # ========== 派单 ==========
+    dispatch_api_url: str = Field(default="", description="派单系统推送地址")
+    assign_scan_interval: int = Field(default=120, description="派单 Worker 兜底扫描间隔（秒），Pub/Sub 事件触发已覆盖主路径")
+    upload_dir: str = Field(default="./uploads", description="附件上传目录")
+
+    # ========== 后端内部 API（派单后回调通知等）==========
+    backend_base_url: str = Field(default="http://localhost:8400", description="后端服务基址，用于 AI 回调后端内部接口")
+    internal_api_key: str = Field(default="zentao", description="内部服务间调用 X-API-Key，需与后端 HELPDESK_SYNC_API_KEY 一致")
+
+    # ========== 诊断服务 ==========
+    diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
+
+    # ========== 知识沉淀 Worker ==========
+    enable_knowledge_sink: bool = Field(default=False, description="知识沉淀 Worker 总开关：默认关，测试环境验证 LLM 提炼质量后再开")
+
+    # ========== 解决方式总结 Worker（结束工单 AI 确认弹窗）==========
+    resolution_worker_concurrency: int = Field(default=10, description="解决方式总结 Worker 最大并行数（同时处理多少个工单的总结）")
+    resolution_worker_queue: str = Field(default="ors:resolution", description="解决方式总结任务队列（Redis List）")
+    resolution_worker_wait_timeout: float = Field(default=30.0, description="BROP 阻塞等待秒数 / LLM 单轮超时秒数")
+    resolution_empty_text: str = Field(default="", description="无任何内容时返回的空串（占位提示由前端 placeholder 控制）")
+
+    # ========== 工单 Agent 状态（讨论区「记得之前发生了什么」）==========
+    # 以下三项**热生效**：从 ai/.env 重读（5 秒 TTL），改完不用重启服务。
+    enable_agent_state: bool = Field(
+        default=True,
+        description="工单 Agent 状态总开关：默认开。关时节选中 comment_lines 完全不动"
+                    "（行为与改造前逐字一致），可随时回滚",
+    )
+    agent_state_raw_window: int = Field(
+        default=10,
+        description="进 prompt 的「最近讨论原文」条数；更早的折叠进结构化状态",
+    )
+    agent_state_worker_concurrency: int = Field(
+        default=4, description="工单状态刷新 Worker 最大并行数"
+    )
+    agent_state_worker_queue: str = Field(
+        default="ors:agent_state", description="工单状态刷新任务队列（Redis List）"
+    )
+    # 注：BRPOP 的阻塞时长**不作为配置项** —— 它必须是短的（1s）且超时按「空轮询」
+    # 处理，见 agent_state_worker._consumer 的说明。给成可调只会让它又被当成异常。
+    discuss_quoted_context_k: int = Field(
+        default=5,
+        description="用户引用某条评论再 @U老师 时，前后各取几条作为语境注入",
+    )
+
+    # ========== MinIO 对象存储（附件图片读取）==========
+    minio_endpoint: str = Field(default="localhost:9000")
+    minio_access_key: str = Field(default="")
+    minio_secret_key: str = Field(default="")
+    minio_bucket: str = Field(default="helpdesk")
+    minio_secure: bool = Field(default=False)
+    minio_api_prefix: str = Field(default="", description="MinIO 反向代理路径前缀（如 /minio），为空则直连")
+
+    # ========== 企业微信 ==========
+    wecom_corpid: str = Field(default="", description="企业微信 企业ID")
+    wecom_corpsecret: str = Field(default="", description="企业微信 应用Secret")
+    wecom_docid: str = Field(default="", description="企业微信 Smartsheet 文档ID")
+    wecom_sheet_id: str = Field(default="", description="企业微信 Smartsheet 子表ID")
+
+    # ========== Meilisearch 全文检索（项目匹配）==========
+    meili_enabled: bool = Field(default=True, description="是否启用 Meilisearch 项目匹配")
+    meili_host_url: str = Field(default="http://localhost:7700")
+    meili_master_key: str = Field(default="", description="开发模式为空字符串时跳过 Authorization 头")
+
+    # ========== Debug ==========
+    debug_assign_to_admin: bool = Field(default=False, description="开发模式：所有工单直接分配给 admin，跳过 AI 派单")
+    # ========== 超时 ==========
+    ai_chain_timeout: float = Field(default=2.5)
+
+    # ========== 文档路径 ==========
+    docs_path: str = Field(default="", description="原始文档根目录，默认 ai/docs/")
+    log_manuals: dict = Field(default_factory=dict, description="多产品日志手册注册表(唯一产品手册来源): {产品: {server, local, match, files}}，服务器优先/本地兜底")
+
+    # ========== CodeSkill 代码检索 ==========
+    code_skill_paths: str = Field(default="", description="代码索引根目录，逗号分隔")
+    media_url_prefix: str = Field(default="/api/ai/media", description="媒体文件 URL 前缀，用于前端渲染图片")
+
+
+# ── Domain-based active collection pointers ─────────────────────
+
+def get_active_collection_for(domain: str) -> str:
+    """读取指定 domain 的活跃 Qdrant 集合名"""
+    try:
+        p = _KB_POINTERS.get(domain)
+        if p and p.exists():
+            name = p.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def write_active_collection_for(domain: str, name: str) -> None:
+    """写入指定 domain 的活跃集合指针（入库脚本调用）"""
+    p = _KB_POINTERS.get(domain)
+    if p:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(name, encoding="utf-8")
+
+
+# ── 向后兼容别名（retrieval.py / pipeline.py / task agent 都在用）──
+
+def get_active_collection() -> str:
+    """向后兼容：读取 team domain 的活跃集合名"""
+    return get_active_collection_for("team") or os.getenv("QDRANT_COLLECTION", "operation_docs")
+
+
+def get_active_faq_collection() -> str:
+    return get_active_collection_for("team")
+
+
+def get_active_platform_faq_collection() -> str:
+    return get_active_collection_for("team")
+
+
+def get_active_cheduan_collection() -> str:
+    return get_active_collection_for("company")
+
+
+def get_active_translation_collection() -> str:
+    return get_active_collection_for("team")
+
+
+def get_active_usp_diagnosis_collection() -> str:
+    return get_active_collection_for("team")
+
+
+def get_active_troubleshooting_collection() -> str:
+    return get_active_collection_for("team")
+
+
+def get_active_cheduan_manual_collection() -> str:
+    return get_active_collection_for("company")
+
+
+def get_active_task_resolutions_collection() -> str:
+    return get_active_collection_for("project")
+
+
+def get_active_dispatch_history_collection() -> str:
+    """派单历史工单向量库活跃集合（L3-A 路，独立 domain "dispatch"）。"""
+    return get_active_collection_for("dispatch")
+
+
+# writer 别名（lambda 实现，避免重复 try/except 逻辑）
+_write_active_collection = lambda n: write_active_collection_for("team", n)
+_write_active_faq_collection = lambda n: write_active_collection_for("team", n)
+_write_active_platform_faq_collection = lambda n: write_active_collection_for("team", n)
+_write_active_cheduan_collection = lambda n: write_active_collection_for("company", n)
+_write_active_translation_collection = lambda n: write_active_collection_for("team", n)
+_write_active_usp_diagnosis_collection = lambda n: write_active_collection_for("team", n)
+_write_active_troubleshooting_collection = lambda n: write_active_collection_for("team", n)
+_write_active_cheduan_manual_collection = lambda n: write_active_collection_for("company", n)
+_write_active_task_resolutions_collection = lambda n: write_active_collection_for("project", n)
+_write_active_dispatch_history_collection = lambda n: write_active_collection_for("dispatch", n)
+
+
+def get_docs_dir() -> Path:
+    """
+    获取文档根目录（知识库源文件所在目录）。
+    优先读 DOCS_PATH 环境变量，未设置时默认 ai/docs/
+    """
+    config = get_ai_config()
+    if config.docs_path:
+        p = Path(config.docs_path)
+        if not p.is_absolute():
+            # 相对路径相对于 ai/ 目录
+            p = Path(__file__).resolve().parent / p
+        return p
+    # 默认：ai/docs/
+    return Path(__file__).resolve().parent / "docs"
+
+
+@lru_cache()
+def get_ai_config() -> AIConfig:
+    """
+    获取 AI 配置单例
+    所有值从环境变量读取（由 ai/.env 注入）
+    注意：qdrant_collection_name 可能被指针文件覆盖（见 get_active_collection）
+    """
+    return AIConfig(
+        # 服务端口
+        port=int(os.getenv("PORT", "8401")),
+        # DeepSeek
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
+        deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        llm_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "low"),
+        llm_connect_timeout=float(os.getenv("LLM_CONNECT_TIMEOUT", "3.0")),
+        llm_read_timeout=float(os.getenv("LLM_READ_TIMEOUT", "30.0")),
+        # 流式首块业务数据超时（秒）：中转 hang 时会发心跳/空行骗过 httpx
+        # read timeout（0916 实锤用户干等 257s），N 秒内没见到第一个 SSE data
+        # 块即中止重试
+        llm_stream_first_timeout=float(os.getenv("LLM_STREAM_FIRST_TIMEOUT", "30.0")),
+
+        # 备用模型（中转站）
+        llm_backend=os.getenv("LLM_BACKEND", "deepseek"),
+        relay_api_key=os.getenv("RELAY_API_KEY", ""),
+        relay_base_url=os.getenv("RELAY_BASE_URL", "https://yitongapi.com/v1"),
+        relay_model=os.getenv("RELAY_MODEL", "gpt-5.6-sol"),
+        relay_fallback_models=os.getenv("RELAY_FALLBACK_MODELS", "claude-opus-4-8,claude-sonnet-5"),
+        relay_thinking=os.getenv("RELAY_THINKING", "off").strip().lower() in ("1", "true", "yes", "on"),
+
+        vision_api_key=os.getenv("VISION_API_KEY", ""),
+        vision_base_url=os.getenv("VISION_BASE_URL", ""),
+        vision_model=os.getenv("VISION_MODEL", "gpt-4o"),
+
+        minio_endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+        minio_access_key=os.getenv("MINIO_ACCESS_KEY", ""),
+        minio_secret_key=os.getenv("MINIO_SECRET_KEY", ""),
+        minio_bucket=os.getenv("MINIO_BUCKET", "helpdesk"),
+        minio_secure=os.getenv("MINIO_SECURE", "false").lower() in ("1", "true", "yes"),
+        minio_api_prefix=os.getenv("MINIO_API_PREFIX", ""),
+        # Qdrant
+        qdrant_host=os.getenv("QDRANT_HOST", "localhost"),
+        qdrant_port=int(os.getenv("QDRANT_PORT", "6333")),
+        qdrant_collection_name=os.getenv("QDRANT_COLLECTION", "operation_docs"),
+        qdrant_timeout=float(os.getenv("QDRANT_TIMEOUT", "5.0")),
+        qdrant_local_path=os.getenv("QDRANT_LOCAL_PATH", ""),
+        ticket_card_collection=os.getenv("TICKET_CARD_COLLECTION", ""),
+        # Redis
+        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        redis_max_context_turns=int(os.getenv("REDIS_MAX_CONTEXT_TURNS", "3")),
+        redis_ttl=int(os.getenv("REDIS_TTL", "0")),
+        # Embedding
+        embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-base-zh-v1.5"),
+        embedding_model_local=os.getenv("EMBEDDING_MODEL_LOCAL", ""),
+        embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
+        embedding_batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "32")),
+        embedding_cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10000")),
+        # Reranker
+        reranker_model_path=os.getenv("RERANKER_MODEL_PATH", ""),
+        # 检索
+        retrieval_top_k=int(os.getenv("RETRIEVAL_TOP_K", "3")),
+        retrieval_score_threshold=float(os.getenv("RETRIEVAL_SCORE_THRESHOLD", "0.65")),
+        # 超时
+        ai_chain_timeout=float(os.getenv("AI_CHAIN_TIMEOUT", "2.5")),
+        # 派单
+        # 诊断服务
+        diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
+        enable_knowledge_sink=os.getenv("ENABLE_KNOWLEDGE_SINK", "0").strip().lower() in ("1", "true", "yes", "on"),
+        # 工单 Agent 状态（开关 + 两个可调参数）。⚠️ 这里是**启动快照**（本函数被
+        # @lru_cache 包着）。运行时判断请用 agent_state_enabled() / agent_state_raw_window()
+        # / discuss_quoted_context_k() —— 那三个是热生效的。
+        enable_agent_state=os.getenv("ENABLE_AGENT_STATE", "1").strip().lower() in ("1", "true", "yes", "on"),
+        agent_state_raw_window=int(os.getenv("AGENT_STATE_RAW_WINDOW", "10") or 10),
+        discuss_quoted_context_k=int(os.getenv("DISCUSS_QUOTED_CONTEXT_K", "5") or 5),
+        # 派单后台
+        assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "120")),
+        # Debug
+        debug_assign_to_admin=os.getenv("DEBUG_ASSIGN_TO_ADMIN", "false").lower() in ("1", "true", "yes"),
+        # Meilisearch
+        meili_enabled=os.getenv("MEILI_ENABLED", "true").lower() in ("1", "true", "yes"),
+        meili_host_url=os.getenv("MEILI_HOST_URL", "http://localhost:7700"),
+        meili_master_key=os.getenv("MEILI_MASTER_KEY", ""),
+        # 派单
+        dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
+        upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
+        # 后端内部 API（派单后回调通知等）
+        backend_base_url=os.getenv("BACKEND_BASE_URL", "http://localhost:8400"),
+        internal_api_key=os.getenv("INTERNAL_API_KEY", "zentao"),
+        # 文档路径
+        docs_path=os.getenv("DOCS_PATH", ""),
+        log_manuals=_parse_log_manuals(os.getenv("LOG_MANUALS", "")),
+        media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/ai/media"),
+        code_skill_paths=os.getenv("CODE_SKILL_PATHS", ""),
+        # 企业微信
+        wecom_corpid=os.getenv("WECOM_CORPID", ""),
+        wecom_corpsecret=os.getenv("WECOM_CORPSECRET", ""),
+        wecom_docid=os.getenv("WECOM_DOCID", ""),
+        wecom_sheet_id=os.getenv("WECOM_SHEET_ID", ""),
+
+    )
+
+
+def _parse_log_manuals(raw: str) -> dict:
+    """解析 LOG_MANUALS 环境变量为 {产品: {server, local, match, files}}。
+
+    LOG_MANUALS 是 JSON 字符串，例:
+      {"USP":{"server":"/data/apps/OpenRobotService_Data/help_manuals/USP日志分析指南",
+              "local":"D:/CodeHub/Algorithm/help_manuals/USP日志分析指南",
+              "match":"USPA|DYNAMIC_MAP|TMS|TASK-MANAGER|AI_map",
+              "files":["USP平台完整架构与日志分析总览.md"]},
+       "ORS":{"server":"/data/apps/OpenRobotService_Data/help_manuals/ORS日志分析指南",
+              "local":"D:/CodeHub/Algorithm/help_manuals/ORS日志分析指南",
+              "match":"ORS",
+              "files":["ORS平台完整架构与日志分析总览.md"]}}
+    服务器优先、本地兜底：解析时保留双地址，取用逻辑在 product_registry。
+    """
+    import json as _json
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        d = _json.loads(raw)
+    except Exception:
+        return {}
+    out = {}
+    for prod, v in d.items():
+        if not isinstance(v, dict):
+            continue
+        out[str(prod)] = {
+            "server": str(v.get("server", "") or "").strip(),
+            "local": str(v.get("local", "") or "").strip(),
+            "match": str(v.get("match", "") or ""),
+            "files": list(v.get("files") or []),
+        }
+    return out
+
+
+_HEALTHCHECK_TIMEOUT = 8.0  # 单项连通检查硬超时（测试可 patch 调快）
+
+
+async def validate_ai_config() -> dict:
+    """
+    启动时连通性检查（失败不阻止启动）
+
+    每项检查包 _HEALTHCHECK_TIMEOUT 硬超时（1015）：deepseek 检查是真实 LLM
+    请求（complete 内层 3 次重试 × 30s 读超时 ≈ 95s+），服务崩时会把 FastAPI
+    lifespan 拖到部署健康检查窗口（原 60s）之外 → 部署失败。检查只为报状态，
+    不值得拖启动。
+    """
+    import asyncio
+    from ai.core import get_llm_client, QdrantClientWrapper, get_memory_manager
+
+    results = {
+        "deepseek": {"status": "pending", "message": ""},
+        "qdrant": {"status": "pending", "message": ""},
+        "redis": {"status": "pending", "message": ""},
+    }
+
+    async def _bounded(name: str, coro):
+        try:
+            await asyncio.wait_for(coro, timeout=_HEALTHCHECK_TIMEOUT)
+        except asyncio.TimeoutError:
+            results[name] = {"status": "error", "message": "连通检查超时——服务可能不可用"}
+        except Exception as e:
+            results[name] = {"status": "error", "message": str(e)}
+
+    async def _check_deepseek():
+        llm = await get_llm_client()
+        await llm.complete("你好", max_tokens=5)
+        results["deepseek"] = {"status": "ok", "message": "连接成功"}
+
+    async def _check_qdrant():
+        qdrant = await QdrantClientWrapper.from_config()
+        collections = await qdrant.list_collections()
+        results["qdrant"] = {"status": "ok", "message": f"已连接，集合: {collections}"}
+
+    async def _check_redis():
+        redis_mgr = await get_memory_manager()
+        if await redis_mgr.health_check():
+            results["redis"] = {"status": "ok", "message": "连接成功"}
+        else:
+            results["redis"] = {"status": "error", "message": "连接超时，使用内存/MySQL降级"}
+
+    await asyncio.gather(
+        _bounded("deepseek", _check_deepseek()),
+        _bounded("qdrant", _check_qdrant()),
+        _bounded("redis", _check_redis()),
+    )
+    return results

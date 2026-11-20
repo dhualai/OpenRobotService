@@ -1,0 +1,37 @@
+# Non-sensitive local UI regression defaults.
+# Passwords must come from environment variables, script parameters, or prompts.
+ssh:
+  host: "125.122.97.107"
+  user: "usp-a"
+  port: 8802
+  key: ""
+  backend_remote_port: 9400
+  backend_local_port: 19400
+  ai_remote_port: 9411
+  ai_local_port: 19411
+  tunnel_timeout: 60
+
+tests:
+  headless: true
+  u1_username: "u1_auto"
+  u2_username: "u2_auto"
+  cleanup_username: "admin"
+
+frontend:
+  dist: "frontend/dist"
+
+report:
+  results_dir: "automation/output/allure-results-ui-regression-combined"
+  report_dir: "automation/output/allure-report-ui-regression-combined"
+  host: "127.0.0.1"
+  port: 8086
+
+database_cleanup:
+  enabled: true
+  host: "127.0.0.1"
+  remote_port: 3306
+  local_port: 19402
+  user: "automation_cleanup"
+  database: "helpdesk_test"
+  title_prefix: "自动化链路验证-%"
+  project_id: "Leo_test"

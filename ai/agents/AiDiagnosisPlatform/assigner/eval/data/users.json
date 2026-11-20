@@ -1,0 +1,923 @@
+{
+"users": [
+	{
+		"id" : "oM1WF6gDGa2k9-v2A7NALQyic8II",
+		"username" : "wechat_oM1WF6gDGa",
+		"password_hash" : "$pbkdf2-sha256$29000$1ZqT8v6\/dy4lRGht7V2rtQ$08BqUT95\/dtXEEgyQBFcRurVg434yVS.6018GMZfCf4",
+		"name" : "赵阮涛",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhaoruantao\", \"password\": \"$pbkdf2-sha256$29000$NGbsvRfCWCuFkLL2Xqu1dg$lav1m6RuM9RzbMoNZRYYM4AEnElyeBJgkvdx0rS0P7o\"}}"
+	},
+	{
+		"id" : "oM1WF6gfqWNTTbJIMK8NasREMC-w",
+		"username" : "wechat_oM1WF6gfqW",
+		"password_hash" : "$pbkdf2-sha256$29000$5\/w\/R0jJeU.pVYqxljJm7A$mOkCng0AvJDYcW.LZiHfMQJED3p0APkChhvLPmXCkkE",
+		"name" : "黄伟",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"huangwei\", \"password\": \"$pbkdf2-sha256$29000$OscYA0AoJSTkHOPc.7.XUg$ZCxo\/h7vxM\/\/k9R\/Sh58hSyFCUUrakuvQd8EECxYQN0\"}}"
+	},
+	{
+		"id" : "oM1WF6hC4rRv54KrtXm9QEXTEnds",
+		"username" : "wechat_oM1WF6hC4r",
+		"password_hash" : "$pbkdf2-sha256$29000$T0npHeOcU4pxbs1ZK4Xwvg$Xt8FqUCIAGxejKQncYkfmJqxWt2vge7Nt.llIVUZjbo",
+		"name" : null,
+		"status" : "inactive",
+		"external_credentials" : "{}"
+	},
+	{
+		"id" : "oM1WF6hH1P4F0ACMBiY10i-vVm5k",
+		"username" : "wechat_oM1WF6hH1P",
+		"password_hash" : "$pbkdf2-sha256$29000$XYvx\/h\/jHCPEeK91bq0VIg$AGKrOEDokLVVt2x5PlRJFc7Np7baDeDzCYosjk2mmok",
+		"name" : "何凌杰",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"helingjie\", \"password\": \"$pbkdf2-sha256$29000$MoZQSqlVak1JqZWScg5hzA$dE9FdmcjyftzwwHTT\/hGJjulLUulbLcUbRaqWjLjuwQ\"}}"
+	},
+	{
+		"id" : "oM1WF6hHVK0ciu7IciKuw80fHK1U",
+		"username" : "wechat_oM1WF6hHVK",
+		"password_hash" : "$pbkdf2-sha256$29000$j9F6by0FwFhrbW2NMUbIOQ$ebIjBVjX5O\/le.8mP.T3lVga4eMIR96b8aOTu\/4gqaU",
+		"name" : "毛梦晴",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"maomengqing\", \"password\": \"$pbkdf2-sha256$29000$4vzfe89Zy1krxbhXitFaCw$t7EJhw5jovVdUm5GCbHoe0Eh4oE6tZcT\/UqsBcqzekY\"}}"
+	},
+	{
+		"id" : "oM1WF6i6geUMuiM0job46q0OKVY8",
+		"username" : "wechat_oM1WF6i6ge",
+		"password_hash" : "$pbkdf2-sha256$29000$stYa43wvBaCUEmIsJSQkhA$G6dYwB.8N1rf\/KqEHoMsLRXPBcFlKOIfiYfTYJQDuRs",
+		"name" : null,
+		"status" : "inactive",
+		"external_credentials" : "{}"
+	},
+	{
+		"id" : "oM1WF6i8e2UqgL-4cGSVuuEGz2Q8",
+		"username" : "wechat_oM1WF6i8e2",
+		"password_hash" : "$pbkdf2-sha256$29000$vFcK4RzjvFcKAWDMmdOasw$gPWxDjLEN\/fS90C4FxNxUosy7koO0grRoLCFCIr0oO4",
+		"name" : "tangjianheng",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"tangjianheng\", \"password\": \"$pbkdf2-sha256$29000$rFWKsTaG8P4fY0ypdW4tZQ$aXrj17nanNtl4Hk7pMuM1vcBXzMmGdQKoqmDscrfYFc\"}}"
+	},
+	{
+		"id" : "oM1WF6iesCxb0khJ3UGjGnGmaETE",
+		"username" : "wechat_oM1WF6iesC",
+		"password_hash" : "$pbkdf2-sha256$29000$DEGIEULIWauVUiolBOB8Dw$Tn\/xSHxBS9WZhhQSustxcP62yCsRLiG3smND59yrGmA",
+		"name" : "清源",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"qingyuan\", \"password\": \"$pbkdf2-sha256$29000$8f7\/v1dqbY0xxljrHSNEqA$dk4BugolnsVhmkqvL.B6gNb8m0uSRNXaerDmxuoRRtQ\"}}"
+	},
+	{
+		"id" : "oM1WF6iI8_KF-UPLzwBm6K_MyWDQ",
+		"username" : "wechat_oM1WF6iI8_",
+		"password_hash" : "$pbkdf2-sha256$29000$v9e617q3VqoVopSyFoJw7g$pV.I6gMGPSe09dQYQpREv6XewQ3ptrkXVWRta5ydl60",
+		"name" : "孙昊",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"sunhao\", \"password\": \"$pbkdf2-sha256$29000$.\/9\/z9nbew8BoFRKae0dww$9fJS2ZxlU11aP7mY.cq8dSP5x9UzOrAYFxaHSaG45XM\"}}"
+	},
+	{
+		"id" : "oM1WF6iPqDaiQzQ_pfj51yJ2jVQs",
+		"username" : "wechat_oM1WF6iPqD",
+		"password_hash" : "$pbkdf2-sha256$29000$WgvB.H9v7d3bu3fuHWOMEQ$Ej6ZUlgwHGvZylQjEiBsprYSzVY6trtvjo3Px1Pco7k",
+		"name" : "新动力",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"xindongli\", \"password\": \"$pbkdf2-sha256$29000$ltIa4xxDKMW4F6J0jrHW.g$OaEgoA\/1dB85.ejfYs.yo79t4CiR81s24IS.VwjEaHw\"}}"
+	},
+	{
+		"id" : "oM1WF6ivfFC4Xa8nVX-77pW1gixY",
+		"username" : "wechat_oM1WF6ivfF",
+		"password_hash" : "$pbkdf2-sha256$29000$SQkhBMC4d641JmRMidHamw$FwUxK\/H8wF4qD4.eVAtnlOsmt63lGEKMTYDiD2CvZx4",
+		"name" : "查媛媛",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"chayuanyuan\", \"password\": \"$pbkdf2-sha256$29000$qPW.txZCKKU0hhCCEGLsXQ$DosV8O1VlQKWQxYpyaJwgyCvH2yyDaFI9HHW2EysGzQ\"}}"
+	},
+	{
+		"id" : "oM1WF6j1eDd9g9UCKZOhrwkjIiVs",
+		"username" : "wechat_oM1WF6j1eD",
+		"password_hash" : "$pbkdf2-sha256$29000$fE8JgZCSstY6R6h1rnVuLQ$1hrlt7mQgcfWhmDFAQxj\/OwXL6luvAGwsmnup7qMBwA",
+		"name" : "何裕忠",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"heyuzhong\", \"password\": \"$pbkdf2-sha256$29000$hBCCEAKg9B7j3DtHyFlLqQ$6QkJ8PG4EoTQMAOulc\/Rx1FvE1G\/4M.ZB8XwuXXMOfA\"}}"
+	},
+	{
+		"id" : "oM1WF6jcXJgGhPU3OQrE4F8NaLUk",
+		"username" : "wechat_oM1WF6jcXJ",
+		"password_hash" : "$pbkdf2-sha256$29000$XEvJGaNUqrXW2rsXgjDmXA$r7WvYbxLVDxvip9yBz0Z.NWWfRt262gfMpg0\/ixc8cw",
+		"name" : "张琦",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangqi\", \"password\": \"$pbkdf2-sha256$29000$rVWKEaLUGiPkXOsdgzAmxA$ETGYpmedPcd\/.jtPWJ3iTPz4vNsT.nbzUdxyJx817RQ\"}}"
+	},
+	{
+		"id" : "oM1WF6jIQaEZOFt-ZUKii3oqw6JI",
+		"username" : "wechat_oM1WF6jIQa",
+		"password_hash" : "$pbkdf2-sha256$29000$QkhJaQ3BmJOy1jonxNj7Pw$FeJr9VN1rJ4lcg8eM\/mCyCyilSoTqc7OvpnyBCMfcdY",
+		"name" : "余国超",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"yuguochao\", \"password\": \"$pbkdf2-sha256$29000$NCak1FpLiTFGyHkvJQSAsA$MiuVxGO3ROVlDG32VHtnMs.shIwBRaqXp\/Q0NAXZuRw\"}}"
+	},
+	{
+		"id" : "oM1WF6jpp1N-SAXPZ3J23fGMThG0",
+		"username" : "wechat_oM1WF6jpp1",
+		"password_hash" : "$pbkdf2-sha256$29000$a21t7d3b29tbSwmhNMYYIw$j\/pxQT1\/Ed62eOD0KsHNcoiq1hrFNIyUCZ17iHeyRGg",
+		"name" : "柯翔",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"kexiang\", \"password\": \"$pbkdf2-sha256$29000$oFTKec9ZKwXgXKtV6h2j9A$Sa77XBXHBC\/55RvAkwTz3E0C7vtfkkXGZESWZGphDMY\"}}"
+	},
+	{
+		"id" : "oM1WF6jUTnErZSq4WDvVPFVc3sWI",
+		"username" : "wechat_oM1WF6jUTn",
+		"password_hash" : "$pbkdf2-sha256$29000$p7Q2BuDc.59TqrVWqhWC0A$yyWZKve0a62YkMqxiRgA6S6A6jKjCMaH6nCTmkfIjPI",
+		"name" : "董华来",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"donghualai\", \"password\": \"$pbkdf2-sha256$29000$MyYEIGRMiRGCUMp5r1XKWQ$M1OIGUxPecqTBXGiFArg1nLrCZ9EFLfWSljwt6BZ97c\"}}"
+	},
+	{
+		"id" : "oM1WF6k1GAd7ErP3oCjfZiEq76RQ",
+		"username" : "wechat_oM1WF6k1GA",
+		"password_hash" : "$pbkdf2-sha256$29000$mBMCIKTUOifkPIfwHuPcGw$FaqAW7LXfvNwbbav4qniLhsihwidWNTEY8xdOZynALY",
+		"name" : "陈连鑫",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"chenlianxin\", \"password\": \"$pbkdf2-sha256$29000$DAFgLGWslTKmFGKsFWJsLQ$csp5Uvv7C9LajJv5SNczYI90rJYo8wkUNl6vtPzsQZI\"}}"
+	},
+	{
+		"id" : "oM1WF6k5-RwhkDNyZrEj6iJIxGOk",
+		"username" : "wechat_oM1WF6k5-R",
+		"password_hash" : "$pbkdf2-sha256$29000$wNgboxQCYExprRUCIMT4fw$z640w.BwRUKRQdt0sdOruqUicUHlHV90VZcuFXN\/S2s",
+		"name" : "张春朝",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangchunchao\", \"password\": \"$pbkdf2-sha256$29000$yxkjZAzBOKdUqpVSKkVo7Q$UNU8i5hMBY64Rd.1D14OHJ0n1apltfwEgsWqbFxeTos\"}}"
+	},
+	{
+		"id" : "oM1WF6k7tbjtixglq2qjt2hl-ZrE",
+		"username" : "wechat_oM1WF6k7tb",
+		"password_hash" : "$pbkdf2-sha256$29000$nJMSAsC4d25tDYEQ4nzPmQ$exwC4dO\/zbUnFd8P4FZeCuFUa4jKYwj5yrdRDUXadm8",
+		"name" : "徐帆",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"xufan\", \"password\": \"$pbkdf2-sha256$29000$OGfM.V\/L.X\/v3VvLOad07g$KjX1DuLED5X07tDvC\/bsbTkg1cPHq0wANQVBz9abUdA\"}}"
+	},
+	{
+		"id" : "oM1WF6kcNiIA59zwRaR7vpd_gDhg",
+		"username" : "wechat_oM1WF6kcNi",
+		"password_hash" : "$pbkdf2-sha256$29000$FSKklBJizHkvBUAIQej9Xw$Fuc0h\/4ZsX3uWm21BxFnHbGSrA4s9gNtLgtXG0mFp3Q",
+		"name" : "袁勋",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"yuanxun\", \"password\": \"$pbkdf2-sha256$29000$9\/7\/v5dybg0BIITwHiNk7A$I9bsPQeyfE5t1bk5HRUZf.3yZbAy.Qo.ArZctUbGfBY\"}}"
+	},
+	{
+		"id" : "oM1WF6kFDWjH2BVZDpYypYYBqZ1U",
+		"username" : "wechat_oM1WF6kFDW",
+		"password_hash" : "$pbkdf2-sha256$29000$gLB2Tsk5p3QOodSaM8b4fw$8V2VjSlxGMViFFrIIH63SLRVwX94cm0F.mdpf\/uGWV0",
+		"name" : "王小宇",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wangxiaoyu\", \"password\": \"$pbkdf2-sha256$29000$kPKe03qvFUJo7R0j5BzD.A$dZDVMX4Y.WAdRD113PcGYETEEE8.yAyf1Sa.52WZiaU\"}}"
+	},
+	{
+		"id" : "oM1WF6kNXLptVygZw4R7qU1s3Z94",
+		"username" : "wechat_oM1WF6kNXL",
+		"password_hash" : "$pbkdf2-sha256$29000$a22NsdZ6DwGgVKoV4ryXUg$xGxnYlvIAxBmlIpQbAeziwjHYi5LTRYVGGol8OJNFHc",
+		"name" : "张冰洋",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangbingyang\", \"password\": \"$pbkdf2-sha256$29000$JORcCwEAQCgFYKz1nvOeMw$CrDeQB.iDPN7fb\/kjbQTtUzlN4S\/wrgLJxNMtXkRYsM\"}}"
+	},
+	{
+		"id" : "oM1WF6kutTlIyinK-sBf_aZnY9pU",
+		"username" : "wechat_oM1WF6kutT",
+		"password_hash" : "$pbkdf2-sha256$29000$P4eQUgqB0Pp\/z5lzLiXEWA$s3CHRzo1FhtwiNq2OecNFsRawDagKVW\/wVF2\/n5sjzo",
+		"name" : "lsy",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"lsy\", \"password\": \"$pbkdf2-sha256$29000$0fqf835P6R2jFAKglBICAA$SK0Shp3uVRip8BWhLiVdg1JlYlfDyjvBf.kdroqGm4I\"}}"
+	},
+	{
+		"id" : "oM1WF6kwNRaXkHvFP9lqP_PPZDUE",
+		"username" : "wechat_oM1WF6kwNR",
+		"password_hash" : "$pbkdf2-sha256$29000$ihGCkBJibM0ZozTmHAMgJA$gF.A9eS9KeJ.g4F.x2v8yht\/9NSPxW3krX\/pEtAyjoE",
+		"name" : "张木清",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangmuqing\", \"password\": \"$pbkdf2-sha256$29000$2JtzLqUUIsQ4p3TuXauVkg$P0ZCpk\/R9q6Zc2JAGRk2x.mgog0mJK2eoco0RUsCSx0\"}}"
+	},
+	{
+		"id" : "oM1WF6kY1TvbRBg2gZYpHf_tgneA",
+		"username" : "wechat_oM1WF6kY1T",
+		"password_hash" : "$pbkdf2-sha256$29000$HAOAcG5tbQ0BIASA0Po\/Zw$yQbc8Bj8i.bEs9B1QKyB67YeVF8tzLEF1W5CAfw6waU",
+		"name" : "陈仰嶙",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"chenyanglin\", \"password\": \"$pbkdf2-sha256$29000$LuVc633vXeudc.59z7n3ng$1BL6x\/u8478e9aw9dpNguBBEUAhxT56k\/rsr45\/9Lao\"}}"
+	},
+	{
+		"id" : "oM1WF6kzQqO60URaSWYXYHAFB4Pg",
+		"username" : "wechat_oM1WF6kzQq",
+		"password_hash" : "$pbkdf2-sha256$29000$yrlXynkvBYDwXstZy1lLKQ$JtMmjw655Ekv4TOfH7RQL0NlfcG78jXp29NgtmtdFuk",
+		"name" : "李冬冬",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"lidongdong\", \"password\": \"$pbkdf2-sha256$29000$p\/Ses3YuBWCMMYaQEoJwDg$jdn2JqqE.kwL4Be1l9ol.dlImz\/iTyComTgQcRRcY5U\"}}"
+	},
+	{
+		"id" : "oM1WF6l25hoAIlUq5TTOgZaDAe_E",
+		"username" : "wechat_oM1WF6l25h",
+		"password_hash" : "$pbkdf2-sha256$29000$BgDAeA8hxLi31trbW2ut1Q$wQf4NWhmmze0SCx\/JwJNBRafAg4WCE3fugTKFfAGAjI",
+		"name" : "王豪",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wanghao\", \"password\": \"$pbkdf2-sha256$29000$p1QKYSxFqPU.h3CuNeackw$ddfEQ5hKIVzCHfYLRQXEwEiq9rNPqxcfmqMVpYpnSK0\"}}"
+	},
+	{
+		"id" : "oM1WF6lBR-a7o19wVxRwiPrjltvI",
+		"username" : "wechat_oM1WF6lBR-",
+		"password_hash" : "$pbkdf2-sha256$29000$6L0XYsw553yPcW7tHUNISQ$R2LbMMUv0I0SJkyWoAYcOPGQYHkG0GbBhkDAedMs9XI",
+		"name" : "应家豪",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"yingjiahao\", \"password\": \"$pbkdf2-sha256$29000$ndNaq7WW0npPyTmn1Lr3\/g$xyXiHpQY2KXZQXy\/c06H7jrVzb4xWOJJVL5MilDQeWc\"}}"
+	},
+	{
+		"id" : "oM1WF6leFsf3dEXqoNRm1PaFSVGI",
+		"username" : "wechat_oM1WF6leFs",
+		"password_hash" : "$pbkdf2-sha256$29000$OYewlhLifK81hhBi7H3PmQ$m1Z.GNyoP6o.fJGwLcJpx7ptcjSsiYCyFxMgBLa9BqQ",
+		"name" : "陈亮",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"chenliang\", \"password\": \"$pbkdf2-sha256$29000$1dqb874XwhjjfC9lDOF8bw$250NI10cgzQrwd9WysraoAgNOJ8IZ0iRukvF6yuGMzw\"}}"
+	},
+	{
+		"id" : "oM1WF6lfdOIjBGx4GfBf9V3gB8FM",
+		"username" : "wechat_oM1WF6lfdO",
+		"password_hash" : "$pbkdf2-sha256$29000$x1irdW5tLQUgpNSaE4IwRg$LWMfka\/CG53jValvuRmKc4nwd95NcNxcRXF5ACZ3ZT4",
+		"name" : "王剑",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wangjian\", \"password\": \"$pbkdf2-sha256$29000$RSiFkHIuRWgtBYAwBuC81w$Qzq6uoICJwUZQcyhLY02PW3RIgT8InAGvF1yRi\/Mmy0\"}}"
+	},
+	{
+		"id" : "oM1WF6ljiqkJYmXcldTiFgPAXljU",
+		"username" : "wechat_oM1WF6ljiq",
+		"password_hash" : "$pbkdf2-sha256$29000$z1lLiXEuJaTUeq.V0hqjdA$e\/gKqyHezVeQhjeAf0Yp3r7\/s4NboZ7scOK3z0R8oXw",
+		"name" : "耿洪秀",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"genghongxiu\", \"password\": \"$pbkdf2-sha256$29000$n1MqBaCUEkIoZax1zjmnlA$ps9nmQg3UKzTiexmnlh8arSmtsJ\/IXr66y3SZv7g9A4\"}}"
+	},
+	{
+		"id" : "oM1WF6lq4WIv-7iIP3pbzk9iNgoY",
+		"username" : "wechat_oM1WF6lq4W",
+		"password_hash" : "$pbkdf2-sha256$29000$Uqo1RgihlPKes\/Z.z5kzxg$PakTs0oxrUIOEESX7KqOp\/yZZ.FjIgFWoVfC\/UUpN0w",
+		"name" : "魏晓锐",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"weixiaorui\", \"password\": \"$pbkdf2-sha256$29000$wvh\/7\/3\/XwtBCCHknDNGiA$POYH1wRXxk7JVX1dbjxdxBjY71oltptP2ptYQKUv1qo\"}}"
+	},
+	{
+		"id" : "oM1WF6m1rMprAH8OvaKtpLW6YCzg",
+		"username" : "wechat_oM1WF6m1rM",
+		"password_hash" : "$pbkdf2-sha256$29000$xTinlLLWOgfAeM8ZA.D8\/w$U51AaHSEH2Svsd17XEllQnc7kzwbuXyYw0A6t.oUCfc",
+		"name" : "何伟",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"hewei\", \"password\": \"$pbkdf2-sha256$29000$QSgFACAE4BxjzHmPMQagFA$x\/QTu2pb.t\/rNiuEBuvbOZqgf7HVsCssbg8JroOV4A4\"}}"
+	},
+	{
+		"id" : "oM1WF6maYWUbrIB9LCTcZ-XACyeg",
+		"username" : "wechat_oM1WF6maYW",
+		"password_hash" : "$pbkdf2-sha256$29000$VmqtVep9rzVm7N3bu1eKEQ$.A\/yI9cg3NL5UGGrRU.qKB2AiN49ldvFyncK\/deG6u8",
+		"name" : "白永奇",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"baiyongqi\", \"password\": \"$pbkdf2-sha256$29000$UspZC0Ho3XvvHQPA.F9LKQ$hVobrIN\/NfpedubYk0U5O\/W615x1EnGFq4xdGtOtq9E\"}}"
+	},
+	{
+		"id" : "oM1WF6mcxXDRcnCnSV8UPZ3-jKL8",
+		"username" : "wechat_oM1WF6mcxX",
+		"password_hash" : "$pbkdf2-sha256$29000$udcaY.y9lxICoLSWEmKMMQ$q5iz46rB6RYe0vrmKGkEyT6.93LMFKd7eHdHAhCpxy4",
+		"name" : "dewgon",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"dewgon\", \"password\": \"$pbkdf2-sha256$29000$tlZqbc3ZWyvFmFMKQajVmg$Aran0vUgEsP0LiIHEYdq5.mL4JlXDYnOFnhBnBGVBgQ\"}}"
+	},
+	{
+		"id" : "oM1WF6mjUHGXWzze0_MI8In_rqwI",
+		"username" : "wechat_oM1WF6mjUH",
+		"password_hash" : "$pbkdf2-sha256$29000$m5MSImSMcS7FOKe0FqKUcg$Sd88LPybq029muMFKHYQlj9kDvaRsQq0PkPzcbAgnEc",
+		"name" : "陈前安",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"chenqianan\", \"password\": \"$pbkdf2-sha256$29000$\/R9jjBHiXEtpDWHMOQegdA$jLP2RcN99lJgymJm88DgKvWz45PcsAb4KJkSFirWXuo\"}}"
+	},
+	{
+		"id" : "oM1WF6mktxXMdWsQ2ejFBLQgp9bs",
+		"username" : "wechat_oM1WF6mktx",
+		"password_hash" : "$pbkdf2-sha256$29000$GUPoXStlrHXOube2ttYagw$GhjDQim5uAhhkApd\/bvqEqjFNocu\/lCluwILwcTtu.g",
+		"name" : "罗昊",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"luohao\", \"password\": \"$pbkdf2-sha256$29000$ZozROkdIaQ2BkDJm7L137g$JimK5JNxqcimOGPoMZCWwHv3wKtF3kz8kxF88P2IrxA\"}}"
+	},
+	{
+		"id" : "oM1WF6mo805X3PG96nc-0bodT_ls",
+		"username" : "wechat_oM1WF6mo80",
+		"password_hash" : "$pbkdf2-sha256$29000$KqV0jjHG2Nt7L8UYg9C6Fw$kVlgHP6BNKTE0P24Sp18LilM.QnTxfPgggKbPZ2T4ko",
+		"name" : "严昊文",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"yanhaowen\", \"password\": \"$pbkdf2-sha256$29000$TElJCUGotfZ.rzVGqFUKAQ$600tK9llK5WfFwICCoZeEZGwz.gXL7gY65dQvi60CRY\"}}"
+	},
+	{
+		"id" : "oM1WF6mQMdepPgazb-M0lvitTnMo",
+		"username" : "wechat_oM1WF6mQMd",
+		"password_hash" : "$pbkdf2-sha256$29000$pPRe6z0HAMC419qb0zoH4A$Mk2Gq8GPbAc\/y8q8GrnTRx0BMCNjBhMcOPXlYwap0NM",
+		"name" : "李加伟",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"lijiawei\", \"password\": \"$pbkdf2-sha256$29000$uNeakzLG.N87J6R0DmEsRQ$zttb5f\/LSWO\/VPQ\/yHsdqlksRg4RITtk9ucjNo2ZPks\"}}"
+	},
+	{
+		"id" : "oM1WF6mRQmGeppfLWr_5MHTUL58E",
+		"username" : "wechat_oM1WF6mRQm",
+		"password_hash" : "$pbkdf2-sha256$29000$lNK6F.Jcq9Xau9day9k7xw$Qo.uwtslvxrC8ztG0rxhO.HpvHJQsCAp1Dws8KzzmMU",
+		"name" : "闵正鹤",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"minzhenghe\", \"password\": \"$pbkdf2-sha256$29000$9d77nzPm\/D9HaK0Vwvgfow$OyQQhHxujEYSEmKJIZxt7Fu5\/fd5eOktGXjEdvPRdsM\"}}"
+	},
+	{
+		"id" : "oM1WF6mS3tUw12oRiUkcCRc-Y7yI",
+		"username" : "wechat_oM1WF6mS3t",
+		"password_hash" : "$pbkdf2-sha256$29000$PAfgXOv9\/9\/7f4.xthZiDA$PIvlvwwWwd1n4s9eYyNCnYdG\/1CoO9AtMKE3JcgecXg",
+		"name" : "冯菲",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"fengfei\", \"password\": \"$pbkdf2-sha256$29000$hfD.3xsjZOxdyzlnrHUuZQ$KZnAzHZfdqGn2s6QlZGL3Yq58aUEOf7PiSQ8RXfpcxc\"}}"
+	},
+	{
+		"id" : "oM1WF6mXaTG5Kw1y3upeZwdO_5sQ",
+		"username" : "wechat_oM1WF6mXaT",
+		"password_hash" : "$pbkdf2-sha256$29000$tjZGKIWQEmIMYezdG6OU8g$SDFGPTnmts8v9e5leTgyGoHVPHbDOWScvoAVuS7wUak",
+		"name" : "王卓",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wangzhuo\", \"password\": \"$pbkdf2-sha256$29000$F0KoVSpl7H1vTcnZmzNGKA$SVzTo6aHudP6NlkvEp1Ec53nrmSFiZudsL1ZVxMdom0\"}}"
+	},
+	{
+		"id" : "oM1WF6mz8EP1sXzwG9gN5mkbQZfk",
+		"username" : "wechat_oM1WF6mz8E",
+		"password_hash" : "$pbkdf2-sha256$29000$hPB.D8G4N.Z87x1jzNmb8w$Ve.FLsoq1A7wCFUJqGJzoN2nQ4LTjwvcqal37KR3O0k",
+		"name" : "盛永捷",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"shengyongjie\", \"password\": \"$pbkdf2-sha256$29000$4bw3hpCyVkqJEcKYM8ZYyw$cC8xBzwfLQWjnlxMQ9LPvYBOrMeBljNUva49H3T6Yd4\"}}"
+	},
+	{
+		"id" : "oM1WF6n6WEkRIOhY0xg6UmVZY8ZA",
+		"username" : "wechat_oM1WF6n6WE",
+		"password_hash" : "$pbkdf2-sha256$29000$yPk\/p7R2bq3V2nsPASDEeA$r1F.60Bx4z.NntzofvUN.GsowKIZlzze8M8KTBgJFqA",
+		"name" : "刘畅",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"liuchang\", \"password\": \"$pbkdf2-sha256$29000$xnjPOee8d44xpjQmJCTEmA$aOjtYAGprKVHq1b.K9cAv25W5bOujlGjDtpWq6c7aVw\"}}"
+	},
+	{
+		"id" : "oM1WF6ncIlKVUbpqJhJZnyG3OOLc",
+		"username" : "wechat_oM1WF6ncIl",
+		"password_hash" : "$pbkdf2-sha256$29000$qhWCkPJei1EKYQwB4FzrnQ$QXOBZZ.NXRcCNOoof2hCNdpod1ynr.CjaIlHftZE3TE",
+		"name" : "张文星",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangwenxing\", \"password\": \"$pbkdf2-sha256$29000$k7IWwngPAWBsbS2F8N5byw$KIoZCgRP6TLLT1kNn5ad6xBQnTQRRtJOcEzNJraQnUU\"}}"
+	},
+	{
+		"id" : "oM1WF6ncs-2jNAQGHeU1jN8T5ox0",
+		"username" : "wechat_oM1WF6ncs-",
+		"password_hash" : "$pbkdf2-sha256$29000$QUhp7d2b857T2nvvfQ\/h\/A$WEBfFNSS347hZk7uZZMJcjJAQUw3Dbz2JGlOZnnzQDE",
+		"name" : "朱珊珊",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhushanshan\", \"password\": \"$pbkdf2-sha256$29000$fS.ltHbO2TtHyFkrhRDC2A$APbqWXFEFzg7JvY28uQ6M8HyoJJTqq1GdMlPvRCZ4dI\"}}"
+	},
+	{
+		"id" : "oM1WF6ndsuIj2PPBUpIF0Lqc-Ex8",
+		"username" : "wechat_oM1WF6ndsu",
+		"password_hash" : "$pbkdf2-sha256$29000$m7P2fg8h5DwHYGytlbJWqg$FEYdb5wGPpb2YHorZeGJQDeBkPbUfXKHZPx\/WqILg3I",
+		"name" : "吴晓亮",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wuxiaoliang\", \"password\": \"$pbkdf2-sha256$29000$bG1Naa3Veu\/9P0dorXWOsQ$lhePcEm1sxH6WPoIyqBjh0XH1NP13Pd4cJygEEyhOMQ\"}}"
+	},
+	{
+		"id" : "oM1WF6ngvxYf7I6o8xMtMC3-FEZY",
+		"username" : "wechat_oM1WF6ngvx",
+		"password_hash" : "$pbkdf2-sha256$29000$q5WSUkoJ4ZwzJgTA2HvvfQ$1g8PXIkQ2Z8JN7DITLFkLwGXQr.1LSlTDaN8vR67LTs",
+		"name" : "贾爽",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"jiashuang\", \"password\": \"$pbkdf2-sha256$29000$wBiDcA7BuHeude4dIwSgtA$dXAMG6d5zDcBpFHhhUE6ccoy9pUnhxCWCWCNhuzujO4\"}}"
+	},
+	{
+		"id" : "oM1WF6nKtDALDN4eAYvGt4LBZRqI",
+		"username" : "wechat_oM1WF6nKtD",
+		"password_hash" : "$pbkdf2-sha256$29000$2zsn5LyXEmKMsXauda61dg$BwLK2oFTR3gO5\/l4xudiZqfVUpd4eKN050WkAT7jTNQ",
+		"name" : "夏泽龙",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"xiazelong\", \"password\": \"$pbkdf2-sha256$29000$Veqd0\/r\/33tv7V0LQQjhnA$FHNvzFUsZODZ0pEb.tUlVQePXMu26Q5lMbsw9MX1QYE\"}}"
+	},
+	{
+		"id" : "oM1WF6nOd6aUWwJVXcX1M4g0xHxA",
+		"username" : "wechat_oM1WF6nOd6",
+		"password_hash" : "$pbkdf2-sha256$29000$aW0NoVQqxRjD2Nv7P0dorQ$L636NVTGs1SvE6K5DCvUrq8ZRb5gp4dVDdSU1gSDh.c",
+		"name" : "赵功杰",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhaogongjie\", \"password\": \"$pbkdf2-sha256$29000$O.c8R.idEwJgTImREgLAGA$Ua.PnqFTB4fWAMGwDA2\/YiKtZxlDdCy7pK5\/ZiM1B14\"}}"
+	},
+	{
+		"id" : "oM1WF6nOlhUfhjdsZqWG-kuEY3Us",
+		"username" : "wechat_oM1WF6nOlh",
+		"password_hash" : "$pbkdf2-sha256$29000$x1hLKeVcay2FUEpprfXe2w$pR8KOe137ewpB2BW2s2YdkEiqmYJ4j704FmiYxgF4eU",
+		"name" : "胡健楠-小号",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"hujiannan-xiaohao\", \"password\": \"$pbkdf2-sha256$29000$59zbW.vd29tbi\/GeM2ZsrQ$\/bi\/dX8uBmlfyvSuL66hQ4vLUdgRJIJWQGxpGa2dvQU\"}}"
+	},
+	{
+		"id" : "oM1WF6nQgLcFj6kxc8erc9POTUjM",
+		"username" : "wechat_oM1WF6nQgL",
+		"password_hash" : "$pbkdf2-sha256$29000$OIdQinHuPaeUEgLg\/P\/fWw$hogovxXreBZBwpTRwZLjQSOgD3TL5yl5OXX4A7gDA2g",
+		"name" : "赵翰林",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhaohanlin\", \"password\": \"$pbkdf2-sha256$29000$C8H4f28tZczZ2zvHeE\/JOQ$G3RZibFW6QNOfbBWhKRMEf.vLrngEBamPdLPnXgI0n4\"}}"
+	},
+	{
+		"id" : "oM1WF6o7gsRiEEcmEodkKCCiAK7U",
+		"username" : "wechat_oM1WF6o7gs",
+		"password_hash" : "$pbkdf2-sha256$29000$c27tfa\/1HuMcQ4jx3ltLqQ$ExThulIZ0xeqpq.ts5kqEHXupXFLslY\/HA4aeb6XCYA",
+		"name" : "王林钰",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wanglinyu\", \"password\": \"$pbkdf2-sha256$29000$cm7t3bsXAsCYE4Lw\/j\/HeA$qSAaX3J5DppyzIqC2dMJBa4OsIEqDpyfiORM\/QRZmrM\"}}"
+	},
+	{
+		"id" : "oM1WF6oeFJDC-2IY3igY8R9kg9fc",
+		"username" : "wechat_oM1WF6oeFJ",
+		"password_hash" : "$pbkdf2-sha256$29000$TYkRIoRQylnLGQOA8H5PKQ$ZD1249ZbHzCHfmzLVzzm2o3VxdhO3Vv41Is3K\/5QZ9I",
+		"name" : "牛郑翔",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"niuzhengxiang\", \"password\": \"$pbkdf2-sha256$29000$03rvXWtNKeW8lxICACDkvA$A\/C23u5jM5AczKxS2XbQNr7CnTzTcoQrHrKNb3fIg0Q\"}}"
+	},
+	{
+		"id" : "oM1WF6okV8Iv6zWz_JC2I7ZNz04s",
+		"username" : "wechat_oM1WF6okV8",
+		"password_hash" : "$pbkdf2-sha256$29000$2bu39v6\/l7I2JuScE6I0Jg$419gPcnXPb8b6ffxifAkRvEoXFGreRGxeQPOcW4pPvM",
+		"name" : "吴佳秀",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wujiaxiu\", \"password\": \"$pbkdf2-sha256$29000$HAOgdI6RkhKC8D6n1HovRQ$BjNhxqPKoz06NnR6a9h\/1.PFgzmDTxLLulR899xMNCY\"}}"
+	},
+	{
+		"id" : "oM1WF6oque-8JBte5XT8MOrS3oYU",
+		"username" : "wechat_oM1WF6oque",
+		"password_hash" : "$pbkdf2-sha256$29000$9R7jPKe09h7j\/L\/Xes.Z0w$ZBEcuBl0ZiixOcJjk2gbLsY2OpUSZ7DF9bdRJQcsyo8",
+		"name" : "官伟文",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"guanweiwen\", \"password\": \"$pbkdf2-sha256$29000$MEbI.d8bQ6jVOkeoldI6pw$8UiodqWaQ8hRqUft2drBuPXTAcS0Z0f2wi5JM4zuB\/Q\"}}"
+	},
+	{
+		"id" : "oM1WF6oxAk6ucaRVSClRJhBLIBw4",
+		"username" : "wechat_oM1WF6oxAk",
+		"password_hash" : "$pbkdf2-sha256$29000$U0qplTIGYAwBoBQC4Pw\/hw$W2BajiRlPqhRxP8JaB1dguJGjL5iQooRSwYKlWwxn4Q",
+		"name" : "张芷豪",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangzhihao\", \"password\": \"$pbkdf2-sha256$29000$j3HuHQNgrHUupRSiFOI8hw$OK\/Uy92HVk0DzVKn8yxAv79JUDuBwgv74Ov4BszP3PI\"}}"
+	},
+	{
+		"id" : "oM1WF6p-jU_WsDOkz1Wmrs0E2yxw",
+		"username" : "wechat_oM1WF6p-jU",
+		"password_hash" : "$pbkdf2-sha256$29000$K2WstZbS.l9rrbVWSumdsw$VU1B39mhV4LN25PwQqp2Xq0HGYYPr7XfwH5OI0pPg.Q",
+		"name" : "孙逸博",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"sunyibo\", \"password\": \"$pbkdf2-sha256$29000$4TyHcC6FUMq5txaCsNZa6w$oXaDFrkcpMPv\/Pp62YyIgozSSjO.dc2njEIAFrrrJpc\"}}"
+	},
+	{
+		"id" : "oM1WF6p2MqiIwxhOwAu7PdE_XM_Y",
+		"username" : "wechat_oM1WF6p2Mq",
+		"password_hash" : "$pbkdf2-sha256$29000$7X3v\/b8XwnjvvTfmHKOUUg$R8t\/VHpUDBQMzMctrpPL4jXKDws2qv0OQ6KN0MJyQx8",
+		"name" : "陈世杰",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"chenshijie\", \"password\": \"$pbkdf2-sha256$29000$jXGuNaZ0bq3V2jsHwDjHmA$ZO.vxNLk.TU0ioHNLXh9ifuU5OdFoqDAXWRAVWA64JU\"}}"
+	},
+	{
+		"id" : "oM1WF6p319lGSYgVhx4vDmnWnCi8",
+		"username" : "wechat_oM1WF6p319",
+		"password_hash" : "$pbkdf2-sha256$29000$6b13jrE2hjBmTIkRopQyZg$n.YiCoCDLewC28o1aSfwUFT0xj4y30gQcngTM58.gAE",
+		"name" : "王子梁",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wangziliang\", \"password\": \"$pbkdf2-sha256$29000$0HovhRCitJbS.j9n7H1vLQ$uTjMfhrqzwXcMXYriKl.zL66mGAbH6YZoyrIVv6VQRs\"}}"
+	},
+	{
+		"id" : "oM1WF6p7u4MVjaf7wfmWCtnRyuGY",
+		"username" : "wechat_oM1WF6p7u4",
+		"password_hash" : "$pbkdf2-sha256$29000$Rqg1BkCoNYawdi4FYAxBKA$4mlbZ0us90OktKI3oO8grsDSE0eMmn1ls2U\/CGO8SW8",
+		"name" : "张旭",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangxu\", \"password\": \"$pbkdf2-sha256$29000$fi8FgNA6B4AwhpByTul9Lw$donUvUkzUAelRRo6eKny7NaoYTJebuga9Aye1NlNHOQ\"}}"
+	},
+	{
+		"id" : "oM1WF6pA1bb86e6M9hWhJosUZBwg",
+		"username" : "wechat_oM1WF6pA1b",
+		"password_hash" : "$pbkdf2-sha256$29000$xJjT.n.vNaZ0jnGOsTbmXA$dLI2Qtn8ETmJV2KQI6385SJxtFeZzEFJ0hYHjsivn\/0",
+		"name" : "户志伟",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"huzhiwei\", \"password\": \"$pbkdf2-sha256$29000$vbdW6n0vpVRKaa1VKkVoTQ$E4AaUJ7d0oq3UQY4IASYAK1SJsE9HjuP.zioAInIdCE\"}}"
+	},
+	{
+		"id" : "oM1WF6pcKa0nnF-HrBTttPqnEhj4",
+		"username" : "wechat_oM1WF6pcKa",
+		"password_hash" : "$pbkdf2-sha256$29000$lHIuZWxtzdm7d875X6t1jg$JCDlaIx3WBXAiXJ6VXZySfBD3N1vexqhS88QpszVWl0",
+		"name" : "滕君",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"tengjun\", \"password\": \"$pbkdf2-sha256$29000$eY9xzvk\/51wrpVQqBQAAIA$sU4qmkOF3ijL0jmzVwUi79IaQ74bZ94KeoX9UzguG2I\"}}"
+	},
+	{
+		"id" : "oM1WF6pCZqgxufmaJBL70ogFkAjU",
+		"username" : "wechat_oM1WF6pCZq",
+		"password_hash" : "$pbkdf2-sha256$29000$X2stRQjBWGttTSmFMCYEYA$06yOMSffPA\/Ajk\/qQsXflEnxF2nqoffYZWFI6qXcgMg",
+		"name" : "彭治程",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"pengzhicheng\", \"password\": \"$pbkdf2-sha256$29000$YWytNYZQirH23jsnRCiF8A$nu.MjRiHTV2yakfnZKNendJZxIfw1lOiS2EOPNKOh.o\"}}"
+	},
+	{
+		"id" : "oM1WF6pDmBybfD8W0-qC7RgskLCw",
+		"username" : "wechat_oM1WF6pDmB",
+		"password_hash" : "$pbkdf2-sha256$29000$SGkNgfA.BwBgrJUyptRaCw$zZ.Btiq8TDeAiNqFFAMnrmkivymehG6WpQ2wtfeK8gk",
+		"name" : "夏泽龙小号",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"xiazelongxiaohao\", \"password\": \"$pbkdf2-sha256$29000$Y4yxlvJ.T8k5h\/D.f.8dIw$fYtn0weBwbRLe5Vnh33q3igzoUCTRmaH4mQNrUQ.BUI\"}}"
+	},
+	{
+		"id" : "oM1WF6pIC4JXPfQR4pb_xxeyytRs",
+		"username" : "wechat_oM1WF6pIC4",
+		"password_hash" : "$pbkdf2-sha256$29000$zfk\/5\/w\/x1ir9Z5z7h0DwA$Q7nsbBIUS8qxofPIBHMck9drkY0YHJaliWOtxpisjsw",
+		"name" : "汪诗杭",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wangshihang\", \"password\": \"$pbkdf2-sha256$29000$oVSqdU4pBQBgrFVKCeGc0w$qCNss565qqbPH7tBNme17zgMLyrxHJlqrVNBPM52pfs\"}}"
+	},
+	{
+		"id" : "oM1WF6pNJeBxmCZ2iTPmgCzj8-UE",
+		"username" : "wechat_oM1WF6pNJe",
+		"password_hash" : "$pbkdf2-sha256$29000$ibHWutf6\/9\/7XwtBSImxNg$.rJYOqs09xj1MAsP6lfaL4cm7pouC4ExzVxQMmkTysY",
+		"name" : "吴彦清",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wuyanqing\", \"password\": \"$pbkdf2-sha256$29000$49x7r3UuZUxpLcU4p1SKcQ$dRZ51G\/msw4oCjWiiDhLKed1BAlMmRHelL0WjIb\/1yw\"}}"
+	},
+	{
+		"id" : "oM1WF6px-ObWIiJv028_u3pCpaI4",
+		"username" : "wechat_oM1WF6px-O",
+		"password_hash" : "$pbkdf2-sha256$29000$iJEyJuQ8B0DonXNOqXWudQ$SiJmfBeaHiTmquHkImwe96yytF5MPVJuLzRoSl3AhsI",
+		"name" : "章宇彬",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangyubin\", \"password\": \"$pbkdf2-sha256$29000$M0ZoLcWYs9bauxeCMEaotQ$KyOm5f3g0697AWpbKme6EuKcTXx1QPvzGiHwbRT5RZU\"}}"
+	},
+	{
+		"id" : "oM1WF6qH6Xh0c9l7OHIRcR5_LxwY",
+		"username" : "wechat_oM1WF6qH6X",
+		"password_hash" : "$pbkdf2-sha256$29000$CKG0FgKAEML4fy8lRIhxrg$1chEeL2i3Xg3EPQNpzxghds6qEakKmgSSBRNpOLtYEs",
+		"name" : "李明烨",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"limingye\", \"password\": \"$pbkdf2-sha256$29000$xHgPIYQQgnDuXeu9txai1A$YxiRd7gccItFfmjQ3Gb.MnJRW\/D9uOI7ljytpy.anBQ\"}}"
+	},
+	{
+		"id" : "oM1WF6qNvPTAWwyWr5oLHO8ENISA",
+		"username" : "wechat_oM1WF6qNvP",
+		"password_hash" : "$pbkdf2-sha256$29000$9j5HaO0d43yvde6d01pr7Q$MhdlpaPw8KGHNTO6FQ.Q1n2cXfiGGPDc\/UwCHOIQesM",
+		"name" : "刘敦培",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"liudunpei\", \"password\": \"$pbkdf2-sha256$29000$0\/p\/7z0nBEBICYGwNkaI8Q$gf3W9knVWtmOS2w.X8uhEgJX0sKuEOi2VrjyCBxbtnI\"}}"
+	},
+	{
+		"id" : "oM1WF6qSvAM0_MnXtA-GUNYJnkOU",
+		"username" : "wechat_oM1WF6qSvA",
+		"password_hash" : "$pbkdf2-sha256$29000$BCCkNCbkfC\/FmJOyNkaIkQ$XSzG8KFu9BCRavPD4X8Y.vnOdh\/5pBQo9wC8TlN6zRI",
+		"name" : "宋尚武",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"songshangwu\", \"password\": \"$pbkdf2-sha256$29000$7Z1zTmmtFeLcu\/e.VwqhNA$HGHw45MQWjFnNVYQ7yTsGD21z3hpyGhql0S233MArcM\"}}"
+	},
+	{
+		"id" : "oM1WF6qYAB1wxDK1C42kmZc9Aw_Q",
+		"username" : "wechat_oM1WF6qYAB",
+		"password_hash" : "$pbkdf2-sha256$29000$yzkHAADgXGsNYSwFQGiNUQ$nkrAKpqEAB113Fvw.XXqV1n.idU4CpfCoWaPAHP2edg",
+		"name" : "秦扬欣",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"qinyangxin\", \"password\": \"$pbkdf2-sha256$29000$B2DMOedcy3nP.f8fYwwB4A$.QTRk11dLrJgcX7O7CKCKhVPgFKRM.4A8flVn3igLug\"}}"
+	},
+	{
+		"id" : "oM1WF6r9d9-83k7EAi2eJqtdyoTs",
+		"username" : "wechat_oM1WF6r9d9",
+		"password_hash" : "$pbkdf2-sha256$29000$FsJYi3Fubc25NyZkbC0F4A$5JRzzGGZAjvAi7.8SLIyJ28k3vDaJg\/ye8SzaJ1zNjo",
+		"name" : "丁冠铭",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"dingguanming\", \"password\": \"$pbkdf2-sha256$29000$cW7tvfc.R6j1Puf8H0MoRQ$1WdDwu5XSrsC4lFqulCUvYaLA.8klFCDnjwV7wldYhc\"}}"
+	},
+	{
+		"id" : "oM1WF6rFaYOnSK_w4LkuKQ7rh1YU",
+		"username" : "wechat_oM1WF6rFaY",
+		"password_hash" : "$pbkdf2-sha256$29000$PQdA6D3HmFOqVcqZc651jg$1SIkwiE8ePBWanbbIQrg5k.2waKCxTJxkdIef7t6pFo",
+		"name" : "安佳兴",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"anjiaxing\", \"password\": \"$pbkdf2-sha256$29000$xniPMQZASEkJAQCg1BqjtA$10ysL.OcuAZxKZ0PoILp9gSVO0ewudg1ntMnNdP.IFI\"}}"
+	},
+	{
+		"id" : "oM1WF6rk0sIV3VeFtNmLbw67T2wI",
+		"username" : "wechat_oM1WF6rk0s",
+		"password_hash" : "$pbkdf2-sha256$29000$RYgxBkCoFSLknLM2RoiREg$dLT9ekWQwESZ3ah4p.1oaOUoZBDW8f2maZw0R9xOC\/w",
+		"name" : "齐子谦",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"qiziqian\", \"password\": \"$pbkdf2-sha256$29000$CkFo7Z3Teu.9txZibG0NQQ$DxOd5leC5jct.xJ2Dfp75p6PO3FgsfQzpuJeu7y0b5Q\"}}"
+	},
+	{
+		"id" : "oM1WF6rnfgi_OBsFl4EYL6YXqfis",
+		"username" : "wechat_oM1WF6rnfg",
+		"password_hash" : "$pbkdf2-sha256$29000$WSslJMRYK8U4x\/gfAwAA4A$NffsXi8BhFIeZsinXWdRVjn8r.98D4vI8qattJuR6uU",
+		"name" : "郑锦正",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhengjinzheng\", \"password\": \"$pbkdf2-sha256$29000$954TonRurbWW8v6fU0qJUQ$1267ikWBcjp9msM.uFqUlgeVcSKCIZl6sO\/fWPkxg3Y\"}}"
+	},
+	{
+		"id" : "oM1WF6rRpfxwEeApkZev2-8pS76Q",
+		"username" : "wechat_oM1WF6rRpf",
+		"password_hash" : "$pbkdf2-sha256$29000$TynFuDem1Jqztvbe.z9HSA$kq5n8mocT752RQIaJgwCQhIt8SdJX61SkGacllwJJxI",
+		"name" : "黄健",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"huangjian\", \"password\": \"$pbkdf2-sha256$29000$D2FM6f3\/X4vR.t8757x3bg$rVAFNCj.UL9S\/kQ2OkAZcT50L.A8REdhh2nwNgjmMPc\"}}"
+	},
+	{
+		"id" : "oM1WF6rtEj6o4c32ZAZCs-uWmfFk",
+		"username" : "wechat_oM1WF6rtEj",
+		"password_hash" : "$pbkdf2-sha256$29000$VSoFwNibE4Lw\/v.\/V.o9xw$rRj0S3qN.ZpSpHDAl10ZfZa1ZU67zDON1GECQjG\/NLU",
+		"name" : "付佳炜",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"fujiawei\", \"password\": \"$pbkdf2-sha256$29000$aC0lBKAUopSyFmKMcU7p\/Q$uSUZWhoW0cVkv0Pun33t\/kWUie5yGwMN0xSfmCPqdzY\"}}"
+	},
+	{
+		"id" : "oM1WF6rVtAIkhjfE6TbO3Nry1CWs",
+		"username" : "wechat_oM1WF6rVtA",
+		"password_hash" : "$pbkdf2-sha256$29000$YcwZA0CIEUIIAQDAmBPivA$EnzeHOTQy33KFwQtZr6QxejwLGqWW8sUlX29vM2b5Aw",
+		"name" : "冯圣元",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"fengshengyuan\", \"password\": \"$pbkdf2-sha256$29000$NCbE2Ns7R0iJ8R7DmLO2lg$RZYRfbz1Q9C3ZbqaVTvbaNsTrs5FgQjtf5ETsnPGKgc\"}}"
+	},
+	{
+		"id" : "oM1WF6rwRzEI3n9obIGkh-MZ7Suk",
+		"username" : "wechat_oM1WF6rwRz",
+		"password_hash" : "$pbkdf2-sha256$29000$AyCkdK7V.l9rzXlPSSklRA$8n6VwG2Nlc.G.1yrj3vEBRyCF3t5wDHapkTsOAzMwns",
+		"name" : "姜钦阳",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"jiangqinyang\", \"password\": \"$pbkdf2-sha256$29000$h1CKUWpNybnXWotR6r1Xig$kVA65HZMA0tYq0DzhLGlUmEEPNVR2WBuioJC6tlzwLQ\"}}"
+	},
+	{
+		"id" : "oM1WF6rWX-kIrgIYPKadw8G3gIEw",
+		"username" : "wechat_oM1WF6rWX-",
+		"password_hash" : "$pbkdf2-sha256$29000$u3cuhbA2BkAIQeidE6KUMg$9oqXwOZtObs85wazI4OhazZws0v\/oeE7omtgGhArOWE",
+		"name" : "叶绍阳",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"yeshaoyang\", \"password\": \"$pbkdf2-sha256$29000$t1ZqrfUeg\/Be6\/1\/732PsQ$hQTupTparEWUXcefCwShAwbssHvumtoKxVKYj8NXrKs\"}}"
+	},
+	{
+		"id" : "oM1WF6s2nHKMBoXyqENYU-C9vyJw",
+		"username" : "wechat_oM1WF6s2nH",
+		"password_hash" : "$pbkdf2-sha256$29000$kpIyZizFWEsJYWxtzXmv9Q$MxV3AoFSQGwzm7JmWYjbg0p6GYomRWuQV4aE5bY0G5k",
+		"name" : "金其豪",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"jinqihao\", \"password\": \"$pbkdf2-sha256$29000$ztmbs3buvdcaA0DIec\/5\/w$aPWj7oxGbBIrh76oTHjQuqYDbVN4uv0PqwgaYMgAP5I\"}}"
+	},
+	{
+		"id" : "oM1WF6s62HcxXIQ3wb6aBYIrFaYk",
+		"username" : "wechat_oM1WF6s62H",
+		"password_hash" : "$pbkdf2-sha256$29000$XsuZszZm7F2r9f4\/hxCi9A$HguiGopBkm9pU155giCczwk3H.fkSpRXyJp5xr\/11HA",
+		"name" : "冯一帆",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"fengyifan\", \"password\": \"$pbkdf2-sha256$29000$k5KS8p6zFiJkjBFirFUqhQ$he4DSa64Omro7DOBkGxpkVPI11Aum26.TUpQ509BCP4\"}}"
+	},
+	{
+		"id" : "oM1WF6sGlzQjlpzR_6pxs4xzG9Rg",
+		"username" : "wechat_oM1WF6sGlz",
+		"password_hash" : "$pbkdf2-sha256$29000$BUDofY9RCiEk5BzDGOO8Vw$BzNGj86Ccx\/xOtCSc937.dJwWRLwNxmzP15BLB0QZLw",
+		"name" : "余仙娟",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"yuxianjuan\", \"password\": \"$pbkdf2-sha256$29000$XEvpfW\/tvXeuVcoZw3iPEQ$IN8i2.FD5RIEgulS40WeV3MIIXvYQChEuRbjjxi0Pgc\"}}"
+	},
+	{
+		"id" : "oM1WF6sZyz_K0We5uc8xbr1BBwxA",
+		"username" : "wechat_oM1WF6sZyz",
+		"password_hash" : "$pbkdf2-sha256$29000$U.o9xxhDKEVo7b03Zsw5pw$dqB7TrCL7I8nZkA1LDqeosG1ZShW\/\/18z6698JRvE20",
+		"name" : "陈柄亦",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"chenbingyi\", \"password\": \"$pbkdf2-sha256$29000$zTlnbI1R6n1Pae09R8hZ6w$4GofmrBU4Lc.XVS.ofM3j1Q5N.\/YKa6fX2o490iNrSc\"}}"
+	},
+	{
+		"id" : "oM1WF6tA0rf0YZisZa3OGPK6RooU",
+		"username" : "wechat_oM1WF6tA0r",
+		"password_hash" : "$pbkdf2-sha256$29000$ROjdW2uttRai1Nq719o7Zw$6SCC0yzG84BRxbmP0\/o.t5qUVLvuc5AmHwVWFvqMxlM",
+		"name" : "肖杰",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"xiaojie\", \"password\": \"$pbkdf2-sha256$29000$z1nrHQOAEAIgxPjfG4NQ6g$BskpAm9c\/Jy9bDXT3ZzQwyHeAGA8vfkVjnCYckqQ93g\"}}"
+	},
+	{
+		"id" : "oM1WF6tD__lrXSkVAQ8VCv1zYark",
+		"username" : "wechat_oM1WF6tD__",
+		"password_hash" : "$pbkdf2-sha256$29000$\/P.fM.YcY4wxprQ2BsBYSw$bz6U\/9XzGkZuRTI7khZ7Q3uAb04Z2BEfkotJ3zQcvIU",
+		"name" : "张万权",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangwanquan\", \"password\": \"$pbkdf2-sha256$29000$L4WwFuJ8z7mXMibkfC8FoA$onY\/yFiy99JZJGzF3Zer4O6LAofe1ukJNzYxyk0.t5U\"}}"
+	},
+	{
+		"id" : "oM1WF6tI0Nojy2LeZjH-VV0ZcA-g",
+		"username" : "wechat_oM1WF6tI0N",
+		"password_hash" : "$pbkdf2-sha256$29000$HYNQihHCWItRao1x7l0rpQ$8uvqKieVqwJ.wfmdiiRBA8dAhxCYjF.BWIDXJAWNCCk",
+		"name" : "黄秋峰",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"huangqiufeng\", \"password\": \"$pbkdf2-sha256$29000$ew.B0BoDQEhp7d1bKwXgHA$aMJ4VgAFT6TSYJrA\/kg.7Z3q8Gnin00kV\/aNbMH0riE\"}}"
+	},
+	{
+		"id" : "oM1WF6tioq2I4TYoJgK11H2TkfQU",
+		"username" : "wechat_oM1WF6tioq",
+		"password_hash" : "$pbkdf2-sha256$29000$8r7X2tu719pbCyFEqHXufQ$Jkh.3VHeWq6M5v2z72Fi2\/I1UxUINkVOEoLKyIh7YHA",
+		"name" : null,
+		"status" : "inactive",
+		"external_credentials" : "{}"
+	},
+	{
+		"id" : "oM1WF6toLeAxNMwKcNHX-z_Qdpm8",
+		"username" : "wechat_oM1WF6toLe",
+		"password_hash" : "$pbkdf2-sha256$29000$P8c4x5hzLoWw1roXYoxxDg$HNsWs.7nstvyNEUCZbfmbVBVfp2rtNJQ5H\/xKy9YXoY",
+		"name" : "巴艳辉",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"bayanhui\", \"password\": \"$pbkdf2-sha256$29000$WIsxRqh1LsU4Z2xtTUmJcQ$hTjucxyeY6ksWxeTcHqyzLnCygXck181l4t3tEvb53c\"}}"
+	},
+	{
+		"id" : "oM1WF6tUiDKhHh9eo-z2P7YZEKA4",
+		"username" : "wechat_oM1WF6tUiD",
+		"password_hash" : "$pbkdf2-sha256$29000$MEbonTMGwPj\/f09pba11zg$T78fCjVdfpbXJqaQRRBrWiQJX.UxJSDK0kCORFm.q6M",
+		"name" : "顾亚波",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"guyabo\", \"password\": \"$pbkdf2-sha256$29000$TOldC6HUmpMyxhjDOMcYgw$sHncfgi3cADYRuKDxCQMlM77P4Yyc0u7f1ESaH0kx4A\"}}"
+	},
+	{
+		"id" : "oM1WF6u3F0_L91TkQ1BMiHRdscRA",
+		"username" : "wechat_oM1WF6u3F0",
+		"password_hash" : "$pbkdf2-sha256$29000$.R8DAMBYa63V2puTEuL8nw$rlojJ6j3kh.Nnt6v1LxD3KGICNvVIYBfLNHzZ0z\/XiA",
+		"name" : "张会丽",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhanghuili\", \"password\": \"$pbkdf2-sha256$29000$HuOcc.59LwWgtNaa03qPsQ$awglMKu64SV0oG9Ez125LkhI3JsGuvWjyNrJ5hGimSs\"}}"
+	},
+	{
+		"id" : "oM1WF6u8K8EoJrKJ1Os8MgxnwnoE",
+		"username" : "wechat_oM1WF6u8K8",
+		"password_hash" : "$pbkdf2-sha256$29000$znlPqdV6jxHC2DsnpDSGEA$MHiS\/95Kw0NURCnMIjGrlraHyJRfSjYpoisbUXiqkyE",
+		"name" : "何军",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"hejun\", \"password\": \"$pbkdf2-sha256$29000$XCullLIWAqA0JoRwDsH43w$9oAsOWpWVtxh07vt\/uJ.Fkubi0JyllhgiKfwuFWdV2k\"}}"
+	},
+	{
+		"id" : "oM1WF6uf4e-qgplfxj64vdUiM6c8",
+		"username" : "wechat_oM1WF6uf4e",
+		"password_hash" : "$pbkdf2-sha256$29000$lzJGiPHee.\/dG4NwDoFwTg$BBPbUVzqiI5eTmWue1W53hr7ptWzbio1akeARB4x9nY",
+		"name" : "谢梦洁",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"xiemengjie\", \"password\": \"$pbkdf2-sha256$29000$MMYYo1QqZUxJSWnt3dt7Lw$XQAx\/BHvhW9\/epJhpKZilrlbAmgUfb3s67YZjDBGWmc\"}}"
+	},
+	{
+		"id" : "oM1WF6ui31eJDfSzkhxNFXm3tTdg",
+		"username" : "wechat_oM1WF6ui31",
+		"password_hash" : "$pbkdf2-sha256$29000$\/h.DsPZeS.ldq5Wytra2dg$bNQs1AEVadaG1Gfn1LbN.EFnGherlt\/yslt1PfKqPF0",
+		"name" : null,
+		"status" : "inactive",
+		"external_credentials" : "{}"
+	},
+	{
+		"id" : "oM1WF6uNWH830R0HjSNPNwuumuYs",
+		"username" : "wechat_oM1WF6uNWH",
+		"password_hash" : "$pbkdf2-sha256$29000$xxhj7L3X.h.jlHJOKWUMIQ$TUt4q0oGvn3tI3Gy9rUhWysb2\/VEBwXsKcc0P0y99RQ",
+		"name" : "丁涛涛",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"dingtaotao\", \"password\": \"$pbkdf2-sha256$29000$j7H2XivlXMt5z3mP8V7LeQ$wIG\/jc7hPlp8bMAgxw4f2QMLUcDGuwJC5ycCQMadHKs\"}}"
+	},
+	{
+		"id" : "oM1WF6uOatR7F6psUyd0yHKcOqkw",
+		"username" : "wechat_oM1WF6uOat",
+		"password_hash" : "$pbkdf2-sha256$29000$7H1PKeXcm9M6Z0zpnXNurQ$Khgfcq75HS9Nih8KLP2uC5oQerMR4Nq8.S6vzijUfIs",
+		"name" : "向阳坤",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"xiangyangkun\", \"password\": \"$pbkdf2-sha256$29000$dO79X4uxdo4xBiBECEForQ$\/GAm9IrkF6oof\/M7Xiez0Tc0pf3sln9UdJdkuWayhe4\"}}"
+	},
+	{
+		"id" : "oM1WF6uT-u3vCA6lqRTg_Ak050Qo",
+		"username" : "wechat_oM1WF6uT-u",
+		"password_hash" : "$pbkdf2-sha256$29000$M6aUMmasdW4tZSzlXMsZww$.3szIYwiSowK49FOTw8rRbkBQ1ek7KRJobuIJfAFARU",
+		"name" : "徐浩南",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"xuhaonan\", \"password\": \"$pbkdf2-sha256$29000$.n8vJYTwPuf8f..d816LMQ$DRpuW1.rWJ1DJ\/NMe5Sr\/hUF5UF\/kHOFtcf5..GjHk8\"}}"
+	},
+	{
+		"id" : "oM1WF6uVGIT3X03oyuCvhdtdOGlU",
+		"username" : "wechat_oM1WF6uVGI",
+		"password_hash" : "$pbkdf2-sha256$29000$yXnPmbP2nlOK0fr\/31sLwQ$FoR8VHN\/iqAOXfOtlKHoX2dYM\/e6Klr1GCdSSVu2J.A",
+		"name" : "郑笔武",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhengbiwu\", \"password\": \"$pbkdf2-sha256$29000$es85x7j3\/n\/PWevdO2dsbQ$rMiEfBNWs71EraaTf5K2DlgEBBkZWIQiy1yeLEDlK9w\"}}"
+	},
+	{
+		"id" : "oM1WF6v0anHMW1_O6pJLE4J2BV6Q",
+		"username" : "wechat_oM1WF6v0an",
+		"password_hash" : "$pbkdf2-sha256$29000$dS5lbE0JoTQmpHSOsTbGWA$2EyoX75hkTGlQku9vKr1qBhks72PtNUgixORLOP76Ks",
+		"name" : "王鹏",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wangpeng\", \"password\": \"$pbkdf2-sha256$29000$vPeeM.ac8x7j3LuX0hrDWA$M2wqMe6Ql1Fs5hWJYvoSgUsm4wbTVoFbAU3swmc2QFQ\"}}"
+	},
+	{
+		"id" : "oM1WF6v3TsWV7AE3bgJwnn_y3q7o",
+		"username" : "wechat_oM1WF6v3Ts",
+		"password_hash" : "$pbkdf2-sha256$29000$n7OWkrL2fu.99x4jhDDGOA$kC93Gi2xMKc.ahL7VK1x3J2v6ChzXfU61LaHKSjXcKw",
+		"name" : "刘佳康",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"liujiakang\", \"password\": \"$pbkdf2-sha256$29000$2nuvVSpFSGkNAQDgfA\/hfA$njD5erWvZFoE2zJLTvzNGcZWXX6.mtb.SMbq18nnmnE\"}}"
+	},
+	{
+		"id" : "oM1WF6v7-vUv9k9Gl9w3w8j2eh4o",
+		"username" : "wechat_oM1WF6v7-v",
+		"password_hash" : "$pbkdf2-sha256$29000$HkNISQlBSCmlNMb4vzdmbA$3bGWggzS5mzTuMs9YAYlPze.IRBtQoRcmVb6xDtx9w0",
+		"name" : "田树政",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"tianshuzheng\", \"password\": \"$pbkdf2-sha256$29000$Quh9j7H2HgOglHIO4bwXQg$ZT0mXd3au80lCo8.W358PDFSVybT0.uIgFK8ZT46IHI\"}}"
+	},
+	{
+		"id" : "oM1WF6vaXmFu1jA3mCaKK05c6FpM",
+		"username" : "wechat_oM1WF6vaXm",
+		"password_hash" : "$pbkdf2-sha256$29000$kZLSWivFWAsBwDinNOZ8Dw$okegykrWoMa\/YJtz82FHwbDdm5Q.bWX2sMFSGd4UO0Q",
+		"name" : "李祥林",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"lixianglin\", \"password\": \"$pbkdf2-sha256$29000$Vcr5fy.FMIbwXitFiHFOSQ$OjnKQH8OeD8jeHiTVQBohGcif4zrMkk\/rLcq21vqCpA\"}}"
+	},
+	{
+		"id" : "oM1WF6vbpcIFuOOC-IFRnOSil0AI",
+		"username" : "wechat_oM1WF6vbpc",
+		"password_hash" : "$pbkdf2-sha256$29000$em.tdU6ptTZm7F2L0XpvbQ$6OFMmDtflpBsqPzY02ow0HqLW1Sd7QFv\/hcTS8zPgUI",
+		"name" : "王智坤",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wangzhikun\", \"password\": \"$pbkdf2-sha256$29000$GsM455wz5vwfgxDCGAPg3A$6yENdFFfcbwBSlYn4Q\/yKFvE1ykjmDqqNJd63ceV1ps\"}}"
+	},
+	{
+		"id" : "oM1WF6vCkjmSz_MPGBJ4jr0-aSUU",
+		"username" : "wechat_oM1WF6vCkj",
+		"password_hash" : "$pbkdf2-sha256$29000$yPk\/5zxnrJUyxtg7J0SoVQ$wG8npyUHBO3niVML4xVSrimg2GZfb8LhoxrZX.FvDZs",
+		"name" : "李昊鹏",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"lihaopeng\", \"password\": \"$pbkdf2-sha256$29000$vXeude6dE4JwLiWEcE6p9Q$bPHd\/seaG3L\/3MKPZdX\/RW6Y2lu8epEHE3Pa3AyfU48\"}}"
+	},
+	{
+		"id" : "oM1WF6viUVmrKn3ohM4ZZeDvRovA",
+		"username" : "wechat_oM1WF6viUV",
+		"password_hash" : "$pbkdf2-sha256$29000$8p6z1tp7z5nTOmcMQegdYw$BuYYm.ArEwS.tzbpIKxjFyse\/Uv1T1taF3O4CgeqcL8",
+		"name" : "冷世承",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"lengshicheng\", \"password\": \"$pbkdf2-sha256$29000$vbeWMkboHYNwzlkLIaTUeg$Q3CUl6Dh6K9NySEPw3nf5MjxjHbcgolBQxbqb5IUrE8\"}}"
+	},
+	{
+		"id" : "oM1WF6vjknOfXFzqFVAQyF0dTnck",
+		"username" : "wechat_oM1WF6vjkn",
+		"password_hash" : "$pbkdf2-sha256$29000$pVTKeW\/NeU\/J.V8LoZRyLg$nQIC.1HDIUZZs2bjJFbvNznGxlYpkpfQdhOM\/NW8Nmc",
+		"name" : "何虹江",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"hehongjiang\", \"password\": \"$pbkdf2-sha256$29000$Xcu5d27tXcu5t3bOmbM25g$nnn8O8esusZckmN3nm..iw7JyndTGFmvHD.VEq3WwYE\"}}"
+	},
+	{
+		"id" : "oM1WF6vploF0ef3C6roGabLfPVUc",
+		"username" : "wechat_oM1WF6vplo",
+		"password_hash" : "$pbkdf2-sha256$29000$9B6jdE6p1RrjfA8BwDgHoA$WN12aPBT2xRsdkwh5s3tf00xsQLht3hGv5tjcCb66\/0",
+		"name" : "邱佐德",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"qiuzuode\", \"password\": \"$pbkdf2-sha256$29000$HWMsxbgXYqwVwniPsfa.lw$pkxjhoovAdviv8d9AEIdUAMspWUcWr3IkA9Hhhmv9mc\"}}"
+	},
+	{
+		"id" : "oM1WF6vRj99qRmU0J-6msgiO00hI",
+		"username" : "wechat_oM1WF6vRj9",
+		"password_hash" : "$pbkdf2-sha256$29000$DSHE2FtrrXUuRcg5B6C0lg$1mbijuu\/JjVNYvQT4mRB4JiOwiswugKCJz0dCMK6imE",
+		"name" : "汪海波",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wanghaibo\", \"password\": \"$pbkdf2-sha256$29000$G6O09j6H0Lp37r1X6j1HqA$vgT9tpSkgn3ZvBy\/lQiHdlsPikjoUiwSlN5dHdDfu\/g\"}}"
+	},
+	{
+		"id" : "oM1WF6vrSEm2SdDzUFuu-eaHBVQI",
+		"username" : "wechat_oM1WF6vrSE",
+		"password_hash" : "$pbkdf2-sha256$29000$jbHW.r8XAkBIybkX4hxDqA$25.iEUlUtd4\/GihFg3ErlzHK5JO2JQB20T9Z9YMhY9U",
+		"name" : "张俊磊",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"zhangjunlei\", \"password\": \"$pbkdf2-sha256$29000$AmBMyVmLEUKIkdKaM0YI4Q$IxnIdRUu2lOlklPvQmNwfYoWxXT0PBK4aebcr3upZdw\"}}"
+	},
+	{
+		"id" : "oM1WF6vSjfcCBrHyoe237IAAihRA",
+		"username" : "wechat_oM1WF6vSjf",
+		"password_hash" : "$pbkdf2-sha256$29000$K4Xw\/p8zJgRgDMEYg3BOyQ$p.ZaLFD\/uYoIqnEIwTkM3k746LsDrFj5f6UUVNuhRMU",
+		"name" : "王锋",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"wangfeng\", \"password\": \"$pbkdf2-sha256$29000$GqP0Xgvh3BtjTIkRAiCEcA$w504VeebqS42Q7Qt5cXCHM7yAn6LUzVE3dl50OD7TyE\"}}"
+	},
+	{
+		"id" : "oM1WF6vvmPQAPdAuCiA250DcW9Ws",
+		"username" : "wechat_oM1WF6vvmP",
+		"password_hash" : "$pbkdf2-sha256$29000$MObc2\/u\/916L8V5rLQWAUA$KOU4RbJ4A5sgRPJGZYuVKJ1tLOVZZ2ZL7Gvhzi9tANo",
+		"name" : "胡健楠",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"hujiannan\", \"password\": \"$pbkdf2-sha256$29000$mzMGwHjPuXeOcY7xHuM8pw$MZSfcHXfIxpG4.ITSdPPT3y704ePn2IC7yDORb\/yqjg\"}}"
+	},
+	{
+		"id" : "user_admin",
+		"username" : "admin",
+		"password_hash" : "$pbkdf2-sha256$29000$BCBk7J0zBkDo\/T\/nXAtBaA$dp9GDv67y6B2Tpum4sATov8M3By.uWAcqit2fcmowGc",
+		"name" : "admin",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"admin\", \"password\": \"$pbkdf2-sha256$29000$kpJyDuH8P4fw\/j\/HmJNyrg$K9p1FDw6pJ6C2qIOo3HQHjsJ9uFGtMJMya3DF\/RP.sY\"}}"
+	},
+	{
+		"id" : "user_f720d5c9",
+		"username" : "test1",
+		"password_hash" : "$pbkdf2-sha256$29000$FULo3RtjbE1JCaEUQgjBuA$ckedIOzNjXCJqCUUCHa5xvORiU3dtHti9IlIKCJbDG8",
+		"name" : "test",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"test\", \"password\": \"$pbkdf2-sha256$29000$o3QOYWxtzfn\/\/x\/DeM8ZYw$iYjApBEnFRv1eEq1mFGD6DfT90r8bA1GhESmMBgTtGU\"}}"
+	},
+	{
+		"id" : "user_f84a1e84",
+		"username" : "wxing",
+		"password_hash" : "$pbkdf2-sha256$29000$05oTghAixBjDOAeAcA6BEA$PGpAcSFRxL8Vgk.i9p0xL3EFduRpkX\/BVntjM4vR2S4",
+		"name" : "wxing",
+		"status" : "inactive",
+		"external_credentials" : "{\"usp\": {\"username\": \"test\", \"password\": \"$pbkdf2-sha256$29000$o3QOYWxtzfn\/\/x\/DeM8ZYw$iYjApBEnFRv1eEq1mFGD6DfT90r8bA1GhESmMBgTtGU\"}}"
+	}
+]}

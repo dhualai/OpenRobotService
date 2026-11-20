@@ -1,0 +1,100 @@
+{
+  "suite": "data_analysis",
+  "description": "AiDataAnalysisPlatform golden cases (L1 + L3). Executed via POST /api/ai/analysis/analyze on the real AI service.",
+  "cases": [
+    {
+      "id": "ANAL-001",
+      "data": "[{\"robot_id\": \"R001\", \"fault_code\": \"E1601\", \"level\": \"Error\"}, {\"robot_id\": \"R002\", \"fault_code\": \"E1601\", \"level\": \"Error\"}, {\"robot_id\": \"R003\", \"fault_code\": \"E2201\", \"level\": \"Warning\"}, {\"robot_id\": \"R004\", \"fault_code\": \"E1601\", \"level\": \"Error\"}]",
+      "data_source": "json",
+      "analysis_type": "fault",
+      "question": "哪些故障最频繁？",
+      "expect": {
+        "l1": {
+          "analysis_type": "fault",
+          "key_terms": ["故障"],
+          "schema": {
+            "analysis_type": "str",
+            "summary": "str",
+            "insights": "list",
+            "recommendations": "list"
+          }
+        },
+        "l3": {
+          "min_score": 3,
+          "rubric": "分析必须基于给定数据：应指出 E1601 出现次数最多并给出排查建议；不得编造数据中不存在的故障码或数字"
+        }
+      },
+      "note": "故障分析：E1601 高频识别 + 建议"
+    },
+    {
+      "id": "ANAL-002",
+      "data": "[{\"robot_id\": \"R001\", \"risk_level\": \"high\", \"risk_item\": \"充电桩离线\"}, {\"robot_id\": \"R002\", \"risk_level\": \"medium\", \"risk_item\": \"任务逾期\"}, {\"robot_id\": \"R003\", \"risk_level\": \"high\", \"risk_item\": \"通讯不稳定\"}]",
+      "data_source": "json",
+      "analysis_type": "risk",
+      "question": "当前有哪些高风险项？",
+      "expect": {
+        "l1": {
+          "analysis_type": "risk",
+          "key_terms": ["风险"],
+          "schema": {
+            "analysis_type": "str",
+            "summary": "str",
+            "insights": "list",
+            "recommendations": "list"
+          }
+        },
+        "l3": {
+          "min_score": 3,
+          "rubric": "风险评估必须基于给定数据，指出高风险项（充电桩离线、通讯不稳定）并给出缓解建议，不得编造"
+        }
+      },
+      "note": "风险评估：高风险项识别"
+    },
+    {
+      "id": "ANAL-003",
+      "data": "[{\"robot_id\": \"R001\", \"task_count\": 100, \"success_count\": 95}, {\"robot_id\": \"R002\", \"task_count\": 80, \"success_count\": 60}, {\"robot_id\": \"R003\", \"task_count\": 50, \"success_count\": 49}]",
+      "data_source": "json",
+      "analysis_type": "task_stats",
+      "question": "哪台车效率最低？",
+      "expect": {
+        "l1": {
+          "analysis_type": "task_stats",
+          "schema": {
+            "analysis_type": "str",
+            "summary": "str",
+            "insights": "list",
+            "recommendations": "list"
+          }
+        },
+        "l3": {
+          "min_score": 3,
+          "rubric": "任务统计必须基于给定数据：应指出 R002 成功率最低（75%），并给出改进建议，不得编造"
+        }
+      },
+      "note": "任务统计：低效机器人识别"
+    },
+    {
+      "id": "ANAL-004",
+      "data": "[{\"robot_id\": \"R001\", \"level\": \"Error\", \"msg\": \"通讯超时\"}, {\"robot_id\": \"R002\", \"level\": \"Warning\", \"msg\": \"路径偏离\"}]",
+      "data_source": "json",
+      "analysis_type": "general",
+      "question": "总结运行情况",
+      "expect": {
+        "l1": {
+          "analysis_type": "general",
+          "schema": {
+            "analysis_type": "str",
+            "summary": "str",
+            "insights": "list",
+            "recommendations": "list"
+          }
+        },
+        "l3": {
+          "min_score": 3,
+          "rubric": "通用分析应总结数据要点（通讯超时、路径偏离），给出合理建议，不得编造数据外的事实"
+        }
+      },
+      "note": "通用分析：摘要 + 洞察"
+    }
+  ]
+}

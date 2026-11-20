@@ -1,0 +1,106 @@
+"""任务 Agent 数据模型"""
+
+from typing import Optional, List, Dict
+from pydantic import BaseModel, Field
+
+
+# ============================================================
+# 请求模型
+# ============================================================
+
+class TaskAnalyzeRequest(BaseModel):
+    """分析工单请求"""
+    task_id: str = Field(..., description="工单 ID")
+    session_id: str = Field(..., description="对话 session，多轮分析共享")
+
+
+# ============================================================
+# 核心数据模型
+# ============================================================
+
+class SolutionDraft(BaseModel):
+    """解决方案草稿（LLM 生成 + 工程师可编辑）"""
+    root_cause_analysis: str = Field(
+        default="", description="根因分析：一句话结论 + 推理链"
+    )
+    suggested_actions: List[str] = Field(
+        default_factory=list, description="建议步骤，优先级排序，每步具体可执行"
+    )
+    references: List[str] = Field(
+        default_factory=list, description="参考来源（排查树节点 / 历史工单 ID）"
+    )
+    confidence: float = Field(
+        default=0.0, ge=0.0, le=1.0, description="置信度 (0~1)"
+    )
+    needs_more_info: bool = Field(
+        default=False, description="是否真的需要更多信息才能出方案"
+    )
+
+
+class AttachmentAnalysis(BaseModel):
+    """附件分析摘要"""
+    has_logs: bool = False           # 日志/文本/文档/结构化文件
+    log_summary: str = ""
+    has_replay: bool = False
+    replay_summary: str = ""
+    has_screenshots: bool = False    # 图片
+    file_count: int = 0              # 已解析的文件/附件数
+
+
+class TaskContext(BaseModel):
+    """工单完整上下文（只读，从后端 REST API + diagnosis JSON 组装）
+
+    注意：此模型不重新诊断。hypotheses/ruled_out/collected_info 来自提单 Agent。
+    """
+    # ── 来自 tasks 表（GET /api/tasks/{task_id}）──
+    task_id: str = Field(..., description="工单 ID")
+    title: str = ""
+    description: str = ""
+    task_type: str = ""          # problem / bug / feature / support / other
+    priority: str = ""           # low / medium / high / urgent
+    status: str = ""             # new / in_progress / pending / resolved / closed
+    source: str = ""             # manual / zentao / ai_agent / ...
+    assigned_to: Optional[str] = None
+    project_name: Optional[str] = None
+    project_id: str = ""
+    attachments: List[dict] = Field(default_factory=list)
+    metadata_info: Optional[dict] = None
+    attachment_analysis: Dict[str, dict] = Field(default_factory=dict,
+        description="已解读附件记忆 {object_path: {kind, analyzed, summary, analyzed_at}}")
+
+    # ── 来自 diagnosis JSON（提单 Agent 交付）──
+    problem_summary: str = ""
+    hypotheses: List[str] = Field(default_factory=list)
+    ruled_out: List[str] = Field(default_factory=list)
+    collected_info: Dict[str, str] = Field(default_factory=dict)
+    fault_code: str = ""
+    robot_type: str = ""
+    location: str = ""
+    diagnosis_rounds: int = 0
+    # 提单元数据 / 工单行时间（USP 拉日志锚点：发生时间 → 创建时间）
+    occurrence_time: str = ""
+    created_at: str = ""
+
+
+    # ── 最终解决方案 ──
+    # solution: 历史「任务 Agent 提交方案」流程曾写入 metadata_info.diagnosis.solution（dict），
+    #            该流程前端未启用且已移除 submit 接口，此字段多为空，仅作兼容保留。
+    # resolution_summary: 「结束工单」时工程师填写的解决方式（metadata_info.resolution_summary，纯字符串），
+    #            这是实际生产唯一会写入的解决方式字段，@# 引用读取时优先用它。
+    solution: Optional[dict] = None
+    resolution_summary: str = ""
+    # AI 讨论摘要（metadata_info.ai_summary），作为"怎么解决"的补充说明
+    ai_summary: str = ""
+    # 诊断报告结构化摘要（metadata_info.diag_summary，由 diagnose_flow 写入）：
+    # 不是完整报告，只存根因一句话 + 置信度 + 缺失信息，供 discuss 引用"上次诊断说了啥"。
+    diag_summary: Optional[dict] = None
+
+
+# ============================================================
+# 响应模型
+# ============================================================
+
+class TaskHealthResponse(BaseModel):
+    """健康检查响应"""
+    status: str = "ok"
+    service: str = "ai-task-agent"

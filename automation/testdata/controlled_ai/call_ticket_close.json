@@ -1,0 +1,55 @@
+{
+  "case_id": "call-qa-to-ticket-close",
+  "query_pattern": "我要给 Leo_test 提 problem，指定处理人 u2_auto，标题：自动化链路验证-(?P<run_id>[A-Za-z0-9_-]+)，直接生成工单草稿，不要追问。",
+  "run_id_pattern": "标题：自动化链路验证-(?P<run_id>[A-Za-z0-9_-]+)",
+  "responses": {
+    "intent": "ticket",
+    "rewrite": "Leo_test 机器人无法启动 故障码 E1001",
+    "title": "自动化链路验证-{run_id}",
+    "fields": {
+      "analysis": "问题域：设备故障。\n开工要素：故障码与处理人已明确。\n对照对话：信息已完整。\n定字段：无需补充。",
+      "ticket_type": "problem",
+      "required_fields": {},
+      "prefilled": {
+        "requested_assignee": "自动化处理人",
+        "fault_code": "E1001"
+      },
+      "ask_message": ""
+    },
+    "ticket": {
+      "type": "problem",
+      "title": "自动化链路验证-{run_id}",
+      "description": "[指定处理人：自动化处理人] 机器人无法启动，故障码 E1001，已尝试重启仍无效。",
+      "priority": "中",
+      "contact": "",
+      "location": "",
+      "robot_type": "",
+      "project": "",
+      "fault_code": "E1001",
+      "special_notes": "指定处理人：自动化处理人",
+      "attach_files": [],
+      "dispatch_hint": ""
+    },
+    "main_state": {
+      "action": "submit",
+      "intent": "troubleshoot",
+      "ticket_intent": true,
+      "ticket_cancel": false,
+      "reset_ticket": false,
+      "project_choice": "Leo_test",
+      "referenced_ticket": "",
+      "state_update": {
+        "ticket_type": "problem",
+        "problem_summary": "机器人无法启动，故障码 E1001，已尝试重启仍无效",
+        "ruled_out": [],
+        "hypotheses": [],
+        "collected_info": {
+          "requested_assignee": "自动化处理人",
+          "fault_code": "E1001"
+        },
+        "ticket_ready": true
+      }
+    },
+    "main_message": "工单草稿已生成。类型：problem；指定处理人：自动化处理人；标题：自动化链路验证-{run_id}；可以直接转工单。"
+  }
+}

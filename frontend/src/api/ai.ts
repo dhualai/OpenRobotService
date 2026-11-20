@@ -1,0 +1,703 @@
+/**
+ * AI 模块 API 封装 —— /api/ai/qa/*
+ *
+ * 诊断 Agent：流式问答（SSE）、工单提交/查询/派单回执、历史工单列表、附件上传。
+ * 注：/chat/* 纯对话与 /memory/* 会话记忆两组接口此前未接线，已移除。
+ */
+import API_CONFIG from '@/config/api';
+import { useAuthStore } from '@/stores/auth';
+import { kickToLogin } from '@/shared/utils/session';
+
+const BASE = API_CONFIG.AI.BASE_URL; // '/api/ai'
+
+// ---------------------------------------------------------------------------
+// 通用请求 helpers
+// ---------------------------------------------------------------------------
+
+/** 生成 session_id（前端用时间戳+随机数，保证唯一性） */
+export const generateSessionId = (): string =>
+  `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+/** 将 session_id 持久化到 localStorage，方便会话列表获取 */
+export const trackSession = (sessionId: string): void => {
+  try {
+    const ids: string[] = JSON.parse(localStorage.getItem('ai_sessions') || '[]');
+    if (!ids.includes(sessionId)) {
+      ids.unshift(sessionId); // 最新排最前
+      // 最多保留 50 个
+      localStorage.setItem('ai_sessions', JSON.stringify(ids.slice(0, 50)));
+    }
+  } catch { /* ignore */ }
+};
+
+/** 带 token 的 fetch 封装（用于 SSE 流式请求） */
+export const fetchWithAuth = async (url: string, init: RequestInit = {}) => {
+  // 主动预刷新：AI 接口此前是 401 的高发面（token 30 分钟到期），
+  // 发请求前先按 TOKEN_EXPIRES_AT 预判并换新，从源头消掉这批 401。
+  await useAuthStore.getState().ensureFreshToken();
+  const doFetch = (tok: string | null) => fetch(url, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+      ...(init.headers as Record<string, string>),
+    },
+  });
+  let res = await doFetch(useAuthStore.getState().token);
+  // 401：token 过期 → 刷新后重试一次（对齐业务后端 createRequest 的刷新能力）。
+  // AI 接口（/qa/submit、/qa/ticket/confirm）token 失效时返回 401（而非 200+空 created_by），
+  // 此处刷新重试，避免转工单 created_by 为空。
+  if (res.status === 401) {
+    const ok = await useAuthStore.getState().refreshAuthToken();
+    if (ok) {
+      res = await doFetch(useAuthStore.getState().token);
+    }
+    if (res.status === 401) {
+      kickToLogin('登录已过期，请重新登录');
+      throw new Error('UNAUTHORIZED');
+    }
+  }
+  return res;
+};
+
+/** 通用 JSON POST */
+export const aiPost = async <T = unknown>(path: string, body: object): Promise<T> => {
+  const res = await fetchWithAuth(`${BASE}${path}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`AI 接口异常: ${res.status}`);
+  return res.json();
+};
+
+/** 通用 JSON GET */
+export const aiGet = async <T = unknown>(path: string, params?: Record<string, string>): Promise<T> => {
+  const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+  const res = await fetchWithAuth(`${BASE}${path}${qs}`, { method: 'GET' });
+  if (!res.ok) throw new Error(`AI 接口异常: ${res.status}`);
+  return res.json();
+};
+
+// ---------------------------------------------------------------------------
+// QA 诊断接口 (/api/ai/qa)
+// ---------------------------------------------------------------------------
+
+export interface QAAskRequest {
+  session_id: string;
+  query: string;
+  skip_retrieval?: boolean;
+}
+
+/** 流式问答（SSE）—— 返回 fetch Response，调用方自行读取 ReadableStream */
+export const qaAskStream = (body: QAAskRequest): Promise<Response> =>
+  fetchWithAuth(`${BASE}/qa/ask/stream`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+/** @U老师 讨论流式请求体 */
+export interface TaskDiscussStreamBody {
+  task_id: string;
+  query: string;
+  context?: Record<string, unknown>;
+}
+
+export interface TaskDiscussStreamHandlers {
+  /** 正文增量 token */
+  onToken?: (token: string) => void;
+  /** 附录（澄清建议/记忆标记）追加后的完整正文（替换草稿） */
+  onRewrite?: (reply: string) => void;
+  /** 评论已落库后的结果 */
+  onResult?: (data: { task_id?: string; reply?: string; [k: string]: unknown }) => void;
+  onDone?: (data: { total_ms?: number }) => void;
+  onError?: (message: string) => void;
+}
+
+/**
+ * POST /task/discuss/stream —— @U老师 讨论 SSE。
+ * 事件：token / rewrite / result / error / done（与后端 router 对齐）。
+ */
+export async function taskDiscussStream(
+  body: TaskDiscussStreamBody,
+  handlers: TaskDiscussStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetchWithAuth(`${BASE}/task/discuss/stream`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal,
+    headers: { Accept: 'text/event-stream' },
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const j = await res.json();
+      detail = typeof j?.message === 'string' ? j.message : (typeof j?.detail === 'string' ? j.detail : '');
+    } catch { /* ignore */ }
+    throw new Error(detail || `服务异常（HTTP ${res.status}）`);
+  }
+  if (!res.body) throw new Error('流式响应无 body');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep = buffer.indexOf('\n\n');
+      while (sep !== -1) {
+        const rawEvent = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        sep = buffer.indexOf('\n\n');
+        const lines = rawEvent.split('\n');
+        const evLine = lines.find((l) => l.startsWith('event:'));
+        const dataLine = lines.find((l) => l.startsWith('data:'));
+        if (!dataLine) continue;
+        const ev = (evLine ? evLine.slice('event:'.length).trim() : 'message') || 'message';
+        const dataStr = dataLine.slice('data:'.length).trim();
+        if (!dataStr) continue;
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(dataStr) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (ev === 'token') {
+          handlers.onToken?.(String(obj.token ?? ''));
+        } else if (ev === 'rewrite') {
+          handlers.onRewrite?.(String(obj.reply ?? ''));
+        } else if (ev === 'result') {
+          handlers.onResult?.(obj as { task_id?: string; reply?: string });
+        } else if (ev === 'error') {
+          const msg = String(obj.message ?? obj.error ?? 'AI 回复失败');
+          handlers.onError?.(msg);
+          throw new Error(msg);
+        } else if (ev === 'done') {
+          handlers.onDone?.(obj as { total_ms?: number });
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export interface ArchiveGenerateHandlers {
+  /** 阶段提示（收集素材/总结中/保存初稿） */
+  onStatus?: (msg: string) => void;
+  /** 报告标题（先生成完） */
+  onTitle?: (text: string) => void;
+  /** 正文增量 */
+  onDelta?: (text: string) => void;
+  /** 生成完成并已写入草稿 */
+  onDone?: (data: { report_id: number; version: number; chars: number }) => void;
+  /** 生成失败（可直接手写） */
+  onError?: (message: string) => void;
+  /** 处理人已手写，AI 初稿不覆盖 */
+  onSkipped?: (message: string) => void;
+}
+
+/**
+ * POST /archive/generate/stream —— 归档报告 AI 初稿（SSE）。
+ * 事件：status / title / delta / done / error / skipped。
+ * 生成与连接解耦：中途断开后台仍会写回，前端可刷新或直接手写。
+ */
+export async function archiveGenerateStream(
+  body: { task_id: number },
+  handlers: ArchiveGenerateHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetchWithAuth(`${BASE}/archive/generate/stream`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal,
+    headers: { Accept: 'text/event-stream' },
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const j = await res.json();
+      detail = typeof j?.detail === 'string' ? j.detail : (typeof j?.message === 'string' ? j.message : '');
+    } catch { /* ignore */ }
+    throw new Error(detail || `服务异常（HTTP ${res.status}）`);
+  }
+  if (!res.body) throw new Error('流式响应无 body');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep = buffer.indexOf('\n\n');
+      while (sep !== -1) {
+        const rawEvent = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        sep = buffer.indexOf('\n\n');
+        const lines = rawEvent.split('\n');
+        const evLine = lines.find((l) => l.startsWith('event:'));
+        const dataLine = lines.find((l) => l.startsWith('data:'));
+        if (!dataLine) continue;
+        const ev = (evLine ? evLine.slice('event:'.length).trim() : 'message') || 'message';
+        const dataStr = dataLine.slice('data:'.length).trim();
+        if (!dataStr) continue;
+        let obj: Record<string, unknown>;
+        try {
+          obj = JSON.parse(dataStr) as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (ev === 'status') {
+          handlers.onStatus?.(String(obj.msg ?? ''));
+        } else if (ev === 'title') {
+          handlers.onTitle?.(String(obj.text ?? ''));
+        } else if (ev === 'delta') {
+          handlers.onDelta?.(String(obj.text ?? ''));
+        } else if (ev === 'done') {
+          handlers.onDone?.(obj as { report_id: number; version: number; chars: number });
+        } else if (ev === 'error') {
+          handlers.onError?.(String(obj.msg ?? '生成失败'));
+        } else if (ev === 'skipped') {
+          handlers.onSkipped?.(String(obj.msg ?? '报告已有内容，AI 初稿未覆盖'));
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** 提交工单（显式传 username，token 失效时后端兜底绑定真实用户） */
+export const qaSubmit = (sessionId: string) =>
+  aiPost<{ code: number; [key: string]: unknown }>('/qa/submit', { session_id: sessionId, username: useAuthStore.getState().username });
+
+// ---------------------------------------------------------------------------
+// 转工单二次确认（按钮路径1：prepare 生成草稿 → 弹窗核对/补字段 → confirm 入库）
+// 对应后端 ai/api/router.py 的 /qa/ticket/prepare、/confirm、/draft
+// ---------------------------------------------------------------------------
+
+/** 工单草稿字段（AI 诊断生成，二次确认时供用户核对/编辑） */
+export interface TicketDraft {
+  ticket_id?: string;
+  session_id?: string;
+  type?: string;       // problem|bug|feature|support|other
+  title?: string;
+  description?: string;
+  priority?: string;   // 紧急|高|中|低
+  status?: string;
+  contact?: string;
+  project?: string;    // 项目名称（落 Task.project_name）
+  project_id?: string; // 项目编码 project_code（落 Task.project_id，明确绑定关系）
+  location?: string;
+  robot_type?: string;
+  fault_code?: string;
+  special_notes?: string;
+  steps_to_reproduce?: string;
+  expected_result?: string;
+  actual_result?: string;
+  severity?: string;
+  version?: string;
+  scenario?: string;
+  expected_effect?: string;
+  source?: string;
+  support_type?: string;
+  preferred_response?: string;
+  missing_fields?: string[];
+  /** 最晚解决时间（ISO 字符串，转工单弹窗 antd DatePicker 选择 → overrides → confirm_submit 入库 → 落 Task.deadline_at） */
+  deadline_at?: string;
+  /** 协商阶段（当前步骤）ID：提单弹窗必选，落 Task.curr_step_id */
+  curr_step_id?: number;
+  /** 阶段完成时间（SLA，ISO 字符串）：提单弹窗必选，落 Task.curr_step_endtime */
+  curr_step_endtime?: string;
+  /** 代他人提单：被代理人 users.id。AI 只识别姓名（on_behalf_of_name），
+   *  精确到人由弹窗内选择确认后回填；见 OnBehalfSelect。 */
+  on_behalf_of?: string;
+  /** AI 识别的被代理人姓名（仅用于弹窗预填提示，不直接入库） */
+  on_behalf_of_name?: string;
+  [k: string]: unknown;
+}
+
+/** 协商阶段（task_steps 模板步骤） */
+export interface TicketStep {
+  id: number;
+  step_name: string;
+  sequence: number;
+}
+
+export interface PrepareTicketResult {
+  /** 业务码：0=草稿就绪/需补字段；1=无需重复提交等提示（已建单会话再次转工单等，仅返回 message、无草稿） */
+  code?: number;
+  stage: 'draft_ready' | 'need_fields' | 'not_ready';
+  draft: TicketDraft;
+  missing_fields: string[];
+  /** 保底必填字段缺失项（stage=not_ready 时返回，面向用户的中文名） */
+  missing_info?: string[];
+  /** stage=not_ready 时返回的面向用户的引导话术 */
+  message?: string;
+  /** 项目编号题标记（not_ready 且因项目未定出题）：前端据此不挂「信息不足」卡片/Toast */
+  project_ask?: boolean;
+  /** 项目编号题结构化候选：前端渲染可点按钮，点击=以用户身份发送序号 */
+  project_choices?: Array<{ index: number; name: string; code?: string }>;
+  prompt: string;
+  ticket_ready?: boolean;
+}
+
+/** 生成工单草稿（按钮转工单：第一次点击）
+ *  保底必填字段不足时返回 code=1 + stage='not_ready' + missing_info（不生成草稿，
+ *  用户需回对话补充后再点） */
+export const qaPrepareTicket = (sessionId: string) =>
+  aiPost<{
+    code: number;
+    data?: PrepareTicketResult;
+    message?: string;
+    stage?: string;
+    missing_info?: string[];
+  }>(
+    '/qa/ticket/prepare', { session_id: sessionId },
+  );
+
+/** 确认提交工单（弹窗确认后：overrides 为用户编辑后的字段；显式传 username，token 失效时后端兜底绑定真实用户） */
+export const qaConfirmTicket = (sessionId: string, overrides: Partial<TicketDraft>) =>
+  aiPost<{
+    code: number;
+    data?: {
+      ticket: TicketDraft;
+      db_id: number;
+      notice: string;
+      /** 代他人提单：关系建立结果（未勾选代提时为 null） */
+      proxy_relation?: {
+        relation_id: number;
+        agent_id: string;
+        agent_name?: string | null;
+        principal_id: string;
+        principal_name?: string | null;
+        created: boolean;
+      } | null;
+      /** 代他人提单：关系建立失败原因（非空时前端必须提示，工单本身已提交成功） */
+      proxy_relation_error?: string;
+    };
+    message?: string;
+    missing_fields?: string[];
+  }>('/qa/ticket/confirm', { session_id: sessionId, overrides, username: useAuthStore.getState().username });
+
+/** 获取待确认草稿（前端轮询兜底，如 SSE 中断后恢复） */
+export const qaGetDraft = (sessionId: string) =>
+  aiGet<{ code: number; data?: { draft: TicketDraft | null } }>('/qa/ticket/draft', { session_id: sessionId });
+
+/** 取消确认：清除待确认草稿（用户关闭确认弹窗/放弃提单时调用）。
+ * 若不清除，后端 review 幂等分支（pipeline.py existing_draft 已存在）不再发 review 事件，
+ * 前端确认弹窗无法再次弹出，提单卡死。清掉后下次对话字段齐全会重新弹窗。 */
+export const qaClearDraft = (sessionId: string): Promise<{ code: number; message?: string }> =>
+  fetchWithAuth(`${BASE}/qa/ticket/draft?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).then(
+    (r) => r.json(),
+  );
+
+/** 按工单类型拉协商阶段列表（提单弹窗打开时调用；task_steps 后续可配置，故独立按需拉取） */
+export const qaGetTicketSteps = (type: string) =>
+  aiGet<{ code: number; data?: { steps: TicketStep[] }; message?: string }>(
+    '/qa/ticket/steps', { type },
+  );
+
+/** 智能项目匹配推荐项（ORS-713：会话信号→相关项目，弹窗排序用） */
+export interface ProjectMatchItem {
+  code: string;
+  name: string;
+  /** 匹配理由内参（机械/LLM），前端只做兜底展示，不透出给用户 */
+  reason?: string;
+}
+
+/** 会话→推荐项目列表（失败/无信号返回空数组=退化现状排序，不报错） */
+export const qaProjectMatch = (sessionId: string) =>
+  aiGet<{ code: number; data?: { matched?: ProjectMatchItem[] }; message?: string }>(
+    '/qa/project-match', { session_id: sessionId },
+  ).then((r) => (r?.code === 0 ? r.data?.matched ?? [] : []));
+
+/** 获取工单 */
+export const qaGetTicket = (sessionId: string) =>
+  aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
+
+/** 历史工单摘要（/memory/tickets/all 列表项，字段与后端 Ticket 表对齐） */
+export interface AiTicketBrief {
+  id: number;
+  session_id: string;
+  ticket_ai_id?: string;
+  title: string;
+  description?: string;
+  type?: string;      // problem|bug|feature|support|other
+  priority?: string;  // 紧急|高|中|低
+  status?: string;    // pending|dispatched|in_progress|resolved|closed
+  contact?: string;
+  location?: string;
+  robot_type?: string;
+  fault_code?: string;
+  severity?: string;
+  attachments?: unknown;
+  diagnosis?: unknown;
+  created_at?: string; // ISO
+  updated_at?: string; // ISO
+  // 提单人 / 接单人（username + 展示名），后端 list_all_tickets 返回
+  created_by?: string;
+  created_by_name?: string;
+  assigned_to?: string;
+  assigned_to_name?: string;
+  // 项目名称（tasks.project_name，list_all_tickets 返回）
+  project?: string;
+  // 工单来源（ai 智能派单 / manual 系统任务），用于控制「重新派单」按钮显隐
+  source?: string;
+  // 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null/undefined）
+  redispatch_tip?: string | null;
+  // 当前登录用户是否已关注本工单（卡片星标）：由后端按 viewer 回填，未传 viewer 时恒为 false
+  is_followed?: boolean;
+  // 代他人提单（代理提单）：关系状态 + 当前用户视角标记 + 参与人姓名。
+  // 视角标记由后端按 token 身份判定（前端不自行拼判定）；姓名对非参与人为 null。
+  proxy_relation_status?: 'pending' | 'acknowledged' | 'declined' | null;
+  is_proxy_agent?: boolean;
+  is_principal?: boolean;
+  /** 当前登录用户是否为本单接单人（接单人视角：可见「谁代谁提单」） */
+  is_proxy_assignee?: boolean;
+  proxy_agent_name?: string | null;
+  proxy_principal_name?: string | null;
+  // 评论区参与讨论人员（头像堆叠；已按评论数→评论时间降序，含未读红点标记）
+  participants?: Array<{
+    username: string;
+    name?: string | null;
+    avatar_resource_id?: number | null;
+    comment_count?: number;
+    last_comment_at?: string | null;
+    has_unread?: boolean;
+  }>;
+}
+
+/** 历史工单列表筛选参数 */
+export interface AiTicketListFilters {
+  status?: string;          // new|in_progress|pending|resolved|canceled|closed
+  type?: string;            // problem|bug|feature|support|other
+  keyword?: string;         // 模糊搜索标题/描述
+  username?: string;        // 按创建者用户名过滤
+  exclude_status?: string;  // 排除的状态，逗号分隔（如 closed）
+  viewer?: string;          // 当前登录用户 username：关注态回填 +「我关注的」筛选（与 username 解耦）
+  followed?: boolean;       // 只看 viewer 关注的工单（「我关注的」）
+}
+
+/** 历史工单列表（GET /api/ai/memory/tickets/all） */
+export const qaListTickets = (skip = 0, limit = 50, filters?: AiTicketListFilters) => {
+  const params: Record<string, string> = { skip: String(skip), limit: String(limit) };
+  if (filters?.status) params.status = filters.status;
+  if (filters?.type) params.type = filters.type;
+  if (filters?.keyword) params.keyword = filters.keyword;
+  if (filters?.username) params.username = filters.username;
+  if (filters?.exclude_status) params.exclude_status = filters.exclude_status;
+  if (filters?.viewer) params.viewer = filters.viewer;
+  if (filters?.followed) params.followed = 'true';
+  return aiGet<{
+    code: number;
+    data?: {
+      items: AiTicketBrief[];
+      total: number;
+      skip?: number;
+      limit?: number;
+      by_status?: Record<string, number>; // 各状态数量（口径：source+username，复用列表接口返回）
+      active_total?: number;               // 除已关闭外总数
+    };
+    message?: string;
+  }>('/memory/tickets/all', params);
+};
+
+/** 派单确认回执 */
+export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispatched') =>
+  aiPost<{ code: number; data?: unknown; message?: string }>('/qa/ticket/ack', {
+    session_id: sessionId,
+    dispatch_id: dispatchId,
+    status,
+  });
+
+
+// ---------------------------------------------------------------------------
+// 车型定制模式（扫码进入链路：把问答式会话切为选项式引导流）
+// 对应后端 ai/api/vehicle_mode.py 的 POST /api/ai/qa/mode/confirm
+// ---------------------------------------------------------------------------
+
+export interface VehicleModeConfirmPayload {
+  /** 会话 ID：先有会话再绑模式；同一 session 重复调用=覆盖重注册（幂等） */
+  session_id: string;
+  /** 扫码场景值（= str(wechat_qrcodes.id)，纯数字）：后端据此精确取扫的那一行录入信息 */
+  scene: string;
+  /** 车型（如 XQE）：弹窗展示值；后端以库内 vehicle_model 为准，此处仅作兜底 */
+  model: string;
+  project_name?: string;
+  customer_name?: string;
+  /** 唯一车号：扫码链路无用（scene 才是车体身份），保留字段兼容其他调用方 */
+  vehicle_code?: string;
+}
+
+/**
+ * 车型定制模式确认：把当前会话注册为车型定制模式（该车型的 SOP / 故障分叉树引导）。
+ *
+ * code=0 注册成功，data 带回该车型的手册文档清单；code=1 表示二维码不可用（查无此码 /
+ * 非已发布 / scene 非法 / 未录车型），message 面向用户（实验阶段明确不降级为常规模式，
+ * 前端提示后由用户联系管理员）。
+ */
+export const qaModeConfirm = (payload: VehicleModeConfirmPayload) =>
+  aiPost<{
+    code: number;
+    message?: string;
+    data?: {
+      confirmed: boolean;
+      model: string;
+      domain: string;
+      manual_docs: Array<{ title: string; path: string; url: string }>;
+      /** 开场大方向引导题（0930）：服务端直出（分叉树顶层），无分叉树知识库时为
+       *  null（退化为纯输入框）。1012 起拆两段：choices=常驻 4（故障码保底优先），
+       *  collapsed_choices=折叠剩余（九大类全部可达而首屏不爆，前端「展开全部」补渲染）。 */
+      opening?: {
+        question: string;
+        choices: Array<string>;
+        collapsed_choices?: Array<string>;
+        hint: string;
+      } | null;
+      /** 车型资料引导（1012，独立于故障题）：扫车型目录下型号详情页（XQE122.md
+       *  形态）生成的按钮组，点击=发送「{型号} 车型介绍」走检索。无型号详情页为 null。 */
+      vehicle_guide?: {
+        question: string;
+        choices: Array<string>;
+      } | null;
+    };
+  }>('/qa/mode/confirm', payload);
+
+
+// ---------------------------------------------------------------------------
+// 流式上传（SSE）—— /qa/upload（带 Accept: text/event-stream 触发流式）
+// ---------------------------------------------------------------------------
+
+export interface UploadStreamCallbacks {
+  /** 文件已保存到后端（saved 列表 + filenames） */
+  onFileSaved?: (data: { saved: Array<{ filename: string; size: number; path: string; object_path?: string }>; filenames: string }) => void;
+  /** 流式 token：VLM 图片描述 +（附带文字时的）诊断文字都会触发，按顺序拼接 */
+  onToken?: (token: string) => void;
+  /** VLM 图片分析完成（desc 为完整描述） */
+  onVisionDone?: (desc: string) => void;
+  /** 最终结果（不含附带文字时 = 确认回执；含文字时 = 诊断结果 {action, thinking, ticket}） */
+  onResult?: (data: Record<string, unknown>) => void;
+  /** 流结束 */
+  onDone?: (data: { total_ms?: number }) => void;
+  /** 错误（HTTP / SSE event:error） */
+  onError?: (msg: string) => void;
+}
+
+/**
+ * 流式上传附件（FormData + SSE，带 Accept: text/event-stream 触发 /qa/upload 流式分支）。
+ * 文件保存、VLM 图片分析、附带文字的完整诊断均通过 SSE 逐步推送，前端可实时渲染。
+ */
+export const qaUploadStream = async (
+  sessionId: string,
+  files: File[],
+  message: string,
+  cb: UploadStreamCallbacks,
+): Promise<void> => {
+  // 安全包装：回调在 SSE 读流循环内被调用，任何回调抛错都会中断整个流，
+  // 导致"后端成功却前台显示失败"。这里统一吞掉回调异常，让流正常读完。
+  const safe = <A extends unknown[]>(fn?: (...args: A) => void | Promise<void>) =>
+    (...args: A) => {
+      try {
+        const r = fn?.(...args);
+        if (r && typeof (r as Promise<void>).catch === 'function') {
+          (r as Promise<void>).catch((e) => console.warn('[upload-stream] 回调异常已忽略:', e));
+        }
+      } catch (e) {
+        console.warn('[upload-stream] 回调异常已忽略:', e);
+      }
+    };
+
+  const doStream = async (tok: string | null): Promise<boolean> => {
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    if (message.trim()) formData.append('message', message.trim());
+    files.forEach((f) => formData.append('files', f));
+
+    const controller = new AbortController();
+    const resp = await fetch(`${BASE}/qa/upload`, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+      headers: {
+        Accept: 'text/event-stream',
+        ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+      },
+    });
+    if (resp.status === 401) return false;
+
+    if (!resp.ok) {
+      safe(cb.onError)(`上传失败: HTTP ${resp.status}`);
+      return true;
+    }
+    if (!resp.body) {
+      safe(cb.onError)('流式响应为空');
+      return true;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // 按行切分；pop 保留可能不完整的一行
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+          if (!line) continue;
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7);
+            continue;
+          }
+          if (!line.startsWith('data: ')) continue;
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
+          if (currentEvent === 'file_saved') {
+            safe(cb.onFileSaved)(data as unknown as Parameters<NonNullable<UploadStreamCallbacks['onFileSaved']>>[0]);
+          } else if (data.token) {
+            safe(cb.onToken)(String(data.token));
+          } else if (currentEvent === 'vision_done' && typeof data.desc === 'string') {
+            safe(cb.onVisionDone)(data.desc);
+          } else if (currentEvent === 'result') {
+            safe(cb.onResult)(data);
+          } else if (currentEvent === 'done') {
+            safe(cb.onDone)(data as { total_ms?: number });
+          } else if (currentEvent === 'error' && data.error) {
+            safe(cb.onError)(String(data.error));
+          }
+        }
+      }
+    } finally {
+      controller.abort();
+    }
+    return true;
+  };
+
+  // 预刷新后再建流：上传 SSE 的 401 必须在流开启前挡掉（流一旦开始无法再改状态码）
+  await useAuthStore.getState().ensureFreshToken();
+  let ok = await doStream(useAuthStore.getState().token);
+  if (!ok) {
+    const refreshed = await useAuthStore.getState().refreshAuthToken();
+    if (refreshed) {
+      ok = await doStream(useAuthStore.getState().token);
+    }
+    if (!ok) {
+      kickToLogin('登录已过期，请重新登录');
+      safe(cb.onError)('登录已过期，请重新登录');
+    }
+  }
+};

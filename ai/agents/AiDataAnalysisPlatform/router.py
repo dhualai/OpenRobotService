@@ -1,0 +1,397 @@
+"""AI 数据分析平台 - FastAPI 路由
+
+提供数据分析、流式分析、快速对话和健康检查的 HTTP 接口。
+
+挂载方式::
+
+    from ai.agents.AiDataAnalysisPlatform.router import router
+    app.include_router(router, prefix="/api/ai/analysis", tags=["AI数据分析"])
+"""
+
+from __future__ import annotations
+
+import json
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+
+from .agent import DataAnalysisAgent
+from .logging_config import get_logger
+from .schemas import (
+    AnalysisRequest,
+    AnalysisResult,
+    ChatResponse,
+    ChatContextMeta,
+    HealthResponse,
+    QuickChatRequest,
+)
+from .report_schemas import ReportRequest, ReportResult, ReportPeriod
+from .report_generator import ReportGenerator, _parse_date
+
+logger = get_logger("Router")
+
+router = APIRouter()
+
+# -- Agent 单例（延迟初始化）---------------------------------------
+
+_agent: DataAnalysisAgent | None = None
+
+# SSE 换行符常量（避免在 f-string 中使用转义序列导致工具截断）
+_SSE_NEWLINE = chr(10) + chr(10)
+
+
+def get_agent() -> DataAnalysisAgent:
+    """获取 Agent 单例（延迟初始化）。
+
+    首次调用时从环境变量读取配置并创建实例。
+    """
+    global _agent
+    if _agent is None:
+        _agent = DataAnalysisAgent.from_env()
+    return _agent
+
+
+def reset_agent() -> None:
+    """重置 Agent 单例（用于测试或配置变更后重新初始化）。"""
+    global _agent
+    _agent = None
+
+
+def _merge_chat_context(request: QuickChatRequest) -> dict:
+    """按“显式参数优先，context_meta 补空位”合并聊天上下文。"""
+    meta: ChatContextMeta | None = request.context_meta
+    explicit = getattr(request, "model_fields_set", set())
+
+    def pick(field_name: str):
+        if field_name in explicit:
+            return getattr(request, field_name)
+        if meta is not None:
+            return getattr(meta, field_name)
+        return getattr(request, field_name)
+
+    context_parts: list[str] = []
+    if request.context:
+        context_parts.append(request.context)
+    if meta is not None:
+        if meta.scene:
+            context_parts.append(f"当前页面场景：{meta.scene}")
+        if meta.project_name:
+            context_parts.append(f"当前页面项目：{meta.project_name}")
+
+    return {
+        "question": request.question,
+        "context": "\n".join(context_parts) if context_parts else None,
+        "data": request.data,
+        "data_source": request.data_source,
+        "analysis_type": pick("analysis_type"),
+        "project_code": pick("project_code"),
+        "user_id": pick("user_id"),
+        "period": pick("period"),
+        "date": pick("date"),
+        "conversation_id": request.conversation_id,
+    }
+
+
+# -- 路由端点 -------------------------------------------------------
+
+@router.get("/health", response_model=HealthResponse, summary="健康检查")
+async def health_check() -> HealthResponse:
+    """返回平台配置信息，验证 Agent 是否可用。"""
+    agent = get_agent()
+    return agent.health_check()
+
+
+@router.post("/analyze", summary="数据分析")
+async def analyze_data(request: AnalysisRequest):
+    """对提供的数据执行 AI 分析。
+
+    - 非流式（stream=false）：返回结构化 AnalysisResult。
+    - 流式（stream=true）：返回 SSE 文本流，逐块返回分析内容。
+    """
+    agent = get_agent()
+
+    if request.stream:
+        async def stream_generator():
+            try:
+                async for chunk in agent.analyze_stream(
+                    data=request.data,
+                    data_source=request.data_source,
+                    analysis_type=request.analysis_type,
+                    question=request.question,
+                    context=request.context,
+                ):
+                    payload = json.dumps(
+                        {"content": chunk}, ensure_ascii=False
+                    )
+                    yield "data: " + payload + _SSE_NEWLINE
+                yield "data: [DONE]" + _SSE_NEWLINE
+            except Exception as exc:
+                logger.exception("流式分析出错")
+                err_payload = json.dumps(
+                    {"error": str(exc)}, ensure_ascii=False
+                )
+                yield "data: " + err_payload + _SSE_NEWLINE
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+        )
+
+    try:
+        result = await agent.analyze(
+            data=request.data,
+            data_source=request.data_source,
+            analysis_type=request.analysis_type,
+            question=request.question,
+            context=request.context,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("分析失败")
+        raise HTTPException(status_code=500, detail="分析服务内部错误") from exc
+
+
+@router.post("/chat", response_model=ChatResponse, summary="快速对话")
+async def quick_chat(request: QuickChatRequest) -> ChatResponse:
+    """快速对话问答。
+
+    - 仅传 question/context：自动识别是普通聊天还是数据分析。
+    - 传 data：执行带数据上下文的分析问答。
+    - 不传 data：自动解析指标意图（AnalysisPlan），按需查库分析；
+      信息不足时返回 clarify 追问（配合 conversation_id 多轮补充）。
+        - 未显式传范围参数时，可由 context_meta 补充页面上下文。
+    """
+    agent = get_agent()
+    try:
+        payload = _merge_chat_context(request)
+        return await agent.chat(**payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("对话失败")
+        raise HTTPException(status_code=500, detail="对话服务内部错误") from exc
+
+
+@router.post("/chat/stream", summary="快速对话（流式 SSE）")
+async def quick_chat_stream(request: QuickChatRequest):
+    """快速对话问答（流式）。与 /chat 同语义，事件流输出。
+
+    SSE 事件协议（data 字段为 JSON）：
+        {"type":"meta","mode":"analysis|clarify|chat","plan":{...},
+         "charts":[...],"cards":[...],"suggestions":[...],"conversation_id":"..."}
+        {"type":"delta","content":"..."}   逐块回答文本
+        {"type":"done","conversation_id":"...","mode":"..."}
+        {"type":"error","error":"..."}
+    """
+    agent = get_agent()
+    payload = _merge_chat_context(request)
+    # chat_stream 不接收 period/date（指标对话流程由 plan 决定时间范围）
+    payload.pop("period", None)
+    payload.pop("date", None)
+
+    async def stream_generator():
+        try:
+            async for event in agent.chat_stream(**payload):
+                yield "data: " + json.dumps(event, ensure_ascii=False) + _SSE_NEWLINE
+        except ValueError as exc:
+            yield "data: " + json.dumps(
+                {"type": "error", "error": str(exc)}, ensure_ascii=False
+            ) + _SSE_NEWLINE
+        except Exception:
+            logger.exception("流式对话失败")
+            yield "data: " + json.dumps(
+                {"type": "error", "error": "对话服务内部错误"}, ensure_ascii=False
+            ) + _SSE_NEWLINE
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/chat/agentic/stream", summary="Agentic 自由对话（流式 SSE，LLM 主导+工具调用）")
+async def agentic_chat_stream(request: QuickChatRequest):
+    """Agentic 流式对话：LLM 自主决定聊天或调用工具查询平台数据。
+
+    与 /chat/stream 同 SSE 事件协议，额外支持：
+        {"type":"reasoning","content":"..."}  思考过程（可选，meta 之前下发）
+        done 事件附带 suggest_questions：LLM 生成的追问建议（可选）
+    不传 data 时进入 agentic 流程（指标问题自动查库，闲聊自由回答）；
+    传 data 或 LLM 客户端无工具能力时自动降级到既有 /chat/stream 流程。
+    """
+    agent = get_agent()
+    payload = _merge_chat_context(request)
+    # agentic_chat_stream 不接收 period/date（时间范围由工具参数决定）
+    payload.pop("period", None)
+    payload.pop("date", None)
+
+    async def stream_generator():
+        try:
+            async for event in agent.agentic_chat_stream(**payload):
+                yield "data: " + json.dumps(event, ensure_ascii=False) + _SSE_NEWLINE
+        except ValueError as exc:
+            yield "data: " + json.dumps(
+                {"type": "error", "error": str(exc)}, ensure_ascii=False
+            ) + _SSE_NEWLINE
+        except Exception:
+            logger.exception("agentic 流式对话失败")
+            yield "data: " + json.dumps(
+                {"type": "error", "error": "对话服务内部错误"}, ensure_ascii=False
+            ) + _SSE_NEWLINE
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+    )
+
+
+@router.get("/types", summary="分析类型列表")
+async def list_analysis_types():
+    """返回支持的分析类型枚举。"""
+    from .schemas import AnalysisType, DataSource
+
+    return {
+        "analysis_types": [
+            {"value": t.value, "label": t.name} for t in AnalysisType
+        ],
+        "data_sources": [
+            {"value": s.value, "label": s.name} for s in DataSource
+        ],
+    }
+
+
+# -- 报告生成 -------------------------------------------------------
+
+
+def _current_username(request: Request) -> str:
+    """从 Authorization 头解出当前登录用户名；无效/缺失返回空串。"""
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not token:
+        return ""
+    from app.core.security import decode_token  # 惰性：避免启动期触发 backend 装配
+
+    payload = decode_token(token)
+    if not payload:
+        return ""
+    return (payload.get("sub") or "").strip()
+
+
+def _get_user_project_codes(username: str) -> set[str]:
+    """查询用户在 user_project_roles 中关联的全部项目 code（project.id ↔ code 同值）。
+
+    关联逻辑：users.username ↔ user_project_roles.user_id ↔ project.id；
+    返回 project.code 集合，与前端 /api/admin/projects/me 的选择口径一致。
+    """
+    from ai.core.database import (
+        SessionLocal,
+        User,
+        UserProjectRole,
+        ProjectDelivery,
+    )
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            return set()
+        rows = (
+            db.query(ProjectDelivery.code)
+            .join(
+                UserProjectRole, UserProjectRole.project_id == ProjectDelivery.id
+            )
+            .filter(UserProjectRole.user_id == user.id)
+            .all()
+        )
+        return {r[0] for r in rows if r[0]}
+    finally:
+        db.close()
+
+
+@router.post("/report/generate", summary="生成日报/周报")
+async def generate_report_api(request: ReportRequest, http_req: Request):
+    """生成日报或周报（项目必选，统计范围仅限 request.project_code）。
+
+    权限校验：project_code 必须属于当前登录用户关联的项目
+    （user_project_roles），防止越权查看其他项目数据。
+
+    - 非流式（stream=false）：返回结构化 ReportResult。
+    - 流式（stream=true）：返回 SSE 文本流。
+    """
+    # 项目必选 + 归属校验（在 SSE 流开启前执行，确保 401/403 能被前端处理）
+    username = _current_username(http_req)
+    if not username:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+    user_project_codes = _get_user_project_codes(username)
+    if request.project_code not in user_project_codes:
+        logger.warning(
+            "用户 %s 尝试生成非关联项目 %s 的报告，已拒绝",
+            username, request.project_code,
+        )
+        raise HTTPException(
+            status_code=403, detail="仅允许生成您关联项目的日报/周报"
+        )
+
+    agent = get_agent()
+    llm_client = agent._llm
+    generator = ReportGenerator(llm_client)
+    target_date = _parse_date(request.date)
+
+    if request.stream:
+        async def stream_generator():
+            try:
+                async for chunk in generator.generate_stream(
+                    period=request.period,
+                    target_date=target_date,
+                    project_code=request.project_code,
+                ):
+                    payload = json.dumps(
+                        {"content": chunk}, ensure_ascii=False
+                    )
+                    yield "data: " + payload + _SSE_NEWLINE
+                yield "data: [DONE]" + _SSE_NEWLINE
+            except Exception as exc:
+                logger.exception("流式报告生成出错")
+                err_payload = json.dumps(
+                    {"error": str(exc)}, ensure_ascii=False
+                )
+                yield "data: " + err_payload + _SSE_NEWLINE
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+        )
+
+    try:
+        result = await generator.generate(
+            period=request.period,
+            target_date=target_date,
+            project_code=request.project_code,
+        )
+        return {"code": 0, "data": result.model_dump()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("报告生成失败")
+        raise HTTPException(status_code=500, detail="报告生成服务内部错误") from exc
+
+
+@router.get("/report/health", summary="报告服务健康检查")
+async def report_health():
+    """检查报告生成服务是否可用。"""
+    try:
+        agent = get_agent()
+        health = agent.health_check()
+        return {
+            "code": 0,
+            "data": {
+                "status": "ok",
+                "service": "report-generator",
+                "provider": health.provider,
+                "model": health.model,
+            },
+        }
+    except Exception as exc:
+        return {"code": 1, "data": {"status": "error", "error": str(exc)}}

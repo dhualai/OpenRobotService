@@ -1,0 +1,14 @@
+# 二进制与构建产物
+/wxpay-service
+/bin/
+dist/
+
+# 密钥与配置（切勿提交）
+*.pem
+*.key
+.env
+!configs/*.example
+
+# 测试与覆盖率
+coverage.out
+*.test

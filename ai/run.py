@@ -1,0 +1,497 @@
+"""
+AI 模块 — 独立启动入口
+
+ai/ 位于项目根目录，与 backend/、frontend/ 并列。
+完全自举，不依赖 backend 的任何模块。
+
+启动方式：
+    cd OpenRobotService
+    python ai/run.py
+    # → FastAPI 服务运行在 http://0.0.0.0:8401
+"""
+import sys
+import asyncio
+import os
+from pathlib import Path
+from contextlib import asynccontextmanager
+
+# Windows GBK → UTF-8：避免 print() 中的 emoji 字符（⏱ 等）导致崩溃
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if (getattr(sys.stdout, "encoding", None) or "").lower() not in ("utf-8", "utf8"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if (getattr(sys.stderr, "encoding", None) or "").lower() not in ("utf-8", "utf8"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+# ── 路径初始化 ──────────────────────────────────────────────
+_project_root = Path(__file__).resolve().parent.parent  # ai/ → 项目根
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+_backend_dir = _project_root / "backend"
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
+# 加载 .env（AI 模块独立配置）
+from dotenv import load_dotenv
+load_dotenv(_project_root / "ai" / ".env")
+
+# ── SECRET_KEY/ALGORITHM 强制从 backend/.env 读（签发源）────────
+# decode_token（app.core.security）用 backend Settings.SECRET_KEY 验签 JWT（不是 ai/config.py 的 AIConfig）。
+# ai/.env 可能被部署覆盖成空/错误值，此处强制从 backend/.env（签发 token 的密钥源）读取覆盖，
+# 确保 decode_token 验签与后端签发一致（否则 _current_user 返回空 → created_by=空）。
+# 必须在 Settings 实例化（首次 decode_token 调用，惰性）前执行——此处是启动期，早于任何请求。
+from dotenv import dotenv_values
+_backend_env = _project_root / "backend" / ".env"
+if _backend_env.exists():
+    _vals = dotenv_values(_backend_env)
+    # JWT_SECRET 是 SECRET_KEY 的历史别名（backend Settings 内部归一），
+    # 只认 SECRET_KEY 会漏读已按别名配置的部署 → 验签密钥不一致 → 全量 401
+    _sk = _vals.get("SECRET_KEY") or _vals.get("JWT_SECRET")
+    if _sk:
+        os.environ["SECRET_KEY"] = _sk
+    if _vals.get("ALGORITHM"):
+        os.environ["ALGORITHM"] = _vals["ALGORITHM"]
+# 硬编码兜底（backend/.env 也不存在时）
+if not os.environ.get("SECRET_KEY"):
+    os.environ["SECRET_KEY"] = "change-me-to-a-random-long-secret"
+if not os.environ.get("ALGORITHM"):
+    os.environ["ALGORITHM"] = "HS256"
+
+# ── FastAPI ──────────────────────────────────────────────────
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时：日志初始化 → 连通性检查 → Embedding 预热 → 知识库自动入库"""
+    from ai.core.logging import setup_logging, get_logger
+    setup_logging()
+    logger = get_logger(__name__)
+    logger.info("=" * 40)
+    logger.info("AI 模块启动中...")
+
+    from ai.config import get_ai_config, validate_ai_config
+
+    # 0. DB schema 补丁（tasks 表补 curr_step_* 三列 + 建 task_steps 表）。
+    #    说明：backend 侧靠 alembic（b9c0d1e2f3a4 / 9a8b7c6d5e4f）落库；但 AI 服务
+    #    可独立启动、不保证已运行 alembic upgrade head，而
+    #    ai/core/task_adapter.py 又从 backend/app/models/task.py 导入含新列的 Task，
+    #    SQLAlchemy SELECT 会带这些列 → DB 物理表缺列就 1054 Unknown column。
+    #    这里按 backend 惯例做幂等补丁（_column_exists / _table_exists 守卫）。
+    try:
+        from sqlalchemy import text
+        from ai.core.database import engine as _ai_engine
+
+        def _col(name: str, table: str = "tasks") -> bool:
+            with _ai_engine.connect() as conn:
+                row = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() "
+                    "AND TABLE_NAME = :t AND COLUMN_NAME = :n"
+                ), {"t": table, "n": name}).scalar()
+            return bool(row)
+
+        def _tbl(name: str) -> bool:
+            with _ai_engine.connect() as conn:
+                row = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :n"
+                ), {"n": name}).scalar()
+            return bool(row)
+
+        # 0.1 tasks.curr_step_* 三列（对齐 b9c0d1e2f3a4）
+        with _ai_engine.connect() as conn:
+            if not _col("curr_step_id"):
+                conn.execute(text(
+                    "ALTER TABLE tasks ADD COLUMN curr_step_id BIGINT NULL COMMENT '当前步骤ID'"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX ix_tasks_curr_step_id ON tasks(curr_step_id)"
+                ))
+                logger.info("补丁: tasks.curr_step_id 已添加")
+            if not _col("curr_step_name"):
+                conn.execute(text(
+                    "ALTER TABLE tasks ADD COLUMN curr_step_name VARCHAR(128) NULL COMMENT '当前步骤名称'"
+                ))
+                logger.info("补丁: tasks.curr_step_name 已添加")
+            if not _col("curr_step_endtime"):
+                conn.execute(text(
+                    "ALTER TABLE tasks ADD COLUMN curr_step_endtime DATETIME NULL COMMENT '当前步骤结束时间'"
+                ))
+                logger.info("补丁: tasks.curr_step_endtime 已添加")
+            conn.commit()
+        # 0.2 task_steps 表（对齐 9a8b7c6d5e4f）
+        if not _tbl("task_steps"):
+            with _ai_engine.connect() as conn:
+                conn.execute(text(
+                    "CREATE TABLE task_steps ("
+                    "  id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '步骤ID',"
+                    "  task_type ENUM('problem','feature','bug','support','other') NOT NULL COMMENT '任务类型',"
+                    "  step_name VARCHAR(128) NOT NULL COMMENT '步骤名称',"
+                    "  sequence INT NOT NULL DEFAULT 0 COMMENT '当前步骤在当前任务类型下的序号',"
+                    "  INDEX ix_task_steps_task_type (task_type)"
+                    ") COMMENT='任务步骤模板表'"
+                ))
+                conn.commit()
+            logger.info("补丁: task_steps 表已创建")
+        # 0.3 conversations / dataqa_conversations 逻辑删除列（历史会话改软删：只打标记不删库，
+        #     数据保留供 AI 侧直达 / 派单准确率统计）。backend / ai 两边模型都带这两列，
+        #     DB 缺列时所有会话查询会 1054 Unknown column，这里做幂等自愈。
+        for _tbl_name in ("conversations", "dataqa_conversations"):  # 代码内硬编码白名单，非外部输入
+            with _ai_engine.connect() as conn:
+                if not _col("is_deleted", _tbl_name):
+                    conn.execute(text(
+                        f"ALTER TABLE {_tbl_name} ADD COLUMN is_deleted TINYINT(1) NOT NULL "
+                        "DEFAULT 0 COMMENT '逻辑删除：1=用户已删除（列表隐藏，数据保留供统计）'"
+                    ))
+                    logger.info(f"补丁: {_tbl_name}.is_deleted 已添加")
+                if not _col("deleted_at", _tbl_name):
+                    conn.execute(text(
+                        f"ALTER TABLE {_tbl_name} ADD COLUMN deleted_at DATETIME NULL "
+                        "COMMENT '逻辑删除时间（UTC）'"
+                    ))
+                    logger.info(f"补丁: {_tbl_name}.deleted_at 已添加")
+                _idx = f"ix_{_tbl_name}_is_deleted"
+                _has_idx = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t AND INDEX_NAME = :i"
+                ), {"t": _tbl_name, "i": _idx}).scalar()
+                if not _has_idx:
+                    conn.execute(text(f"CREATE INDEX {_idx} ON {_tbl_name}(is_deleted)"))
+                    logger.info(f"补丁: {_tbl_name} 索引 {_idx} 已添加")
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"DB schema 补丁（curr_step_* / task_steps / 会话软删列）跳过: {e}")
+
+    # 1. 连通性检查（DeepSeek + Qdrant + Redis）
+    try:
+        results = await validate_ai_config()
+        for name, info in results.items():
+            if info["status"] == "ok":
+                logger.info(f"外部服务连通: {name} — {info['message']}")
+            else:
+                logger.error(f"外部服务不通: {name} — {info['message']}")
+    except Exception as e:
+        logger.error(f"连通性检查异常: {e}", exc_info=True)
+
+    # 2. Embedding 模型预热
+    try:
+        from ai.core.embed import get_embed_client
+        client = await get_embed_client()
+        await client._ensure_model()
+        logger.info("Embedding 模型预热完成")
+    except Exception as e:
+        logger.error(f"Embedding 模型预热失败: {e}", exc_info=True)
+
+    # 3. 知识库自动检查 & 入库（统一框架，自动发现所有 parser）
+    qdrant = None
+    local = None
+    try:
+        from qdrant_client import QdrantClient
+        from ai.ingestion.registry import discover_parsers, list_registered
+
+        qdrant_cfg = get_ai_config()
+        if qdrant_cfg.qdrant_local_path:
+            local = Path(qdrant_cfg.qdrant_local_path)
+            if not local.is_absolute():
+                local = _project_root / local
+            qdrant = QdrantClient(path=str(local))
+        else:
+            qdrant = QdrantClient(
+                host=qdrant_cfg.qdrant_host, port=qdrant_cfg.qdrant_port,
+                check_compatibility=False,
+            )
+
+        discover_parsers()
+        logger.debug(f"Qdrant 本地路径: {local}")
+
+        try:
+            existing = [c.name for c in qdrant.get_collections().collections]
+            logger.debug(f"现有 Qdrant 集合 ({len(existing)}): {existing}")
+        except Exception:
+            logger.debug("无法列出 Qdrant 集合")
+
+        registered = sorted(
+            list_registered(),
+            key=lambda m: (m.collection_type, not m.ingester_cls.rebuild),
+        )
+
+        for meta in registered:
+            ingester = meta.ingester_cls()
+            ingester.verbose = False  # 静默模式，状态由 logger 输出
+            active = ingester.pointer_reader()
+            label = meta.description or meta.name
+
+            if not ingester.rebuild:
+                if ingester.validate_source_files():
+                    try:
+                        await ingester.auto_ingest(client=qdrant)
+                    except Exception as e:
+                        logger.error(f"知识库 {label} 入库失败: {e}", exc_info=True)
+            elif not (active and qdrant.collection_exists(active)):
+                logger.info(f"知识库 {label} 未就绪，自动入库中...")
+                try:
+                    await ingester.auto_ingest(client=qdrant)
+                except Exception as e:
+                    logger.error(f"知识库 {label} 入库失败: {e}", exc_info=True)
+            elif active:
+                logger.info(f"知识库 {label} 已就绪，集合: {active}")
+
+    except Exception as e:
+        logger.error(f"知识库自动入库异常: {e}", exc_info=True)
+
+    if qdrant is not None:
+        try:
+            qdrant.close()
+        except Exception:
+            pass
+
+    # 4. 启动诊断后台服务
+    diag_worker = None
+    diag_stop = None
+    try:
+        from ai.agents.AiTaskPlatform.services.diagnosis_worker import diagnosis_worker_start
+        diag_worker, diag_stop = diagnosis_worker_start()
+        logger.info(f"诊断后台服务已启动 (scan interval={get_ai_config().diagnosis_scan_interval}s)")
+    except Exception as e:
+        logger.error(f"诊断后台服务启动失败: {e}", exc_info=True)
+
+    # 5. 启动知识沉淀 Worker（扫描已解决工单 → Qdrant 回写）
+    # 总开关 ENABLE_KNOWLEDGE_SINK 默认关：未验证 LLM 提炼质量前不在生产跑。
+    # 开关挡在 import 之前——关的时候完全不加载该模块。
+    knowledge_worker = None
+    archive_worker = None
+    knowledge_stop = None
+    archive_stop = None
+    if get_ai_config().enable_knowledge_sink:
+        try:
+            from ai.core.knowledge_worker import run_knowledge_worker
+            knowledge_stop = asyncio.Event()
+            knowledge_worker = asyncio.create_task(run_knowledge_worker(knowledge_stop))
+            logger.info(f"知识沉淀 Worker 已启动 (scan interval={get_ai_config().diagnosis_scan_interval}s)")
+        except Exception as e:
+            logger.error(f"知识沉淀 Worker 启动失败: {e}", exc_info=True)
+    else:
+        logger.info("知识沉淀 Worker 未启动（ENABLE_KNOWLEDGE_SINK=0）")
+    if getattr(get_ai_config(), "enable_archive_flow", True):
+        try:
+            from ai.core.archive_flow import run_archive_ingest_worker
+            archive_stop = asyncio.Event()
+            archive_worker = asyncio.create_task(
+                run_archive_ingest_worker(archive_stop))
+            logger.info("归档入库 Worker 已启动（轮询 approved 报告）")
+        except Exception as e:
+            logger.error(f"归档入库 Worker 启动失败: {e}", exc_info=True)
+
+    # 7. 启动派单后台 Worker（定时扫描待派单池 → 自动指派）
+    assign_worker = None
+    assign_worker_task = None
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.pipeline.worker import AssignmentWorker
+        _cfg = get_ai_config()
+        assign_worker = AssignmentWorker(interval=_cfg.assign_scan_interval)
+        assign_worker_task = asyncio.create_task(assign_worker.run())
+        assign_worker._task = assign_worker_task
+        logger.info(f"派单 Worker 已启动 (scan interval={_cfg.assign_scan_interval}s)")
+    except Exception as e:
+        logger.error(f"派单 Worker 启动失败: {e}", exc_info=True)
+
+    # 7.5 启动解决方式总结 Worker（结束工单 AI 确认弹窗后台总结，Redis 队列 + 多消费者并行）
+    resolution_worker = None
+    resolution_worker_task = None
+    try:
+        from ai.agents.AiTaskPlatform.services.resolution_worker import resolution_worker_start
+        resolution_worker, resolution_worker_task = resolution_worker_start()
+        _rcfg = get_ai_config()
+        logger.info(f"解决方式总结 Worker 已启动 (concurrency={_rcfg.resolution_worker_concurrency}, queue={_rcfg.resolution_worker_queue})")
+    except Exception as e:
+        logger.error(f"解决方式总结 Worker 启动失败: {e}", exc_info=True)
+
+    # 7.6 启动工单状态刷新 Worker（每次 @U老师 之后把新讨论折叠进结构化状态）。
+    # **无条件启动**：总开关 ENABLE_AGENT_STATE 是热生效的（改 .env 不必重启），
+    # 如果这里按开关决定启不启，运行中把开关打开就还得重启才有人消费队列。
+    # 开关关时没人入队，消费者只是阻塞在 BRPOP 上，不产生开销。
+    agent_state_worker = None
+    try:
+        from ai.agents.AiTaskPlatform.services.agent_state_worker import (
+            agent_state_worker_start,
+        )
+        agent_state_worker, _as_task = agent_state_worker_start()
+        _ascfg = get_ai_config()
+        logger.info(
+            f"工单状态刷新 Worker 已启动 "
+            f"(concurrency={_ascfg.agent_state_worker_concurrency}, "
+            f"queue={_ascfg.agent_state_worker_queue}, "
+            f"开关={_ascfg.enable_agent_state})"
+        )
+    except Exception as e:
+        logger.error(f"工单状态刷新 Worker 启动失败: {e}", exc_info=True)
+
+    # 8. 企业微信 Smartsheet 集成状态
+    try:
+        _wcfg = get_ai_config()
+        if _wcfg.wecom_corpid and _wcfg.wecom_corpsecret:
+            logger.info(f"企业微信已配置: corpid={_wcfg.wecom_corpid[:6]}..., "
+                         f"docid={_wcfg.wecom_docid[:8]}..., "
+                         f"sheet_id={_wcfg.wecom_sheet_id[:8]}...")
+            logger.info(f"企业微信接口: "
+                         f"GET  /api/ai/wecom/projects (拉全部), "
+                         f"GET  /api/ai/wecom/projects/search (分页查), "
+                         f"POST /api/ai/wecom/projects/{{id}} (更新)")
+        else:
+            logger.warning("企业微信未配置 (WECOM_CORPID / WECOM_CORPSECRET 未设置)，接口不可用")
+    except Exception as e:
+        logger.warning(f"企业微信配置检查失败: {e}")
+
+    logger.info("AI 模块启动完成")
+
+    yield
+
+    # ── 关闭 ──
+    if assign_worker:
+        await assign_worker.stop()
+    if resolution_worker:
+        logger.info("解决方式总结 Worker 停止中...")
+        await resolution_worker.stop()
+    if agent_state_worker:
+        logger.info("工单状态刷新 Worker 停止中...")
+        await agent_state_worker.stop()
+    if knowledge_stop:
+        knowledge_stop.set()
+        logger.info("知识沉淀 Worker 停止中...")
+        try:
+            await asyncio.wait_for(knowledge_worker, timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning("知识沉淀 Worker 停止超时(10s)")
+    if archive_stop:
+        archive_stop.set()
+    if archive_worker:
+        logger.info("归档入库 Worker 停止中...")
+        try:
+            await asyncio.wait_for(archive_worker, timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning("归档入库 Worker 停止超时(10s)")
+    if diag_stop:
+        diag_stop.set()
+        logger.info("诊断后台服务停止中...")
+        try:
+            await asyncio.wait_for(diag_worker, timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning("诊断后台服务停止超时(10s)")
+
+
+app = FastAPI(
+    title="OpenRobotService AI 模块",
+    description="操作问答引导 · 知识库检索 · AI 助手",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── 挂载路由（从 ai/api 自举，不再依赖 backend）──────────────
+from ai.api import qa_router, chat_router, memory_router, task_agent_router, wecom_router, assigner_router, archive_router
+app.include_router(qa_router)
+app.include_router(archive_router)
+app.include_router(chat_router)
+app.include_router(memory_router)
+app.include_router(task_agent_router)
+app.include_router(wecom_router)
+app.include_router(assigner_router)
+
+# ── 挂载 AiDataAnalysisPlatform 路由（数据分析）──────────────
+from ai.agents.AiDataAnalysisPlatform.router import router as analysis_router
+app.include_router(analysis_router, prefix="/api/ai/analysis", tags=["AI数据分析"])
+
+# ── 静态资源（知识库图片等）───────────────────────────────────
+from ai.config import get_docs_dir, get_ai_config
+_ai_cfg = get_ai_config()
+_docs = get_docs_dir()
+_media_prefix = _ai_cfg.media_url_prefix
+
+_media_dir = _docs / "operation_doc" / "media"
+if _media_dir.is_dir():
+    app.mount(
+        f"{_media_prefix}/operation_doc",
+        StaticFiles(directory=str(_media_dir)),
+        name="media_operation_doc",
+    )
+
+_faq_media_dir = _docs / "faq_doc" / "media"
+if _faq_media_dir.is_dir():
+    app.mount(
+        f"{_media_prefix}/faq_doc",
+        StaticFiles(directory=str(_faq_media_dir)),
+        name="media_faq_doc",
+    )
+
+_cheduan_media_dir = _docs / "cheduan_doc" / "media"
+if _cheduan_media_dir.is_dir():
+    app.mount(
+        f"{_media_prefix}/cheduan_doc",
+        StaticFiles(directory=str(_cheduan_media_dir)),
+        name="media_cheduan_doc",
+    )
+
+# 五层 domain KB 媒体文件（kb/{domain}/{sub_domain}/media/）
+from ai.config import _KB_DIR as _kb_root
+if _kb_root.is_dir():
+    app.mount(
+        f"{_media_prefix}/kb",
+        StaticFiles(directory=str(_kb_root)),
+        name="media_kb",
+    )
+
+# 聊天记录转发图（qa/forward_image 落盘 uploads/forward/）：微信对 data:/blob: 图
+# 无法长按保存/转发，前端生成后上传换同域真实 URL 再展示
+_forward_dir = Path(_ai_cfg.upload_dir) / "forward"
+_forward_dir.mkdir(parents=True, exist_ok=True)
+app.mount(
+    f"{_media_prefix}/forward",
+    StaticFiles(directory=str(_forward_dir)),
+    name="media_forward",
+)
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "OpenRobotService AI"}
+
+
+@app.get("/")
+async def root():
+    return {
+        "service": "OpenRobotService AI 模块",
+        "version": "1.0.0",
+        "endpoints": {
+            "chat": "POST /api/ai/chat",
+            "chat_stream": "POST /api/ai/chat/stream",
+            "qa_ask": "POST /api/ai/qa/ask",
+            "qa_ask_stream": "POST /api/ai/qa/ask/stream",
+            "qa_health": "GET /api/ai/qa/health",
+            "health": "GET /health",
+        },
+    }
+
+
+# ── 入口 ─────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    # 优先读 ai/.env 中的 PORT（由 ai/config.py 的 load_dotenv 注入），缺省回退 8401
+    port = get_ai_config().port
+    # 热重载默认关闭（1015）：reload=True 时 WatchFiles 在部署拷文件期间反复重启
+    # 服务，健康检查窗口极易撞上重载空窗；且与 backend（reload=False）不一致。
+    # 本地开发需要热重载时在 ai/.env 设 AI_RELOAD=1
+    reload = os.getenv("AI_RELOAD", "").strip().lower() in ("1", "true", "yes", "on")
+    if reload:
+        uvicorn.run("ai.run:app", host="0.0.0.0", port=port, reload=True,
+                    reload_dirs=["ai"], log_level="info")
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

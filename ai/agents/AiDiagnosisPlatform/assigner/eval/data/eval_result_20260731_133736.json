@@ -1,0 +1,126 @@
+{
+  "total": 10,
+  "valid": 10,
+  "skipped_no_name": 0,
+  "hits": 2,
+  "accuracy": 0.2,
+  "avg_confidence": 0.7369999999999999,
+  "avg_time_ms": 6144.0,
+  "decision_distribution": {
+    "recommend": 3,
+    "auto": 5,
+    "fallback": 2
+  },
+  "details": [
+    {
+      "ticket_id": 25,
+      "title": "地图编辑无法删除已有库位",
+      "gt_name": "吴佳秀",
+      "predicted_name": "陈连鑫",
+      "predicted_id": "user_75867e85",
+      "hit": false,
+      "confidence": 0.72,
+      "decision": "recommend",
+      "elapsed_ms": 7039
+    },
+    {
+      "ticket_id": 47,
+      "title": "车子异常离线，遗留的障碍物标识无法清除，影响其他车运行",
+      "gt_name": "徐浩南",
+      "predicted_name": "刘青源",
+      "predicted_id": "user_442f5d55",
+      "hit": false,
+      "confidence": 0.82,
+      "decision": "auto",
+      "elapsed_ms": 4124
+    },
+    {
+      "ticket_id": 53,
+      "title": "北区食堂测试区附近有参与培训的人员吸烟被投诉",
+      "gt_name": "耿洪秀",
+      "predicted_name": "耿洪秀",
+      "predicted_id": "user_07e2b423",
+      "hit": true,
+      "confidence": 0.47,
+      "decision": "fallback",
+      "elapsed_ms": 3979
+    },
+    {
+      "ticket_id": 62,
+      "title": "提升机外设事件丢失问题",
+      "gt_name": "齐子谦",
+      "predicted_name": "陈连鑫",
+      "predicted_id": "user_75867e85",
+      "hit": false,
+      "confidence": 0.82,
+      "decision": "auto",
+      "elapsed_ms": 6402
+    },
+    {
+      "ticket_id": 63,
+      "title": "算法优化",
+      "gt_name": "夏泽龙",
+      "predicted_name": "贾爽",
+      "predicted_id": "oD5oY3f_XqVL75qkCns1hblJ-8UM",
+      "hit": false,
+      "confidence": 0.85,
+      "decision": "auto",
+      "elapsed_ms": 7252
+    },
+    {
+      "ticket_id": 65,
+      "title": "乐飞地图预处理要15-30分钟",
+      "gt_name": "徐浩南",
+      "predicted_name": "田树政",
+      "predicted_id": "user_2e32261e",
+      "hit": false,
+      "confidence": 0.45,
+      "decision": "fallback",
+      "elapsed_ms": 6620
+    },
+    {
+      "ticket_id": 66,
+      "title": "库位和库位载具参数不同步",
+      "gt_name": "陈连鑫",
+      "predicted_name": "陈连鑫",
+      "predicted_id": "user_75867e85",
+      "hit": true,
+      "confidence": 0.85,
+      "decision": "recommend",
+      "elapsed_ms": 6732
+    },
+    {
+      "ticket_id": 69,
+      "title": "上轨buffer0.5，车偏到0.45上不了轨",
+      "gt_name": "张文星",
+      "predicted_name": "徐浩南",
+      "predicted_id": "user_d48c82bb",
+      "hit": false,
+      "confidence": 0.72,
+      "decision": "recommend",
+      "elapsed_ms": 6817
+    },
+    {
+      "ticket_id": 71,
+      "title": "创建任务后，显示任务已下发，但车端说没有收到任务",
+      "gt_name": "陈连鑫",
+      "predicted_name": "贾爽",
+      "predicted_id": "oD5oY3f_XqVL75qkCns1hblJ-8UM",
+      "hit": false,
+      "confidence": 0.82,
+      "decision": "auto",
+      "elapsed_ms": 6626
+    },
+    {
+      "ticket_id": 72,
+      "title": "流程编排，发起流程不能指定载具类型",
+      "gt_name": "张文星",
+      "predicted_name": "汪海波",
+      "predicted_id": "user_211398ea",
+      "hit": false,
+      "confidence": 0.85,
+      "decision": "auto",
+      "elapsed_ms": 5851
+    }
+  ]
+}

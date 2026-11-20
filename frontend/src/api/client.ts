@@ -1,0 +1,383 @@
+// 通用API客户端 - 从 HelpDesk apiClient.js 移植，增加 TypeScript 类型
+// 功能：Token管理 / 请求缓存 / 自动重试 / 超时控制 / 发布-订阅Token刷新
+
+import { getApiBaseUrl } from '../config/api';
+import { WECHAT_CONFIG } from '../config/wechat';
+import { buildWechatAuthUrl, buildStateFromPath } from '../shared/utils/url';
+import { persistAuthTokens, readStored, removeStored } from '../stores/authStorage';
+
+const MAX_RETRIES = 2;
+const RETRY_DELAY = 1000;
+const REQUEST_TIMEOUT = 30000;
+const CACHE_EXPIRY_TIME = 5 * 60 * 1000; // 5分钟
+// 主动预刷新阈值：token 剩余不足该时长即先刷新，避免「到期 → 401 → 重试」这条被动链路
+const REFRESH_AHEAD_MS = 2 * 60 * 1000;
+
+type Subscriber = (token: string | null) => void;
+
+// 请求缓存
+const requestCache = new Map<string, { data: unknown; timestamp: number }>();
+
+// Token管理（全局共享）
+let userToken: string | null = null;
+let isRefreshing = false;
+let refreshSubscribers: Subscriber[] = [];
+
+// 登出流程标记：logout() 设 true、login() 设 false。
+// 用途：登出瞬间清空 token，在途请求会带旧 token 收到 401，刷新又因 refresh_token 被清而失败，
+// 若不拦截会整页跳微信静默授权=自动登录，覆盖 SPA 的 navigate('/login?reason=logout')，
+// 表现为"登出当下就跳走"。此标记让 401 失败分支在登出中放弃抢跳转。
+// 模块级变量随 webview 重载而复位（false），恰好符合"临时退出"语义：重开仍可自动登录。
+let loggingOut = false;
+export function setLoggingOut(v: boolean): void {
+  loggingOut = v;
+}
+export function isLoggingOut(): boolean {
+  return loggingOut;
+}
+
+export interface ApiErrorType {
+  name: string;
+  message: string;
+  statusCode: number;
+  originalError?: unknown;
+}
+
+export class ApiError extends Error {
+  statusCode: number;
+  originalError?: unknown;
+  /** 原始错误响应体（如 422 阻塞详情） */
+  errorBody?: unknown;
+
+  constructor(message: string, statusCode: number, originalError?: unknown, errorBody?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.statusCode = statusCode;
+    this.originalError = originalError;
+    this.errorBody = errorBody;
+  }
+}
+
+/**
+ * 构造用户可读的错误信息。
+ * FastAPI 参数校验失败（422）时 detail 是数组 [{type, loc, msg, input}]，
+ * 而非字符串——这里把字段路径(loc)与具体原因(msg)提取成人类可读文案，
+ * 例如「query 字段：String should have at most 500 characters」，
+ * 让前端 Toast 直接定位是哪个字段超长/缺失，无需再查后端日志。
+ */
+function buildErrorMessage(errorData: Record<string, unknown>, status: number): string {
+  const detail = errorData.detail;
+  // FastAPI 422：detail 为校验错误数组
+  if (Array.isArray(detail) && detail.length > 0) {
+    const parts = detail
+      .map((err) => {
+        if (err && typeof err === 'object') {
+          const e = err as { loc?: unknown[]; msg?: string };
+          const loc = Array.isArray(e.loc) ? e.loc.filter((x) => typeof x === 'string').join('.') : '';
+          const msg = e.msg || '';
+          return loc ? `「${loc}」${msg}` : msg;
+        }
+        return String(err);
+      })
+      .filter(Boolean);
+    if (parts.length > 0) {
+      return `参数校验失败(${status}): ${parts.join('；')}`;
+    }
+  }
+  // 常规错误：detail/message/error 为字符串
+  const msg = errorData.detail || errorData.message || errorData.error;
+  return typeof msg === 'string' ? msg : `HTTP错误! 状态码: ${status}`;
+}
+
+export function initToken(): string {
+  if (userToken) return userToken;
+  try {
+    // 读当前环境命名空间 key；升级前老用户回退无前缀 legacy key
+    const savedToken = readStored('AUTH_TOKEN');
+    if (savedToken) {
+      userToken = savedToken;
+      return userToken;
+    }
+  } catch { /* SSR safe */ }
+  throw new Error('用户未登录，请先登录');
+}
+
+export function getToken(): string | null {
+  return userToken;
+}
+
+export function setToken(token: string): void {
+  userToken = token;
+}
+
+export function clearToken(): void {
+  userToken = null;
+}
+
+async function refreshTokenRequest(): Promise<string> {
+  // 优先读当前环境 scoped key，未迁移前回退 legacy key
+  const storedRefreshToken = readStored('REFRESH_TOKEN');
+  if (!storedRefreshToken) {
+    throw new Error('No refresh token available');
+  }
+  const authBaseUrl = getApiBaseUrl('AUTH');
+  const response = await fetch(`${authBaseUrl}/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: storedRefreshToken }),
+  });
+  if (!response.ok) throw new Error('Token refresh failed');
+  const data = await response.json();
+  if (!data.access_token) throw new Error('No access token in refresh response');
+  const expiresAt = Date.now() + data.expires_in * 1000;
+  userToken = data.access_token;
+  // 刷新结果写回当前环境命名空间 key
+  persistAuthTokens(data.access_token, data.refresh_token, expiresAt);
+  return data.access_token;
+}
+
+/**
+ * 主动预刷新：access token 剩余不足 REFRESH_AHEAD_MS 时先换新，再发业务请求。
+ *
+ * 背景：access token 默认仅 30 分钟，前端原先只在收到 401 后才刷新重试——
+ * 用户在网络面板能看到成批 401，且每个 401 都多一次往返。这里用 TOKEN_EXPIRES_AT
+ * （此前只写不读）在请求发出前预判，从源头消掉这批可见 401。
+ *
+ * 失败静默：不清 token、不跳登录，交给既有 401 分支兜底；否则「预刷新失败」
+ * 会把仍可用的旧 token 提前作废，反而扩大故障面。
+ */
+async function ensureFreshToken(): Promise<void> {
+  let expiresAt: number;
+  try {
+    const raw = readStored('TOKEN_EXPIRES_AT');
+    if (!raw) return; // 无过期时间（legacy 数据）→ 不预判，走 401 兜底
+    expiresAt = Number(raw);
+  } catch {
+    return; // SSR / 存储不可用
+  }
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return;
+  if (expiresAt - Date.now() > REFRESH_AHEAD_MS) return;
+
+  // 已有刷新在飞：不重复触发（后续请求会自然带上新 token）
+  if (isRefreshing) return;
+
+  isRefreshing = true;
+  try {
+    const newToken = await refreshTokenRequest();
+    onRefreshSuccess(newToken);
+  } catch (error) {
+    onRefreshFailed(error);
+  } finally {
+    isRefreshing = false;
+  }
+}
+
+function onRefreshSuccess(newToken: string): void {
+  refreshSubscribers.forEach((cb) => cb(newToken));
+  refreshSubscribers = [];
+}
+
+function onRefreshFailed(_error: unknown): void {
+  refreshSubscribers.forEach((cb) => cb(null));
+  refreshSubscribers = [];
+}
+
+function subscribeToRefresh(callback: Subscriber): void {
+  refreshSubscribers.push(callback);
+}
+
+export interface RequestOptions {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: BodyInit | null;
+  skipCache?: boolean;
+  responseType?: 'json' | 'arrayBuffer';
+  skipAuth?: boolean;  // 跳过Token校验（用于登录等无需认证的接口）
+  timeout?: number;    // 自定义超时（毫秒），覆盖默认 30s（如授权码申请需等待 MQTT 审批，耗时较长）
+}
+
+// createRequest 工厂函数
+export function createRequest(baseUrl: string, _serviceName = 'API') {
+  const request = async <T = unknown>(
+    endpoint: string,
+    options: RequestOptions = {},
+    retries = 0,
+  ): Promise<T> => {
+    if (!options.skipAuth && !userToken) {
+      initToken();
+    }
+
+    const url = `${baseUrl}${endpoint}`;
+    const method = (options.method || 'GET').toUpperCase();
+
+    // GET 请求缓存检查
+    if (method === 'GET' && !options.skipCache) {
+      const cached = requestCache.get(url);
+      if (cached && Date.now() - cached.timestamp < CACHE_EXPIRY_TIME) {
+        return cached.data as T;
+      }
+    }
+
+    // 主动预刷新：token 临近过期先换新，避免「到期 → 401 → 重试」的可见 401。
+    // 置于 GET 缓存命中判断之后：缓存直接返回时无需触发刷新。
+    if (!options.skipAuth) {
+      await ensureFreshToken();
+    }
+
+    const defaultHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (userToken) {
+      defaultHeaders['Authorization'] = `Bearer ${userToken}`;
+    }
+
+    const requestOptions: RequestInit = {
+      method: options.method,
+      headers: { ...defaultHeaders, ...options.headers },
+      body: options.body,
+    };
+
+    // FormData 不设置 Content-Type
+    if (options.body instanceof FormData) {
+      delete (requestOptions.headers as Record<string, string>)['Content-Type'];
+    }
+
+    try {
+      // 超时控制
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), options.timeout ?? REQUEST_TIMEOUT);
+
+      const response = await fetch(url, {
+        ...requestOptions,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        let errorMessage = `HTTP错误! 状态码: ${response.status}`;
+        let errorBody: unknown = undefined;
+        try {
+          errorBody = await response.json();
+          if (errorBody) {
+            const eb = errorBody as Record<string, unknown>;
+            if (eb.detail || eb.message || eb.error) {
+              errorMessage = buildErrorMessage(eb, response.status);
+            }
+          }
+        } catch { /* ignore */ }
+
+        // 401 → Token刷新
+        if (response.status === 401 && retries < MAX_RETRIES) {
+          if (!isRefreshing) {
+            isRefreshing = true;
+            try {
+              const newToken = await refreshTokenRequest();
+              onRefreshSuccess(newToken);
+              return request<T>(endpoint, options, retries + 1);
+            } catch (refreshError) {
+              onRefreshFailed(refreshError);
+              // 登出流程中（userToken/refresh_token 已被 logout 清空）：
+              // 不抢跳转，登出动作本身会 navigate('/login?reason=logout')。
+              // 若这里再整页跳微信静默授权，会自动登录并覆盖 SPA 跳转，表现为"登出当下就跳走"。
+              if (loggingOut) {
+                throw refreshError;
+              }
+              // 先清掉已失效的 token 再跳转：否则整页重载后 main.tsx 的
+              // checkLoginStatus 会用 localStorage 里的旧 token 恢复登录态并再次请求，
+              // 又 401 又跳回来，形成无限重载循环（对齐 kickToLogin 先登出清 token 再跳转的做法）。
+              userToken = null;
+              try {
+                removeStored('AUTH_TOKEN');
+                removeStored('REFRESH_TOKEN');
+                removeStored('TOKEN_EXPIRES_AT');
+              } catch { /* SSR safe */ }
+              if (WECHAT_CONFIG.loginEnabled) {
+                const state = buildStateFromPath(window.location.pathname);
+                window.location.href = buildWechatAuthUrl(state);
+              } else {
+                const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+                window.location.href = `${base}/login`;
+              }
+              throw refreshError;
+            } finally {
+              isRefreshing = false;
+            }
+          } else {
+            return new Promise<T>((resolve, reject) => {
+              subscribeToRefresh((newToken) => {
+                if (newToken) {
+                  resolve(request<T>(endpoint, options, retries + 1));
+                } else {
+                  reject(new Error('Token refresh failed'));
+                }
+              });
+            });
+          }
+        }
+
+        // 500+ → 重试
+        if (response.status >= 500 && retries < MAX_RETRIES) {
+          await new Promise((r) => setTimeout(r, RETRY_DELAY * (retries + 1)));
+          return request<T>(endpoint, options, retries + 1);
+        }
+
+        throw new ApiError(errorMessage, response.status, undefined, errorBody);
+      }
+
+      // 解析响应
+      let data: T;
+      if (options.responseType === 'arrayBuffer') {
+        data = (await response.arrayBuffer()) as unknown as T;
+      } else {
+        data = (await response.json()) as T;
+      }
+
+      // 缓存 GET 响应
+      if (method === 'GET' && !options.skipCache) {
+        requestCache.set(url, { data, timestamp: Date.now() });
+      }
+
+      // 写操作（POST/PUT/DELETE 等）成功后清除全部 GET 缓存，
+      // 确保所有列表/明细页面后续拉取时能拿到最新数据，无需手动刷新
+      if (method !== 'GET') {
+        requestCache.clear();
+      }
+
+      return data;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new ApiError('请求超时，请稍后重试', 408, error);
+      }
+      if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+        throw new ApiError('无法连接到服务器，请检查后端服务是否正常运行', 0, error);
+      }
+      throw new ApiError('请求过程中发生未知错误', 0, error);
+    }
+  };
+
+  return request;
+}
+
+export function clearCache(endpoint?: string, baseUrl?: string): void {
+  if (endpoint && baseUrl) {
+    requestCache.delete(`${baseUrl}${endpoint}`);
+  } else {
+    requestCache.clear();
+  }
+}
+
+export function validateResponse<T extends Record<string, unknown>>(
+  data: T,
+  expectedFields: string[] = []
+): T {
+  if (!data || typeof data !== 'object') {
+    throw new ApiError('无效的响应格式', 200);
+  }
+  for (const field of expectedFields) {
+    if (!(field in data)) {
+      throw new ApiError(`响应缺少必需字段: ${field}`, 200);
+    }
+  }
+  return data;
+}

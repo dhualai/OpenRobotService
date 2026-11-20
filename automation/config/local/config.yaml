@@ -1,0 +1,35 @@
+﻿# 本地开发环境配置
+api:
+  base_url: "http://localhost:8400"
+  timeout: 30
+
+database:
+  host: "localhost"
+  port: 3306
+  user: "root"
+  # 与 backend/.env.example 的默认 DATABASE_URL 对齐（root:123456@127.0.0.1:3306/helpdesk_724）
+  password: "123456"
+  database: "helpdesk_724"
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+
+qdrant:
+  host: "localhost"
+  port: 6333
+
+deepseek:
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+
+wechat:
+  token: "local_token"
+  encoding_aes_key: ""
+  app_id: "wx_local"
+
+playwright:
+  browser: "chromium"
+  headless: true

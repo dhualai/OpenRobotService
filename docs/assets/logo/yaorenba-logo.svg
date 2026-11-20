@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144" width="144" height="144">
+  <!-- 「摇人吧」正式 Logo · EVE 版（方形铺满背景，适配微信头像方/圆显示） -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#AEEBE0"/>
+      <stop offset="1" stop-color="#84D9CB"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#E7F4F1"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFF1C0"/>
+      <stop offset="0.5" stop-color="#F2A65A"/>
+      <stop offset="1" stop-color="#C16B70"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="144" height="144" fill="url(#bg)"/>
+
+  <!-- 星点 -->
+  <circle cx="33" cy="44" r="2.5" fill="#fff" opacity=".88"/>
+  <circle cx="111" cy="44" r="2.5" fill="#fff" opacity=".88"/>
+  <circle cx="48" cy="27" r="1.9" fill="#fff" opacity=".8"/>
+  <circle cx="96" cy="27" r="1.9" fill="#fff" opacity=".8"/>
+
+  <!-- 主体 -->
+  <g transform="translate(0,-7)">
+    <path d="M60 104 Q52 115 54 121 Q60 124 64 122 Q69 130 72 134 Q75 130 80 122 Q84 124 90 121 Q92 115 84 104 Z" fill="url(#flame)"/>
+    <path d="M66 106 Q72 125 78 106 Z" fill="#FFF6D8"/>
+    <rect x="37" y="70" width="8" height="22" rx="4" fill="url(#body)"/>
+    <rect x="99" y="70" width="8" height="22" rx="4" fill="url(#body)"/>
+    <ellipse cx="72" cy="74" rx="25" ry="33" fill="url(#body)"/>
+    <rect x="53" y="57" width="38" height="21" rx="10.5" fill="#23272B"/>
+    <path d="M58 67 Q62.5 61 67 67" fill="none" stroke="#46D6D0" stroke-width="5.5" stroke-linecap="round" opacity="0.28"/>
+    <path d="M77 67 Q81.5 61 86 67" fill="none" stroke="#46D6D0" stroke-width="5.5" stroke-linecap="round" opacity="0.28"/>
+    <path d="M58 67 Q62.5 61 67 67" fill="none" stroke="#46D6D0" stroke-width="3.6" stroke-linecap="round"/>
+    <path d="M77 67 Q81.5 61 86 67" fill="none" stroke="#46D6D0" stroke-width="3.6" stroke-linecap="round"/>
+  </g>
+</svg>

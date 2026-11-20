@@ -1,0 +1,21 @@
+# Local development only. Binds Postgres to loopback.
+# Do not use this file as the customer install.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-topo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-topo}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - topo_pg_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-topo} -d ${POSTGRES_DB:-topo}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  topo_pg_dev:

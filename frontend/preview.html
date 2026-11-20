@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>转发图预览（测试）</title>
+<link rel="stylesheet" href="/src/shared/styles/global.css">
+<style>
+  /* 预览页专用：把 off-screen 截图容器改为可见居中展示 */
+  body { display: flex; justify-content: center; padding: 24px 8px; background: #dfe3ea; }
+  .forward-snapshot { position: static !important; align-self: flex-start; flex-shrink: 0; box-shadow: 0 8px 40px rgba(15,23,42,.18); border-radius: 4px; }
+  /* 假消息气泡（复刻聊天气泡核心样式；Markdown 手写等价结构） */
+  .pv-demo-wrap { display: flex; flex-direction: column; gap: 10px; }
+  .chat-bubble-wrap.pv { display: flex; }
+  .chat-bubble-wrap.pv.is-left { justify-content: flex-start; }
+  .chat-bubble-wrap.pv.is-right { justify-content: flex-end; }
+  .pv .chat-bubble { max-width: 78%; border-radius: 12px; padding: 9px 12px; font-size: 13.5px; line-height: 1.65; }
+  .pv .is-user { background: #4da2e8; color: #fff; }
+  .pv .is-ai { background: #fff; border: 1px solid #e2e5ea; }
+  .pv .who { font-size: 11px; color: #9aa2af; margin-bottom: 3px; }
+  .pv h4 { margin: 6px 0 2px; font-size: 13px; }
+  .pv ol, .pv ul { margin: 4px 0 4px 18px; }
+  .pv li { margin: 2px 0; }
+  .pv code { background: #eef1f5; border-radius: 4px; padding: 0 5px; font-family: Consolas, monospace; font-size: 12.5px; }
+  .pv .kw { color: #4da2e8; }
+</style>
+</head>
+<body>
+<!-- 与 makeForwardImage 生成的结构完全同构 -->
+<div class="forward-snapshot" id="snap">
+  <div class="forward-snapshot__head">
+    <img class="forward-snapshot__logo" src="/share-thumb.png" alt="摇人吧">
+    <div class="forward-snapshot__titles">
+      <div class="forward-snapshot__name">摇人吧 · AI 助手 U老师</div>
+      <div class="forward-snapshot__sub">胡健楠 的提问记录 · 2026/09/10 16:19 起</div>
+    </div>
+  </div>
+  <div class="forward-snapshot__body pv-demo-wrap">
+    <div class="chat-bubble-wrap pv is-right">
+      <div class="chat-bubble is-user">AGV 报 E813 目标点不可达，车是 XFL-191，B区-03 货架取货失败</div>
+    </div>
+    <div class="chat-bubble-wrap pv is-left">
+      <div class="chat-bubble is-ai">
+        <div class="who">U老师</div>
+        <p>这个报错是取货任务的目标点位不可达。按下面顺序排查：</p>
+        <h4>1. 检查地图点位</h4>
+        <ol>
+          <li>打开<b>地图管理 → 点位列表</b>，搜索 <code>B-03</code>，确认点位存在且未被禁用</li>
+          <li>核对点位坐标与货架实际位置偏差是否 &lt; 50mm</li>
+        </ol>
+        <h4>2. 检查货架位绑定</h4>
+        <ol>
+          <li>在<b>库存管理 → 货架位</b>里看 B-03 绑定的地图点位是否指向有效点位</li>
+          <li>重新绑定后需<b>重发地图</b>生效</li>
+        </ol>
+        <h4>3. 检查车辆定位</h4>
+        <p>车辆定位置信度低于 0.6 时会拒绝移动到目标点——让车跑一圈定位，看定位页面数值。</p>
+        <p>以上三步都正常仍报错，转工单让工程师看日志。</p>
+      </div>
+    </div>
+    <div class="chat-bubble-wrap pv is-right">
+      <div class="chat-bubble is-user">好，我先查下点位</div>
+    </div>
+  </div>
+  <div class="forward-snapshot__foot">
+    <div class="forward-snapshot__foot-line"></div>
+    <div class="forward-snapshot__foot-text">来自「摇人吧」服务号 · AGV/AMR 现场问题，问 AI 就行</div>
+  </div>
+</div>
+
+<!-- 复刻「点完生成图片」后的预览弹层（类名与 ChatPanel 完全一致，样式来自 global.css） -->
+<div class="chat-forward-preview" id="pv-layer" style="display:none">
+  <div class="chat-forward-preview__panel">
+    <div class="chat-forward-preview__hint" id="pv-hint">正在生成图片…</div>
+    <div class="chat-forward-preview__img-wrap"><img id="pv-img" alt="转发图"></div>
+    <div class="chat-forward-preview__ops">
+      <button class="chat-forward-bar__btn is-primary" id="pv-dl" disabled>下载图片</button>
+      <button class="chat-forward-bar__btn" id="pv-close">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+  // 复刻微信内路径：html2canvas + 单物理字体（验证单字体下基线是否对齐）
+  const layer = document.getElementById('pv-layer');
+  const hint = document.getElementById('pv-hint');
+  const img = document.getElementById('pv-img');
+  const dl = document.getElementById('pv-dl');
+  let url = '';
+  layer.style.display = 'flex';
+  // pane 隐藏时视口塌陷（innerWidth=0）会把 flex 布局压成废尺寸——等可见再截
+  for (let i = 0; i < 40 && window.innerWidth === 0; i++) await new Promise(r => setTimeout(r, 250));
+  // 单物理字体必须落到每个文本元素上（类规则里的 font-family 会盖过根上的继承——
+  // 上轮实验因此无效），递归 !important 强制
+  document.querySelectorAll('#snap, #snap *').forEach(el => {
+    el.style.setProperty('font-family', '"Microsoft YaHei"', 'important');
+  });
+  // 模拟微信「克隆渲染不吃样式表」：整树内联 computedStyle 后禁用全部样式表再截图——
+  // 产物颜色若完好，证明内联方案不依赖样式表，微信里成立
+  const INLINE_PROPS = ['display','position','flex-direction','flex','flex-shrink','align-items','justify-content','background','background-color','color','border','border-radius','padding','margin','font-family','font-size','font-weight','line-height','text-align','width','height','max-width','min-height','box-shadow','opacity','overflow','box-sizing','letter-spacing','white-space','word-break','text-decoration','list-style'];
+  const inlineComputed = (el) => {
+    if (!(el instanceof HTMLElement)) return;
+    const cs = getComputedStyle(el);
+    const parts = [];
+    for (const p of INLINE_PROPS) { const v = cs.getPropertyValue(p); if (v && v !== 'none' && v !== 'normal') parts.push(`${p}:${v};`); }
+    el.style.cssText += parts.join('');
+    for (const child of el.children) inlineComputed(child);
+  };
+  inlineComputed(document.getElementById('snap'));
+  const sheets = [...document.styleSheets];
+  sheets.forEach(s => { s.disabled = true; });
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/node_modules/html2canvas-pro/dist/html2canvas-pro.min.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  // 文本预栅格化：把文本节点替换成 canvas 画的 img（fillText 中英混排天然同基线），
+  // html2canvas 只画图片+色块——基线问题从根上消失，平台无关
+  const rasterizeTexts = (rootEl) => {
+    const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+    const texts = [];
+    while (walker.nextNode()) if (walker.currentNode.textContent && walker.currentNode.textContent.trim()) texts.push(walker.currentNode);
+    for (const node of texts) {
+      const el = node.parentElement;
+      if (!el) continue;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      const raw = node.textContent;
+      const fontSize = parseFloat(cs.fontSize) || 13;
+      const font = `${cs.fontStyle} ${cs.fontWeight} ${fontSize}px ${cs.fontFamily}`;
+      const meas = document.createElement('canvas').getContext('2d');
+      meas.font = font;
+      const availW = Math.max(el.getBoundingClientRect().width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), 40) || 300;
+      const lines = [];
+      for (const seg of raw.split('\n')) {
+        let cur = '';
+        for (const ch of seg) {
+          if (meas.measureText(cur + ch).width > availW && cur) { lines.push(cur); cur = ch; }
+          else cur += ch;
+        }
+        lines.push(cur);
+      }
+      const lh = parseFloat(cs.lineHeight) || fontSize * 1.5;
+      const dpr = 2;
+      const w = Math.ceil(Math.max(...lines.map(l => meas.measureText(l).width), 1)) + 2;
+      const h = Math.ceil(lines.length * lh) + 2;
+      const c = document.createElement('canvas');
+      c.width = Math.ceil(w * dpr); c.height = Math.ceil(h * dpr);
+      const g = c.getContext('2d');
+      g.scale(dpr, dpr);
+      g.font = font;
+      g.fillStyle = cs.color;
+      g.textBaseline = 'alphabetic';
+      lines.forEach((l, i) => g.fillText(l, 1, i * lh + (lh + fontSize * 0.72) / 2));
+      const img = document.createElement('img');
+      img.src = c.toDataURL('image/png');
+      img.style.cssText = `display:inline-block;vertical-align:top;width:${w}px;height:${h}px;`;
+      node.replaceWith(img);
+    }
+  };
+  rasterizeTexts(document.getElementById('snap'));
+  sheets.forEach(s => { s.disabled = true; });
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/node_modules/html2canvas-pro/dist/html2canvas-pro.min.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  const canvas = await window.html2canvas(document.getElementById('snap'),
+    { scale: 2, useCORS: true, backgroundColor: '#eef1f6', logging: false });
+  sheets.forEach(s => { s.disabled = false; });
+  url = canvas.toDataURL('image/png');
+  img.src = url;
+  hint.textContent = '长按图片可直接发送给朋友，或保存图片';
+  dl.disabled = false;
+  dl.addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `摇人吧对话记录_${Date.now()}.png`;
+    a.click();
+  });
+  document.getElementById('pv-close').addEventListener('click', () => { layer.style.display = 'none'; });
+  layer.addEventListener('click', (e) => { if (e.target === layer) layer.style.display = 'none'; });
+</script>
+</body>
+</html>

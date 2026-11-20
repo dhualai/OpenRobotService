@@ -1,0 +1,245 @@
+# ══════════════════════════════════════════════════════════════════
+# Assigner 派单配置
+#
+# 说明：本文件是派单模块唯一的配置入口，由 settings.py 加载。
+# 各配置块与代码的对应关系：
+#   job_level_penalty    → ranking/ranker.py（职级折扣）
+#   history_recall       → recall/history_recall.py（相似工单）+ expertise_recall.py（问题簇）
+#   department_routing   → filtering/dept_router.py
+#   departments          → 运行时不读；部门画像只认 DB。yaml 这段仅作历史底稿/迁移种子
+#   product_routing      → filtering/product_router.py
+#   vague_strong_signals → ranking/tags.py（Step2 模糊强信号；命中跳过 Step3–6）
+#   llm_recall           → recall/llm_recall.py（画像召回：单轮 single_top_k，分批每批 batch_top_k 全保留）
+#   preferred_floor      → ranking/ranker.py（倾向接单人精排保底；对接人只打标）
+# ══════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════
+# 3.2 相似工单 / 问题簇 参数（两路并行，可空）
+#    消费方：recall/history_recall.py（相似工单，resolved+closed）+ recall/expertise_recall.py（问题簇，resolved+closed）
+#    - retrieve_top_k:    相似工单 Qdrant 检索条数
+#    - half_life_days:    时间衰减半衰期（天），A/B 共用同一函数
+#    - decay_floor:       时间衰减尽头（默认 0.4，老单不会掉到 0）
+#    - sim_threshold:     相似工单相似度阈值
+#    - fault_code_boost:  历史同故障码的加分（相似工单）
+#    - robot_type_boost:  历史同车型的加分（相似工单）
+#    - cluster_merge / cluster_assign：开发者模式可改，写入 runtime_overrides.yaml（不改本文件正文）
+#    - cluster_top_k:     新单最多落入几个簇
+#    - cluster_count_exp: 次数项 ln(1+n)^exp，越小次数收益越弱（1=旧口径，现用 0.3）
+#    - misassign_confirm_boost: 相似路上给纠正接手人加分
+#    - misassign_reject_factor: 两处都压时，相似人分与 Step4 总分各乘此值（默认 0.7）
+#    - misassign_reject_once: 仅 Step4 一处压时用此值（默认 0.5；无相似命中时）
+# ══════════════════════════════════════════════════════════════════
+history_recall:
+  retrieve_top_k: 30        # 相似工单 Qdrant 检索条数
+  half_life_days: 90        # 半衰期：90天后约 0.62，半年后约 0.48，尽头 0.4
+  decay_floor: 0.4
+  sim_threshold: 0.3
+  fault_code_boost: 0.15
+  robot_type_boost: 0.10
+  cluster_merge: 0.85
+  cluster_min_size: 4
+  cluster_assign: 0.80
+  cluster_top_k: 2
+  cluster_count_exp: 0.3    # 次数收益：结10张 ≈ 结1张的 1.45 倍（旧口径约 3.5 倍）
+  misassign_confirm_boost: 0.15   # 派错纠正：接手人相似分加这么多
+  misassign_reject_factor: 0.70   # 两处压：相似人分 × 此值，Step4 总分再 × 此值
+  misassign_reject_once: 0.50    # 仅 Step4 一处压（无相似命中）时用
+
+# ══════════════════════════════════════════════════════════════════
+# 3.3 倾向接单人精排保底
+#    消费方：ranking/ranker.py
+#    - preferred_floor: 倾向接单人 total = max(加权后分数, 该值)。对接人 / 提单人 / 原不满意
+#                       只打标，不加分；对接人不再 ×2。
+# ══════════════════════════════════════════════════════════════════
+preferred_floor: 0.9
+
+# ══════════════════════════════════════════════════════════════════
+# 3.4 模糊强信号（Step2）
+#    消费方：ranking/tags.py::match_vague_strong_signal
+#    只认 dispatch_hint=severe → 跳过 Step3–6，进 Step7。
+#    lacking 不截断：只往 prompt 注入「建议正常派单、接手后再问」。
+#    不再扫描述正文。
+# ══════════════════════════════════════════════════════════════════
+vague_strong_signals:
+  enabled: true
+
+# ══════════════════════════════════════════════════════════════════
+# 3.5 画像召回人数（Step3）
+#    消费方：recall/llm_recall.py
+#    提示模型按区间选人，不钉死人数；解析只按上限封顶，不强制凑满下限。
+#    分批后各批并集全进 Step4，不再第二轮决选。
+#    - single_top_min / single_top_max: 单轮（人数 ≤ single_round_max）选人区间（默认 3～6）
+#    - batch_top_min / batch_top_max:   分批时每批选人区间（默认 2～4）
+#    - single_round_max: 候选人数 ≤ 此值时不分批（默认 12）
+#    - batch_size:       分批每批人数（默认 8）
+#    兼容：仍可读旧键 single_top_k / batch_top_k 当作上限。
+# ══════════════════════════════════════════════════════════════════
+llm_recall:
+  single_top_min: 3
+  single_top_max: 6
+  batch_top_min: 2
+  batch_top_max: 4
+  single_round_max: 12
+  batch_size: 8
+
+# ══════════════════════════════════════════════════════════════════
+# 4. 职级惩罚系数
+#    用途：职级越高越不优先接单，精排后按职级打折。
+#    说明：不要折太狠（曾用 L2:0.60/L3:0.40，会把管理/审核级压出 LLM 的 Top-K 决策窗口，
+#          导致用户重派备注提到"上报上级/请领导"时，LLM 即便想选上级也看不到人选）。
+#          现改为轻微打折（~0.90），让上级保留在决策窗口内；职级高低由 Step6 LLM
+#          结合重派备注与每位候选标出的职级（L1/L2/L3）自主判断。
+#    消费方：ranking/ranker.py
+# ══════════════════════════════════════════════════════════════════
+job_level_penalty:
+  1: 1.0     # 一线：不打折
+  2: 0.90    # 管理/审核：轻微打折（不过度压制，保留在 LLM 决策窗口内）
+  3: 0.90    # 仅兜底：轻微打折（同上，职级高低交给 LLM 结合备注/职级自主判断）
+  99: 0.90   # 未知职级兜底值
+
+# ══════════════════════════════════════════════════════════════════
+# 5. 部门路由（Layer 1：R2 LLM + R3 历史 融合 + R-Audit 审查）
+#    消费方：filtering/dept_router.py
+#    策略：保证"不派错部门"——R2 LLM 为主判、R3 历史为佐证。仅当部门判定足够确信才
+#          hard_filter 收紧候选；中等信度 soft_prior 倾向；低信度 no_filter 保留全量。
+#   融合：
+#     - 原则：LLM(R2) 为基础分（不打折）；历史(R3) 只做"可加佐证"，不做惩罚。
+#     - history_confirm_threshold: 该部门历史占比达到此值才视为"历史明确偏向"（佐证生效）。
+#     - history_bonus:    历史明确偏向该部门（占比 ≥ history_confirm_threshold）时加的分（佐证确认）。
+#     - 历史不足/缺失（占比 < threshold 或 hist=0）→ 不加不减，final = LLM 分，不打折。
+#   阈值：
+#     - hard_filter_score: 与 R2「明确负责」档同一下沿 0.80；主部门分达到即硬收紧。
+#     - hard_mid_score + hard_filter_margin: 主部门在 [0.70, 0.80) 且领先第二名 > margin 也可 hard。
+#     - soft_prior_score: 中等信度 → 倾向该部门但不强制（精排给该部门加分）。
+#    说明：R5 强关键词已移除（子串匹配易误触），R-Audit 独立复核兜底（dept_audit_enabled=true）。
+# ══════════════════════════════════════════════════════════════════
+department_routing:
+  fusion:
+    history_confirm_threshold: 0.5  # 该部门历史占比达到此值才视为"历史明确偏向"（佐证加分）
+    history_bonus: 0.05             # 历史明确偏向时加的分（佐证确认）
+                                    # 注：历史缺失/不足以确认时，LLM 为基础分不打折、不加不减
+  thresholds:
+    hard_filter_score: 0.80
+    hard_mid_score: 0.70
+    hard_filter_margin: 0.20
+    soft_prior_score: 0.55
+    dept_boost: 1.5
+  llm:
+    enabled: true
+    # max_tokens 需容纳最多 3 个部门 + reason
+    max_tokens: 480
+    temperature: 0
+    # min_confidence：R2 输出 confidence 的保留下限。配合 R2 prompt 四档刻度，
+    # 主判(0.80+)与主要候选(0.55+)均可过；次要候选(0.25~0.55)也保留，供融合/收紧权衡。
+    min_confidence: 0.3
+  history:
+    enabled: true
+    top_k: 10
+    min_similarity: 0.70
+  audit:
+    # 审查给出纠正部门时的最低置信；达到则强制 hard 到纠正部门。
+    min_confidence: 0.7
+
+# R-Audit 部门派发审查开关（true = R2 判完部门后独立 LLM 单轮复核）
+dept_audit_enabled: true
+
+# 运行时不读。部门画像只认 DB departments.profile_text；没有则 tip「没有部门画像」。
+# 以下仅作历史底稿 / migrate_department_profiles.py 种子，不再补漏。
+departments:
+  - id: robot_hardware
+    name: 机器人事业部
+    profile_text: |
+      【负责】车体硬件、机械结构、电池/电机/底盘、货叉/升降等行走与执行机构故障。
+      【不负责】调度系统、路径规划、SLAM/定位、服务号软件、地图编辑。
+      【典型现象】无法开机、充不进电、轮子脱落/卡死、车体碰撞变形、货叉不动。
+    examples:
+      - title: "AGV左前轮脱落，车体底部碰撞变形"
+        dept: 机器人事业部
+      - title: "电池充不进电，开机无反应"
+        dept: 机器人事业部
+
+  - id: vehicle_software
+    name: 智能移动研究院
+    profile_text: |
+      【负责】车载软件、SLAM/定位、激光雷达/传感器、控制器、网关通信、底层驱动。
+      【不负责】车体机械硬件、调度任务下发、服务号平台、地图路网编辑。
+      【典型现象】定位漂移、重定位失败、雷达无数据、传感器报错、控制无响应。
+    examples:
+      - title: "车辆定位漂移，显示位置与实际偏差大"
+        dept: 智能移动研究院
+
+  - id: dispatch_planning
+    name: 智能规划研究院
+    profile_text: |
+      【负责】调度USP、任务调度/下发/阻塞、路径规划/避让/锁区、地图编辑、
+              摇人吧服务号平台（前端/后端/AI/后台管理）。
+      【不负责】车体机械、车载 SLAM/传感器驱动、纯硬件故障。
+      【典型现象】任务无法下发、路径规划失败、地图保存失败、服务号功能异常。
+    examples:
+      - title: "调度任务一直处于阻塞状态，无法下发"
+        dept: 智能规划研究院
+
+# ══════════════════════════════════════════════════════════════════
+# 6. 产品收紧（Layer 2）
+#    消费方：filtering/product_router.py
+# ══════════════════════════════════════════════════════════════════
+product_routing:
+  projects:
+    - markers: ["摇人吧服务号"]
+      product: 摇人吧服务号
+  # 部门→产品映射：车端类工单（无项目标记时）按部门落到对应产品，避免误入默认「调度USP」。
+  # 推断优先级：项目标记(projects) > 部门映射(dept_to_product) > 默认(default_product)。
+  # 注：此映射曾于 2026-08-24 实现并验证后遗漏于配置，此处补回。
+  dept_to_product:
+    智能移动研究院: 车端软件
+    机器人事业部: 车端硬件
+  default_product: 调度USP
+  default_when_project_set: true
+  # users.responsibility_modules 中的 key 可能与 config 产品名不一致
+  profile_keys:
+    摇人吧服务号: ["摇人吧服务号", "服务号"]
+    调度USP: ["调度USP"]
+    车端软件: ["车端软件"]
+    车端硬件: ["车端硬件"]
+
+# ══════════════════════════════════════════════════════════════════
+# 7.1 兜底转「项目经理」（Step7）
+#    消费方：pipeline/dispatch_flow.py + ranking/fallback_decision.py
+#    顺序：本单对接人 → 本单 project.project_manager_id → 本配置。
+#    三者都空 → 未指派 + tip，不拔精排 #1。
+#    - project_manager_id：配置兜底的项目经理 users.id（项目字段为空时才用）
+#    - project_manager_name：姓名；查 users 失败时用，避免只配了 ID 却派不出去
+# ══════════════════════════════════════════════════════════════════
+project_manager_id: "oD5oY3e8Lpa689OQHmGRV-kVcVIc"
+project_manager_name: 毛梦晴
+
+# ══════════════════════════════════════════════════════════════════
+# 10. LLM 最终决策（Step 6）
+#    消费方：ranking/llm_decision.py
+#    规则：Step6 铁律 + 产品附录；can_decide=false / 名单外 / 调用失败 → None，不回精排 #1。
+#          精排全量进仲裁（本版不截 Top-K）。
+#    - llm_decision_topk：<=0 不截窗（本版 0）；>0 时才截到精排前 K 名（兼容旧配置）
+#    - yaorenba_force_module_owner：摇人吧附录是否列出子界面负责人（default true；仅附录，非强制）
+# ══════════════════════════════════════════════════════════════════
+llm_decision_topk: 0
+yaorenba_force_module_owner: true
+
+# ══════════════════════════════════════════════════════════════════
+# 11. 归档审核人派审（提交归档报告时）
+#    消费方：archive_review/
+#    与工程师派单 Step0–7 无关。领域名与 dual_tree.DOMAINS 对齐。
+#    - domains: 问题领域 → 审核人 users.id 列表
+#    - on_empty: 无人可选时 fail（提交失败，不进待审）
+#    选人：按在审数量加权抽签，weight=1/(load+1)，负荷低概率高，不是必派最少者。
+#    名单为空时提交会失败；上线前请填入真实 users.id。
+# ══════════════════════════════════════════════════════════════════
+archive_reviewers:
+  domains:
+    调度系统: []
+    车体硬件: []
+    车端软件: []
+    摇人吧: []
+    上游对接: []
+    实施工具: []
+    售前: []
+  on_empty: fail

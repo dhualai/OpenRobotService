@@ -1,0 +1,60 @@
+# =============================================================================
+# OpenRobotService 测试用例模板
+# 按此模板由 AI 生成 YAML → scripts/generate_cases.py 写入 Excel
+# =============================================================================
+
+# ---------- 字段说明（对应 Excel 列 + test_runner.py 读取逻辑）----------
+# id:              字符串，模块前缀+3位序号，自动生成
+# module:          call | tasks | admin | auth （= Excel sheet 名）
+# method:          GET | POST | PUT | PATCH | DELETE
+# path:            API 路径，如 /api/tasks
+# auth:            "Y" | "N"  是否带 Authorization header
+# role:            admin | engineer | customer （可选，默认 admin）
+# payload:         请求体 JSON（GET/DELETE 时为 null）  ← 会被 json.loads 解析
+# expected_status: 期望 HTTP 状态码
+# expected_fields: 断言 JSON 响应中的字段键值对    ← 会被 json.loads 解析
+# note:            辅助信息：覆盖类型 / 功能点 / 备注
+# type:            扩展标记（当前未参与断言）
+
+# ---------- YAML 编写规则 ----------
+# 1. 每个用例是一个 `- field: value` 块
+# 2. payload / expected_fields 使用 YAML 的行内 JSON 或块标量
+# 3. 模块分文件或合并文件均可
+# 4. id 留空则 generate_cases.py 自动填充
+
+# ==================== 示例：auth 模块 ====================
+# - id: AUTH-001
+#   module: auth
+#   method: POST
+#   path: /auth/login
+#   auth: "N"
+#   payload: {"username": "testadmin", "password": "admin123"}
+#   expected_status: 200
+#   expected_fields: {"token_type": "bearer"}
+#   note: "正常流程：登录成功"
+
+# ==================== 示例：call 模块 ====================
+# - id: CALL-005
+#   module: call
+#   method: POST
+#   path: /api/qa/ask
+#   auth: "Y"
+#   payload: {"question": "机器故障怎么办"}
+#   expected_status: 200
+#   expected_fields: {"success": true}
+#   note: "正常流程：提交问题"
+
+# ==================== 示例：权限角色 ====================
+# - id: TASK-035
+#   module: tasks
+#   method: POST
+#   path: /api/tasks/1/assign
+#   auth: "Y"
+#   role: customer
+#   payload: {"assigned_to": "engineer"}
+#   expected_status: 403
+#   expected_fields: null
+#   note: "权限：customer 不可转派（仅 admin）"
+
+# ==================== 覆盖类型速查（填在 note 中） ====================
+# 正常流程 | 异常流程 | 权限 | 状态流转 | 数据校验 | Redis | AI | 数据库
