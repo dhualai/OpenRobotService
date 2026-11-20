@@ -11,13 +11,15 @@
 
 /** 当前挂载前缀，如 `/t/app`；开发态（base=/）返回空串。 */
 export function orsPrefix(): string {
-  const m = /^\/([tp])\/app(?=\/|$)/.exec(window.location.pathname);
-  return m ? `/${m[1]}/app` : "";
+  // BASE_URL 形如 /t/app/kb/ → 摇人吧自身的挂载前缀是 /t/app（去掉末段 /kb）
+  const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
+  if (/\/kb$/.test(base)) return base.slice(0, -3);
+  return '';
 }
 
 function key(name: string): string {
-  const m = /^\/([tp])\//.exec(window.location.pathname);
-  return (m ? `${m[1]}_` : "") + name;
+  const m = /^\/([tp])\/app$/.exec(orsPrefix());
+  return (m ? `${m[1]}_` : '') + name;
 }
 
 function ls(): Storage | null {
@@ -50,9 +52,12 @@ function saveTokens(access?: string, refresh?: string): void {
   if (refresh) s.setItem(key("refresh_token"), refresh);
 }
 
-/** 摇人吧登录页地址，带 from 便于登录后跳回智库当前页。 */
+/** 摇人吧登录页地址，带 from 便于登录后跳回智库。 */
 export function orsLoginUrl(): string {
-  const from = encodeURIComponent(window.location.pathname + window.location.search);
+  // from 必须是**相对摇人吧 base** 的路径：摇人吧登录页会拼成 <它的 base><from>，
+  // 传绝对路径会拼出 /t/app/t/app/kb/ 这种重复前缀（实测踩过）。
+  const kbPath = (import.meta.env.BASE_URL || '/').replace(/^\/([tp])\/app/, '') || '/';
+  const from = encodeURIComponent(kbPath);
   return `${orsPrefix()}/login?from=${from}`;
 }
 
