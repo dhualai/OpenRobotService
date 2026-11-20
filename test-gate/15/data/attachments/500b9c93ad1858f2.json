@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxODI1MTkuMzYzMTg5NSwgImlhdCI6IDE3OTUxNzg5MTkuMzYzMTl9.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "Error E1001",
+    "description": "Robot fault"
+  }
+}

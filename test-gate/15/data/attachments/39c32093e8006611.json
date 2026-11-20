@@ -1,0 +1,11 @@
+{
+  "method": "PATCH",
+  "url": "http://mock.local/api/tasks/1/status",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidTJfYXV0byIsICJleHAiOiAxNzk1MTgyNTE4Ljk4MzI0MTMsICJpYXQiOiAxNzk1MTc4OTE4Ljk4MzI0MTh9.bW9jay1zaWc"
+  },
+  "body": {
+    "status": "resolved",
+    "resolution_summary": "已替换传感器模块"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://localhost:8400/api/tasks/",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsIm5hbWUiOiJhZG1pbiIsImV4cCI6MTc5NTE4MDY4M30.q_jDvXj1fIpak58GeE_sPzxtL2iaBzM2beHB8EUQNac"
+  },
+  "body": {
+    "title": "real-smoke-task",
+    "description": "real backend smoke"
+  }
+}

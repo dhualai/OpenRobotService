@@ -1,0 +1,14 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/admin/resource-manager/resources/1",
+  "reason": "OK",
+  "headers": {
+    "content-length": "45",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": 1,
+    "name": "test-resource",
+    "type": "file"
+  }
+}
