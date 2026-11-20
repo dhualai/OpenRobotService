@@ -1,0 +1,15 @@
+Port 22
+Protocol 2
+HostKey /etc/ssh/ssh_host_rsa_key
+UsePAM yes
+X11Forwarding no
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+PermitRootLogin no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+
+AllowUsers topo
