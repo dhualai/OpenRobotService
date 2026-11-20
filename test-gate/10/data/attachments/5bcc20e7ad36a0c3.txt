@@ -1,0 +1,1 @@
+INFO     automation.test_file:test_logger.py:96 file log entry
