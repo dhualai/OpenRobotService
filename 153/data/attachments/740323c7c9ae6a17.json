@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/tasks/1/relations",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTk3NjYuODI2MDIyNiwgImlhdCI6IDE3OTUxNTYxNjYuODI2MDIyOX0.bW9jay1zaWc"
+  }
+}
