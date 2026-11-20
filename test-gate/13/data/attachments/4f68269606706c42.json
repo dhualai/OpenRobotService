@@ -1,0 +1,13 @@
+{
+  "status_code": 201,
+  "url": "http://mock.local/api/admin/roles",
+  "reason": "Created",
+  "headers": {
+    "content-length": "24",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": 3,
+    "name": "viewer"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/1/complete-step",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTc4NzQuMTA2NjMzLCAiaWF0IjogMTc5NTE1NDI3NC4xMDY2MzM0fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "next_step_id": 2
+  }
+}
