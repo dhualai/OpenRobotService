@@ -6,7 +6,10 @@ from __future__ import annotations
 请求带 ``Authorization: Bearer <摇人吧 access_token>`` 时，由本模块服务端到服务端
 调摇人吧 ``GET {ORS_BASE_URL}/api/auth/me`` 校验，再按下面的规则落到本地 User/Grant：
 
-* 库里已有同 username 的用户行 → **原样沿用**其 role 与 Grant（老用户无感）；
+* 库里已有同 username 的用户行 → **原样沿用**其 role 与 Grant（老用户无感），
+  但允许**提权**：历史 role 是只读（guest）而摇人吧侧已授予 ``frontend:kb:write`` 时，
+  升级为 engineer 并把 ``product_all`` 授权从 read 提升到 write
+  （否则「先登录、后加权限码」的用户会永远停在 guest——线上踩过）；
 * 没有历史行 → 按摇人吧权限码映射建档：
   - ``admin``（含 username=admin）→ role=admin，两产品 product_all + write
   - ``frontend:kb:write`` / ``frontend:kb:*`` → role=engineer，两产品 product_all + write
@@ -106,12 +109,56 @@ def role_for(permissions: tuple[str, ...]) -> str:
     return "guest"
 
 
+def _set_product_perm(db: Session, username: str, product: str, perm: str) -> None:
+    """把某产品的 ``product_all`` 授权置为指定权限（不存在则建）。"""
+    row = (
+        db.query(Grant)
+        .filter(
+            Grant.username == username,
+            Grant.product == product,
+            Grant.kind == "product_all",
+            Grant.resource_id == "",
+        )
+        .one_or_none()
+    )
+    if row is None:
+        db.add(
+            Grant(
+                username=username,
+                product=product,
+                kind="product_all",
+                resource_id="",
+                perm=perm,
+            )
+        )
+        return
+    row.perm = perm
+
+
+def _upgrade_readonly(db: Session, row: User, user: OrsUser) -> None:
+    """只读账号在获得写权限码后提权。
+
+    A 方案要求老用户不被降级，因此只在「历史是只读、目标可写」时动：
+    已有可写角色（engineer/supervisor/admin）一律原样保留。
+    """
+    if row.role != "guest":
+        return
+    target = role_for(user.permissions)
+    if target == "guest":
+        return
+    log.info("upgrade readonly user %s: guest -> %s", row.username, target)
+    row.role = target
+    for product in PRODUCTS:
+        _set_product_perm(db, row.username, product, "write")
+
+
 def provision(db: Session, user: OrsUser) -> User:
-    """确保本地有该用户。已有行原样沿用（仅补显示名），新行按权限码映射建档。"""
+    """确保本地有该用户。已有行沿用 role/Grant（只读账号可被权限码提权），新行按权限码映射建档。"""
     row = db.get(User, user.username)
     if row:
         if user.name and not (row.display_name or "").strip():
             row.display_name = user.name
+        _upgrade_readonly(db, row, user)
         return row
     role = role_for(user.permissions)
     row = User(

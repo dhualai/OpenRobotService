@@ -35,6 +35,7 @@ import { PERM_WECOM_SHEETS } from '@/api/wecomSheets';
 import { PERM_WXPAY_ADMIN } from '@/api/wxpay';
 import { PERM_ANNOUNCEMENT } from '@/api/announcement';
 import { PERM_LEARNING } from '@/api/learning';
+import { KB_PORTAL_URL } from '@/shared/constants/kbPortal';
 import { useAuthStore } from '@/stores/auth';
 
 function LocationProbe() {
@@ -89,12 +90,23 @@ describe('AdminEntries', () => {
       expect(screen.getByRole('button', { name: new RegExp(`^${label}`) })).toBeInTheDocument();
     });
     const cards = screen.getAllByRole('button').filter((button) => button.classList.contains('admin-entries-card'));
-    expect(cards).toHaveLength(4);
+    // 五个一级菜单：原有四个 + 智库（功能拓扑）
+    expect(cards).toHaveLength(5);
     expect(screen.queryByRole('button', { name: /^用户管理/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^开发者模式/ })).not.toBeInTheDocument();
     expect(screen.queryByText('用户统计')).not.toBeInTheDocument();
     expect(fetchUserSummary).not.toHaveBeenCalled();
     expect(fetchBatchUserInfo).not.toHaveBeenCalled();
+  });
+
+  it('功能拓扑作为一级菜单，点击新标签页打开智库（不进前端路由）', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    renderView('/admin/entries');
+    const card = screen.getByRole('button', { name: /^功能拓扑/ });
+    expect(card).toBeInTheDocument();
+    await act(async () => { fireEvent.click(card); });
+    expect(openSpy).toHaveBeenCalledWith(KB_PORTAL_URL, '_blank', 'noopener,noreferrer');
+    openSpy.mockRestore();
   });
 
   it.each([
@@ -201,7 +213,8 @@ describe('AdminEntries', () => {
     const cards = screen
       .getAllByRole('button')
       .filter((b) => b.classList.contains('admin-entries-card'));
-    expect(cards).toHaveLength(4);
+    // 五个一级菜单：原有四个 + 智库（功能拓扑）
+    expect(cards).toHaveLength(5);
     cards.forEach((card) => {
       expect(card.querySelector('svg')).not.toBeNull();
     });
