@@ -6,7 +6,7 @@
 2. 数据导入（JSON 导入 / 旧 Excel 导入）→ 落库 ProjectTransportEfficiency / 型号明细表。
 """
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import io
 
 from sqlalchemy import create_engine, and_, func
@@ -18,6 +18,9 @@ from app.modules.admin.models_das.models import (
 )
 from app.modules.admin.services.data_service import DataService as AdminDataService
 from app.modules.admin.utils_das.config import DATABASE_URL
+
+# 东八区时区常量（与 data_import_service._BEIJING_TZ 同源，但独立定义避免 import 循环）
+_BEIJING_TZ = timezone(timedelta(hours=8))
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -226,7 +229,9 @@ class TransportEfficiencyService:
             start_iso = data_obj.get("start_time") if isinstance(data_obj, dict) else None
             if isinstance(start_iso, str) and len(start_iso) >= 10:
                 saw_dated_record = True
-                if start_iso[:10] == date:
+                # 先按时区归一化到北京时间再取日期；解析失败时退回字符串前缀兜底（兼容老数据）
+                bj_date = _beijing_date_of_iso(start_iso)
+                if (bj_date or start_iso[:10]) == date:
                     metrics = found
                     break
             elif dateless_metrics is None:
@@ -408,6 +413,37 @@ def _parse_rate(value) -> Optional[float]:
     except ValueError:
         return None
     return round(num / 100, 4) if text.endswith('%') else num
+
+
+def _beijing_date_of_iso(iso_str: str) -> Optional[str]:
+    """把 ISO 时间字符串按其自带时区解析后，转换为北京时间的 YYYY-MM-DD。
+
+    处理三种常见形态：
+      - "2026-11-19T16:00:00.000Z"      → Z 视为 UTC → 转北京时间得到 2026-11-20
+      - "2026-11-20T00:00:00+08:00"     → 已是北京时间 → 直接得到 2026-11-20
+      - "2026-11-20 00:00:00"           → 无时区，视为北京时间（旧数据兼容）
+
+    解析失败返回 None，调用方可选择退回老逻辑。
+    """
+    if not isinstance(iso_str, str):
+        return None
+    text = iso_str.strip()
+    if len(text) < 10:
+        return None
+    # Python < 3.11 的 fromisoformat 不识别尾部 Z，统一替换成 +00:00
+    text_normalized = text.replace('Z', '+00:00')
+    # fromisoformat 不接受空格分隔的时间（如 "2026-11-20 00:00:00"），兜底替换为 T
+    if ' ' in text_normalized[:11]:
+        text_normalized = text_normalized[:10] + 'T' + text_normalized[11:]
+    try:
+        dt = datetime.fromisoformat(text_normalized)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_BEIJING_TZ)
+    else:
+        dt = dt.astimezone(_BEIJING_TZ)
+    return dt.strftime('%Y-%m-%d')
 
 
 def _find_metrics(obj, depth: int = 0) -> Optional[Dict]:
