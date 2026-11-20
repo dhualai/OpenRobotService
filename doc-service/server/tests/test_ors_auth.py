@@ -77,6 +77,79 @@ def test_perm_matches_any_wildcard_and_empty():
     assert ors_auth._perm_matches_any((), "frontend:kb:write") is False
 
 
+# ---------- 提权：只读账号获得写权限码后升级（A 方案不降级） ----------
+
+
+def test_upgrade_readonly_to_engineer(db):
+    """guest + frontend:kb:write → engineer，且 product_all 授权提升为 write。"""
+    from app.infra.models import Grant, User
+
+    db.add(User(username="ro", password_hash="", role="guest"))
+    for product in ("usp", "ors"):
+        db.add(Grant(username="ro", product=product, kind="product_all", resource_id="", perm="read"))
+    db.commit()
+
+    ors_auth.provision(db, OrsUser("ro", "RO", ("frontend:kb:write",)))
+    db.commit()
+
+    assert db.get(User, "ro").role == "engineer"
+    perms = {
+        g.product: g.perm
+        for g in db.query(Grant).filter(Grant.username == "ro").all()
+    }
+    assert perms == {"usp": "write", "ors": "write"}
+
+
+def test_readonly_without_write_permission_stays_guest(db):
+    """guest + 没有写权限码 → 保持 guest（不误提权）。"""
+    from app.infra.models import Grant, User
+
+    db.add(User(username="ro2", password_hash="", role="guest"))
+    db.add(Grant(username="ro2", product="usp", kind="product_all", resource_id="", perm="read"))
+    db.commit()
+
+    ors_auth.provision(db, OrsUser("ro2", "RO2", ("backend:project:all",)))
+    db.commit()
+
+    assert db.get(User, "ro2").role == "guest"
+    perm = db.query(Grant).filter(Grant.username == "ro2").one().perm
+    assert perm == "read"
+
+
+def test_engineer_not_downgraded(db):
+    """A 方案：已有可写角色即便当前没有写权限码也不降级。"""
+    from app.infra.models import Grant, User
+
+    db.add(User(username="eng2", password_hash="", role="engineer"))
+    db.add(Grant(username="eng2", product="usp", kind="product_all", resource_id="", perm="write"))
+    db.commit()
+
+    ors_auth.provision(db, OrsUser("eng2", "E", ("backend:project:all",)))
+    db.commit()
+
+    assert db.get(User, "eng2").role == "engineer"
+    assert db.query(Grant).filter(Grant.username == "eng2").one().perm == "write"
+
+
+def test_upgrade_creates_grant_when_missing(db):
+    """历史只读账号缺某产品授权时，提权应补建 write 授权。"""
+    from app.infra.models import Grant, User
+
+    db.add(User(username="ro3", password_hash="", role="guest"))
+    db.add(Grant(username="ro3", product="usp", kind="product_all", resource_id="", perm="read"))
+    db.commit()
+
+    ors_auth.provision(db, OrsUser("ro3", "RO3", ("frontend:kb:write",)))
+    db.commit()
+
+    perms = {
+        g.product: g.perm
+        for g in db.query(Grant).filter(Grant.username == "ro3").all()
+    }
+    assert perms.get("usp") == "write"
+    assert perms.get("ors") == "write"
+
+
 # ---------- verify_ors_token：对摇人吧响应的容错 ----------
 
 class _Resp:
