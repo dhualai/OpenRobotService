@@ -34,6 +34,7 @@ import { PERM_TASK_POLICY } from '@/pages/admin/TaskPolicyPage';
 import { PERM_WECOM_SHEETS } from '@/api/wecomSheets';
 import { PERM_WXPAY_ADMIN } from '@/api/wxpay';
 import { PERM_ANNOUNCEMENT } from '@/api/announcement';
+import { PERM_LEARNING } from '@/api/learning';
 import { useAuthStore } from '@/stores/auth';
 
 function LocationProbe() {
@@ -99,7 +100,7 @@ describe('AdminEntries', () => {
   it.each([
     ['用户与权限', 'users', ['用户管理', '角色管理', '权限管理', '分配角色', '设置用户']],
     ['工单与派单', 'dispatch', ['责任模块树', '责任双树', '工单关联规则']],
-    ['运营与数据', 'operations', ['二维码管理', '企微表格', '工作日历', '公告管理', '奖励管理']],
+    ['运营与数据', 'operations', ['题目生成', '二维码管理', '企微表格', '工作日历', '公告管理', '奖励管理']],
     ['系统工具', 'system', ['操作记录', '开发者模式']],
   ])('opens the %s category with only its related tools', async (label, category, entries) => {
     renderView();
@@ -125,6 +126,7 @@ describe('AdminEntries', () => {
     ['dispatch', '责任双树', '/admin/dual-tree'],
     ['dispatch', '工单关联规则', '/admin/task-policy'],
     ['operations', '二维码管理', '/admin/qrcode-manage'],
+    ['operations', '题目生成', '/admin/question-generation'],
     ['operations', '企微表格', '/admin/wecom-sheets'],
     ['operations', '工作日历', '/admin/work-calendar'],
     ['operations', '公告管理', '/admin/announcements'],
@@ -143,6 +145,7 @@ describe('AdminEntries', () => {
     ['operations', '企微表格', PERM_WECOM_SHEETS],
     ['operations', '奖励管理', PERM_WXPAY_ADMIN],
     ['operations', '公告管理', PERM_ANNOUNCEMENT],
+    ['operations', '题目生成', PERM_LEARNING],
   ])('preserves permission filtering and updates for %s / %s', (category, label, permission) => {
     useAuthStore.setState({ permissions: ['frontend:admin:roles:show'] });
     renderView(`/admin/entries/${category}`);

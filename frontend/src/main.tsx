@@ -131,6 +131,7 @@ const KnowledgeQuestionDetail = lazyImport(() => import('@/pages/admin/Knowledge
 const KnowledgeContributorPage = lazyImport(() => import('@/pages/admin/KnowledgeContributorPage'));
 const KnowledgeReviewPage = lazyImport(() => import('@/pages/admin/KnowledgeReviewPage'));
 const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
+const QuestionGeneration = lazyImport(() => import('@/pages/admin/learning/QuestionGeneration'));
 const DispatchDev = lazyImport(() => import('@/pages/admin/DispatchDev'));
 const TaskPolicyPage = lazyImport(() => import('@/pages/admin/TaskPolicyPage'));
 const QrcodeManage = lazyImport(() => import('@/pages/admin/QrcodeManage'));
@@ -249,6 +250,7 @@ const router = createBrowserRouter([
               // 次级入口：三大功能传统列表页 + 管理员工具
               { path: 'entries', element: <AdminEntries /> },
               { path: 'entries/:category', element: <AdminEntries /> },
+              { path: 'question-generation', element: <QuestionGeneration /> },
               {
                 element: <AdminLayout />,
                 children: [

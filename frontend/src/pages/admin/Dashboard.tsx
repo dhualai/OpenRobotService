@@ -34,6 +34,7 @@ import { avatarUrl } from '@/api/profile';
 import KnowledgeContributionCard from './KnowledgeContributionCard';
 import HighValueQuestionCard from './HighValueQuestionCard';
 import { fetchRewardStats, fenToYuan } from '@/api/wxpay';
+import { PERM_LEARNING } from '@/api/learning';
 import { POLL_INTERVAL_MS } from '@/config/poll';
 import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
@@ -116,7 +117,7 @@ export default function Dashboard() {
     void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
   }, []);
 
-  const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
+  const canAccessAdminEntries = hasPermission('frontend:admin:other:show') || hasPermission(PERM_LEARNING);
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   // 资源管理入口需 backend:resource:base:read 权限（隐藏「数据资源」弹层中相应入口）

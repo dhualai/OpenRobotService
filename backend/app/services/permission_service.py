@@ -29,6 +29,7 @@ PERM_KNOWLEDGE_CONTRIBUTION = "frontend:admin:knowledge:show"
 # 其他角色要在权限管理里显式勾选——该码由 announcement.ensure_announcement_permission
 # 在 permissions 的注册块里写入，不会在接口函数体内写（见该函数 docstring）。
 PERM_ANNOUNCEMENT = "frontend:admin:announcement:manage"
+PERM_LEARNING = "frontend:admin:learning:manage"
 
 # 智库（doc-service，挂在 /t/app/kb/ 下的独立服务）写权限。
 # 该服务账号统一走摇人吧登录态，由它服务端调 /api/auth/me 拿 permissions 后映射角色：
@@ -45,6 +46,7 @@ _GLOBAL_ROLE_DERIVED_PERMISSIONS: Dict[str, tuple] = {
         PERM_PROJECT_INFO_TEMPLATE,
         PERM_PROJECT_LEDGER_IMPORT,
         PERM_ANNOUNCEMENT,
+        PERM_LEARNING,
     ),
 }
 _user_roles_cache: Dict[str, Dict[str, Any]] = {}
