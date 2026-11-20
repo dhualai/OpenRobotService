@@ -780,6 +780,19 @@ async def approve_option(
             obj.approved_at = datetime.now()
         sync_db.commit()
 
+        # ── 实体审核通过后，自动关闭对应审核工单（兜底：防止前端两步请求时序不一致导致工单残留） ──
+        approval_type_map = {'company': 'new_company', 'department': 'new_department', 'project': 'new_project'}
+        approval_type = approval_type_map.get(target_type, '')
+        if approval_type:
+            sync_db.execute(text("""
+                UPDATE tasks
+                SET status = 'closed', closed_at = NOW()
+                WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.target_id')) = :target_id
+                  AND JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.approval_type')) = :approval_type
+                  AND status NOT IN ('closed', 'archived', 'archiving', 'canceled', 'cancelled')
+            """), {'target_id': target_id, 'approval_type': approval_type})
+            sync_db.commit()
+
         resp = {"status": "approved", "id": target_id, "name": obj.name}
         if target_type == 'project':
             resp["code"] = obj.code
@@ -827,6 +840,19 @@ async def reject_option(
             obj.approved_at = datetime.now()
         obj.reject_reason = reason or None
         sync_db.commit()
+
+        # ── 实体驳回后，自动关闭对应审核工单（兜底：防止前端两步请求时序不一致导致工单残留） ──
+        approval_type_map = {'company': 'new_company', 'department': 'new_department', 'project': 'new_project'}
+        approval_type = approval_type_map.get(target_type, '')
+        if approval_type:
+            sync_db.execute(text("""
+                UPDATE tasks
+                SET status = 'closed', closed_at = NOW()
+                WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.target_id')) = :target_id
+                  AND JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.approval_type')) = :approval_type
+                  AND status NOT IN ('closed', 'archived', 'archiving', 'canceled', 'cancelled')
+            """), {'target_id': target_id, 'approval_type': approval_type})
+            sync_db.commit()
 
         return {"status": "rejected", "id": target_id, "name": obj.name, "reason": reason}
     except HTTPException:

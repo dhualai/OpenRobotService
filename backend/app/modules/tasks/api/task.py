@@ -2448,12 +2448,13 @@ async def update_task_status(
     # 原双键直比 created_by/assigned_to 会漏掉「已确认跟进的被代理人」，
     # 使其看得见工单却关不掉（can_close 已放行，接口却 403，两处口径打架）。
     _roles = await get_ticket_roles(db, ticket, current_user)
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
 
     # AI 工单（source='ai'）允许任何登录用户操作状态（created_by='system' 不是真实用户）
     if ticket.source == 'ai':
         pass
     elif not (
-        _roles.is_creator or _roles.is_assignee or _roles.is_principal or is_admin
+        _roles.is_creator or _roles.is_assignee or _roles.is_principal or is_admin or can_operate
     ):
         raise HTTPException(status_code=403, detail="无权限更新任务状态")
 
@@ -2463,26 +2464,26 @@ async def update_task_status(
         # ── 撤回（→ canceled）权限收窄：仅提单人(created_by) 或 管理员可撤回，处理人(assigned_to) 不可撤回 ──
         # 业务规则：撤回是提单人防止「派错单/误提」的特权，处理人应走「退回/暂停」而非替提单人撤回。
         # created_by 过渡期可能是 username 或 users.id，与当前用户双键比较。
-        if status_enum == TicketStatus.CANCELED and not is_admin and not user_matches(current_user, ticket.created_by):
+        if status_enum == TicketStatus.CANCELED and not is_admin and not can_operate and not user_matches(current_user, ticket.created_by):
             raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
 
         # ── 暂停（→ pending）直达：仅**管理员**可直接挂起处理中的工单 ──
         if status_enum == TicketStatus.PENDING and ticket.status == TicketStatus.IN_PROGRESS:
-            if not is_admin:
+            if not is_admin and not can_operate:
                 raise HTTPException(status_code=403, detail="仅管理员可直接暂停工单")
 
         # ── 请求暂停（→ pending_requested）两阶段路径：保留兼容历史数据，仅处理人可发起 ──
         if status_enum == TicketStatus.PENDING_REQUESTED:
             if ticket.status != TicketStatus.IN_PROGRESS:
                 raise HTTPException(status_code=400, detail="仅处理中的工单可发起暂停请求")
-            if not _roles.is_assignee and not is_admin:
+            if not _roles.is_assignee and not is_admin and not can_operate:
                 raise HTTPException(status_code=403, detail="仅处理人可请求暂停工单")
 
         # ── 暂停请求后续操作权限收窄（pending_requested 两阶段，保留兼容） ──
         # pending_requested → pending  = 提单人确认暂停
         # pending_requested → in_progress = 提单人驳回（继续处理）
         if ticket.status == TicketStatus.PENDING_REQUESTED:
-            if not (_roles.is_creator or _roles.is_principal or is_admin):
+            if not (_roles.is_creator or _roles.is_principal or is_admin or can_operate):
                 raise HTTPException(status_code=403, detail="仅提单人/被代理人/管理员可处理暂停请求")
             if status_enum not in (TicketStatus.PENDING, TicketStatus.IN_PROGRESS):
                 raise HTTPException(status_code=400, detail="暂停请求中仅可「确认暂停」或「驳回」")
@@ -2491,14 +2492,14 @@ async def update_task_status(
         if status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
             if ticket.status != TicketStatus.IN_PROGRESS:
                 raise HTTPException(status_code=400, detail="仅处理中的工单可标记无法解决")
-            if not _roles.is_assignee and not is_admin:
+            if not _roles.is_assignee and not is_admin and not can_operate:
                 raise HTTPException(status_code=403, detail="仅处理人可标记无法解决工单")
 
         # ── 无法解决请求后续：必须由**提单人侧**处理 ──
         # unsolvable_requested → unsolvable = 提单人确认（终态）
         # unsolvable_requested → in_progress = 提单人驳回（继续处理）
         if ticket.status == TicketStatus.UNSOLVABLE_REQUESTED:
-            if not (_roles.is_creator or _roles.is_principal or is_admin):
+            if not (_roles.is_creator or _roles.is_principal or is_admin or can_operate):
                 raise HTTPException(status_code=403, detail="仅提单人/被代理人/管理员可处理无法解决请求")
             if status_enum not in (TicketStatus.UNSOLVABLE, TicketStatus.IN_PROGRESS):
                 raise HTTPException(status_code=400, detail="无法解决确认中仅可「确认无法解决」或「驳回」")
@@ -2506,7 +2507,7 @@ async def update_task_status(
         # ── 已无法解决 → 继续处理（回到 in_progress）：仅**处理人**可恢复 ──
         if ticket.status == TicketStatus.UNSOLVABLE:
             if status_enum == TicketStatus.IN_PROGRESS:
-                if not _roles.is_assignee and not is_admin:
+                if not _roles.is_assignee and not is_admin and not can_operate:
                     raise HTTPException(status_code=403, detail="仅处理人可恢复无法解决的工单")
 
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
