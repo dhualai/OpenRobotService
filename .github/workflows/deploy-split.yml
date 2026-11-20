@@ -905,6 +905,10 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: allure-history
+          # keep_files: 保留 test-gate.yml 发布的 gh-pages/test-gate/ 子目录。
+          # 不设此项时本步骤会清空整个 gh-pages 分支，导致 test-gate 报告被抹掉
+          # （2026-11-20 实测：test-gate 推送 4 秒后被本步骤覆盖）。
+          keep_files: true
 
   # ---------------- 构建 + 上传 artifact（托管 runner） ----------------
   # 与 gate 并行：build 只依赖 plan（产物与测试无数据依赖，串行纯浪费 ~100s 墙钟）。
