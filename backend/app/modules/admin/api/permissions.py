@@ -63,6 +63,9 @@ async def get_all_permissions(
         # 必须放在这里（读权限列表时），不能放接口函数体内，否则 403 会先挡住注册。
         from app.modules.admin.api.announcement import ensure_announcement_permission
         ensure_announcement_permission()
+        # 智库写权限：同样只在读权限列表时注册（原因见各 ensure 函数 docstring）
+        from app.modules.admin.services.kb_portal_permissions import ensure_kb_portal_permission
+        ensure_kb_portal_permission()
         permissions = db_manager.get_all_permissions()
         return DataResponse(
             code=0,

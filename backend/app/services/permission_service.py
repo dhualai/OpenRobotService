@@ -30,6 +30,13 @@ PERM_KNOWLEDGE_CONTRIBUTION = "frontend:admin:knowledge:show"
 # 在 permissions 的注册块里写入，不会在接口函数体内写（见该函数 docstring）。
 PERM_ANNOUNCEMENT = "frontend:admin:announcement:manage"
 
+# 智库（doc-service，挂在 /t/app/kb/ 下的独立服务）写权限。
+# 该服务账号统一走摇人吧登录态，由它服务端调 /api/auth/me 拿 permissions 后映射角色：
+#   有本码 → engineer（可编辑）；admin 账号直通；其他已登录用户 → guest（只读）。
+# 由 kb_portal_permissions.ensure_kb_portal_permission 在 permissions 的注册块写入，
+# 不在接口函数体内写（见该函数 docstring）。默认不派发给任何全局角色，需在权限管理显式勾选。
+PERM_KB_WRITE = "frontend:kb:write"
+
 # 「拥有哪个全局角色 → 额外获得哪些权限码」。开发者 / 超级管理员可编辑详情模板；
 # 一键导入全部项目、公告管理只开给超级管理员（admin 账号照旧直通）。
 _GLOBAL_ROLE_DERIVED_PERMISSIONS: Dict[str, tuple] = {
