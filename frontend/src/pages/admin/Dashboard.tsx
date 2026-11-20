@@ -38,10 +38,7 @@ import { PERM_LEARNING } from '@/api/learning';
 import { POLL_INTERVAL_MS } from '@/config/poll';
 import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
-
-interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
-
-type MoreEntryIconKind = 'projects' | 'data' | 'reports' | 'other';
+import { MORE_FUNCTION_ENTRIES, type MoreEntryIconKind } from './moreEntries';
 
 /** 更多功能入口图标：与 macaron admin 页的 lucide 图标同款线条 */
 function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
@@ -88,6 +85,18 @@ function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
       </svg>
     );
   }
+  if (kind === 'topology') {
+    // lucide network —— 节点与连线，贴合「功能拓扑」
+    return (
+      <svg {...common}>
+        <rect x="16" y="16" width="6" height="6" rx="1" />
+        <rect x="2" y="16" width="6" height="6" rx="1" />
+        <rect x="9" y="2" width="6" height="6" rx="1" />
+        <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
+        <path d="M12 12V8" />
+      </svg>
+    );
+  }
   // lucide more-horizontal
   return (
     <svg {...common}>
@@ -97,13 +106,6 @@ function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
     </svg>
   );
 }
-
-const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
-  { path: '/admin/project-manage', label: '项目管理', kind: 'projects', tone: 'blue-1' },
-  { path: '/admin/data-resource', label: '数据资源', kind: 'data', tone: 'blue-2', group: 'data-resource' },
-  { path: '/admin/daily-summary', label: '日报周报', kind: 'reports', tone: 'blue-3' },
-  { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
-];
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -386,7 +388,17 @@ export default function Dashboard() {
           {MORE_FUNCTION_ENTRIES
             .filter((e) => e.path !== '/admin/entries' || canAccessAdminEntries)
             .map((e) => (
-            <div key={e.path} className="dashboard-more-card" data-tone={e.tone} onClick={() => e.group === 'data-resource' ? setDataResourceSheetVisible(true) : navigate(e.path)}>
+            <div
+              key={e.path}
+              className="dashboard-more-card"
+              data-tone={e.tone}
+              onClick={() => {
+                if (e.group === 'data-resource') { setDataResourceSheetVisible(true); return; }
+                // 智库等独立应用：同源子路径，新标签页打开（不走前端路由）
+                if (e.external) { window.open(e.external, '_blank', 'noopener,noreferrer'); return; }
+                navigate(e.path);
+              }}
+            >
               <span className="dashboard-more-card__icon"><MoreEntryIcon kind={e.kind} /></span>
               <span className="dashboard-more-card__label">{e.label}</span>
             </div>

@@ -4897,6 +4897,7 @@ html, body, #root {
 .dashboard-more-card[data-tone='blue-2'] .dashboard-more-card__icon { background: #e7f3f8; color: var(--mac-blue-2); }
 .dashboard-more-card[data-tone='blue-3'] .dashboard-more-card__icon { background: #eaf7fd; color: var(--mac-blue-3); }
 .dashboard-more-card[data-tone='blue-4'] .dashboard-more-card__icon { background: #f2fbff; color: var(--mac-blue-4); }
+.dashboard-more-card[data-tone='blue-5'] .dashboard-more-card__icon { background: #f7fdff; color: var(--mac-blue-5); }
 .dashboard-more-card__label { font-size: 11.5px; color: var(--mac-muted-fg); }
 
 
