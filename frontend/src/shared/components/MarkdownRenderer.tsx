@@ -22,6 +22,7 @@ import { useAuthStore } from '@/stores/auth';
 import { ENV_PREFIX, RAW_BASE } from '@/config/api';
 import API_CONFIG from '@/config/api';
 import ImageLightbox from '@/shared/components/ImageLightbox';
+import { loadAuthImage, getAuthImgCache, setAuthImgCache } from '@/shared/utils/authImageFetch';
 
 // ---------------------------------------------------------------------------
 // 媒体 URL 检测正则
@@ -373,95 +374,29 @@ interface AuthImageProps {
   alt?: string;
 }
 
+/**
+ * 从 alt 文本中提取可选的尺寸语法：
+ *   ![架构图|50%](url) → { alt: '架构图', width: '50%' }
+ *   ![截图|300](url)  → { alt: '截图', width: '300px' }  (纯数字默认 px)
+ *   ![截图|300px](url)→ { alt: '截图', width: '300px' }
+ *   ![普通图](url)    → { alt: '普通图', width: undefined }
+ *
+ * 不匹配时原样返回 alt，现有 Markdown 不受影响。
+ */
+function parseAltSize(alt: string): { alt: string; width?: string } {
+  if (!alt) return { alt: '' };
+  const m = alt.match(/^(.*?)\|\s*(\d+(?:px|%)?)\s*$/);
+  if (!m) return { alt };
+  const raw = m[2];
+  // 纯数字 → 默认 px；带单位 → 原样
+  const width = /^\d+$/.test(raw) ? `${raw}px` : raw;
+  return { alt: m[1], width };
+}
+
 /** AuthImage 的缓存条目：status 为最终/进行中状态。 */
 type AuthCacheEntry =
   | { status: 'direct' | 'error' }
   | { status: 'loaded'; blobUrl: string };
-
-/**
- * 模块级鉴权图片缓存（key = fullUrl + token）：
- * react-markdown 用 passKeys(true) 按「标签名 + 兄弟序号」生成 key（如 img-0 / p-0），
- * 会覆盖组件上的 key。流式期间图片前的段落/格式变化会使图片位置 key 变化，导致
- * AuthImage remount → 重置 imgState → 重新 fetch → 图片闪烁。这里把已解析结果缓存，
- * remount 时立即恢复，不重新 fetch，杜绝流式期间的图片闪烁。
- */
-const authImgCache = new Map<string, AuthCacheEntry>();
-/** 并发去重：同一 URL 只发一次 fetch，其余挂载共享结果。 */
-const authImgInflight = new Map<string, Promise<AuthCacheEntry>>();
-
-/** 串上 token 作为缓存 key 的一部分，token 变更/失效后自动重新加载 */
-const authCacheKey = (fullUrl: string): string => `${fullUrl}::${useAuthStore.getState().token || ''}`;
-
-// 图片加载并发限制：避免一次性大量图片请求占满连接 / 主线程导致页面假死
-const MAX_CONCURRENT_IMG = 8;
-let _imgActive = 0;
-const _imgWaiters: Array<() => void> = [];
-function _acquireImgSlot(): Promise<void> {
-  if (_imgActive < MAX_CONCURRENT_IMG) {
-    _imgActive += 1;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => _imgWaiters.push(resolve));
-}
-function _releaseImgSlot(): void {
-  _imgActive = Math.max(0, _imgActive - 1);
-  const next = _imgWaiters.shift();
-  if (next) next();
-}
-
-/** 鉴权加载单个图片（带缓存 + 并发去重），返回最终缓存条目 */
-function loadAuthImage(fullUrl: string): Promise<AuthCacheEntry> {
-  const cacheKey = authCacheKey(fullUrl);
-  const cached = authImgCache.get(cacheKey);
-  if (cached) return Promise.resolve(cached);
-  const inflight = authImgInflight.get(cacheKey);
-  if (inflight) return inflight;
-
-  const p = (async (): Promise<AuthCacheEntry> => {
-    await _acquireImgSlot();
-    try {
-      const token = useAuthStore.getState().token;
-      if (!token) {
-        const entry: AuthCacheEntry = { status: 'direct' };
-        authImgCache.set(cacheKey, entry);
-        return entry;
-      }
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-      const res = await fetch(fullUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const contentType = res.headers.get('content-type') || '';
-      if (contentType && !IMAGE_MIME_RE.test(contentType) && !VIDEO_MIME_RE.test(contentType)) {
-        const entry: AuthCacheEntry = { status: 'direct' };
-        authImgCache.set(cacheKey, entry);
-        return entry;
-      }
-
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const entry: AuthCacheEntry = { status: 'loaded', blobUrl };
-      authImgCache.set(cacheKey, entry);
-      return entry;
-    } catch {
-      const entry: AuthCacheEntry = { status: 'direct' };
-      authImgCache.set(cacheKey, entry);
-      return entry;
-    } finally {
-      _releaseImgSlot();
-    }
-  })();
-
-  // 无论成功失败都要清理 inflight，允许后续变更时重新加载
-  authImgInflight.set(cacheKey, p.finally(() => authImgInflight.delete(cacheKey)));
-  return authImgInflight.get(cacheKey)!;
-}
 
 /**
  * 鉴权图片组件：
@@ -469,7 +404,7 @@ function loadAuthImage(fullUrl: string): Promise<AuthCacheEntry> {
  *   - 同源直链 URL → 直接 <img> 加载（cookie 自动携带）
  *   - 相对路径 / /api/ 前缀 → fetch + Bearer Token 鉴权后转 blob URL
  *   - 加载失败 → 显示连接 + 点击新窗口打开
- * 加载结果走模块级缓存（authImgCache），流式 remount 复用不闪烁。
+ * 加载结果走共享缓存（authImageFetch），流式 remount 复用不闪烁。
  */
 function AuthImage({ src, alt = '' }: AuthImageProps) {
   const [imgState, setImgState] = useState<{
@@ -478,6 +413,16 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
   }>({ status: 'idle' });
   const [previewOpen, setPreviewOpen] = useState(false);
   const blobUrlRef = useRef<string | null>(null);
+
+  // 从 alt 中提取可选尺寸语法（如 `![图|50%](url)` → width=50%）
+  const { alt: cleanAlt, width: imgWidth } = parseAltSize(alt);
+  // 统一的 img 样式：有尺寸语法时用其作 max-width；无则保持 100%（原行为）
+  const imgStyle: React.CSSProperties = {
+    maxWidth: imgWidth || '100%',
+    borderRadius: 8,
+    margin: '8px 0',
+    display: 'block',
+  };
 
   // 同步解析 URL 类型
   const urlInfo = useMemo(() => {
@@ -512,19 +457,17 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
 
     // 直接渲染类型（绝对外链/同源/无 token）→ 不用 fetch，缓存为 direct
     if (urlInfo.type === 'direct') {
-      const cacheKey = authCacheKey(urlInfo.fullUrl);
-      if (authImgCache.get(cacheKey)?.status === 'direct') {
+      if (getAuthImgCache(urlInfo.fullUrl)?.status === 'direct') {
         setImgState({ status: 'direct' });
       } else {
-        authImgCache.set(cacheKey, { status: 'direct' });
+        setAuthImgCache(urlInfo.fullUrl, { status: 'direct' });
         setImgState({ status: 'direct' });
       }
       return;
     }
 
     // 需要鉴权：同步查缓存，命中立即恢复（拿缓存 blobUrl 也即时更新 blobUrlRef）
-    const cacheKey = authCacheKey(urlInfo.fullUrl);
-    const cached = authImgCache.get(cacheKey);
+    const cached = getAuthImgCache(urlInfo.fullUrl);
     if (cached?.status === 'loaded') {
       blobUrlRef.current = cached.blobUrl;
       setImgState({ status: 'loaded', blobUrl: cached.blobUrl });
@@ -588,14 +531,14 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
         <>
           <img
             src={urlInfo.url}
-            alt={alt}
+            alt={cleanAlt}
             className="md-image md-image--clickable"
             loading="eager"
             onClick={openPreview}
             onError={handleImgError}
-            style={{ maxWidth: '100%', borderRadius: 8, margin: '8px 0', display: 'block' }}
+            style={imgStyle}
           />
-          <ImageLightbox src={previewSrc} alt={alt} open={previewOpen} onClose={() => setPreviewOpen(false)} />
+          <ImageLightbox src={previewSrc} alt={cleanAlt} open={previewOpen} onClose={() => setPreviewOpen(false)} />
         </>
       );
     }
@@ -609,7 +552,7 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
   if (imgState.status === 'error') {
     return (
       <span className="md-media-fallback">
-        <a href={urlInfo.url} target="_blank" rel="noopener noreferrer">{alt || '查看图片'}</a>
+        <a href={urlInfo.url} target="_blank" rel="noopener noreferrer">{cleanAlt || '查看图片'}</a>
       </span>
     );
   }
@@ -628,14 +571,14 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
     <>
       <img
         src={finalSrc}
-        alt={alt}
+        alt={cleanAlt}
         className="md-image md-image--clickable"
         loading="eager"
         onClick={openPreview}
         onError={handleImgError}
-        style={{ maxWidth: '100%', borderRadius: 8, margin: '8px 0', display: 'block' }}
+        style={imgStyle}
       />
-      <ImageLightbox src={previewSrc} alt={alt} open={previewOpen} onClose={() => setPreviewOpen(false)} />
+      <ImageLightbox src={previewSrc} alt={cleanAlt} open={previewOpen} onClose={() => setPreviewOpen(false)} />
     </>
   );
 }

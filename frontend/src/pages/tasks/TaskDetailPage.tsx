@@ -34,8 +34,7 @@ import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canE
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
-import MDEditor from '@uiw/react-md-editor';
-import '@uiw/react-md-editor/markdown-editor.css';
+import ArchiveReportRichEditor, { type ArchiveReportRichEditorHandle } from '@/shared/components/ArchiveReportRichEditor';
 import { archiveGenerateStream, fetchWithAuth, taskDiscussStream } from '@/api/ai';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { getProjectMembers } from '@/api/projects';
@@ -372,11 +371,11 @@ export default function TaskDetailPage() {
   // 只有「有没有、是哪几张」。score 为 dense 余弦，仅用于请求侧 min_score。
   const [archiveSimilar, setArchiveSimilar] = useState<ArchiveSimilarItem[]>([]);
   const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
-  // ORS-1010：报告预览/编辑切换（生成完默认预览——用户先看到渲染结果含图片）
-  const [archiveReportPreview, setArchiveReportPreview] = useState(false);
   // ORS-1010：报告插图上传（走评论附件接口拿 object_path，正文插 markdown）
   const [uploadingReportImage, setUploadingReportImage] = useState(false);
   const reportImageInputRef = useRef<HTMLInputElement | null>(null);
+  // RichEditor ref：用于插入上传好的图片
+  const archiveEditorRef = useRef<ArchiveReportRichEditorHandle | null>(null);
   // ORS-1010：展开查看卡正文（问题/根因/解决）的条目
   const [expandedSimilar, setExpandedSimilar] = useState<Set<number>>(new Set());
   // 检索成功完成（retrieval_status=ok）：0 条也显示"未发现"提示，让功能存在感在；
@@ -767,7 +766,7 @@ export default function TaskDetailPage() {
       setArchiveSimilar(list.slice(0, 5));
       setArchiveSimilarReady(res?.retrieval_status !== 'unavailable');
     } catch {
-      setArchiveSimilar([]); setArchiveReportPreview(false); // 静默降级：相似提示拿不到不影响知识沉淀
+      setArchiveSimilar([]); // 静默降级：相似提示拿不到不影响知识沉淀
       setArchiveSimilarReady(false);
     } finally {
       setArchiveSimilarLoading(false);
@@ -775,27 +774,42 @@ export default function TaskDetailPage() {
   }, []);
 
   // ── 开始归档（closed → archiving）──
-  /** ORS-1010：报告插图上传——走评论附件接口拿 object_path，正文插相对路径
-      markdown（预览/审核/知识卡全链路 AuthImage 可渲染）。多张逐张传，
-      追加到正文末尾；失败 toast 不中断 */
-  const handleReportImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = ''; // 允许重复选同一文件
+  /** ORS-1010：报告插图上传——走评论附件接口拿 object_path，通过 RichEditor ref 插到光标位置。
+      多张逐张传，外部按钮 / 粘贴 / 拖拽统一入口。失败 toast 不中断 */
+  const handleReportImageUpload = async (files: File[]) => {
     if (!files.length) return;
     setUploadingReportImage(true);
     try {
-      const inserts: string[] = [];
+      const inserts: { path: string; name: string }[] = [];
       for (const f of files) {
         const objectPath = await uploadCommentAttachment(f, `report-${Date.now()}`);
-        inserts.push(`![${f.name}](/api/tasks/attachments/download?path=${encodeURIComponent(objectPath)})`);
+        inserts.push({ path: objectPath, name: f.name });
       }
-      setArchiveReportContent((prev) => `${prev || ''}${prev?.trim() ? '\n' : ''}${inserts.join('\n')}\n`);
+      // RichEditor 就绪 → 插入光标位置；未就绪（极罕见）→ 降级：拼 Markdown 文本末尾
+      if (archiveEditorRef.current && !archiveEditorRef.current.focus) {
+        archiveEditorRef.current.insertImages(inserts);
+      } else if (archiveEditorRef.current && archiveEditorRef.current.insertImages) {
+        archiveEditorRef.current.insertImages(inserts);
+      } else {
+        // 兜底：直接改 state（RichEditor 有 useEffect 同步 value → setContent）
+        const mdStrings = inserts.map(({ path, name }) =>
+          `![${name}](/api/tasks/attachments/download?path=${encodeURIComponent(path)})`
+        );
+        setArchiveReportContent((prev) => `${prev || ''}${prev?.trim() ? '\n' : ''}${mdStrings.join('\n')}\n`);
+      }
       Toast({ message: `已插入 ${inserts.length} 张图片`, theme: 'success' });
     } catch (err) {
       Toast({ message: `图片上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setUploadingReportImage(false);
     }
+  };
+
+  /** 文件选择 input 触发的上传（保持旧签名，内部归一到 handleReportImageUpload） */
+  const handleReportImageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // 允许重复选同一文件
+    handleReportImageUpload(files);
   };
 
   // ── 开始归档（closed → archiving）──
@@ -809,7 +823,7 @@ export default function TaskDetailPage() {
       setArchiveEditorMode('edit');
       setArchiveEditorVisible(true);
       // ORS-1010：相似工单与 AI 初稿并行拉取（失败静默，编辑器不等它）
-      setArchiveSimilar([]); setArchiveReportPreview(false);
+      setArchiveSimilar([]);
       void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
@@ -852,7 +866,6 @@ export default function TaskDetailPage() {
     async function runGenerate() {
     setArchiveGenerating(true);
     setArchiveGenStatus('AI 正在为您总结知识沉淀报告…');
-    setArchiveReportPreview(false);
     let acc = '';
     try {
       await archiveGenerateStream(
@@ -865,7 +878,6 @@ export default function TaskDetailPage() {
           onDone: () => {
             setArchiveGenerating(false);
             setArchiveGenStatus('');
-            setArchiveReportPreview(true); // 生成完默认预览：先看渲染结果（含图片）
             // ORS-1035：服务端生成写回推进了 revision，重取最新版报告同步本地
             // （内容+版本号），否则保存必撞「已被他人修改」、重开弹窗见旧内容
             request<Ticket>(`/archive-report/${Number(taskDetail.id)}/archive-report`)
@@ -1039,7 +1051,7 @@ export default function TaskDetailPage() {
     }
     setArchiveEditorVisible(true);
     // ORS-1010：编辑/再编辑打开时后台带出相似工单（失败静默）
-    setArchiveSimilar([]); setArchiveReportPreview(false);
+    setArchiveSimilar([]);
     void fetchArchiveSimilar(Number(detail.id));
   };
 
@@ -3203,15 +3215,15 @@ export default function TaskDetailPage() {
       {/* ── 知识沉淀报告编辑器 Popup ── */}
       <Popup
         visible={archiveEditorVisible}
-        onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}
+        onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}
         placement="bottom"
         showOverlay
       >
         {/* ORS-1010：编辑器+相似工单块易超 88vh，ticket-edit-form 类本身不滚动
             （滚动在其 __body 子层，本弹窗未用）——底部内容曾被硬裁（1010 用户
             iOS 实测提示语只剩半句）。内联开启滚动。 */}
-        <div className="ticket-edit-form" style={{ display: 'flex', flexDirection: 'column', maxHeight: '88vh', overflow: 'hidden' }}>
-          <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>×</span>
+        <div className="ticket-edit-form" style={{ display: 'flex', flexDirection: 'column', maxHeight: '88vh', overflow: 'hidden', padding: '16px 20px' }}>
+          <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '知识沉淀报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改知识沉淀报告' : '编写知识沉淀报告')}
           </h4>
@@ -3321,7 +3333,7 @@ export default function TaskDetailPage() {
                     accept="image/*"
                     multiple
                     style={{ display: 'none' }}
-                    onChange={handleReportImageUpload}
+                    onChange={handleReportImageInputChange}
                   />
                 </div>
               </div>
@@ -3338,33 +3350,16 @@ export default function TaskDetailPage() {
                     <MarkdownRenderer content={archiveReportContent} streaming />
                   )}
                 </div>
-              ) : archiveReportPreview ? (
-                /* ORS-1010 预览态：渲染版（图片可见），可切回编辑 */
-                <div style={{ height: 380, overflowY: 'auto', border: '1px solid var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px' }}>
-                  <MarkdownRenderer content={archiveReportContent} />
-                </div>
               ) : (
-                // ORS-1010 精简：MDEditor 工具栏整排删除，写作不需要二十个格式图标
-                <MDEditor
-                  commands={[]}
-                  extraCommands={[]}
-                  height={380}
+                /* ORS-1142：WYSIWYG 富文本编辑器，底层持久化 Markdown */
+                <ArchiveReportRichEditor
+                  ref={archiveEditorRef}
                   value={archiveReportContent}
-                  onChange={(v) => setArchiveReportContent(v || '')}
-                  preview="edit"
+                  onChange={setArchiveReportContent}
+                  onUploadImages={handleReportImageUpload}
                 />
               )}
               </div>
-              {!archiveGenerating && (
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                  <span
-                    onClick={() => setArchiveReportPreview((v) => !v)}
-                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
-                  >
-                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
-                  </span>
-                </div>
-              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingTop: 12 }}>
                 <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -3375,14 +3370,12 @@ export default function TaskDetailPage() {
             </>
           ) : (
             <>
-              {/* ORS-1035：报告用 MarkdownRenderer 展示——内嵌的相对路径图片
-                  （attachments/download）走 AuthImage 带登录态加载；MDEditor
-                  的 img 无鉴权渲染会 401 */}
-              <MarkdownRenderer content={archiveReportContent} />
+              {/* ORS-1142：审核人只读查看（WYSIWYG 所见即所得） */}
+              <ArchiveReportRichEditor value={archiveReportContent} onChange={() => {}} readOnly />
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
-                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>关闭</Button>
+                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>关闭</Button>
                 <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过知识沉淀</Button>
-                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回知识沉淀</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回知识沉淀</Button>
               </div>
             </>
           )}
