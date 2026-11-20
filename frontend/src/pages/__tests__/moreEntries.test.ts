@@ -17,8 +17,12 @@ describe('后台管理「更多功能」入口清单', () => {
     expect(KB_PORTAL_URL.startsWith('http')).toBe(false);
   });
 
-  it('原有四个入口不受影响', () => {
-    const labels = MORE_FUNCTION_ENTRIES.map((e) => e.label);
-    expect(labels).toEqual(expect.arrayContaining(['项目管理', '数据资源', '日报周报', '其他']));
+  it('原有四个入口不受影响：顺序与色调保持不变，功能拓扑只做追加', () => {
+    const original = MORE_FUNCTION_ENTRIES.slice(0, 4);
+    expect(original.map((e) => e.label)).toEqual(['项目管理', '数据资源', '日报周报', '其他']);
+    expect(original.map((e) => e.tone)).toEqual(['blue-1', 'blue-2', 'blue-3', 'blue-4']);
+    // 追加项排在最后
+    expect(MORE_FUNCTION_ENTRIES[4].label).toBe('功能拓扑');
+    expect(MORE_FUNCTION_ENTRIES[4].tone).toBe('blue-5');
   });
 });

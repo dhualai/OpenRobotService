@@ -24,9 +24,11 @@ export type MoreEntryIconKind = 'projects' | 'data' | 'reports' | 'other' | 'top
 export const KB_PORTAL_URL: string = import.meta.env.VITE_KB_PORTAL_URL || '/t/app/kb/';
 
 export const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
+  // 原有四项：顺序与色调保持不变（功能拓扑只做追加，不动既有入口）
   { path: '/admin/project-manage', label: '项目管理', kind: 'projects', tone: 'blue-1' },
   { path: '/admin/data-resource', label: '数据资源', kind: 'data', tone: 'blue-2', group: 'data-resource' },
   { path: '/admin/daily-summary', label: '日报周报', kind: 'reports', tone: 'blue-3' },
-  { path: '/kb/', label: '功能拓扑', kind: 'topology', tone: 'blue-4', external: KB_PORTAL_URL },
-  { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-5' },
+  { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
+  // 追加项：智库（功能拓扑），独立微服务，新标签页打开
+  { path: '/kb/', label: '功能拓扑', kind: 'topology', tone: 'blue-5', external: KB_PORTAL_URL },
 ];
