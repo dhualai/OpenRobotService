@@ -1,5 +1,19 @@
 import { gotoOrsLogin, orsToken, refreshOrsToken } from "./ors-session";
 
+/**
+ * 后端 API 前缀：随构建 base 走。
+ *
+ * 挂在摇人吧子路径下时 base=/t/app/kb/，故 `/api/v1/xxx` → `/t/app/kb/api/v1/xxx`，
+ * 正好命中 nginx 的 `location ^~ /t/app/kb/api/` 反代到本机 9420；
+ * 本地开发 base=/ 时拼出来仍是原路径，不受影响。
+ */
+const API_BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
+
+export function apiUrl(path: string): string {
+  if (!path.startsWith("/")) return path;
+  return `${API_BASE}${path}`;
+}
+
 export class ApiError extends Error {
   status: number;
   detail: string;
@@ -81,16 +95,17 @@ function parseDetail(raw: string): string {
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const url = apiUrl(path);
   // 账号统一：带摇人吧 token（同源共享 localStorage）
   const token = orsToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  let r = await fetch(path, { ...init, headers, credentials: "include" });
+  let r = await fetch(url, { ...init, headers, credentials: "include" });
   if (r.status === 401 && !path.includes("/auth/login")) {
     // access token 只有 30 分钟，先试一次续期再重放，避免用户被反复踢
     if (await refreshOrsToken()) {
       const t2 = orsToken();
       if (t2) headers.set("Authorization", `Bearer ${t2}`);
-      r = await fetch(path, { ...init, headers, credentials: "include" });
+      r = await fetch(url, { ...init, headers, credentials: "include" });
     }
   }
   if (r.status === 401 && !path.includes("/auth/login")) {

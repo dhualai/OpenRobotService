@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Me } from "../api";
+import { api, apiUrl, type Me } from "../api";
 import { orsLoginUrl, orsToken } from "../ors-session";
 import { resetSession } from "../session";
 
@@ -37,7 +37,7 @@ export function AccountPage() {
   const products = (u?.products || []).map((p) => PRODUCT[p] || p).join("、") || "—";
   async function downloadPack() {
     setPackMsg("");
-    const r = await fetch("/api/v1/account/auth-pack", {
+    const r = await fetch(apiUrl("/api/v1/account/auth-pack"), {
       credentials: "include",
       headers: { "X-Topo-Origin": window.location.origin, Authorization: `Bearer ${orsToken()}` },
     });
