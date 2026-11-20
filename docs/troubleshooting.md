@@ -357,6 +357,14 @@ git commit --amend -m "feat: 正确的提交信息"
 - 本机 `helpdesk` 还缺 `tasks.archived_by`、`tasks.archived_at`，工单整行读取同样报1054。六个字段均已在模型中定义为可空；复用 `backend/scripts/schema_sync.py` 的模型比对和只加不减能力，限定 `tasks`、`reward_record`，只补六列及 `ix_tasks_archived_by`、`ix_reward_task_role` 索引，不修改历史奖励或财务流程。
 - 执行前确认连接仅为本地库、核对定向dry-run，执行时获取 `ors_schema_sync` 命名锁；执行后重查缺列及历史奖励值。不要对结构已漂移的存量库直接执行全量 `alembic upgrade head`，也不要顺带修其他表。目标环境需独立核对，不能视为已同步线上数据库。
 
+### 7.5 本地登录500、8400后端启动失败（2026-11-20）
+
+- 表现：5173前端和8401 AI服务正常，但8400未监听；通过Vite请求 `/api/auth/me` 返回500。重启业务后端时，`init_users_db()` 查询管理员即报MySQL 1054：`Unknown column 'users.timezone' in 'field list'`，随后退出。不是账号密码错误，也不是首页「其他」入口的显示逻辑导致。
+- 根因：当前用户模型已有 `timezone`、`timezone_locked`、`timezone_source`、`timezone_updated_at`，本地 `127.0.0.1:3306/helpdesk.users` 未同步这四列。`create_all()` 不会给已存在的表补列，单纯重启不能修复结构漂移。
+- 本地恢复：先只读核对模型与实际表结构，备份 `SHOW CREATE TABLE users`；复用 `backend/scripts/schema_sync.py` 的模型DDL和执行能力，在 `ors_schema_sync` 命名锁内仅补这四列，不执行全库同步、不补无关索引、不修改已有列、密码或迁移版本。修复前后用户数均为1；表结构备份位于 `backend/logs/local-auth-recovery.users-schema-20261120-111446.sql`。
+- 已重新启动本地8400业务后端；直连及5173代理的 `/api/health`、使用既有配置管理员凭据的 `/api/auth/login`、携带返回令牌的 `/api/auth/me` 均返回200。未打印或保存密码及令牌，未操作生产环境。
+- 后续更新或切换后端代码时，先核对目标库和模型结构差异；本地修复不等于其他环境已同步，不要对历史结构漂移的库盲目执行 `alembic upgrade head`。
+
 ## 八、相关文档
 
 | 文档 | 路径 |

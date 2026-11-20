@@ -537,6 +537,30 @@ erDiagram
 
 专项奖复用 `reward_record`，`source_type=knowledge_challenge`、`source_id=问题ID`、`role=answerer`，保留原唯一约束。管理员改选不修改原账本收款人、金额或支付状态，已存在记录的差异交原财务路径核对，不重新生成一笔奖励。社区知识直接读取问题截止快照及当前最佳，不创建伪工单或冒充已审核归档报告。
 
+### 2.9 后台知识点文章与题目（2026-11-20增量，未在目标环境迁移）
+
+ORM：`backend/app/models/learning.py`；迁移：`a4c8e2f6b901 → b5d9f307ca12`。新增以下五张表，不修改现有归档知识、工单状态或学习任务结构。ID采用UUID十六进制字符串，时间为naive UTC，实体间均为逻辑关联，没有新增物理外键。本轮仅使用隔离SQLite验证迁移，不代表真实环境已部署。
+
+| 表 | 关键字段及约束 |
+|---|---|
+| `learning_articles` | `id`、标题/分类、可空编辑草稿 `draft` JSON、脱敏来源 `sources` JSON、当前确认版本号 `active_version`、启用标记、乐观锁 `revision`、创建人与时间；每篇至多一个编辑草稿 |
+| `learning_article_versions` | `id`、文章ID、版本号、不可变 `snapshot` JSON（实际正文及脱敏来源）、确认人与时间；`(article_id, version)` 唯一 |
+| `learning_questions` | `id`、文章ID与绑定版本号、题目 `payload` JSON（题干/选项/答案/解析/知识点与文章摘录）、独立审核/启用状态、乐观锁与时间 |
+| `learning_generations` | 请求ID主键、文章ID、类型、请求指纹、输入修订与文章版本、操作人、运行状态、结果JSON、安全错误摘要与时间；用于生成幂等和状态查询 |
+| `learning_audits` | `id`、文章ID、可空题目ID、操作人/动作、内容与被审核修订的不可变快照JSON、时间；保留确认、采用、审核和启停历史 |
+
+```mermaid
+erDiagram
+    learning_articles ||--o{ learning_article_versions : "不可变确认版本(逻辑)"
+    learning_articles ||--o{ learning_questions : "关联题目(逻辑)"
+    learning_article_versions ||--o{ learning_questions : "文章ID及版本号绑定(逻辑)"
+    learning_articles ||--o{ learning_generations : "生成记录(逻辑)"
+    learning_articles ||--o{ learning_audits : "操作留痕(逻辑)"
+    learning_questions o|--o{ learning_audits : "审核及编辑快照(逻辑)"
+```
+
+来源工单ID仅保存在受限来源JSON内，并非学习阅读投影字段；非工单来源无需伪造工单ID。文章确认新版本、旧题退回草稿及停用、审计记录在同一事务中完成。后台预览仅返回白名单阅读字段及题干选项，不新增正式作答表。管理权限码为 `frontend:admin:learning:manage`，迁移同时在既有 `permissions` 中幂等登记。
+
 ## 3. 关系总表（父子 + 基数 + 是否物理约束）
 
 ### 3.1 物理外键

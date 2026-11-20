@@ -8,6 +8,7 @@
 Wave 2.1 完成：双 Project 合并为单一 `Project` 类（表 `project`，String 主键 `code`）。
 """
 from app.models.base import Base
+from app.models.learning import LearningArticle, LearningArticleVersion, LearningQuestion, LearningGeneration, LearningAudit
 from app.models.knowledge import (
     KnowledgePublication, KnowledgeLike, KnowledgeLikeEvent,
     ArchiveReviewDecision, KnowledgeSettlement, KnowledgeDiscussion,

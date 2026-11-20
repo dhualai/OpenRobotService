@@ -29,6 +29,7 @@ PERM_KNOWLEDGE_CONTRIBUTION = "frontend:admin:knowledge:show"
 # 其他角色要在权限管理里显式勾选——该码由 announcement.ensure_announcement_permission
 # 在 permissions 的注册块里写入，不会在接口函数体内写（见该函数 docstring）。
 PERM_ANNOUNCEMENT = "frontend:admin:announcement:manage"
+PERM_LEARNING = "frontend:admin:learning:manage"
 
 # 「拥有哪个全局角色 → 额外获得哪些权限码」。开发者 / 超级管理员可编辑详情模板；
 # 一键导入全部项目、公告管理只开给超级管理员（admin 账号照旧直通）。
@@ -38,6 +39,7 @@ _GLOBAL_ROLE_DERIVED_PERMISSIONS: Dict[str, tuple] = {
         PERM_PROJECT_INFO_TEMPLATE,
         PERM_PROJECT_LEDGER_IMPORT,
         PERM_ANNOUNCEMENT,
+        PERM_LEARNING,
     ),
 }
 _user_roles_cache: Dict[str, Dict[str, Any]] = {}

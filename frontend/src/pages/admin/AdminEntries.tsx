@@ -13,6 +13,7 @@ import { PERM_WECOM_SHEETS } from '@/api/wecomSheets';
 import { PERM_WXPAY_ADMIN } from '@/api/wxpay';
 import { PERM_ANNOUNCEMENT } from '@/api/announcement';
 import { PERM_WORK_CALENDAR } from '@/api/workCalendar';
+import { PERM_LEARNING } from '@/api/learning';
 
 const AdminUserStatistics = lazy(() => import('./AdminUserStatistics'));
 
@@ -63,6 +64,7 @@ const entryGroups: EntryGroup[] = [
     icon: <MacTable2 />,
     tone: 'blue-3',
     entries: [
+      { path: '/admin/question-generation', label: '题目生成', desc: 'AI提炼知识点、生成题目与日常题库维护', icon: <MacFileText />, tone: 'blue-2' },
       { path: '/admin/qrcode-manage', label: '二维码管理', desc: '带参数二维码批量创建、发布、状态流转', icon: <MacScrollText />, tone: 'blue-3' },
       { path: '/admin/wecom-sheets', label: '企微表格', desc: '企微智能表格接入、测试连接、定时同步', icon: <MacTable2 />, tone: 'blue-2' },
       { path: '/admin/work-calendar', label: '工作日历', desc: '公司工作时间、法定节假日与调休（工单提醒按此推送）', icon: <MacCalendarDays />, tone: 'blue-3' },
@@ -92,6 +94,7 @@ export default function AdminEntries() {
   const canShowWxpayRewards = useAuthStore((state) => state.hasPermission(PERM_WXPAY_ADMIN));
   const canShowAnnouncement = useAuthStore((state) => state.hasPermission(PERM_ANNOUNCEMENT));
   const canShowWorkCalendar = useAuthStore((state) => state.hasPermission(PERM_WORK_CALENDAR));
+  const canManageLearning = useAuthStore((state) => state.hasPermission(PERM_LEARNING));
   const canManageChallenges = useAuthStore((state) => state.canManageKnowledgeChallenges);
   const visibleGroups = entryGroups.map((group) => ({
     ...group,
@@ -102,6 +105,7 @@ export default function AdminEntries() {
       (entry.path !== '/admin/wxpay-rewards' || canShowWxpayRewards) &&
       (entry.path !== '/admin/knowledge/challenges?view=manage' || canManageChallenges) &&
       (entry.path !== '/admin/work-calendar' || canShowWorkCalendar) &&
+      (entry.path !== '/admin/question-generation' || canManageLearning) &&
       (entry.path !== '/admin/announcements' || canShowAnnouncement),
     ),
   })).filter((group) => group.entries.length > 0);
