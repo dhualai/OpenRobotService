@@ -1,0 +1,7 @@
+{
+  "method": "DELETE",
+  "url": "http://mock.local/api/call/conversations/99999",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTk2OTAuMTg0NDQyMywgImlhdCI6IDE3OTUxNTYwOTAuMTg0NDQzfQ.bW9jay1zaWc"
+  }
+}

@@ -1,0 +1,2 @@
+INFO     automation.clients.ApiClient:api_client.py:56 Connected to API: http://localhost:8400
+INFO     automation.clients.ApiClient:api_client.py:63 API client disconnected

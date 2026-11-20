@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTk2OTAuNzQwMzY2MiwgImlhdCI6IDE3OTUxNTYwOTAuNzQwMzY2N30.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "全链路验证任务",
+    "description": "flow demo",
+    "ticket_type": "bug"
+  }
+}

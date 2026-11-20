@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/daily-reports",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTk2ODkuOTc5Mjk5OCwgImlhdCI6IDE3OTUxNTYwODkuOTc5MzAwM30.bW9jay1zaWc"
+  },
+  "body": {
+    "type": "daily"
+  }
+}
