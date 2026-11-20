@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/tasks/1/spec-doc",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNDg2NTQuMjI2ODQ0LCAiaWF0IjogMTc5NTE0NTA1NC4yMjY4NDQzfQ.bW9jay1zaWc"
+  },
+  "body": {
+    "content": ""
+  }
+}
