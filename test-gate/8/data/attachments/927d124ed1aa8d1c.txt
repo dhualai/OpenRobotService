@@ -1,2 +1,0 @@
-INFO     automation.clients.MySQLClient:mysql_client.py:43 Connected to MySQL: localhost:3306/helpdesk_test
-INFO     automation.clients.MySQLClient:mysql_client.py:59 MySQL client disconnected

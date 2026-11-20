@@ -1,7 +1,0 @@
-{
-  "method": "POST",
-  "url": "http://mock.local/api/wechat",
-  "body": {
-    "xml": "<xml/>"
-  }
-}

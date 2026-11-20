@@ -1,8 +1,0 @@
-{
-  "method": "POST",
-  "url": "http://mock.local/api/auth/login",
-  "body": {
-    "username": "testadmin",
-    "password": "wrong"
-  }
-}

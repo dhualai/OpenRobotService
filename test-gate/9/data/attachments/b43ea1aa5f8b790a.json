@@ -1,7 +1,0 @@
-{
-  "method": "GET",
-  "url": "http://mock.local/api/tasks/stats/overview",
-  "headers": {
-    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNDk1NDQuMzQ5MjA2LCAiaWF0IjogMTc5NTE0NTk0NC4zNDkyMDY0fQ.bW9jay1zaWc"
-  }
-}
