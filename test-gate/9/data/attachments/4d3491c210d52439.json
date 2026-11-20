@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/messages",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNDk1NDMuODQxNTU4LCAiaWF0IjogMTc5NTE0NTk0My44NDE1NTg1fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "content": "Test message"
+  }
+}
