@@ -1,7 +1,0 @@
-{
-  "method": "DELETE",
-  "url": "http://mock.local/api/admin/projects/risks/R999",
-  "headers": {
-    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTU0NDEuMTI3NzYxLCAiaWF0IjogMTc5NTE1MTg0MS4xMjc3NjExfQ.bW9jay1zaWc"
-  }
-}

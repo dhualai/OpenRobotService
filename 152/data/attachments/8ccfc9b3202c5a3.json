@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/roles",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTc2MDAuMTAxNTgzMiwgImlhdCI6IDE3OTUxNTQwMDAuMTAxNTgzN30.bW9jay1zaWc"
+  },
+  "body": {
+    "name": "viewer"
+  }
+}

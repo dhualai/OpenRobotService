@@ -1,7 +1,0 @@
-{
-  "method": "GET",
-  "url": "http://mock.local/api/tasks/1/operation-logs",
-  "headers": {
-    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUxNTc1NjAuNjM2MzM0MiwgImlhdCI6IDE3OTUxNTM5NjAuNjM2MzM0NH0.bW9jay1zaWc"
-  }
-}
