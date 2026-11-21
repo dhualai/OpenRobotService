@@ -1,0 +1,18 @@
+{
+  "status_code": 200,
+  "url": "http://localhost:8400/api/auth/login",
+  "reason": "OK",
+  "headers": {
+    "date": "Sat, 21 Nov 2026 03:49:25 GMT",
+    "server": "uvicorn",
+    "content-length": "369",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": {
+    "token_type": "bearer",
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsIm5hbWUiOiJhZG1pbiIsImV4cCI6MTc5NTIzNDc2Nn0.k0Bei-P6v_xXC51f7I1MZB8ZRCvPAP-EaOYPF0i0xVE",
+    "expires_in": 1800,
+    "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsImV4cCI6MTc5NTgzNzc2NiwidHlwZSI6InJlZnJlc2gifQ.ZjnRGmBNrwX_WlDMMM88UkVfXkeHzRmJxcb5vgcTH9Q"
+  }
+}

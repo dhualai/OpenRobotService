@@ -1,0 +1,7 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/users",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUyMzY1NTcuMjQxMTc2NiwgImlhdCI6IDE3OTUyMzI5NTcuMjQxMTc2OH0.bW9jay1zaWc"
+  }
+}

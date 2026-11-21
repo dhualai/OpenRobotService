@@ -1,0 +1,2 @@
+2026-11-21 03:49:14 | [32mINFO | automation.clients.RedisClient | Connected to Redis: localhost:6379/0
+2026-11-21 03:49:14 | [32mINFO | automation.clients.RedisClient | Redis client disconnected

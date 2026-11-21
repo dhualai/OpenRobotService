@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/projects/risks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTUyMzY1NTcuMTg5NTUxLCAiaWF0IjogMTc5NTIzMjk1Ny4xODk1NTE0fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "name": "Risk A",
+    "level": "high"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/ai/qa/ticket/prepare",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidTFfYXV0byIsICJleHAiOiAxNzk1MjM2NTU3LjM1OTYyNDYsICJpYXQiOiAxNzk1MjMyOTU3LjM1OTYyNDl9.bW9jay1zaWc"
+  },
+  "body": {
+    "session_id": "sess_auto_mock_001"
+  }
+}
