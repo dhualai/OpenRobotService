@@ -1459,12 +1459,12 @@ class TicketService:
         }
 
     @staticmethod
-    async def delete_ticket(db: AsyncSession, ticket_id: int, is_admin: bool = False) -> bool:
+    async def delete_ticket(db: AsyncSession, ticket_id: int, can_hard_delete: bool = False) -> bool:
         ticket = await TicketService.get_ticket_by_id(db, ticket_id)
         if not ticket:
             return False
         
-        if is_admin:
+        if can_hard_delete:
             from sqlalchemy import delete
             await db.execute(delete(TicketComment).where(TicketComment.task_id == ticket_id))
             await db.delete(ticket)

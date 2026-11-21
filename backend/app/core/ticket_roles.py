@@ -20,7 +20,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
-from app.core.user_identity import is_admin_user, same_identity, user_matches
+from app.core.user_identity import same_identity, user_matches
 
 # 侧别标识（与 api/task.py 的 _ACTOR_SIDE_* 保持一致）
 SIDE_ASSIGNED = "assigned"
@@ -42,7 +42,6 @@ class TicketRoles:
     # --- 基础身份 ---
     is_creator: bool = False      # tasks.created_by（= 代理人，全程不变）
     is_assignee: bool = False     # tasks.assigned_to
-    is_admin: bool = False
 
     # --- 代理关系派生 ---
     is_agent: bool = False             # 我是本单的代理人
@@ -129,7 +128,6 @@ def resolve_ticket_roles(
     roles.is_creator = user_matches(current_user, created_by)
     roles.is_assignee = user_matches(current_user, assigned_to)
     roles.is_customer = user_matches(current_user, customer)
-    roles.is_admin = is_admin_user(current_user)
     roles.is_follower = bool(is_follower)
 
     # 权限位：显式传入优先，否则从 user.permissions 推断
@@ -139,7 +137,7 @@ def resolve_ticket_roles(
             if isinstance(current_user, dict)
             else (getattr(current_user, "permissions", None) or [])
         )
-        can_operate = "backend:tasks:operate" in perms or roles.is_admin
+        can_operate = "backend:tasks:operate" in perms
     roles.can_operate = bool(can_operate)
 
     # --- 代理关系派生 ---
@@ -168,18 +166,17 @@ def resolve_ticket_roles(
         or roles.is_principal or roles.is_pending_principal or roles.is_customer
     )
 
-    # 可推进/改状态：接单人、代理人（created_by 本就含）、已确认的被代理人、管理员、有 operate 权限
+    # 可推进/改状态：接单人、代理人（created_by 本就含）、已确认的被代理人、有 operate 权限
     roles.can_operate = bool(
         roles.can_operate
         or roles.is_assignee
         or roles.is_creator
         or roles.is_principal
-        or roles.is_admin
     )
 
-    # 确认关闭：代理人（created_by）+ 已确认被代理人 + 管理员
+    # 确认关闭：代理人（created_by）+ 已确认被代理人 + 有 operate 权限的人
     # 注意：customer 不再参与（设计文档决策 6，修掉「新单 customer 为空导致非 admin 关不掉单」）
-    roles.can_close = bool(roles.is_creator or roles.is_principal or roles.is_admin)
+    roles.can_close = bool(roles.is_creator or roles.is_principal or roles.can_operate)
 
     # 撤回：仅实际提交人（代理人），被代理人**不可撤回**（决策 4）
     roles.can_withdraw = bool(roles.is_creator)

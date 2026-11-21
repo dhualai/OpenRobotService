@@ -27,10 +27,10 @@ def _user_name(user: Dict[str, Any]) -> str:
 
 
 def is_admin_or_special(user: Dict[str, Any]) -> bool:
-    """管理员或有模块树特殊写权限 → True。"""
+    """有模块树特殊写权限 → True（admin 不再直通，统一走 SPECIAL_PERM 编码）。"""
     perms = user.get("permissions") or []
     if isinstance(perms, (list, set)):
-        if "admin" in perms or SPECIAL_PERM in perms:
+        if SPECIAL_PERM in perms:
             return True
         for p in perms:
             if p == SPECIAL_PERM or p == f"{SPECIAL_PERM}:*" or p == "*":
@@ -38,7 +38,7 @@ def is_admin_or_special(user: Dict[str, Any]) -> bool:
     roles = user.get("roles") or {}
     if isinstance(roles, dict):
         for rp in roles.values():
-            if isinstance(rp, (list, set)) and ("admin" in rp or SPECIAL_PERM in rp):
+            if isinstance(rp, (list, set)) and SPECIAL_PERM in rp:
                 return True
     return False
 

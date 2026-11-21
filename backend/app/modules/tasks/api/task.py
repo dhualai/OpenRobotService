@@ -69,7 +69,7 @@ from app.services.notification_outbox_service import NotificationOutboxService
 from app.integrations.api import verify_sync_api_key, verify_robot_alarm_api_key
 from app.services.identity_service import IdentityService
 from app.core.config import settings
-from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys, same_identity
+from app.core.user_identity import user_matches, to_user_id, actor_username, identity_keys, same_identity
 from app.services.redispatch_tip_service import (  # 派单说明：列表/气泡/详情同一出口
     build_redispatch_tip,
     clean_reasoning_for_display,
@@ -1120,11 +1120,10 @@ async def get_task(
             # （接单人身份依据 _log.assigned_id（本轮真正被派单对象）判定，见下 `_viewer_assignee`）
             _viewer_user = None
             _viewer_creator = False
-            _viewer_admin = False
             _viewer_operate = False
             try:
                 from app.core.database import get_user_with_roles
-                from app.core.user_identity import user_matches, is_admin_user
+                from app.core.user_identity import user_matches
                 from app.core.security import decode_token
                 if token:
                     _payload = decode_token(token)
@@ -1133,22 +1132,18 @@ async def get_task(
                         _viewer_user = get_user_with_roles(_uname)
                         if _viewer_user:
                             _viewer_creator = user_matches(_viewer_user, getattr(ticket, "created_by", None))
-                            _viewer_admin = is_admin_user(_viewer_user)
                             _perms = _viewer_user.get("permissions") or []
-                            _viewer_operate = (
-                                _viewer_admin or "backend:tasks:operate" in _perms
-                            )
+                            _viewer_operate = "backend:tasks:operate" in _perms
             except Exception:
                 _viewer_user = None
                 _viewer_creator = False
-                _viewer_admin = False
                 _viewer_operate = False
             # 最近一次「人工转派」的原因：**和派单原因放在一起展示**，不进工单动态。
             # 转派走 operation_log（不写 task_dispatch_log），原因落在 detail.reason。
-            # 权限与派单原因一致：只给接单人 / 提单人 / 管理员 / 有 operate 权限。
+            # 权限与派单原因一致：只给接单人 / 提单人 / 有 operate 权限。
             # ⚠️ 必须算在 `if _log is not None` **之外** —— 下面 else 分支（无派单日志）
             #    也要用它。（同函数内变量先用后赋值＝UnboundLocalError，本仓踩过一次。）
-            _viewer_ok = _viewer_admin or _viewer_operate
+            _viewer_ok = _viewer_operate
             # 接单人身份按**工单当前的 assigned_to** 判（与下面 _viewer_assignee 同一口径）。
             # 这里不能用 _viewer_assignee —— 它依赖 _log，此刻还没查。
             _viewer_is_assignee = bool(
@@ -1875,15 +1870,14 @@ async def update_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     user_name = (current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", username))
 
-    # 拥有 backend:tasks:operate 权限的用户视同 admin，跳过身份与状态流转校验
+    # 拥有 backend:tasks:operate 权限的用户跳过身份与状态流转校验
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
     # 统一角色解析（含被代理人）：见 app/core/ticket_roles.py
     roles = await get_ticket_roles(db, ticket, current_user)
-    if not is_admin and not can_operate:
+    if not can_operate:
         if not roles.is_related:
             raise HTTPException(status_code=403, detail="无权限更新此任务")
         if ticket.status == TicketStatus.CLOSED:
@@ -2058,16 +2052,16 @@ async def delete_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
+    can_hard_delete = has_permission_code(current_user, "backend:tasks:delete")
 
-    if not is_admin:
+    if not can_hard_delete:
         roles = await get_ticket_roles(db, ticket, current_user)
         if not (roles.is_assignee or roles.is_creator):
             raise HTTPException(status_code=403, detail="无权限更新此任务")
 
     try:
-        success = await TicketService.delete_ticket(db, task_id, is_admin)
+        success = await TicketService.delete_ticket(db, task_id, can_hard_delete)
         if not success:
             raise HTTPException(status_code=404, detail="任务未找到")
         return {"message": "任务删除成功"}
@@ -2440,7 +2434,6 @@ async def update_task_status(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
 
@@ -2454,36 +2447,36 @@ async def update_task_status(
     if ticket.source == 'ai':
         pass
     elif not (
-        _roles.is_creator or _roles.is_assignee or _roles.is_principal or is_admin or can_operate
+        _roles.is_creator or _roles.is_assignee or _roles.is_principal or can_operate
     ):
         raise HTTPException(status_code=403, detail="无权限更新任务状态")
 
     try:
         status_enum = TicketStatus(status)
 
-        # ── 撤回（→ canceled）权限收窄：仅提单人(created_by) 或 管理员可撤回，处理人(assigned_to) 不可撤回 ──
+        # ── 撤回（→ canceled）权限收窄：仅提单人(created_by) 或 有 operate 权限可撤回 ──
         # 业务规则：撤回是提单人防止「派错单/误提」的特权，处理人应走「退回/暂停」而非替提单人撤回。
         # created_by 过渡期可能是 username 或 users.id，与当前用户双键比较。
-        if status_enum == TicketStatus.CANCELED and not is_admin and not can_operate and not user_matches(current_user, ticket.created_by):
-            raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
+        if status_enum == TicketStatus.CANCELED and not can_operate and not user_matches(current_user, ticket.created_by):
+            raise HTTPException(status_code=403, detail="仅提单人或有 operate 权限可撤回工单")
 
-        # ── 暂停（→ pending）直达：仅**管理员**可直接挂起处理中的工单 ──
+        # ── 暂停（→ pending）直达：仅**有 operate 权限**可直接挂起处理中的工单 ──
         if status_enum == TicketStatus.PENDING and ticket.status == TicketStatus.IN_PROGRESS:
-            if not is_admin and not can_operate:
+            if not can_operate:
                 raise HTTPException(status_code=403, detail="仅管理员可直接暂停工单")
 
         # ── 请求暂停（→ pending_requested）两阶段路径：保留兼容历史数据，仅处理人可发起 ──
         if status_enum == TicketStatus.PENDING_REQUESTED:
             if ticket.status != TicketStatus.IN_PROGRESS:
                 raise HTTPException(status_code=400, detail="仅处理中的工单可发起暂停请求")
-            if not _roles.is_assignee and not is_admin and not can_operate:
+            if not _roles.is_assignee and not can_operate:
                 raise HTTPException(status_code=403, detail="仅处理人可请求暂停工单")
 
         # ── 暂停请求后续操作权限收窄（pending_requested 两阶段，保留兼容） ──
         # pending_requested → pending  = 提单人确认暂停
         # pending_requested → in_progress = 提单人驳回（继续处理）
         if ticket.status == TicketStatus.PENDING_REQUESTED:
-            if not (_roles.is_creator or _roles.is_principal or is_admin or can_operate):
+            if not (_roles.is_creator or _roles.is_principal or can_operate):
                 raise HTTPException(status_code=403, detail="仅提单人/被代理人/管理员可处理暂停请求")
             if status_enum not in (TicketStatus.PENDING, TicketStatus.IN_PROGRESS):
                 raise HTTPException(status_code=400, detail="暂停请求中仅可「确认暂停」或「驳回」")
@@ -2492,14 +2485,14 @@ async def update_task_status(
         if status_enum == TicketStatus.UNSOLVABLE_REQUESTED:
             if ticket.status != TicketStatus.IN_PROGRESS:
                 raise HTTPException(status_code=400, detail="仅处理中的工单可标记无法解决")
-            if not _roles.is_assignee and not is_admin and not can_operate:
+            if not _roles.is_assignee and not can_operate:
                 raise HTTPException(status_code=403, detail="仅处理人可标记无法解决工单")
 
         # ── 无法解决请求后续：必须由**提单人侧**处理 ──
         # unsolvable_requested → unsolvable = 提单人确认（终态）
         # unsolvable_requested → in_progress = 提单人驳回（继续处理）
         if ticket.status == TicketStatus.UNSOLVABLE_REQUESTED:
-            if not (_roles.is_creator or _roles.is_principal or is_admin or can_operate):
+            if not (_roles.is_creator or _roles.is_principal or can_operate):
                 raise HTTPException(status_code=403, detail="仅提单人/被代理人/管理员可处理无法解决请求")
             if status_enum not in (TicketStatus.UNSOLVABLE, TicketStatus.IN_PROGRESS):
                 raise HTTPException(status_code=400, detail="无法解决确认中仅可「确认无法解决」或「驳回」")
@@ -2507,7 +2500,7 @@ async def update_task_status(
         # ── 已无法解决 → 继续处理（回到 in_progress）：仅**处理人**可恢复 ──
         if ticket.status == TicketStatus.UNSOLVABLE:
             if status_enum == TicketStatus.IN_PROGRESS:
-                if not _roles.is_assignee and not is_admin and not can_operate:
+                if not _roles.is_assignee and not can_operate:
                     raise HTTPException(status_code=403, detail="仅处理人可恢复无法解决的工单")
 
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
@@ -2762,7 +2755,6 @@ async def respond_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
@@ -2772,11 +2764,11 @@ async def respond_task(
     _roles = await get_ticket_roles(db, ticket, current_user)
 
     # AI 工单（created_by='system'）允许任何登录用户操作；
-    # 其余需处理人/提单人/被代理人(已确认跟进)/管理员/操作权限
+    # 其余需处理人/提单人/被代理人(已确认跟进)/操作权限
     if ticket.source == 'ai':
         pass
     elif not (
-        _roles.is_assignee or _roles.is_creator or _roles.is_principal or is_admin or can_operate
+        _roles.is_assignee or _roles.is_creator or _roles.is_principal or can_operate
     ):
         raise HTTPException(status_code=403, detail="无权限响应此工单")
 
@@ -2904,19 +2896,18 @@ async def complete_task_step(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
     roles = await get_ticket_roles(db, ticket, current_user)
 
-    # 权限：仅接单人 / 管理员 / operate 权限位（与前端 isAssignee 门控、set-step-time 口径一致）。
+    # 权限：仅接单人 / 有 operate 权限（与前端 isAssignee 门控、set-step-time 口径一致）。
     # ⚠️ 不可回填 `roles.can_operate`：该字段在 resolve_ticket_roles 内被 OR 上了
     # is_creator / is_principal，会把提单人、已确认跟进的被代理人一并放行，
     # 使其可绕过前端替处理人推进阶段并设定下一阶段 SLA（接口越权 + 打乱协商回合）。
     if ticket.source == 'ai':
         pass
-    elif not (roles.is_assignee or is_admin or can_operate):
+    elif not (roles.is_assignee or can_operate):
         raise HTTPException(status_code=403, detail="无权限操作此工单")
 
     if ticket.status != TicketStatus.IN_PROGRESS:
@@ -3082,16 +3073,15 @@ async def negotiate_step(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
 
-    # 权限：接单人 / 提单人 / 被代理人(已确认跟进) / 管理员 / 操作权限 均可协商（回合双方对话）
+    # 权限：接单人 / 提单人 / 被代理人(已确认跟进) / 有 operate 权限 均可协商（回合双方对话）
     # 决策 10：被代理人在 pending 期间**不参与协商**（is_principal 仅在 acknowledged 为 True）
     _roles = await get_ticket_roles(db, ticket, current_user)
     if ticket.source != 'ai' and not (
-        _roles.is_assignee or _roles.is_creator or _roles.is_principal or is_admin or can_operate
+        _roles.is_assignee or _roles.is_creator or _roles.is_principal or can_operate
     ):
         raise HTTPException(status_code=403, detail="无权限协商此工单")
 
@@ -3270,15 +3260,14 @@ async def set_step_time(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
 
-    # 仅处理人/管理员/操作权限（角色口径统一走 roles，且早于 _actor_side 调用以命中缓存）
+    # 仅处理人/有 operate 权限（角色口径统一走 roles，且早于 _actor_side 调用以命中缓存）
     _roles = await get_ticket_roles(db, ticket, current_user)
     _is_assignee = _roles.is_assignee
-    if ticket.source != 'ai' and not (_is_assignee or is_admin or can_operate):
+    if ticket.source != 'ai' and not (_is_assignee or can_operate):
         raise HTTPException(status_code=403, detail="无权限设置节点时间")
 
     # 仅已升级上报的工单可用
@@ -3292,14 +3281,14 @@ async def set_step_time(
     ticket.deadline_at = endtime  # 一锤定音设置时间 → 更新工单截止时间
     ticket.curr_step_agreed = True
     # 一锤定音由谁按下就归谁的侧别（已确认跟进的被代理人亦归 creator 侧）；
-    # 纯管理员/运维等非参与者 fallback 为接单人侧（语义：轮到问题方确认）
+    # 纯非参与者 fallback 为接单人侧（语义：轮到问题方确认）
     ticket.step_last_updated_by = _actor_side(ticket, current_user, username) or _ACTOR_SIDE_ASSIGNED
     ticket.step_last_updated_at = func.now()
     await db.commit()
     await db.refresh(ticket)
 
     user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
-    _role = "处理人" if _is_assignee else ("管理员" if is_admin else "")
+    _role = "处理人" if _is_assignee else ("管理员" if can_operate else "")
 
     await OperationLogService.log(
         db=db, task_id=task_id, op_type=OperationType.UPDATE,
@@ -3365,15 +3354,14 @@ async def reopen_step(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
 
-    # 权限：提单人 / 被代理人(已确认跟进) / 管理员 / 操作权限（AI 工单放行）
+    # 权限：提单人 / 被代理人(已确认跟进) / 有 operate 权限（AI 工单放行）
     _roles = await get_ticket_roles(db, ticket, current_user)
     if ticket.source != 'ai' and not (
-        _roles.is_creator or _roles.is_principal or is_admin or can_operate
+        _roles.is_creator or _roles.is_principal or can_operate
     ):
         raise HTTPException(status_code=403, detail="仅提单人可打回工单")
 
@@ -3682,12 +3670,12 @@ async def update_creator_name(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     user_name = (current_user.get('name', username) if isinstance(current_user, dict) else username)
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
 
-    # 仅工单处理人（assigned_to）或管理员可修改创建人姓名
-    if not is_admin:
+    # 仅工单处理人（assigned_to）或有 operate 权限可修改创建人姓名
+    if not can_operate:
         _roles = await get_ticket_roles(db, ticket, current_user)
         if not _roles.is_assignee:
             raise HTTPException(status_code=403, detail="仅工单处理人可修改创建人姓名")
@@ -3797,15 +3785,15 @@ async def re_dispatch_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = is_admin_user(current_user)
     username = actor_username(current_user)
     user_name = (current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", username)) or username
     token = current_user.get('token') if isinstance(current_user, dict) else getattr(current_user, "token", None)
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
 
-    # 权限口径对齐 update_task：管理员 / 提单人 / 处理人 / 被代理人(已确认跟进)
+    # 权限口径对齐 update_task：有 operate 权限 / 提单人 / 处理人 / 被代理人(已确认跟进)
     # customer 收敛为展示用联系人，不再参与权限（决策 6）
     _roles = await get_ticket_roles(db, ticket, current_user)
-    if not is_admin and not (_roles.is_assignee or _roles.is_creator or _roles.is_principal):
+    if not can_operate and not (_roles.is_assignee or _roles.is_creator or _roles.is_principal):
         raise HTTPException(status_code=403, detail="无权限重新派单此任务")
     if ticket.status == TicketStatus.CLOSED:
         raise HTTPException(status_code=400, detail="已关闭的任务不能重新派单")

@@ -339,9 +339,31 @@ async def get_user_field_options(
         db.close()
 
 
-# ===== 公司/部门提交与审核 =====
+# ===== 公司/部门/项目提交与审核 =====
 
-ADMIN_ASSIGNEE_ID = "admin"  # 审核工单指派给管理员
+# 审核工单默认处理人：拥有此权限的第一个用户（替代旧的 ADMIN_ASSIGNEE_ID="admin" 硬编码）
+APPROVAL_MANAGER_PERMISSION = "backend:options:approve"
+
+
+def ensure_approval_permission() -> None:
+    """确保审核工单处理人权限已注册（幂等）。"""
+    from app.services.identity_service import IdentityService
+    IdentityService.add_permission(
+        permission_id="perm_backend_options_approve",
+        code=APPROVAL_MANAGER_PERMISSION,
+        name="审核工单默认处理人",
+        resource_type="backend",
+        action="operate",
+        description="公司/部门/项目等主数据录入审核工单的默认指派权限，拥有此权限的第一个活跃用户将被指派为处理人",
+    )
+
+
+def _resolve_approval_assignee() -> str:
+    """返回审核工单应指派给谁（user_id），查不到则返回空串让派单 Worker 兜底。"""
+    ensure_approval_permission()
+    from app.services.permission_service import permission_service
+    uid = permission_service.get_first_user_by_permission(APPROVAL_MANAGER_PERMISSION)
+    return uid or ""
 
 
 # ===== 部门职责画像（AI 派单 R2 部门分类用）=====
@@ -464,7 +486,7 @@ async def submit_new_company(
         description=f"用户 {user_name} 申请新增公司「{name}」，请审核。",
         ticket_type=TaskType.OTHER,
         priority=TaskPriority.LOW,
-        assigned_to=ADMIN_ASSIGNEE_ID,
+        assigned_to=_resolve_approval_assignee(),
         metadata_info={
             "approval_type": "new_company",
             "target_table": "companies",
@@ -549,7 +571,7 @@ async def submit_new_department(
         description=f"用户 {user_name} 申请新增部门「{name}」（所属公司：{company_name}），请审核。",
         ticket_type=TaskType.OTHER,
         priority=TaskPriority.LOW,
-        assigned_to=ADMIN_ASSIGNEE_ID,
+        assigned_to=_resolve_approval_assignee(),
         metadata_info={
             "approval_type": "new_department",
             "target_table": "departments",
@@ -655,7 +677,7 @@ async def submit_new_project(
             description=ticket_desc,
             ticket_type=TaskType.OTHER,
             priority=TaskPriority.LOW,
-            assigned_to=ADMIN_ASSIGNEE_ID,
+            assigned_to=_resolve_approval_assignee(),
             metadata_info={
                 "approval_type": "new_project",
                 "target_table": "project",

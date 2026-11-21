@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import String, cast, func, select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.user_identity import is_admin_user
+from app.modules.admin.api.auth import has_permission_code
 from app.models.identity import UserDB
 from app.models.knowledge import (
     ArchiveReviewDecision, KnowledgeLike, KnowledgeLikeEvent,
@@ -276,7 +276,7 @@ async def overview(db, actor, month=None):
             "top_three": (await public_rankings(db, month))[:3],
             "top_questioners": (await public_rankings(db, month, role="questioner"))[:3],
             "top_answerers": (await public_rankings(db, month, role="answerer"))[:3],
-            "can_review": configured or review is not None or history is not None or is_admin_user(actor),
+            "can_review": configured or review is not None or history is not None or has_permission_code(actor, "backend:knowledge-review:operate"),
             "reviewer_configured": configured, "pending_review_count": pending_count,
             "rule_notice": "综合榜统一计奖；同工单双角色暂计1次，同数量按有效获赞排序；未定边界须确认后发奖"}
 
