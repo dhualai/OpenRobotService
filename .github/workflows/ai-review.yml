@@ -28,9 +28,8 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: ai-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
-  cancel-in-progress: true
+# 注意：防抖分组必须放 job 级且快筛/深度分开——workflow 级同组会让
+# push 触发的快筛与 labeled 触发的深度检视互相取消（实测踩过）
 
 jobs:
   quick-screen:
@@ -42,6 +41,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: ai-review-quick-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+      cancel-in-progress: true
     env:
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -118,6 +120,9 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: ai-review-deep-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+      cancel-in-progress: true
     env:
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
