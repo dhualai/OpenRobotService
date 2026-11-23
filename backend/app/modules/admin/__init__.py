@@ -5,6 +5,7 @@ MIGRATION.md 阶段 3：承接 DAS projects/risks/daily-reports/export + AAS 用
 from fastapi import APIRouter
 from app.modules.admin.api.knowledge import router as knowledge_router
 from app.modules.admin.api.knowledge_challenge import router as knowledge_challenge_router
+from app.modules.admin.api.learning import router as learning_router
 from app.modules.admin.api.projects import project_router
 from app.modules.admin.api.risks import risk_router
 from app.modules.admin.api.daily_reports import daily_report_router
@@ -36,6 +37,7 @@ from app.modules.admin.api.work_calendar import router as work_calendar_router
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 admin_router.include_router(knowledge_router)
 admin_router.include_router(knowledge_challenge_router)
+admin_router.include_router(learning_router)
 
 admin_router.include_router(project_router)
 admin_router.include_router(risk_router)

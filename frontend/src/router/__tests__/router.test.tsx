@@ -133,6 +133,11 @@ const resolvesInRealRouter = (url: string) =>
   REAL_ROUTE_PATHS.some((p) => matchPath(`/${p}`, url) !== null || matchPath(`/${p}`, url.replace(/^\/admin/, '')) !== null);
 
 describe('真实路由表（src/main.tsx）', () => {
+  it('题目生成页面挂在真实后台路由而非历史副本', () => {
+    expect(resolvesInRealRouter('/admin/question-generation')).toBe(true);
+    expect(MAIN_SRC).toContain("import('@/pages/admin/learning/QuestionGeneration')");
+    expect(MAIN_SRC).toContain("{ path: 'question-generation', element: <QuestionGeneration /> }");
+  });
   it('项目工单卡三格的下钻路由已挂上（每个按钮各一个列表页）', () => {
     // 卡片点击后跳的正是这三个 URL（见 ProjectTicketsCard.openTickets）
     for (const scope of ['all', 'pending', 'overdue']) {

@@ -89,3 +89,9 @@ template:
       thing33: ""
       phrase15: ""
       thing13: ""
+# 账号授权通过提醒, [授权编号, 项目名称] — 扫码注册用户申请加入项目被审核通过后推送
+  12:
+    id: yMO7yjE4S0NnH97TuTgK9g46jCczObVr4-WcE0BReMg
+    data:
+      character_string2: ""
+      thing8: ""

@@ -4897,6 +4897,7 @@ html, body, #root {
 .dashboard-more-card[data-tone='blue-2'] .dashboard-more-card__icon { background: #e7f3f8; color: var(--mac-blue-2); }
 .dashboard-more-card[data-tone='blue-3'] .dashboard-more-card__icon { background: #eaf7fd; color: var(--mac-blue-3); }
 .dashboard-more-card[data-tone='blue-4'] .dashboard-more-card__icon { background: #f2fbff; color: var(--mac-blue-4); }
+.dashboard-more-card[data-tone='blue-5'] .dashboard-more-card__icon { background: #f7fdff; color: var(--mac-blue-5); }
 .dashboard-more-card__label { font-size: 11.5px; color: var(--mac-muted-fg); }
 
 
@@ -10647,6 +10648,90 @@ button.dispatch-dev__rate-row { cursor: pointer; }
   transition: opacity 0.15s, box-shadow 0.15s;
 }
 .task-policy-row:active { opacity: 0.85; }
+
+/* —— ArchiveReportRichEditor（知识沉淀报告富文本编辑器）——
+   参考 ChallengeAnswerRichEditor 样式（knowledgeChallenges.css），
+   按编辑器语义独立命名，避免 admin 页面样式污染任务页。 */
+.archive-report-document { min-width: 0; }
+.archive-report-format {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 8px;
+  border: 1px solid var(--border); border-bottom: 0;
+  border-radius: 10px 10px 0 0; background: var(--card);
+}
+.archive-report-format button {
+  border: 0; border-radius: 6px; padding: 6px 9px;
+  background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer;
+}
+.archive-report-format button:hover { background: var(--muted, #f6f8fa); }
+.archive-report-format button:disabled { opacity: .45; cursor: default; }
+.archive-report-rich-editor {
+  box-sizing: border-box; min-height: 300px; max-height: 420px; overflow-y: auto;
+  padding: 16px; border: 1px solid var(--border); border-radius: 0 0 10px 10px;
+  background: var(--card); color: var(--foreground); font-size: 14px; line-height: 1.9;
+  overflow-wrap: anywhere; outline: none;
+}
+.archive-report-rich-editor:focus { border-color: var(--brand, #266fe8); }
+.archive-report-rich-editor[aria-disabled="true"] {
+  border-radius: 10px; /* 只读态无 toolbar，单独圆角 */
+  opacity: 1;
+  background: var(--muted, #f6f8fa);
+}
+.archive-report-rich-editor p { margin: 0 0 10px; }
+.archive-report-rich-editor p:last-child { margin-bottom: 0; }
+.archive-report-rich-editor h2 { font-size: 17px; font-weight: 650; margin: 16px 0 8px; }
+.archive-report-rich-editor h3 { font-size: 15px; font-weight: 600; margin: 14px 0 6px; }
+.archive-report-rich-editor ul, .archive-report-rich-editor ol { padding-left: 1.4em; margin: 0 0 10px; }
+.archive-report-rich-editor li { margin-bottom: 3px; }
+.archive-report-rich-editor img {
+  display: block; max-width: 100%; margin: 12px 0; border-radius: 8px;
+  object-fit: contain; cursor: zoom-in;
+}
+.archive-report-rich-editor img.ProseMirror-selectednode {
+  outline: 2px solid var(--brand, #266fe8); outline-offset: 2px; cursor: grab;
+}
+/*
+ * Tiptap ResizableNodeView resize handles：
+ * Tiptap 创建的 handle 是 <div data-resize-handle="top-left"> —— 只有 position:absolute，
+ * 默认 0×0 完全不可见！这里补全尺寸/颜色/交互。
+ * 显示规则：一直显示（editor 里只有图片节点用 ResizableNodeView）。
+ */
+.archive-report-rich-editor [data-resize-handle] {
+  width: 10px; height: 10px;
+  background: var(--brand, #266fe8);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.2);
+  pointer-events: auto;
+  opacity: 0.75;
+  transition: opacity .15s, transform .1s;
+}
+.archive-report-rich-editor [data-resize-handle]:hover { opacity: 1; transform: scale(1.25); }
+/* 角落手柄：Tiptap positionHandle 设了 top/bottom/left/right:0 */
+.archive-report-rich-editor [data-resize-handle="top-left"]     { margin: -6px 0 0 -6px; cursor: nw-resize; }
+.archive-report-rich-editor [data-resize-handle="top-right"]    { margin: -6px -6px 0 0; cursor: ne-resize; }
+.archive-report-rich-editor [data-resize-handle="bottom-left"]  { margin: 0 0 -6px -6px; cursor: sw-resize; }
+.archive-report-rich-editor [data-resize-handle="bottom-right"] { margin: 0 -6px -6px 0; cursor: se-resize; }
+/* 左右边缘手柄 */
+.archive-report-rich-editor [data-resize-handle="left"] {
+  top: 50% !important; left: -6px !important;
+  transform: translateY(-50%); cursor: w-resize;
+}
+.archive-report-rich-editor [data-resize-handle="right"] {
+  top: 50% !important; right: -6px !important;
+  transform: translateY(-50%); cursor: e-resize;
+}
+/* resize 中 container 状态 */
+.archive-report-rich-editor [data-resize-container][data-resize-state="true"] { user-select: none; }
+.archive-report-rich-editor .ProseMirror-selectednode { outline: 2px solid var(--brand, #266fe8); }
+.archive-report-rich-editor table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.archive-report-rich-editor th, .archive-report-rich-editor td {
+  border: 1px solid var(--border); padding: 6px 10px; font-size: 13px;
+}
+.archive-report-rich-editor pre { white-space: pre-wrap; padding: 10px; background: var(--muted, #f6f8fa); border-radius: 8px; margin: 8px 0; }
+.archive-report-rich-editor code {
+  padding: 2px 6px; background: var(--muted, #f6f8fa); border-radius: 4px;
+  font-size: 12.5px; font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace;
+}
 .task-policy-row:disabled { opacity: 0.6; cursor: not-allowed; }
 /* 不同色相——红（阻塞）/蓝（子工单）/紫（同步） */
 .task-policy-row--red { border-left: 3px solid #ef4444; }

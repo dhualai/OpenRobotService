@@ -92,7 +92,9 @@ class NotificationUtils:
     OVERDUE_WARNING_TICKET = 9
     ROBOT_ALARM = 10
     STEP_NOTIFICATION = 11  # 步骤协商通知模板
-    TICKET_HOST = "https://usp.ep-zl.com/p/app/tasks"
+    # 模板 12 = 账号授权通过提醒 [授权账号, 项目名称] — 扫码注册用户申请加入项目被审核通过后推送
+    PROJECT_JOIN_APPROVED = 12
+    TICKET_HOST = f"{settings.FRONTEND_BASE_URL}/tasks"
 
     @classmethod
     def _initialize_mqtt(cls):
@@ -823,6 +825,74 @@ class NotificationUtils:
 
         asyncio.get_event_loop().run_in_executor(_executor, _send)
         return {"code": 200, "message": "通知已提交发送"}
+
+    @staticmethod
+    def _load_template(template_id: int) -> Dict[str, Any]:
+        """从 template.yaml 加载模板定义（id + data 字段名）。"""
+        template_file = os.path.join(os.path.dirname(__file__), 'template.yaml')
+        with open(template_file, 'r', encoding='utf-8') as f:
+            templates = yaml.safe_load(f)['template']
+        template = templates.get(template_id)
+        if not template:
+            raise ValueError(f"Template with id {template_id} not found in template.yaml")
+        return template
+
+    @staticmethod
+    def send_project_join_approved_notification(
+        open_id: str,
+        project_name: str,
+        ticket_id: Optional[int] = None,
+    ) -> tuple:
+        """推送「账号授权通过提醒」（模板 12）给扫码注册被审核通过的用户。
+
+        从 template.yaml 读取模板 id 和 data 字段名，生成授权编号（"USP" + 6 位随机数），
+        调 wechat_service 直接发微信模板消息给指定 openid（不走 ticket 系统，无需 token）。
+
+        URL 指向授权工单详情页；ticket_id 为空时兜底到个人资料页。
+        返回 (success: bool, result: str|dict)。
+        """
+        # 1. 从 template.yaml 读模板定义
+        try:
+            template = NotificationUtils._load_template(NotificationUtils.PROJECT_JOIN_APPROVED)
+        except Exception as e:
+            logger.error(f"[project_join_approved] 读模板 12 失败: {e}")
+            return False, f"模板加载失败: {e}"
+
+        template_id = template['id']
+        data_keys = list(template['data'].keys())
+        if len(data_keys) < 2:
+            logger.error(f"[project_join_approved] 模板 12 data 字段数不足 2，实际: {data_keys}")
+            return False, "模板 data 字段数不足"
+
+        # 2. 生成授权编号
+        auth_code = f"USP{random.randint(100000, 999999)}"
+
+        # 3. 组装模板 data（按 template.yaml 字段顺序）
+        template_data = {
+            data_keys[0]: {"value": auth_code},
+            data_keys[1]: {"value": project_name},
+        }
+
+        # 4. URL 指向授权工单详情页；ticket_id 为空时兜底到个人资料页
+        if ticket_id:
+            url = f"{NotificationUtils.TICKET_HOST}/{ticket_id}"
+        else:
+            url = f"{settings.FRONTEND_BASE_URL}/admin/profile"
+
+        # 5. 调 wechat_service 发送
+        try:
+            from app.wechat.services.wechat_service import wechat_service
+            success, result = wechat_service.send_template_message(
+                open_id, template_data, url, template_id
+            )
+            if success:
+                logger.info(f"[project_join_approved] ✅ 推送成功 open_id={open_id[:8]}... 授权编号={auth_code}")
+            else:
+                logger.warning(f"[project_join_approved] ❌ 推送失败 open_id={open_id[:8]}... result={result}")
+            return success, result
+        except Exception as e:
+            logger.error(f"[project_join_approved] ❌ 推送异常: {e}")
+            return False, str(e)
 
     @staticmethod
     async def send_step_notification(

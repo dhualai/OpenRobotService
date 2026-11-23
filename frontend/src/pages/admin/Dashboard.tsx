@@ -34,13 +34,11 @@ import { avatarUrl } from '@/api/profile';
 import KnowledgeContributionCard from './KnowledgeContributionCard';
 import HighValueQuestionCard from './HighValueQuestionCard';
 import { fetchRewardStats, fenToYuan } from '@/api/wxpay';
+import { PERM_LEARNING } from '@/api/learning';
 import { POLL_INTERVAL_MS } from '@/config/poll';
 import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
-
-interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
-
-type MoreEntryIconKind = 'projects' | 'data' | 'reports' | 'other';
+import { MORE_FUNCTION_ENTRIES, type MoreEntryIconKind } from './moreEntries';
 
 /** 更多功能入口图标：与 macaron admin 页的 lucide 图标同款线条 */
 function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
@@ -97,13 +95,6 @@ function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
   );
 }
 
-const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
-  { path: '/admin/project-manage', label: '项目管理', kind: 'projects', tone: 'blue-1' },
-  { path: '/admin/data-resource', label: '数据资源', kind: 'data', tone: 'blue-2', group: 'data-resource' },
-  { path: '/admin/daily-summary', label: '日报周报', kind: 'reports', tone: 'blue-3' },
-  { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
-];
-
 export default function Dashboard() {
   const navigate = useNavigate();
   const { hasPermission, projectIds, username, name, avatarResourceId } = useAuthStore();
@@ -116,7 +107,7 @@ export default function Dashboard() {
     void setupWechatShare({ title, desc, link: window.location.href, imgUrl: shareImageUrl() });
   }, []);
 
-  const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
+  const canAccessAdminEntries = hasPermission('frontend:admin:other:show') || hasPermission(PERM_LEARNING);
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   // 资源管理入口需 backend:resource:base:read 权限（隐藏「数据资源」弹层中相应入口）
@@ -385,7 +376,17 @@ export default function Dashboard() {
           {MORE_FUNCTION_ENTRIES
             .filter((e) => e.path !== '/admin/entries' || canAccessAdminEntries)
             .map((e) => (
-            <div key={e.path} className="dashboard-more-card" data-tone={e.tone} onClick={() => e.group === 'data-resource' ? setDataResourceSheetVisible(true) : navigate(e.path)}>
+            <div
+              key={e.path}
+              className="dashboard-more-card"
+              data-tone={e.tone}
+              onClick={() => {
+                if (e.group === 'data-resource') { setDataResourceSheetVisible(true); return; }
+                // 智库等独立应用：同源子路径，新标签页打开（不走前端路由）
+                if (e.external) { window.open(e.external, '_blank', 'noopener,noreferrer'); return; }
+                navigate(e.path);
+              }}
+            >
               <span className="dashboard-more-card__icon"><MoreEntryIcon kind={e.kind} /></span>
               <span className="dashboard-more-card__label">{e.label}</span>
             </div>
