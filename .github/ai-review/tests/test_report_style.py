@@ -18,12 +18,12 @@ def test_fingerprint_stable():
     assert a == b and a != c and len(a) == 8
 
 
-def test_report_doc_layout():
-    """文档化排版：红黄绿固定排序（红组含快筛且最前）、无 alert 色条、建议默认展开。"""
+def test_report_red_only_layout():
+    """只留红档：快筛红组置顶 → 必须采纳；黄绿不渲染；建议 💡 默认展开。"""
     parsed = {
         "conclusion": "高风险",
         "blockers": [{"location": "a.py:5", "issue": "删列" * 60,
-                      "suggestion": "确认无读写"}],
+                      "suggestion": "确认无读写方，历史数据先归档"}],
         "warnings": [{"location": "b.py:1", "issue": "datetime.now",
                       "suggestion": "改 UTC"}],
         "infos": [{"location": "c.py:1", "issue": "命名", "suggestion": ""}],
@@ -32,21 +32,19 @@ def test_report_doc_layout():
         {"path": "m.py", "label": "数据库迁移",
          "reason": "DDL 不可自动回滚"}], "warnings": []}
     md = render_report(parsed, quick, 492, "abcd1234", "deepseek-flash")
-    # 排序：红组（快筛在前）→ 黄 → 绿（匹配 ### 分组标题，避开表格列头）
     assert md.index("### 🔴 规则快筛命中") < md.index("### 🔴 必须采纳")
-    assert md.index("### 🔴 必须采纳") < md.index("### 🟡 选择采纳")
-    assert md.index("### 🟡 选择采纳") < md.index("### 🟢 可优化")
-    # 无 alert 色条（用户要求去除左侧色条）
-    assert "[!CAUTION]" not in md and "[!WARNING]" not in md and "[!TIP]" not in md
-    # 内容不截断（120 字 issue 全文保留）+ 建议默认展开 + 卡通图标
-    assert "删列" * 60 in md
-    assert "<details open>" in md and "🧸" in md
-    # 上海时间：无 UTC 标注 + 计数表格 + 页脚
-    import re as _re
-    head = _re.search(r"\*\*PR #492\*\*[^\n]*", md).group(0)
-    assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", head)  # 上海时间
-    assert "| 🟢 可优化 |" in md and "🪵" in md
+    assert "### 🟡" not in md and "### 🟢" not in md
+    assert "[!CAUTION]" not in md
+    assert "删列" * 60 in md                      # 内容不截断
+    assert "<details open><summary>💡 小D的建议</summary>" in md
+    assert " UTC" not in _head_of(md) and "🪵" in md
+    # 计数行与红组条目数一致
+    assert "🔴 **发现 2 项必须采纳的问题**（AI 1 项 + 规则快筛 1 项）" in md
 
+
+def _head_of(md):
+    import re
+    return re.search(r"\*\*PR #492\*\*[^\n]*", md).group(0)
 
 def test_report_inline_paths_removed_from_summary():
     fp = finding_fingerprint("a.py:5", "删列")

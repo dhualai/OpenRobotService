@@ -232,15 +232,11 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
         loc = it.get("location") or it.get("path") or "未知位置"
         return finding_fingerprint(loc, it.get("issue"))
 
-    # 各档剔除已发行内评论后的条目——表格计数与正文分组共用这一份，
-    # 否则会出现「表格 4 条、正文 0 条」的口径分裂（用户实测反馈）
-    sections_data = []
-    if parsed:
-        for key, title in SECTIONS:
-            items = [it for it in (parsed.get(key) or [])
+    # 只展示「必须采纳」一档（用户定稿：黄绿不再展示）；快筛命中归入红组置顶。
+    # 表格计数与正文分组共用同一份剔除后条目（口径不分裂）。
+    blocker_items = [it for it in ((parsed or {}).get("blockers") or [])
                      if _fp(it) not in (inline_paths or set())]
-            sections_data.append((key, title, items))
-    fps = [ _fp(it) for _key, _t, items in (sections_data or []) for it in items ]
+    fps = [_fp(it) for it in blocker_items]
     lines = [
         "<!-- ors-ai-review:report -->",
         "<!-- ors-ai-review:fp=" + ",".join(fps) + " -->",
@@ -261,16 +257,21 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
         ]
         return "\n".join(lines)
 
-    conclusion = parsed.get("conclusion") or "未发现明显风险"
-    emoji = LEVEL_EMOJI.get(conclusion, "🟢")
-    counts = {k: len(items) for k, _t, items in sections_data}
-    lines += [
-        f"| {emoji} 结论 | 🔴 必须采纳 | 🟡 选择采纳 | 🟢 可优化 |",
-        "|:---|:---:|:---:|:---:|",
-        f"| **{conclusion}** | **{counts['blockers']}** | "
-        f"**{counts['warnings']}** | **{counts['infos']}** |",
-        "",
-    ]
+    n_quick = (len(quick_result.get("blockers") or [])
+               + len(quick_result.get("warnings") or [])) if quick_result else 0
+    if not blocker_items and not n_quick:
+        lines += [
+            "🟢 **未发现必须采纳的高危改动**——数据库/迁移、部署链路、密钥等"
+            "确定性规则与 AI 深度检视均未命中，可放心合并。",
+            "",
+            "---",
+            "🪵 本报告不阻塞合并 · 由人工复核决定 · " + str(model_label),
+        ]
+        return "\n".join(lines)
+
+    lines.append(f"🔴 **发现 {len(blocker_items) + n_quick} 项必须采纳的问题**"
+                 f"（AI {len(blocker_items)} 项 + 规则快筛 {n_quick} 项）")
+    lines.append("")
 
     def render_items(items):
         out = []
@@ -280,27 +281,25 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
             sug = (it.get("suggestion") or "").strip()
             out.append(f"- `{loc}`：{issue}" if issue else f"- `{loc}`")
             if sug and sug != issue:
-                out += ["    <details open><summary>🧸 小D的建议</summary>",
+                out += ["    <details open><summary>💡 小D的建议</summary>",
                         "",
                         f"    {sug}",
                         "",
                         "    </details>"]
         return out
 
-    # 红组最前：确定性规则快筛命中（100% 准确）优先于 AI 判断
-    if quick_result and (quick_result["blockers"] or quick_result["warnings"]):
+    # 红组置顶：确定性规则快筛命中（100% 准确）优先于 AI 判断
+    if n_quick:
         lines.append("### 🔴 规则快筛命中（确定性）")
         lines.append("")
         for it in quick_result["blockers"] + quick_result["warnings"]:
             lines.append(f"- `{it['path']}`：{it['label']}——{it['reason']}")
         lines.append("")
 
-    for key, title, items in sections_data:
-        if not items:
-            continue
-        lines.append(f"### {title}")
+    if blocker_items:
+        lines.append("### 🔴 必须采纳")
         lines.append("")
-        lines += render_items(items)
+        lines += render_items(blocker_items)
         lines.append("")
 
     lines += ["---",
@@ -431,7 +430,7 @@ def main():
     if files and parsed:
         side = {f.get("filename", ""): parse_new_side_lines(f.get("patch"))
                 for f in files}
-        for key in ("blockers", "warnings"):
+        for key in ("blockers",):
             for it in list(parsed.get(key) or []):
                 loc = it.get("location", "") or ""
                 path, _, ln = loc.rpartition(":")

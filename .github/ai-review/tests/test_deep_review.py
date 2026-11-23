@@ -33,6 +33,17 @@ def test_parse_llm_json_tolerates_fence():
     assert parsed["conclusion"] == "高风险"
 
 
+def test_render_report_green():
+    """无 blocker 时只出一句绿灯结论，黄绿意见不渲染。"""
+    parsed = {"conclusion": "未发现明显风险", "blockers": [],
+              "warnings": [{"location": "b.py:1", "issue": "小问题",
+                            "suggestion": "改掉"}], "infos": []}
+    md = render_report(parsed, {"skipped": True, "blockers": [], "warnings": []},
+                       431, "abcd1234", "deepseek-flash")
+    assert "🟢 **未发现必须采纳的高危改动**" in md
+    assert "小问题" not in md and "### 🟡" not in md
+
+
 def test_render_report_llm_failed():
     md = render_report(None, {"skipped": True, "blockers": [], "warnings": []},
                        431, "abcdef123456", "双通道超时")
@@ -52,13 +63,14 @@ def test_render_report_full():
     }
     quick = screen([f("backend/app/y.py", "+a = datetime.now()\n")])
     md = render_report(parsed, quick, 431, "abcdef123456", "deepseek-v4-flash")
-    # 文档化排版：标题 + 计数表格 + 红组最前（规则快筛优先于 AI 判断）
+    # 只展示红档：标题 + 红组（快筛置顶）+ blockers，黄绿不渲染
     assert "# 🤖 AI 检视报告" in md
-    assert "**高风险**" in md and "| 🔴 必须采纳 |" in md
+    assert "🔴 **发现 2 项必须采纳的问题**（AI 1 项 + 规则快筛 1 项）" in md
     assert "`a.py:52`" in md
-    assert "<details open><summary>🧸 小D的建议</summary>" in md
+    assert "<details open><summary>💡 小D的建议</summary>" in md
     assert "🔴 规则快筛命中（确定性）" in md
     assert "deepseek-v4-flash" in md
+    assert "### 🟡" not in md and "### 🟢" not in md   # 黄绿不展示
     import re as _re
     head = _re.search(r"\*\*PR #431\*\*[^\n]*", md).group(0)
     assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", head)  # 上海时间无 UTC 标注
