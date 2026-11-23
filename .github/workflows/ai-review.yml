@@ -196,7 +196,7 @@ jobs:
           (steps.tgt.outputs.mode == 'auto' && steps.deep.outputs.run == 'true')
         continue-on-error: true
         env:
-          PR: ${{ steps.tgt.outputs.pr }}
+          PR_NUMBER: ${{ steps.tgt.outputs.pr }}
         run: |
           python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
             --marker "ors-ai-review:report" --file report.md \
