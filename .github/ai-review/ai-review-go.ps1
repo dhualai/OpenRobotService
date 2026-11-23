@@ -12,9 +12,11 @@ param(
 $ErrorActionPreference = "Stop"
 
 function GhApi([string]$Method, [string]$Path, $Body) {
+  # 有 Body 时走 stdin 喂 JSON（--input -）；
+  # 不能写两次 --input（第二个会把 JSON 字符串当文件名）
   if ($Body) {
     $json = $Body | ConvertTo-Json -Depth 5
-    return gh api $Path -X $Method --input - --input $json 2>$null | ConvertFrom-Json
+    return $json | gh api $Path -X $Method --input - 2>$null | ConvertFrom-Json
   }
   return gh api $Path 2>$null | ConvertFrom-Json
 }

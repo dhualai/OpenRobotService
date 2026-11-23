@@ -96,7 +96,9 @@ jobs:
             echo "labeled_run=$labeled_run" >> "$GITHUB_OUTPUT"
           fi
 
+      # skip 哨兵（commit message 未点名 PR）时，后续步骤全部显式跳过
       - name: Resolve PR base sha
+        if: steps.tgt.outputs.mode != 'skip'
         id: base
         env:
           PR: ${{ steps.tgt.outputs.pr }}
@@ -105,15 +107,18 @@ jobs:
       # 双 checkout：base-rules/ = base 快照（规则+知识库+执行脚本，PR 不可篡改）；
       # pr-code/ = base 分支检出（仅作 bootstrap 回退脚本源，不含 PR 代码）
       - uses: actions/checkout@v4
+        if: steps.tgt.outputs.mode != 'skip'
         with:
           ref: ${{ steps.base.outputs.sha }}
           path: base-rules
       - uses: actions/checkout@v4
+        if: steps.tgt.outputs.mode != 'skip'
         with:
           ref: refs/heads/${{ steps.tgt.outputs.base_ref }}
           path: pr-code
 
       - name: Resolve exec scripts dir
+        if: steps.tgt.outputs.mode != 'skip'
         id: edir
         run: |
           if [ -f base-rules/.github/ai-review/scripts/deep_review.py ]; then
