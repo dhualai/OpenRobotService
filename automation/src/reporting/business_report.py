@@ -9,11 +9,21 @@
         --out automation/output/test-report-business.html
 """
 import argparse
-import json
 import pathlib
 import collections
 import datetime
 import re
+
+if __package__:
+    from .report_data import (
+        STATUS_CN, case_duration_ms, count_statuses, describe_counts, load_results,
+        read_object, report_overview,
+    )
+else:
+    from report_data import (
+        STATUS_CN, case_duration_ms, count_statuses, describe_counts, load_results,
+        read_object, report_overview,
+    )
 
 DEFAULT_RESULTS = pathlib.Path('output/allure-results')
 DEFAULT_OUT = pathlib.Path('output/test-report-business.html')
@@ -115,7 +125,11 @@ def load_att(root, step):
 
 def extract_steps(root, steps, depth=0):
     out = []
-    for s in steps or []:
+    if not isinstance(steps, list):
+        return out
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
         out.append({
             'raw': s.get('name') or '',
             'label': translate_step(s.get('name') or ''),
@@ -129,23 +143,25 @@ def extract_steps(root, steps, depth=0):
 
 def collect(root=DEFAULT_RESULTS):
     scenes = collections.defaultdict(lambda: collections.defaultdict(list))
-    if not root.is_dir():
-        return scenes
-    for f in sorted(root.rglob('*-result.json')):
-        try:
-            d = json.loads(f.read_text(encoding='utf-8'))
-        except Exception:
-            continue
-        labels = {x.get('name'): x.get('value') for x in d.get('labels', [])}
+    for d in load_results(root):
+        raw_labels = d.get('labels')
+        labels = {}
+        if isinstance(raw_labels, list):
+            labels = {
+                x['name']: x['value'] for x in raw_labels if isinstance(x, dict)
+                and isinstance(x.get('name'), str) and isinstance(x.get('value'), str)
+            }
         feat = labels.get('feature') or '未分类'
         story = labels.get('story') or '未标注场景'
-        det = d.get('statusDetails') or {}
+        details = d.get('statusDetails')
+        details = details if isinstance(details, dict) else {}
         scenes[feat][story].append({
-            'title': d.get('name') or '(未命名场景)',
-            'status': str(d.get('status') or 'unknown'),
-            'steps': extract_steps(root, d.get('steps')),
-            'message': (det.get('message') or '').strip(),
-            'duration': max(0, int((d.get('stop') or 0) - (d.get('start') or 0))),
+            'title': d['name'],
+            'status': d['status'],
+            'source': d['source'],
+            'steps': extract_steps(d['directory'], d.get('steps')),
+            'message': str(details.get('message') or '').strip(),
+            'duration': case_duration_ms(d),
         })
     return scenes
 
@@ -153,10 +169,6 @@ def collect(root=DEFAULT_RESULTS):
 def esc(x):
     return (str(x).replace('&', '&amp;').replace('<', '&lt;')
             .replace('>', '&gt;').replace('"', '&quot;'))
-
-
-STATUS_CN = {'passed': '通过', 'failed': '未通过', 'broken': '中断',
-             'skipped': '跳过', 'unknown': '未知'}
 
 
 def clip(text, limit=1800):
@@ -181,15 +193,18 @@ def main(argv=None):
                         help='Allure 结果目录（默认 output/allure-results）')
     parser.add_argument('--out', default=str(DEFAULT_OUT),
                         help='输出 HTML 路径（默认 output/test-report-business.html）')
+    parser.add_argument('--context', type=pathlib.Path, help='Test Gate 判定与运行信息 JSON')
+    parser.add_argument('--expect-gate', action='store_true', help='缺失门禁判定时显示未验收')
     args = parser.parse_args(argv)
 
     root = pathlib.Path(args.results)
     out_path = pathlib.Path(args.out)
 
     scenes = collect(root)
-    grand = sum(len(v) for m in scenes.values() for v in m.values())
     all_scenes = [s for m in scenes.values() for v in m.values() for s in v]
+    grand = len(all_scenes)
     bad = [s for s in all_scenes if s['status'] in ('failed', 'broken')]
+    context = read_object(args.context) if args.context else {}
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
     feats = sorted(scenes.keys(), key=lambda k: -sum(len(v) for v in scenes[k].values()))
 
@@ -200,18 +215,16 @@ def main(argv=None):
          '.wrap{max-width:1040px;margin:0 auto}',
          'h1{font-size:23px;margin:0 0 6px}',
          '.sub{color:#6e7781;font-size:13px;margin-bottom:22px}',
-         '.verdict{border-radius:12px;padding:18px 22px;margin-bottom:26px;border:1px solid}',
-         '.ok{background:#e8f5ec;border-color:#a6d8b6}.bad{background:#fdeeee;border-color:#f0b6b6}',
-         '.verdict h2{margin:0 0 6px;font-size:17px}.verdict p{margin:0;font-size:14px}',
-         '.verdict.ok h2{color:#146c2e}.verdict.bad h2{color:#b3261e}',
+         '.report-overview{border-radius:12px;padding:18px 22px;margin-bottom:26px;'
+         'border:1px solid #d1d9e0;background:#fff;overflow-wrap:anywhere}',
+         '.report-overview h2{margin:0 0 6px;font-size:17px}.report-overview p{margin:6px 0;font-size:14px}',
+         '.gate-suites{margin-top:14px}.source{font-size:11px;color:#57606a}',
          '.toc{background:#fff;border:1px solid #e3e8ee;border-radius:10px;padding:6px 20px;font-size:13px;margin:22px 0}',
          '.toc a{display:inline-block;margin:8px 18px 8px 0;color:#0969da;text-decoration:none}',
          'table{border-collapse:collapse;width:100%;background:#fff;border-radius:10px;overflow:hidden;font-size:14px}',
          'th{background:#f0f3f6;text-align:left;padding:10px 14px;font-weight:600;font-size:13px;color:#57606a}',
          'td{padding:11px 14px;border-top:1px solid #eaeef2;vertical-align:top}',
          '.mod{font-weight:600}.mod small{display:block;font-weight:400;color:#6e7781;font-size:12px;margin-top:2px}',
-         '.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600;white-space:nowrap}',
-         '.pill.ok{background:#e8f5ec;color:#146c2e}.pill.bad{background:#fdeeee;color:#b3261e}',
          'section.module{margin-top:34px}',
          'section.module>h3{font-size:17px;margin:0 0 4px}',
          'section.module>h3 span{font-weight:400;font-size:13px;color:#6e7781;margin-left:8px}',
@@ -253,14 +266,8 @@ def main(argv=None):
          '</style></head><body><div class="wrap">']
 
     p.append('<h1>自动化测试结论报告</h1>')
-    p.append(f'<div class="sub">生成时间 {now} · {len(feats)} 个业务模块 · {grand} 个验证场景</div>')
-
-    if bad:
-        p.append(f'<div class="verdict bad"><h2>结论：{len(bad)} 个场景未通过，建议暂缓发布</h2>'
-                 '<p>标红场景已自动展开，可直接查看失败步骤的入参、出参与断言差异。</p></div>')
-    else:
-        p.append('<div class="verdict ok"><h2>结论：功能全部正常，可以发布</h2>'
-                 f'<p>本次共执行 {grand} 个验证场景，全部符合预期，未发现功能异常。</p></div>')
+    p.append(f'<div class="sub">生成时间 {now} · {len(feats)} 个业务模块</div>')
+    p.append(report_overview(count_statuses(all_scenes), context, expect_gate=args.expect_gate))
 
     p.append('<div class="toc" style="background:#eef6ff;border-color:#c9defa">'
              '<b>怎么看到「步骤、入参、出参、断言」</b>：'
@@ -270,14 +277,13 @@ def main(argv=None):
 
     p.append('<h3 style="font-size:15px;margin:0 0 10px">各模块情况</h3>')
     p.append('<table><thead><tr><th style="width:26%">业务模块</th><th style="width:11%">场景数</th>'
-             '<th style="width:12%">结果</th><th>测了什么</th></tr></thead><tbody>')
+             '<th style="width:32%">结果分布</th><th>测了什么</th></tr></thead><tbody>')
     for feat in feats:
-        mtotal = sum(len(v) for v in scenes[feat].values())
-        mbad = sum(1 for v in scenes[feat].values() for s in v if s['status'] in ('failed', 'broken'))
+        counts = count_statuses(s for items in scenes[feat].values() for s in items)
+        mtotal = sum(counts.values())
         pos, desc = FEATURE_INFO.get(feat, ('', '该模块的业务流程与接口行为'))
-        pill = '<span class="pill ok">通过</span>' if mbad == 0 else f'<span class="pill bad">{mbad} 个未通过</span>'
         p.append(f'<tr><td class="mod">{esc(feat)}<small>{esc(pos)}</small></td>'
-                 f'<td>{mtotal}</td><td>{pill}</td><td>{esc(desc)}</td></tr>')
+                 f'<td>{mtotal}</td><td>{esc(describe_counts(counts))}</td><td>{esc(desc)}</td></tr>')
     p.append('</tbody></table>')
 
     p.append('<div class="toc">快速跳转：')
@@ -302,8 +308,10 @@ def main(argv=None):
                 tag_cls = 'bad' if is_bad else ('skip' if sc['status'] in ('skipped', 'unknown') else 'ok')
                 auto_open = is_bad or first_of_module
                 first_of_module = False
+                source = f'<span class="source">{esc(sc["source"])}</span>' if sc["source"] else ''
                 p.append(f'<details class="scene"{" open" if auto_open else ""}>')
                 p.append(f'<summary><span class="sname">{esc(sc["title"])}</span>'
+                         f'{source}'
                          f'<span class="tag {tag_cls}">{STATUS_CN.get(sc["status"], sc["status"])}</span></summary>')
                 p.append('<div class="body">')
                 if sc['steps']:
@@ -329,7 +337,8 @@ def main(argv=None):
                     p.append('<div class="meta">（该场景未记录分步信息）</div>')
                 if sc['message']:
                     p.append(f'<div class="err">{esc(sc["message"])}</div>')
-                p.append(f'<div class="meta">耗时 {sc["duration"]} 毫秒</div>')
+                if sc["duration"] is not None:
+                    p.append(f'<div class="meta">耗时 {sc["duration"]} 毫秒</div>')
                 p.append('</div></details>')
             p.append('</div>')
         p.append('</section>')
