@@ -1,0 +1,4 @@
+2026-11-23 08:53:03 | [32mINFO | httpx | HTTP Request: GET http://localhost:6333/collections "HTTP/1.1 200 OK"
+2026-11-23 08:53:03 | [32mINFO | automation.clients.QdrantClient | Connected to Qdrant: localhost:6333
+2026-11-23 08:53:03 | [32mINFO | automation.clients.QdrantClient | Qdrant client disconnected
+2026-11-23 08:53:03 | [32mINFO | httpx | HTTP Request: GET http://localhost:6333 "HTTP/1.1 200 OK"
