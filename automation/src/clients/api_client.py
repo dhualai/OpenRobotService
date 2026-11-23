@@ -139,7 +139,7 @@ class ApiClient(BaseClient):
             self._allure_attach_response(response)
 
             if response.status_code in (401, 403) and self._raise_auth_errors:
-                raise AuthenticationError(f"Authentication failed: {response.status_code} {response.text}")
+                raise AuthenticationError(f"Authentication failed: HTTP {response.status_code}")
 
             return response
 

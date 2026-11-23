@@ -133,14 +133,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Prepare required quality JUnit evidence
+        if: always()
+        run: |
+          python3 -m automation.src.reporting.gate_junit \
+            --input-dir automation/output --output-dir automation/output/safe-junit quality-infra quality-api
+
       - name: Upload required quality JUnit results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-junit-quality
           path: |
-            automation/output/junit-quality-infra.xml
-            automation/output/junit-quality-api.xml
+            automation/output/safe-junit/junit-quality-infra.xml
+            automation/output/safe-junit/junit-quality-api.xml
           if-no-files-found: warn
           retention-days: 7
 
@@ -300,14 +306,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Prepare required real backend JUnit evidence
+        if: always()
+        run: |
+          python3 -m automation.src.reporting.gate_junit \
+            --input-dir automation/output --output-dir automation/output/safe-junit real contract
+
       - name: Upload required real backend JUnit results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-junit-real
           path: |
-            automation/output/junit-real.xml
-            automation/output/junit-contract.xml
+            automation/output/safe-junit/junit-real.xml
+            automation/output/safe-junit/junit-contract.xml
           if-no-files-found: warn
           retention-days: 7
 
@@ -414,12 +426,18 @@ jobs:
           path: automation/output/allure-results-scenarios
           if-no-files-found: warn
 
+      - name: Prepare scenario JUnit evidence
+        if: always()
+        run: |
+          python3 -m automation.src.reporting.gate_junit \
+            --input-dir automation/output --output-dir automation/output/safe-junit scenarios
+
       - name: Upload scenario JUnit results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scenario-test-results
-          path: automation/output/junit-scenarios.xml
+          path: automation/output/safe-junit/junit-scenarios.xml
 
   # ---------------- 6. Allure 汇总 ----------------
   allure-report:

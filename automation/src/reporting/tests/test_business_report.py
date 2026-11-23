@@ -143,5 +143,12 @@ def test_scenario_artifact_matches_allure_download_and_keeps_results_flat():
     assert allure_path == "automation/output/allure-results-scenarios"
     assert any(f"--alluredir={allure_path}" in step.get("run", "") for step in scenario_steps)
     assert any(
-        step["with"]["path"] == "automation/output/junit-scenarios.xml" for step in uploads
+        step["with"]["path"] == "automation/output/safe-junit/junit-scenarios.xml"
+        for step in uploads
+    )
+    assert any(
+        "automation.src.reporting.gate_junit" in step.get("run", "")
+        and "scenarios" in step["run"].split()
+        and step["if"] == "always()"
+        for step in scenario_steps
     )

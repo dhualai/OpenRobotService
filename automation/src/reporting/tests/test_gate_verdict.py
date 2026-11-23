@@ -195,8 +195,15 @@ def test_required_suite_artifacts_are_connected_to_enforced_verdict():
         assert any(step["with"]["name"] == suite.allure_artifact and step["if"] == "always()"
                    for step in uploads)
         assert any(fnmatchcase(step["with"]["name"], "gate-junit-*")
-                   and f"automation/output/junit-{suite.key}.xml" in step["with"]["path"].splitlines()
+                   and f"automation/output/safe-junit/junit-{suite.key}.xml"
+                   in step["with"]["path"].splitlines()
                    and step["if"] == "always()" for step in uploads)
+        assert any(
+            "automation.src.reporting.gate_junit" in step.get("run", "")
+            and suite.key in step["run"].split()
+            and step["if"] == "always()"
+            for step in steps
+        )
 
     evaluate = next(step for step in report["steps"] if step.get("id") == "gate-verdict")
     assert evaluate["if"] == "always()"

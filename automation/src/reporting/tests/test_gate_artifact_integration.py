@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from automation.src.reporting import business_report, gate_verdict
+from automation.src.reporting import business_report, gate_junit, gate_verdict
 
 
 PYTEST_CASES = """
@@ -65,11 +65,12 @@ def test_gate_with_pytest_artifacts_and_observed_scenario(tmp_path, monkeypatch)
     allure_dir = tmp_path / "allure-artifacts"
 
     def run_pytest(selection, junit, allure, exit_code=0):
+        raw_junit = tmp_path / "raw-junit" / junit.name
         completed = subprocess.run(
             [
                 sys.executable, "-B", "-m", "pytest", "-c", str(config), "-p",
                 "no:cacheprovider", "-q", str(pytest_file), "-k", selection,
-                f"--junitxml={junit}", f"--alluredir={allure}", "--clean-alluredir",
+                f"--junitxml={raw_junit}", f"--alluredir={allure}", "--clean-alluredir",
             ],
             cwd=tmp_path,
             env={**os.environ, "PYTEST_ADDOPTS": ""},
@@ -77,6 +78,7 @@ def test_gate_with_pytest_artifacts_and_observed_scenario(tmp_path, monkeypatch)
             timeout=40,
         )
         assert completed.returncode == exit_code, completed.stdout.decode(errors="replace")
+        gate_junit.export_junit(raw_junit, junit)
 
     for suite in gate_verdict.REQUIRED_SUITES:
         run_pytest(
