@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/tasks/1/spec-doc",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MDQ1MjIuNDUxNDEzOSwgImlhdCI6IDE3OTU0MDA5MjIuNDUxNDE0M30.bW9jay1zaWc"
+  }
+}

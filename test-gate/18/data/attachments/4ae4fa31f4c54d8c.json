@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/admin/dashboard/tickets/summary",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MDQ1MjEuNjkzODUxNSwgImlhdCI6IDE3OTU0MDA5MjEuNjkzODUyfQ.bW9jay1zaWc"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/admin/roles/999",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MDQ1MjEuODA4MTcxNywgImlhdCI6IDE3OTU0MDA5MjEuODA4MTcyfQ.bW9jay1zaWc"
+  },
+  "body": {
+    "name": "x"
+  }
+}

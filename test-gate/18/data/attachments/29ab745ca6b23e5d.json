@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/admin/projects/risks/R1",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MDQ1MjEuNjY5MjYwNywgImlhdCI6IDE3OTU0MDA5MjEuNjY5MjYxfQ.bW9jay1zaWc"
+  },
+  "body": {
+    "level": "low"
+  }
+}
