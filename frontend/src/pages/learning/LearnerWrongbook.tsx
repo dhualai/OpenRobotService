@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast } from 'tdesign-mobile-react';
-import { ArrowLeft, RefreshCw, BookX, CheckCircle, Circle, ChevronRight, Award } from 'lucide-react';
+import { BookX, CheckCircle, Circle, ChevronDown, ChevronRight, Award, RotateCw } from 'lucide-react';
 import { listWrongbook, setWrongbookStatus, type WrongbookItem, type WrongbookStatus } from '@/api/learner';
 import './learner.css';
 
@@ -19,6 +19,7 @@ export default function LearnerWrongbook() {
   const [status, setStatus] = useState<WrongbookStatus | ''>('');
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   useEffect(() => {
@@ -45,6 +46,10 @@ export default function LearnerWrongbook() {
     } catch (err) {
       Toast({ message: `操作失败：${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
+  };
+
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   return (
@@ -83,7 +88,7 @@ export default function LearnerWrongbook() {
         </div>
       </section>
 
-      {/* 状态筛选 */}
+      {/* 状态筛选（刷新按钮与筛选按钮统一样式） */}
       <div className="learner-wrongbook-filters">
         {STATUS_FILTERS.map((f) => (
           <button
@@ -94,8 +99,13 @@ export default function LearnerWrongbook() {
             {f.label}
           </button>
         ))}
-        <button className="learner-home__refresh" onClick={refresh} aria-label="刷新">
-          <RefreshCw size={14} />
+        <button
+          className="learner-wrongbook-filter"
+          onClick={refresh}
+          aria-label="刷新"
+          title="刷新列表"
+        >
+          <RotateCw size={14} /> 刷新
         </button>
       </div>
 
@@ -109,63 +119,81 @@ export default function LearnerWrongbook() {
           <p>{status ? `当前筛选下没有错题` : '还没有错题，保持住！'}</p>
         </div>
       ) : (
-        <div className="learner-home__list">
+        <div className="learner-wrongbook-list">
           {items.map((item) => {
             const question = item.question;
+            const isOpen = expanded[item.id] ?? false;
             return (
               <div key={item.id} className={`learner-wrongbook-card learner-wrongbook-card--${item.status}`}>
-                <div className="learner-wrongbook-card__top">
-                  <span className="learner-wrongbook-card__chapter">
-                    {item.article_category} · {item.article_title}
-                  </span>
-                  <span className={`learner-wrongbook-card__status learner-wrongbook-card__status--${item.status}`}>
-                    {item.status === 'wrong' ? `未掌握 · 错${item.wrong_count}次` : item.status === 'mastered' ? '已掌握' : '已跳过'}
-                  </span>
-                </div>
+                {/* 点击标题行 → 展开/收起 */}
+                <button
+                  className="learner-wrongbook-card__header"
+                  onClick={() => toggleExpand(item.id)}
+                  aria-expanded={isOpen}
+                >
+                  <div className="learner-wrongbook-card__header-left">
+                    <span className="learner-wrongbook-card__type">
+                      {question.question_type === 'single_choice' ? '单选' :
+                       question.question_type === 'multiple_choice' ? '多选' : '判断'}
+                    </span>
+                    <span className="learner-wrongbook-card__chapter">
+                      {item.article_category} · {item.article_title}
+                    </span>
+                    <span className={`learner-wrongbook-card__status learner-wrongbook-card__status--${item.status}`}>
+                      {item.status === 'wrong' ? `未掌握 · 错${item.wrong_count}次` : item.status === 'mastered' ? '已掌握' : '已跳过'}
+                    </span>
+                  </div>
+                  <ChevronDown
+                    size={16}
+                    className={`learner-wrongbook-card__caret ${isOpen ? 'is-open' : ''}`}
+                  />
+                </button>
 
-                <div className="learner-wrongbook-card__type">
-                  {question.question_type === 'single_choice' ? '单选题' :
-                   question.question_type === 'multiple_choice' ? '多选题' : '判断题'}
-                </div>
+                {/* 默认收起：仅题干 */}
                 <div className="learner-wrongbook-card__stem">{question.stem}</div>
 
-                {question.options?.length > 0 && (
-                  <ul className="learner-wrongbook-card__options">
-                    {question.options.map((opt) => (
-                      <li key={opt.key}>
-                        <span className="learner-wrongbook-card__opt-key">{opt.key}</span>
-                        {opt.text}
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                {/* 展开后：选项 + 操作 */}
+                {isOpen && (
+                  <>
+                    {question.options?.length > 0 && (
+                      <ul className="learner-wrongbook-card__options">
+                        {question.options.map((opt) => (
+                          <li key={opt.key}>
+                            <span className="learner-wrongbook-card__opt-key">{opt.key}</span>
+                            {opt.text}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
 
-                <div className="learner-wrongbook-card__footer">
-                  <button
-                    className="learner-wrongbook-card__back"
-                    onClick={() => navigate(`/tasks/learning/${item.article_id}`)}
-                  >
-                    <ChevronRight size={16} /> 回到课程重做
-                  </button>
-                  {item.status === 'wrong' ? (
-                    <div className="learner-wrongbook-card__actions">
-                      <button onClick={() => handleMark(item.id, 'mastered')} className="is-master">
-                        标记已掌握
+                    <div className="learner-wrongbook-card__footer">
+                      <button
+                        className="learner-wrongbook-card__back"
+                        onClick={() => navigate(`/tasks/learning/${item.article_id}`)}
+                      >
+                        <ChevronRight size={16} /> 回到课程重做
                       </button>
-                      <button onClick={() => handleMark(item.id, 'skipped')} className="is-skip">
-                        跳过
-                      </button>
+                      {item.status === 'wrong' ? (
+                        <div className="learner-wrongbook-card__actions">
+                          <button onClick={() => handleMark(item.id, 'mastered')} className="is-master">
+                            标记已掌握
+                          </button>
+                          <button onClick={() => handleMark(item.id, 'skipped')} className="is-skip">
+                            跳过
+                          </button>
+                        </div>
+                      ) : item.status === 'mastered' ? (
+                        <button onClick={() => handleMark(item.id, 'wrong')} className="learner-wrongbook-card__actions is-reset">
+                          恢复为未掌握
+                        </button>
+                      ) : (
+                        <button onClick={() => handleMark(item.id, 'wrong')} className="learner-wrongbook-card__actions is-reset">
+                          取消跳过
+                        </button>
+                      )}
                     </div>
-                  ) : item.status === 'mastered' ? (
-                    <button onClick={() => handleMark(item.id, 'wrong')} className="learner-wrongbook-card__actions is-reset">
-                      恢复为未掌握
-                    </button>
-                  ) : (
-                    <button onClick={() => handleMark(item.id, 'wrong')} className="learner-wrongbook-card__actions is-reset">
-                      取消跳过
-                    </button>
-                  )}
-                </div>
+                  </>
+                )}
               </div>
             );
           })}

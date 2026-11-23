@@ -840,6 +840,9 @@
   gap: 10px;
   padding: 14px 16px;
   margin-top: 8px;
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
 }
 .learner-wrongbook-stat {
   flex: 1;
@@ -874,6 +877,9 @@
   align-items: center;
   gap: 6px;
   padding: 4px 16px 10px;
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
   overflow-x: auto;
 }
 .learner-wrongbook-filter {
@@ -886,6 +892,9 @@
   color: #6a7a7a;
   cursor: pointer;
   font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .learner-wrongbook-filter.is-active {
   background: #2d7a5f;
@@ -893,30 +902,68 @@
   color: #fff;
 }
 
+/* 列表容器居中限宽 */
+.learner-wrongbook-list {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .learner-wrongbook-card {
   background: #fff;
   border: 1px solid rgba(232, 234, 234, 0.7);
   border-radius: 14px;
-  padding: 14px 16px;
+  padding: 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
 }
 .learner-wrongbook-card--wrong { border-left: 3px solid #d4380d; }
 .learner-wrongbook-card--mastered { border-left: 3px solid #2d7a5f; }
 .learner-wrongbook-card--skipped { border-left: 3px solid #c0c8c8; }
 
-.learner-wrongbook-card__top {
+/* 可点击的标题行 */
+.learner-wrongbook-card__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
-  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  gap: 8px;
 }
+.learner-wrongbook-card__header:active {
+  background: #f7f8f8;
+}
+.learner-wrongbook-card__header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+.learner-wrongbook-card__caret {
+  flex-shrink: 0;
+  color: #a0a8a8;
+  transition: transform 0.2s ease;
+}
+.learner-wrongbook-card__caret.is-open {
+  transform: rotate(180deg);
+}
+
 .learner-wrongbook-card__chapter {
   font-size: 12px;
   color: #8a9a9a;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 .learner-wrongbook-card__status {
   flex-shrink: 0;
@@ -930,25 +977,31 @@
 .learner-wrongbook-card__status--skipped { background: rgba(160, 160, 160, 0.15); color: #7a8a8a; }
 
 .learner-wrongbook-card__type {
-  display: inline-block;
+  flex-shrink: 0;
   font-size: 11px;
   color: #d48806;
   background: rgba(255, 165, 0, 0.12);
   padding: 2px 8px;
   border-radius: 8px;
-  margin-bottom: 6px;
+  font-weight: 500;
 }
 .learner-wrongbook-card__stem {
   font-size: 14px;
   font-weight: 600;
   color: #2b2b2b;
   line-height: 1.55;
-  margin-bottom: 8px;
+  padding: 0 14px 10px;
+  /* 收起时显示 3 行 */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
+
 .learner-wrongbook-card__options {
   list-style: none;
   padding: 0;
-  margin: 0 0 10px;
+  margin: 0 14px 10px;
   background: #fafbfb;
   border-radius: 8px;
   overflow: hidden;
@@ -984,7 +1037,7 @@
   justify-content: space-between;
   gap: 8px;
   border-top: 1px solid rgba(232, 234, 234, 0.5);
-  padding-top: 10px;
+  padding: 10px 14px;
 }
 .learner-wrongbook-card__back {
   display: inline-flex;
