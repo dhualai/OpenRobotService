@@ -307,6 +307,65 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- 进度可视化
+
+class Progress:
+    """PR 对话区的一条 sticky 进度评论，随阶段就地更新（打勾 + 已进行秒数）。
+
+    - 仅 CI 模式可用（REPO/PR_NUMBER/GH_TOKEN 齐全），本地回放自动关闭；
+    - 使用与最终报告相同的 marker：落评论阶段 post_comment 会把同一条
+      评论 PATCH 成正式报告，进度条无缝变成报告，不堆楼；
+    - 任何失败只打日志，绝不影响检视本身。
+    """
+
+    STEPS = ("拉取变更", "LLM 深度检视", "渲染报告")
+    MARKER = "ors-ai-review:report"
+
+    def __init__(self, repo, pr, token, t0):
+        self.repo, self.pr, self.token, self.t0 = repo, pr, token, t0
+        self.enabled = bool(repo and str(pr).isdigit() and token)
+        self.done = set()
+
+    def mark_done(self, step):
+        self.done.add(step)
+
+    def update(self, current):
+        if not self.enabled:
+            return
+        try:
+            from post_comment import find_comment
+            elapsed = int(time.time() - self.t0)
+            rows = []
+            for s in self.STEPS:
+                if s in self.done:
+                    rows.append(f"- ✅ {s}")
+                elif s == current:
+                    rows.append(f"- ⏳ **{s}…**")
+                else:
+                    rows.append(f"- ⬜ {s}")
+            md = "\n".join([
+                f"<!-- {self.MARKER} -->",
+                "# 🤖 AI 检视报告",
+                "",
+                f"**PR #{self.pr}** · {now_display_str()}",
+                "",
+                f"⏳ **AI 检视进行中** — 已进行 {elapsed} 秒",
+                "",
+                *rows,
+                "",
+                "> 完成后本条评论将自动替换为检视报告（预计 1~2 分钟）。",
+            ])
+            existing = find_comment(self.repo, self.pr, self.token, self.MARKER)
+            if existing:
+                gh_api(self.repo, f"issues/comments/{existing}", self.token,
+                       method="PATCH", body={"body": md})
+            else:
+                gh_api(self.repo, f"issues/{self.pr}/comments", self.token,
+                       method="POST", body={"body": md})
+        except Exception as exc:
+            print(f"进度更新失败（不影响检视）: {exc}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------- 主流程
 
 def load_text(path, default=""):
@@ -356,6 +415,10 @@ def main():
     pr = os.environ.get("PR_NUMBER", "")
     token = os.environ.get("GH_TOKEN", "")
 
+    t0 = time.time()
+    progress = Progress(repo, pr, token, t0)
+    progress.update("拉取变更")
+
     # 1. 取变更文件（CI）或本地 diff
     title = args.title
     if args.diff_file:
@@ -370,6 +433,8 @@ def main():
         if status != 200:
             print(f"拉取 PR 文件失败：HTTP {status}", file=sys.stderr)
             return EXIT_OK
+        progress.mark_done("拉取变更")
+        progress.update("LLM 深度检视")
         if not title:
             meta_status, meta = fetch_pr_meta(repo, pr, token)
             if meta_status == 200 and isinstance(meta, dict):
@@ -418,6 +483,9 @@ def main():
             last_raw = content
             print(f"LLM 输出解析失败（第 {attempt} 次）：{exc}", file=sys.stderr)
             model_label = f"输出异常（{model_label}）"
+    progress.mark_done("LLM 深度检视")
+    t_llm_done = time.time()
+    progress.update("渲染报告")
     if not parsed and last_raw and args.out:
         # 原始输出落盘供诊断（LLM 文本非密钥）；报告降级为「未完成」
         with open(args.out + ".raw", "w", encoding="utf-8") as fh:
@@ -452,6 +520,13 @@ def main():
 
     report = render_report(parsed, quick_result, pr or "本地回放", args.sha,
                            model_label or "LLM 不可用", inline_paths)
+    if progress.enabled:
+        total = int(time.time() - t0)
+        d_sec = int(t_llm_done - t0)
+        r_sec = max(total - d_sec, 0)
+        report = report.replace(
+            "\n---\n🪵",
+            f"\n⏱ 总耗时 {total} 秒（diff {d_sec}s · LLM/渲染 {r_sec}s）\n\n---\n🪵", 1)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(report)
