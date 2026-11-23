@@ -49,6 +49,12 @@ class NotificationOutboxService:
 
         `skipped`：临期预警已错过「截止前最后一个工作时段末尾」，不再补发，
         由截止后的逾期提醒接管（见 working_time_service.plan_send_time）。
+
+        注意：occurrence 进幂等键后，逾期提醒每天 DAG 命中都会创建一张新 outbox
+        记录（day0 / day1 / ...）。但 working_time_service.plan_send_time 已把
+        逾期提醒的 scheduled_at 统一算为「DAG 执行时刻之后的下一个工作日」，
+        所以周末/假期堆积的重复命中 scheduled_at 会相同，由下方"同时刻合并"
+        检查兜底，不会真的重复发送。
         """
         if not recipient_id:
             return {"status": "error", "message": "缺少接收人"}
