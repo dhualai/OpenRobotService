@@ -384,14 +384,20 @@ jobs:
         run: |
           pytest automation/tests/real/test_ticket_scenarios.py -q --alluredir=automation/output/allure-results-scenarios --junitxml=automation/output/junit-scenarios.xml
 
-      - name: Upload scenario test results
+      - name: Upload scenario Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-scenarios
+          path: automation/output/allure-results-scenarios
+          if-no-files-found: warn
+
+      - name: Upload scenario JUnit results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scenario-test-results
-          path: |
-            automation/output/allure-results-scenarios
-            automation/output/junit-scenarios.xml
+          path: automation/output/junit-scenarios.xml
 
   # ---------------- 6. Allure 汇总 ----------------
   allure-report:
@@ -407,6 +413,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
+        # always(): 即使上游（如 Docker action 构建）失败，也照常下载已有结果，
+        # 避免后续统计因目录为空而误报"合计 0"。
+        if: always()
         with:
           pattern: allure-results-*
           merge-multiple: true
@@ -443,9 +452,10 @@ jobs:
       - name: Case-level summary from Allure results
         # 直接解析 Allure result JSON，把用例级统计写进 run 页面 Summary，
         # 无需下载 artifact 即可看到通过/失败数量与失败用例名。
+        # tee 让内容同时进入 step 日志，便于排查（否则 summary 内容在日志里看不到）。
         if: always()
         run: |
-          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
           import json, pathlib, collections
           root = pathlib.Path('automation/output/allure-results')
           cnt = collections.Counter()
@@ -460,14 +470,20 @@ jobs:
                   cnt[st] += 1
                   if st in ('failed', 'broken'):
                       bad.append((st, d.get('fullName') or d.get('name') or '?'))
+          total = sum(cnt.values())
           print('')
           print('### 用例统计（来自 Allure 结果）')
           print('')
-          print(f'- 合计：{sum(cnt.values())}')
+          print(f'- 合计：{total}')
           for k in ('passed', 'failed', 'broken', 'skipped', 'unknown'):
               if cnt.get(k):
                   print(f'- {k}：{cnt[k]}')
-          if bad:
+          if total == 0:
+              print('')
+              print('> ⚠️ 未解析到任何用例结果：可能是上游 job 未产出 Allure 文件，')
+              print('> 或报告步骤自身失败（如外部 action 下载失败）。**不代表测试通过。**')
+              print('> 请查看各测试 job 的日志确认。')
+          elif bad:
               print('')
               print('### 失败用例')
               print('')
@@ -479,6 +495,107 @@ jobs:
               print('')
               print('无失败用例 ✓')
           PY
+
+      - name: Build standalone HTML report
+        # Allure 报告靠 JS fetch 读取 data/*.json，file:// 打开会被浏览器 CORS 拦截而空白，
+        # 必须起 http 服务。此步骤额外生成一份数据全内联的单文件 HTML，双击即可查看。
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, pathlib, collections, html
+
+          root = pathlib.Path('automation/output/allure-results')
+          cnt = collections.Counter()
+          rows = []
+          if root.is_dir():
+              for f in sorted(root.rglob('*-result.json')):
+                  try:
+                      d = json.loads(f.read_text(encoding='utf-8'))
+                  except Exception:
+                      continue
+                  st = str(d.get('status') or 'unknown')
+                  cnt[st] += 1
+                  full = d.get('fullName') or d.get('name') or f.stem
+                  short = full.split('#')[-1] if '#' in full else full.split('.')[-1]
+                  dur = max(0, int((d.get('stop') or 0) - (d.get('start') or 0)))
+                  detail = ((d.get('statusDetails') or {}).get('message') or '').strip()
+                  rows.append((st, short, full, dur, detail))
+
+          total = sum(cnt.values())
+          order = {'failed': 0, 'broken': 1, 'passed': 2, 'skipped': 3, 'unknown': 4}
+          rows.sort(key=lambda r: (order.get(r[0], 9), r[2]))
+          color = {'passed': '#1a7f37', 'failed': '#cf222e', 'broken': '#9a6700',
+                   'skipped': '#6e7781', 'unknown': '#6e7781'}
+
+          def esc(x):
+              return html.escape(str(x), quote=True)
+
+          out_parts = ['<!DOCTYPE html>',
+                       '<html lang="zh-CN"><head><meta charset="utf-8"><title>测试报告</title>',
+                       '<style>',
+                       'body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:0;padding:24px;color:#1f2328;background:#fff}',
+                       'h1{font-size:20px;margin:0 0 4px}',
+                       '.meta{color:#6e7781;font-size:12px;margin-bottom:16px}',
+                       '.stats{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}',
+                       '.card{border:1px solid #d1d9e0;border-radius:8px;padding:10px 16px;min-width:96px}',
+                       '.card b{display:block;font-size:22px;line-height:1.3}',
+                       '.card span{font-size:12px;color:#6e7781}',
+                       'table{border-collapse:collapse;width:100%;font-size:13px}',
+                       'th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #eaeef2;vertical-align:top}',
+                       'th{background:#f6f8fa}',
+                       'td.st{white-space:nowrap;font-weight:600}',
+                       'code{font-size:12px;color:#57606a;word-break:break-all}',
+                       'tr:hover td{background:#f6f8fa}',
+                       '</style></head><body>',
+                       '<h1>测试报告</h1>',
+                       f'<div class="meta">用例合计 {total} 条</div>',
+                       '<div class="stats">']
+          for k in ('passed', 'failed', 'broken', 'skipped', 'unknown'):
+              if cnt.get(k):
+                  out_parts.append(f'<div class="card"><b style="color:{color[k]}">{cnt[k]}</b><span>{k}</span></div>')
+          out_parts.append('</div>')
+          out_parts.append('<table><thead><tr><th>状态</th><th>用例</th><th>耗时</th><th>失败信息</th></tr></thead><tbody>')
+          for st, short, full, dur, detail in rows:
+              c = color.get(st, '#6e7781')
+              detail_html = '<code>' + esc(detail) + '</code>' if detail else ''
+              out_parts.append(
+                  '<tr><td class="st" style="color:' + c + '">' + esc(st) + '</td>'
+                  + '<td><div>' + esc(short) + '</div><code>' + esc(full) + '</code></td>'
+                  + '<td>' + str(dur) + ' ms</td><td>' + detail_html + '</td></tr>')
+          out_parts.append('</tbody></table></body></html>')
+
+          out = pathlib.Path('automation/output/test-report.html')
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text('\n'.join(out_parts), encoding='utf-8')
+          print(f'standalone report: {out} ({out.stat().st_size} bytes, {total} cases)')
+          PY
+
+      - name: Upload standalone HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-standalone
+          path: automation/output/test-report.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Build business report
+        # 面向非技术读者的四层报告：模块 → 功能 → 场景 → 步骤（含入参/出参/断言）。
+        # 脚本位于 automation/src/reporting/business_report.py，仅依赖标准库。
+        if: always()
+        run: |
+          python3 automation/src/reporting/business_report.py \
+            --results automation/output/allure-results \
+            --out automation/output/test-report-business.html
+
+      - name: Upload business report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-business
+          path: automation/output/test-report-business.html
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Job summary
         run: |
@@ -493,5 +610,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 报告在哪看" >> $GITHUB_STEP_SUMMARY
           echo "1. **概要**：本页面（上方用例统计与失败清单）" >> $GITHUB_STEP_SUMMARY
-          echo "2. **详细报告**：本页底部 Artifacts → 下载 \`allure-report-html\` → 解压打开 \`latest/index.html\`" >> $GITHUB_STEP_SUMMARY
-          echo "3. **在线地址**：已发布至 \`gh-pages\` 的 \`test-gate/\` 目录，仓库启用 GitHub Pages 后可直接访问" >> $GITHUB_STEP_SUMMARY
+          echo "2. **业务视角（推荐给非技术同事）**：Artifacts → \`test-report-business\` → 双击打开，按模块/功能/场景/步骤分层，含入参、出参、断言" >> $GITHUB_STEP_SUMMARY
+          echo "3. **用例清单**：Artifacts → \`test-report-standalone\` → 双击 \`test-report.html\`" >> $GITHUB_STEP_SUMMARY
+          echo "4. **完整 Allure（给开发）**：Artifacts → \`allure-report-html\` → 解压后**必须起 http 服务**（\`file://\` 会被浏览器 CORS 拦截，页面空白）" >> $GITHUB_STEP_SUMMARY
+          echo "5. **在线地址**：已发布至 \`gh-pages\` 的 \`test-gate/\` 目录，仓库启用 GitHub Pages 后可直接访问" >> $GITHUB_STEP_SUMMARY
