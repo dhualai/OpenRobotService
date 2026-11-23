@@ -48,13 +48,30 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
+      # 双 checkout：脚本优先从 base 检出（防 PR 改脚本自豁免/滥用 secret），
+      # base 尚无脚本时（本功能自身的 PR）回退 pr-code 并告警，合入后自动消除
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base-src
+      - uses: actions/checkout@v4
+        with:
+          path: pr-code
+      - name: Resolve scripts dir
+        id: sdir
+        run: |
+          if [ -f base-src/.github/ai-review/scripts/quick_screen.py ]; then
+            echo "dir=base-src" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=pr-code" >> "$GITHUB_OUTPUT"
+            echo "::warning::base 分支尚无 ai-review 脚本，回退使用 PR 版本（本功能合入 test 后自动消除）"
+          fi
 
       - name: Run quick screen
         id: screen
         # exit 10 = 命中高危；0 = 未命中或纯文档跳过；其他 = 出错（仍不阻塞）
         run: |
-          python3 .github/ai-review/scripts/quick_screen.py \
+          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/quick_screen.py \
             --out-json quick.json --out-md quick.md || code=$?
           echo "exit_code=${code:-0}" >> "$GITHUB_OUTPUT"
 
@@ -62,7 +79,7 @@ jobs:
         if: steps.screen.outputs.exit_code == '10'
         continue-on-error: true
         run: |
-          python3 .github/ai-review/scripts/post_comment.py \
+          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
             --marker "ors-ai-review:quick" --file quick.md
 
       - name: Notify wecom (blocker only)
@@ -87,7 +104,7 @@ jobs:
           PY
             echo "详情：https://github.com/${REPO}/pull/${PR}"
           } > wecom.md
-          python3 .github/ai-review/scripts/notify_wecom.py --file wecom.md
+          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
 
   deep-review:
     name: Deep review (LLM)
@@ -150,10 +167,20 @@ jobs:
             --out-wecom wecom.md || code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve exec scripts dir
+        id: edir
+        run: |
+          # 携带 secrets 的执行脚本（post/notify）同样 base 优先，回退 pr-code
+          if [ -f base-rules/.github/ai-review/scripts/post_comment.py ]; then
+            echo "dir=base-rules" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=pr-code" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Post report comment
         continue-on-error: true
         run: |
-          python3 pr-code/.github/ai-review/scripts/post_comment.py \
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
             --marker "ors-ai-review:report" --file report.md \
             --inline inline.json
 
@@ -162,7 +189,7 @@ jobs:
         continue-on-error: true
         env:
           NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
-        run: python3 pr-code/.github/ai-review/scripts/notify_wecom.py --file wecom.md
+        run: python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
 
       # label 触发跑完自动摘标签，方便下次再次触发；手动 dispatch 无标签可摘
       - name: Remove trigger label

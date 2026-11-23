@@ -37,6 +37,8 @@ EXIT_OK, EXIT_LLM_FAIL = 0, 2
 MAX_DIFF_LINES = 2400          # 送入 LLM 的 diff 总行数上限
 MAX_PATCH_PER_FILE = 300       # 单文件 patch 行数上限，超出截断
 LLM_TIMEOUT = 120
+# LLM 净耗时累加（多次调用/重试合并），供报告尾部耗时明细使用
+_LLM_SECONDS = 0.0
 # 推理模型的 reasoning_content 同样计入 max_tokens，budget 给足，
 # 否则 content 会被截成空（finish_reason=length），表现为「调用成功但无输出」
 MAX_TOKENS = 16000
@@ -106,6 +108,8 @@ def _chat(base_url, key, model, messages):
     t0 = time.time()
     with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
         body = json.loads(resp.read(1024 * 1024).decode("utf-8", "replace"))
+    global _LLM_SECONDS
+    _LLM_SECONDS += time.time() - t0
     choice = body["choices"][0]
     content = choice["message"].get("content")
     if not content:
@@ -521,12 +525,13 @@ def main():
     report = render_report(parsed, quick_result, pr or "本地回放", args.sha,
                            model_label or "LLM 不可用", inline_paths)
     if progress.enabled:
+        import deep_review as _self
+        llm_sec = int(_self._LLM_SECONDS)
+        other_sec = max(int(t_llm_done - t0) - llm_sec, 0)
         total = int(time.time() - t0)
-        d_sec = int(t_llm_done - t0)
-        r_sec = max(total - d_sec, 0)
         report = report.replace(
             "\n---\n🪵",
-            f"\n⏱ 总耗时 {total} 秒（diff {d_sec}s · LLM/渲染 {r_sec}s）\n\n---\n🪵", 1)
+            f"\n⏱ 总耗时 {total} 秒（准备 {other_sec}s · LLM {llm_sec}s）\n\n---\n🪵", 1)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(report)
