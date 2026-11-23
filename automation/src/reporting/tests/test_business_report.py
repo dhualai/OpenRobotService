@@ -127,7 +127,7 @@ def test_scenario_artifact_matches_allure_download_and_keeps_results_flat():
         if step.get("uses", "").startswith("actions/download-artifact@")
     )
     assert "scenarios" in report_job["needs"]
-    assert download["merge-multiple"] is True
+    assert download["merge-multiple"] is False
 
     scenario_steps = jobs["scenarios"]["steps"]
     uploads = [

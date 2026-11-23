@@ -116,13 +116,13 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           AUTOMATION_ENV: local
         run: |
-          pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/ai_metrics/tests/ automation/src/runtime/tests/ automation/src/client/tests/ automation/src/contract/tests/ automation/src/remote/tests/ automation/src/ticket_pipeline/tests/ automation/src/reporting/tests/ automation/ci_ai_gen/tests/ automation/mcp_server/tests/ automation/tests/infrastructure/ automation/src/mocks/tests/ -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-infra.xml
+          pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/ai_metrics/tests/ automation/src/runtime/tests/ automation/src/client/tests/ automation/src/contract/tests/ automation/src/remote/tests/ automation/src/ticket_pipeline/tests/ automation/src/reporting/tests/ automation/ci_ai_gen/tests/ automation/mcp_server/tests/ automation/tests/infrastructure/ automation/src/mocks/tests/ -q --alluredir=automation/output/allure-results/quality-infra --junitxml=automation/output/junit-quality-infra.xml
 
       - name: Run API mock tests
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest automation/tests/ -m api -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-api.xml
+          pytest automation/tests/ -m api -q --alluredir=automation/output/allure-results/quality-api --junitxml=automation/output/junit-quality-api.xml
 
       - name: Upload Allure results
         if: always()
@@ -130,6 +130,17 @@ jobs:
         with:
           name: allure-results-quality
           path: automation/output/allure-results
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload required quality JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-junit-quality
+          path: |
+            automation/output/junit-quality-infra.xml
+            automation/output/junit-quality-api.xml
           if-no-files-found: warn
           retention-days: 7
 
@@ -266,7 +277,7 @@ jobs:
           REAL_ADMIN_USERNAME: admin
           REAL_ADMIN_PASSWORD: ${{ secrets.REAL_ADMIN_PASSWORD || vars.REAL_ADMIN_PASSWORD || 'usp2026@EP' }}
         run: |
-          pytest automation/tests/real -m smoke -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-real.xml
+          pytest automation/tests/real -m smoke -q --alluredir=automation/output/allure-results/real --junitxml=automation/output/junit-real.xml
 
       - name: Run OpenAPI contract smoke
         env:
@@ -278,7 +289,7 @@ jobs:
           CONTRACT_INCLUDE_PATH_REGEX: ^/api/health$
           CONTRACT_MAX_EXAMPLES: "5"
         run: |
-          pytest automation/tests/contract -m contract -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-contract.xml
+          pytest automation/tests/contract -m contract -q --alluredir=automation/output/allure-results/contract --junitxml=automation/output/junit-contract.xml
 
       - name: Upload Allure results
         if: always()
@@ -286,6 +297,17 @@ jobs:
         with:
           name: allure-results-real-smoke
           path: automation/output/allure-results
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload required real backend JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-junit-real
+          path: |
+            automation/output/junit-real.xml
+            automation/output/junit-contract.xml
           if-no-files-found: warn
           retention-days: 7
 
@@ -412,14 +434,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
-        # always(): 即使上游（如 Docker action 构建）失败，也照常下载已有结果，
-        # 避免后续统计因目录为空而误报"合计 0"。
+      - name: Download Allure artifacts by job
+        uses: actions/download-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           pattern: allure-results-*
+          merge-multiple: false
+          path: automation/output/allure-artifacts
+
+      - name: Download required JUnit artifacts
+        uses: actions/download-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          pattern: gate-junit-*
           merge-multiple: true
-          path: automation/output/allure-results
+          path: automation/output/gate-junit
+
+      - name: Evaluate required suites
+        id: gate-verdict
+        if: always()
+        continue-on-error: true
+        env:
+          QUALITY_JOB_RESULT: ${{ needs.quality-gate.result }}
+          REAL_JOB_RESULT: ${{ needs.real-smoke.result }}
+        run: |
+          python3 automation/src/reporting/gate_verdict.py \
+            --junit-dir automation/output/gate-junit \
+            --allure-artifacts-dir automation/output/allure-artifacts \
+            --merged-allure-dir automation/output/allure-results \
+            --quality-job "$QUALITY_JOB_RESULT" \
+            --real-job "$REAL_JOB_RESULT"
 
       - name: Generate Allure HTML report
         continue-on-error: true
@@ -491,9 +537,6 @@ jobs:
                   print(f'- `{name}`（{st}）')
               if len(bad) > 40:
                   print(f'- …另有 {len(bad) - 40} 条，见下方 Allure 报告')
-          else:
-              print('')
-              print('无失败用例 ✓')
           PY
 
       - name: Build standalone HTML report
@@ -598,6 +641,7 @@ jobs:
           retention-days: 14
 
       - name: Job summary
+        if: always()
         run: |
           echo "## Test gate results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -614,3 +658,13 @@ jobs:
           echo "3. **用例清单**：Artifacts → \`test-report-standalone\` → 双击 \`test-report.html\`" >> $GITHUB_STEP_SUMMARY
           echo "4. **完整 Allure（给开发）**：Artifacts → \`allure-report-html\` → 解压后**必须起 http 服务**（\`file://\` 会被浏览器 CORS 拦截，页面空白）" >> $GITHUB_STEP_SUMMARY
           echo "5. **在线地址**：已发布至 \`gh-pages\` 的 \`test-gate/\` 目录，仓库启用 GitHub Pages 后可直接访问" >> $GITHUB_STEP_SUMMARY
+
+      - name: Enforce Test Gate verdict
+        if: always()
+        env:
+          VERDICT_OUTCOME: ${{ steps.gate-verdict.outcome }}
+        run: |
+          if [ "$VERDICT_OUTCOME" != success ]; then
+            echo "::error::Test Gate 未通过，请查看必跑套件判定"
+            exit 1
+          fi
