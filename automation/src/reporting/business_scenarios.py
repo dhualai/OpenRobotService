@@ -100,7 +100,7 @@ def checked_step(role: str, action: str, expected: str, actual: str) -> Business
     return BusinessStep(role, action, expected, passed_result=actual)
 
 
-SCENARIOS.update({
+SERVICE_ACCOUNT_SCENARIOS = {
     "service-ticket-lifecycle": BusinessScenario(
         "服务号工单", "提单人报障，处理人解决，提单人验收关闭", SOURCE_LABELS["service-account-ui"],
         {
@@ -154,7 +154,8 @@ SCENARIOS.update({
             "settle": checked_step("用户与系统", "作答点赞，截止后评选", "按答案点赞选出最佳答案，奖励待财务审核且只入账一次", "选出了获赞答案，唯一一条奖励记录待财务审核"),
         },
     ),
-})
+}
+SCENARIOS.update(SERVICE_ACCOUNT_SCENARIOS)
 
 
 def record_business_evidence(scenario_id: str, step_id: str, response) -> None:

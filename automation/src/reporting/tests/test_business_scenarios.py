@@ -105,6 +105,7 @@ def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_
     name = _write_case(
         observer, "归档规则", scenario, "passed",
         [(key, None, None) for key in SCENARIOS[scenario].steps],
+        uid="a0",
     )
     for attachment in observer.glob("*-attachment.json"):
         data = json.loads(attachment.read_text(encoding="utf-8"))
@@ -121,11 +122,13 @@ def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_
     card = _scenario_html(html, scenario)
     assert "服务号后台规则检查（观察项）" in card
     assert 'class="business-status success">通过' in card
+    assert "<th>角色</th><th>动作</th><th>预期结果</th><th>实际结果</th>" in card
+    assert 'href="#case-a0"' in card and 'id="case-a0"' in html
     assert "知识已发布，三类奖励可申领" in card
     assert token not in html
 
 
-def test_business_report_shows_evidence_roles_and_localizes_source_groups(tmp_path):
+def test_business_overview_lists_service_account_flows_and_preserves_source_groups(tmp_path):
     incident = _write_case(
         tmp_path, "提单与接单", "incident-create", "passed",
         [("create", 200, USP_USAGE_ISSUE), ("accept", 200, "in_progress")],
@@ -158,21 +161,15 @@ def test_business_report_shows_evidence_roles_and_localizes_source_groups(tmp_pa
     business_report.main(["--results", str(tmp_path), "--out", str(business)])
     standalone_report.main(["--results", str(tmp_path), "--out", str(standalone)])
     html = business.read_text(encoding="utf-8")
-    assert "业务场景一览" in html
-    incident_html = _scenario_html(html, "incident-create")
-    assert "模拟通过" in incident_html
-    assert "<th>角色</th><th>动作</th><th>预期结果</th><th>实际结果</th>" in incident_html
-    assert "<td>提单人</td><td>提交「USP 使用问题」</td>" in incident_html
-    assert "已创建「USP 使用问题」工单（HTTP 200）" in incident_html
-    assert "<td>接单人</td><td>接收同一张工单</td><td>工单进入处理中</td>" in incident_html
-    assert "处理中（HTTP 200）" in incident_html
-    assert 'href="#case-a0"' in incident_html and 'id="case-a0"' in html
-
-    pause_html = _scenario_html(html, "work-order-pause")
-    assert 'class="business-status failure">失败' in pause_html
-    assert "<td>提单人</td><td>确认暂停</td><td>工单进入已暂停</td>" in pause_html
-    assert '<td class="failure">处理中（HTTP 200）</td>' in pause_html
-    assert "系统拒绝访问（HTTP 403）" in _scenario_html(html, "admin-permissions")
+    overview = html.split("业务场景一览", 1)[1].split("</section>", 1)[0]
+    assert overview.count('class="business-scenario"') == 5
+    assert overview.index('id="scenario-service-ticket-lifecycle"') < overview.index(
+        'id="scenario-service-knowledge-finance"'
+    )
+    for scenario_id in ("incident-create", "work-order-pause", "admin-permissions"):
+        assert f'id="scenario-{scenario_id}"' not in html
+    assert 'id="case-a0"' in html and 'id="case-a1"' in html
+    assert "后台权限检查" in html
 
     groups = business_report.collect(tmp_path)
     assert set(groups) == {
@@ -188,25 +185,26 @@ def test_business_report_shows_evidence_roles_and_localizes_source_groups(tmp_pa
 
 
 def test_report_keeps_skipped_missing_and_incomplete_scenarios_unverified(tmp_path):
-    incident = _write_case(
-        tmp_path, "提单", "incident-create", "passed", [("create", 200, USP_USAGE_ISSUE)]
+    finance = _write_case(
+        tmp_path, "归档规则", "service-knowledge-finance", "passed", []
     )
-    pause = _write_case(
-        tmp_path, "暂停", "work-order-pause", "skipped", [], message="USE_MOCK=0 required"
+    challenge = _write_case(
+        tmp_path, "高价值问题", "service-challenge", "skipped", []
     )
     (tmp_path / SOURCES_FILE).write_text(json.dumps({
-        incident: SOURCE_LABELS["quality-api"], pause: SOURCE_LABELS["scenarios"],
+        finance: SOURCE_LABELS["service-account-rules"],
+        challenge: SOURCE_LABELS["service-account-rules"],
     }), encoding="utf-8")
     output = tmp_path / "business.html"
     business_report.main(["--results", str(tmp_path), "--out", str(output)])
     html = output.read_text(encoding="utf-8")
 
-    incident_html = _scenario_html(html, "incident-create")
-    assert "未验证" in incident_html and "步骤证据不完整" in incident_html
-    assert "未记录实际结果" in incident_html
-    assert "本次没有启用真实后端验证" in _scenario_html(html, "work-order-pause")
-    admin_html = _scenario_html(html, "admin-permissions")
-    assert "未验证" in admin_html and "模拟接口测试（计划）" in admin_html
+    finance_html = _scenario_html(html, "service-knowledge-finance")
+    assert "未验证" in finance_html and "步骤证据不完整" in finance_html
+    assert "未记录实际结果" in finance_html
+    assert "本次用例已跳过" in _scenario_html(html, "service-challenge")
+    progress_html = _scenario_html(html, "service-learning-progress")
+    assert "未验证" in progress_html and "服务号测试站页面（计划）" in progress_html
 
 
 def test_evidence_omits_unrecognized_response_values(monkeypatch):

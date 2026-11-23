@@ -16,8 +16,8 @@ import re
 
 if __package__:
     from .business_scenarios import (
-        EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIOS, SCENARIO_LABEL, SOURCE_LABELS,
-        describe_actual,
+        EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIO_LABEL, SERVICE_ACCOUNT_SCENARIOS,
+        SOURCE_LABELS, describe_actual,
     )
     from .report_data import (
         STATUS_CN, case_duration_ms, count_statuses, describe_counts, load_results,
@@ -25,8 +25,8 @@ if __package__:
     )
 else:
     from business_scenarios import (
-        EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIOS, SCENARIO_LABEL, SOURCE_LABELS,
-        describe_actual,
+        EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIO_LABEL, SERVICE_ACCOUNT_SCENARIOS,
+        SOURCE_LABELS, describe_actual,
     )
     from report_data import (
         STATUS_CN, case_duration_ms, count_statuses, describe_counts, load_results,
@@ -224,7 +224,7 @@ def _business_evidence(result, scenario_id):
 def load_service_account_ui(root):
     """Read only the known lifecycle result and its assertion outcomes."""
     scenario_id = 'service-ticket-lifecycle'
-    scenario = SCENARIOS[scenario_id]
+    scenario = SERVICE_ACCOUNT_SCENARIOS[scenario_id]
     case_names = {
         f'{package}.{test}#{test}'
         for package in ('tests.ui', 'automation.tests.ui')
@@ -321,12 +321,12 @@ def render_business_scenarios(results, *, service_account_ui=None):
     cases = collections.defaultdict(list)
     for result in results:
         scenario_id = result_labels(result).get(SCENARIO_LABEL)
-        if scenario_id in SCENARIOS:
+        if scenario_id in SERVICE_ACCOUNT_SCENARIOS:
             cases[scenario_id].append(result)
 
     priority = {'failed': 0, 'broken': 1, 'passed': 2, 'skipped': 3, 'unknown': 4}
     parts = ['<section class="business-list"><h3>业务场景一览</h3>']
-    for scenario_id, scenario in SCENARIOS.items():
+    for scenario_id, scenario in SERVICE_ACCOUNT_SCENARIOS.items():
         # A Mock run can collect a real-only case and skip it. Use the designated evidence source.
         candidates = [case for case in cases[scenario_id] if case['source'] == scenario.source]
         case = min(candidates, key=lambda record: priority[record['status']], default=None)
