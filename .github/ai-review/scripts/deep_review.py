@@ -227,12 +227,20 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
     注：GitHub 评论过滤自定义 CSS（style/bgcolor 均被剥离），真实背景色
     无法实现，以排版层级与分隔线保证「一份完整文档」的观感。
     """
-    fps = []
+    def _fp(it):
+        """意见指纹：与 main 构造 inline_items 的口径严格一致。"""
+        loc = it.get("location") or it.get("path") or "未知位置"
+        return finding_fingerprint(loc, it.get("issue"))
+
+    # 各档剔除已发行内评论后的条目——表格计数与正文分组共用这一份，
+    # 否则会出现「表格 4 条、正文 0 条」的口径分裂（用户实测反馈）
+    sections_data = []
     if parsed:
-        for key, _t in SECTIONS:
-            for it in parsed.get(key) or []:
-                fps.append(finding_fingerprint(
-                    it.get("location", it.get("path", "")), it.get("issue")))
+        for key, title in SECTIONS:
+            items = [it for it in (parsed.get(key) or [])
+                     if _fp(it) not in (inline_paths or set())]
+            sections_data.append((key, title, items))
+    fps = [ _fp(it) for _key, _t, items in (sections_data or []) for it in items ]
     lines = [
         "<!-- ors-ai-review:report -->",
         "<!-- ors-ai-review:fp=" + ",".join(fps) + " -->",
@@ -255,12 +263,12 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
 
     conclusion = parsed.get("conclusion") or "未发现明显风险"
     emoji = LEVEL_EMOJI.get(conclusion, "🟢")
+    counts = {k: len(items) for k, _t, items in sections_data}
     lines += [
         f"| {emoji} 结论 | 🔴 必须采纳 | 🟡 选择采纳 | 🟢 可优化 |",
         "|:---|:---:|:---:|:---:|",
-        f"| **{conclusion}** | **{len(parsed.get('blockers') or [])}** | "
-        f"**{len(parsed.get('warnings') or [])}** | "
-        f"**{len(parsed.get('infos') or [])}** |",
+        f"| **{conclusion}** | **{counts['blockers']}** | "
+        f"**{counts['warnings']}** | **{counts['infos']}** |",
         "",
     ]
 
@@ -287,11 +295,7 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
             lines.append(f"- `{it['path']}`：{it['label']}——{it['reason']}")
         lines.append("")
 
-    for key, title in SECTIONS:
-        items = [it for it in (parsed.get(key) or [])
-                 if finding_fingerprint(
-                     it.get("location", it.get("path", "")),
-                     it.get("issue")) not in (inline_paths or set())]
+    for key, title, items in sections_data:
         if not items:
             continue
         lines.append(f"### {title}")

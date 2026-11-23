@@ -88,6 +88,15 @@ def test_requirements_txt_not_treated_as_doc():
     assert "backend/requirements.txt" in paths
 
 
+def test_requirements_md_still_doc():
+    """requirements.md 是文档不是依赖清单（精确正则防误伤）。"""
+    r = screen([f("backend/requirements.md", "+# deps\n"),
+                f("backend/requirements.txt", "+flask==2.0.0\n")])
+    assert r["skipped"] is False      # 有代码类（requirements.txt）才不 skip
+    paths = {it["path"] for it in r["warnings"]}
+    assert "backend/requirements.txt" in paths
+
+
 def test_self_dir_excluded():
     """检视器自身目录豁免：规则源码字面量与测试桩不得自我命中（PR #492 教训）。"""
     r = screen([
