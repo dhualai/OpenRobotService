@@ -25,6 +25,13 @@ describe('知识点与题库API协议', () => {
     expect(mocks.request).toHaveBeenCalledWith('/learning/articles/article-1/generate', expect.objectContaining({ method: 'POST', timeout: 180000, body: JSON.stringify(body), skipCache: true }));
   });
 
+  it('来源摘要与相似工单查询保留字符串工单号，且绕过缓存', async () => {
+    await learning.listSourceTasks('充电', 2);
+    await learning.getSimilarSourceTasks('9007199254740993');
+    expect(mocks.request.mock.calls[0][0]).toBe('/learning/sources?keyword=%E5%85%85%E7%94%B5&page=2');
+    expect(mocks.request.mock.calls[1]).toEqual(['/learning/sources/9007199254740993/similar', { skipCache: true }]);
+  });
+
   it('审核与启用是不同操作，只有审核传入核验确认', async () => {
     await learning.actLearningQuestion('question-1', 2, 'approve');
     await learning.actLearningQuestion('question-1', 3, 'enable');

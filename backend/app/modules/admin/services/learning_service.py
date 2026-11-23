@@ -1,12 +1,15 @@
 import hashlib
 import json
 import logging
+import re
+from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from math import sqrt
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.llm_client import get_llm_client
@@ -23,6 +26,8 @@ from app.services.permission_service import PERM_LEARNING
 
 
 SOURCE_STATES = (TaskStatus.CLOSED, TaskStatus.ARCHIVING, TaskStatus.ARCHIVED)
+SOURCE_STOP_WORDS = {"工单", "问题", "现场", "处理", "情况", "进行", "发现", "检查", "故障", "异常", "设备",
+    "机器", "器人", "无法", "出现", "需要", "相关", "正常", "以及", "核实", "实现", "功能", "the", "and", "with", "from", "that", "this"}
 logger = logging.getLogger(__name__)
 
 
@@ -65,12 +70,40 @@ async def source_task(db, actor, task_id):
     return task
 
 
-async def source_listing(db, actor, keyword="", page=1):
+async def eligible_source_query(db, actor):
     manager(actor)
     identities = await actor_identities(db, actor)
     blocked = select(ArchiveReport.task_id).where(ArchiveReport.submit_status != "approved",
         ArchiveReport.reviewer.in_(identities))
-    query = select(Task).where(Task.status.in_(SOURCE_STATES), Task.id.not_in(blocked))
+    return select(Task).where(Task.status.in_(SOURCE_STATES), Task.id.not_in(blocked))
+
+
+async def source_previews(db, tasks):
+    if not tasks:
+        return []
+    terms = await known_terms(db, [{"type": "work_order", "id": task.id} for task in tasks])
+    previews = []
+    for task in tasks:
+        summary = re.sub(r"\s+", " ", redact(task.description, terms)).strip()
+        previews.append({"id": str(task.id), "title": redact(task.title, terms), "status": task.status.value,
+            "summary": summary[:240] + ("…" if len(summary) > 240 else "")})
+    return previews
+
+
+def source_features(preview):
+    features = Counter()
+    for text, weight in ((preview["title"], 3), (preview["summary"], 1)):
+        cleaned = re.sub(r"\[[^\]]*\]", " ", text).casefold()
+        for word in re.findall(r"[a-z][a-z0-9_-]+|[\u4e00-\u9fff]{2,}", cleaned):
+            tokens = [word] if word.isascii() else [word[index:index + 2] for index in range(len(word) - 1)]
+            for token in tokens:
+                if token not in SOURCE_STOP_WORDS:
+                    features[token] += weight
+    return features
+
+
+async def source_listing(db, actor, keyword="", page=1):
+    query = await eligible_source_query(db, actor)
     if keyword.strip():
         conditions = [Task.title.contains(keyword.strip(), autoescape=True)]
         if keyword.strip().isdigit():
@@ -78,7 +111,36 @@ async def source_listing(db, actor, keyword="", page=1):
         query = query.where(or_(*conditions))
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
     tasks = (await db.execute(query.order_by(Task.updated_at.desc(), Task.id.desc()).offset((page - 1) * 20).limit(20))).scalars().all()
-    return {"total": total, "items": [{"id": str(task.id), "title": task.title, "status": task.status.value} for task in tasks]}
+    return {"total": total, "items": await source_previews(db, tasks)}
+
+
+async def similar_source_tasks(db, actor, task_id, limit=10):
+    task = await source_task(db, actor, task_id)
+    source = (await source_previews(db, [task]))[0]
+    features = source_features(source)
+    if not features:
+        return {"source": source, "items": [], "matching_method": "text"}
+    conditions, relevance = [], []
+    for token, weight in features.most_common(24):
+        title_match = Task.title.contains(token, autoescape=True)
+        description_match = Task.description.contains(token, autoescape=True)
+        conditions.append(or_(title_match, description_match))
+        relevance.append(case((title_match, weight * 3), else_=0) + case((description_match, weight), else_=0))
+    query = (await eligible_source_query(db, actor)).where(Task.id != task_id, or_(*conditions))
+    tasks = (await db.execute(query.order_by(sum(relevance).desc(), Task.updated_at.desc(), Task.id.desc()).limit(200))).scalars().all()
+    previews = await source_previews(db, [task, *tasks])
+    source = previews[0]
+    features = source_features(source)
+    norm = sqrt(sum(weight * weight for weight in features.values()))
+    ranked = []
+    for preview in previews[1:]:
+        candidate = source_features(preview)
+        candidate_norm = sqrt(sum(weight * weight for weight in candidate.values()))
+        score = sum(weight * candidate[token] for token, weight in features.items()) / (norm * candidate_norm) if norm and candidate_norm else 0
+        if score >= 0.2:
+            ranked.append((score, preview))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return {"source": source, "items": [preview for _, preview in ranked[:limit]], "matching_method": "text"}
 
 
 async def prepare_sources(db, actor, body):
