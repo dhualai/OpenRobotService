@@ -93,7 +93,7 @@ def test_service_ticket_history_checks_all_steps_and_never_counts_towards_gate(
     assert ("再次打开仍显示已关闭" in card) == (last_status == "passed")
     assert "Test Gate 判定：未验收" in html and "结果总数 0" in html
     assert token not in html
-    assert "未验证" in _scenario_html(html, "service-learning-progress")
+    assert "未验证（服务号测试站页面）" in _scenario_html(html, "service-learning")
 
 
 def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_path):
@@ -162,10 +162,16 @@ def test_business_overview_lists_service_account_flows_and_preserves_source_grou
     standalone_report.main(["--results", str(tmp_path), "--out", str(standalone)])
     html = business.read_text(encoding="utf-8")
     overview = html.split("业务场景一览", 1)[1].split("</section>", 1)[0]
-    assert overview.count('class="business-scenario"') == 5
-    assert overview.index('id="scenario-service-ticket-lifecycle"') < overview.index(
-        'id="scenario-service-knowledge-finance"'
+    assert overview.count('class="business-scenario"') == 4
+    titles = (
+        "提单 → 派单 → 处理 → 关闭",
+        "知识沉淀 → 内容审核 → 财务审核 → 奖励",
+        "选材 → AI 出题 → 审核启用 → 学习答题",
+        "高价值问题 → 用户解答 → 评选 → 奖励",
     )
+    positions = [overview.index(f"<strong>{title}</strong>") for title in titles]
+    assert positions == sorted(positions)
+    assert 'id="scenario-service-learning-progress"' not in html
     for scenario_id in ("incident-create", "work-order-pause", "admin-permissions"):
         assert f'id="scenario-{scenario_id}"' not in html
     assert 'id="case-a0"' in html and 'id="case-a1"' in html
@@ -191,9 +197,18 @@ def test_report_keeps_skipped_missing_and_incomplete_scenarios_unverified(tmp_pa
     challenge = _write_case(
         tmp_path, "高价值问题", "service-challenge", "skipped", []
     )
+    learning = _write_case(
+        tmp_path, "后台答题预览", "service-learning", "passed",
+        [(key, None, None) for key in (*SCENARIOS["service-learning"].steps, "submit")],
+    )
+    for attachment in tmp_path.glob("后台答题预览-*-attachment.json"):
+        data = json.loads(attachment.read_text(encoding="utf-8"))
+        data["outcome"] = "passed"
+        attachment.write_text(json.dumps(data), encoding="utf-8")
     (tmp_path / SOURCES_FILE).write_text(json.dumps({
         finance: SOURCE_LABELS["service-account-rules"],
         challenge: SOURCE_LABELS["service-account-rules"],
+        learning: SOURCE_LABELS["service-account-rules"],
     }), encoding="utf-8")
     output = tmp_path / "business.html"
     business_report.main(["--results", str(tmp_path), "--out", str(output)])
@@ -203,8 +218,11 @@ def test_report_keeps_skipped_missing_and_incomplete_scenarios_unverified(tmp_pa
     assert "未验证" in finance_html and "步骤证据不完整" in finance_html
     assert "未记录实际结果" in finance_html
     assert "本次用例已跳过" in _scenario_html(html, "service-challenge")
-    progress_html = _scenario_html(html, "service-learning-progress")
-    assert "未验证" in progress_html and "服务号测试站页面（计划）" in progress_html
+    learning_html = _scenario_html(html, "service-learning")
+    assert 'class="business-status neutral">部分验证' in learning_html
+    assert "可用题目符合审核、启用和文章版本要求" in learning_html
+    assert "未验证（服务号测试站页面）" in learning_html
+    assert learning_html.count("<tr>") == 6
 
 
 def test_evidence_omits_unrecognized_response_values(monkeypatch):

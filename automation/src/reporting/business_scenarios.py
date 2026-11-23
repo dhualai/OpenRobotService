@@ -52,6 +52,8 @@ class BusinessScenario:
     title: str
     source: str
     steps: dict[str, BusinessStep]
+    flow_title: str = ""
+    planned_steps: tuple[tuple[BusinessStep, str], ...] = ()
 
 
 SCENARIOS = {
@@ -125,6 +127,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
                 ("提单人", "关闭并重新打开工单", "状态仍为已关闭", "再次打开仍显示已关闭"),
             ), 1)
         },
+        flow_title="提单 → 派单 → 处理 → 关闭",
     ),
     "service-knowledge-finance": BusinessScenario(
         "服务号知识", "工单知识归档、发布与奖励审核", SOURCE_LABELS["service-account-rules"],
@@ -133,6 +136,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
             "approve": checked_step("财务审核人", "批准整组奖励并重复提交", "发布知识，奖励可申领，重复批准不重复发放", "知识已发布，三类奖励可申领，重复提交无新增"),
             "reject": checked_step("财务审核人", "在独立工单中拒绝奖励", "知识不发布，奖励不进入可申领", "知识未发布，奖励已拒绝"),
         },
+        flow_title="知识沉淀 → 内容审核 → 财务审核 → 奖励",
     ),
     "service-learning": BusinessScenario(
         "服务号学习", "整理知识、审核出题与后台答题预览", SOURCE_LABELS["service-account-rules"],
@@ -142,10 +146,13 @@ SERVICE_ACCOUNT_SCENARIOS = {
             "enable": checked_step("内容审核人", "筛选可用题目", "人工审核、已启用且匹配文章当前版本时才可用", "可用题目符合审核、启用和文章版本要求"),
             "score": checked_step("后台预览者", "提交多选题答案", "答案集合完全匹配才得分，预览不保存成绩", "少选未得分，重复选项被拒绝，完整答案得分，预览未留存"),
         },
-    ),
-    "service-learning-progress": BusinessScenario(
-        "服务号学习", "学员在学习中心答题并查看进度", SOURCE_LABELS["service-account-ui"],
-        {"submit": checked_step("学员", "打开课程、答题并刷新", "成绩和课程进度可在重新打开后查看", "成绩和课程进度已保存")},
+        flow_title="选材 → AI 出题 → 审核启用 → 学习答题",
+        planned_steps=(
+            (
+                BusinessStep("学员", "打开课程、答题并刷新", "成绩和课程进度可在重新打开后查看"),
+                SOURCE_LABELS["service-account-ui"],
+            ),
+        ),
     ),
     "service-challenge": BusinessScenario(
         "服务号高价值问题", "发布问题、作答点赞、评选与奖励入审", SOURCE_LABELS["service-account-rules"],
@@ -153,6 +160,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
             "publish": checked_step("专区管理员", "发布独立的高价值问题", "授权管理员发布成功，普通用户被拒绝", "普通用户被拒绝，授权管理员已独立发布"),
             "settle": checked_step("用户与系统", "作答点赞，截止后评选", "按答案点赞选出最佳答案，奖励待财务审核且只入账一次", "选出了获赞答案，唯一一条奖励记录待财务审核"),
         },
+        flow_title="高价值问题 → 用户解答 → 评选 → 奖励",
     ),
 }
 SCENARIOS.update(SERVICE_ACCOUNT_SCENARIOS)

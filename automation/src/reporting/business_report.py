@@ -340,10 +340,15 @@ def render_business_scenarios(results, *, service_account_ui=None):
             for step_id, step in scenario.steps.items()
         ]
         verdict, colour, reason = _business_result(case, [match for _, _, match in observations])
+        if scenario.planned_steps and colour == 'success':
+            verdict, colour, reason = '部分验证', 'neutral', '已验证的步骤通过，待验证步骤见下表。'
+        observations.extend(
+            (step, f'未验证（{source}）', None) for step, source in scenario.planned_steps
+        )
         parts.append(
             f'<details class="business-scenario" id="scenario-{scenario_id}">'
             f'<summary><span class="module-name">{esc(scenario.module)}</span>'
-            f'<strong>{esc(scenario.title)}</strong>'
+            f'<strong>{esc(scenario.flow_title or scenario.title)}</strong>'
             f'<span class="business-status {colour}">{verdict}</span>'
             f'<span class="source">{esc(scenario.source)}{"（计划）" if case is None else ""}</span>'
             '</summary><div class="business-body">'
