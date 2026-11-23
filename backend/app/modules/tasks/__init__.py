@@ -12,6 +12,7 @@ from app.modules.tasks.api.spec_doc import router as spec_doc_router
 from app.modules.tasks.api.problem_doc import router as problem_doc_router
 from app.modules.tasks.api.ws import router as ws_router
 from app.modules.tasks.api.archive_report import router as archive_report_router
+from app.modules.tasks.api.learning import router as learner_router
 
 tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -25,3 +26,4 @@ tasks_router.include_router(archive_report_router)
 tasks_router.include_router(task_router)
 tasks_router.include_router(async_tasks_router)
 tasks_router.include_router(ws_router)
+tasks_router.include_router(learner_router)

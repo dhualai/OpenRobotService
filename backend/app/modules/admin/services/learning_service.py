@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.llm_client import get_llm_client
 from app.models.identity import UserDB
-from app.models.learning import LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration, LearningQuestion
+from app.models.learning import LearningAnswer, LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration, LearningQuestion
 from app.models.task import ArchiveReport, Task, TaskStatus
 from app.modules.admin.api.auth import has_permission_code
 from app.modules.admin.services.knowledge_service import actor_identities
@@ -517,5 +517,20 @@ async def preview_answer(db, actor, article_id, question_id, answers):
         raise HTTPException(422, "请选择有效且不重复的答案")
     if question.payload["question_type"] != "multiple_choice" and len(answers) != 1:
         raise HTTPException(422, "单选和判断题只能选择一个答案")
-    return {"is_correct": set(answers) == set(question.payload["correct_answer"]),
+
+    is_correct = set(answers) == set(question.payload["correct_answer"])
+    # 写入答题记录——同一用户对同一版本同一道题只允许答一次
+    user_id = str(actor.get("id") or actor.get("username") or "")
+    try:
+        db.add(LearningAnswer(
+            user_id=user_id, article_id=article_id,
+            article_version=article.active_version, question_id=question_id,
+            answers=list(answers), is_correct=is_correct,
+            created_at=utcnow(),
+        ))
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()  # 已答过，忽略重复写入，直接返回上次结果
+
+    return {"is_correct": is_correct,
         **{key: question.payload[key] for key in ("correct_answer", "explanation", "source_excerpt")}}

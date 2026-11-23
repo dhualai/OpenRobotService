@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, JSON, String, UniqueConstraint
 
 from app.models.base import Base
 
@@ -77,4 +77,23 @@ class LearningAudit(Base):
     operator_id = Column(String(64), nullable=False)
     action = Column(String(40), nullable=False)
     snapshot = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
+class LearningAnswer(Base):
+    """做题人答题记录——同一用户对同一版本文章的同一道题只允许答一次。"""
+
+    __tablename__ = "learning_answers"
+    __table_args__ = (
+        UniqueConstraint("user_id", "question_id", "article_version", name="uq_learning_answer_once"),
+        Index("ix_learning_answers_user_article", "user_id", "article_id"),
+    )
+
+    id = Column(String(32), primary_key=True, default=new_id)
+    user_id = Column(String(64), nullable=False, index=True)
+    article_id = Column(String(32), nullable=False, index=True)
+    article_version = Column(Integer, nullable=False)
+    question_id = Column(String(32), nullable=False, index=True)
+    answers = Column(JSON, nullable=False)  # 用户提交的选项 key 列表，如 ["A", "C"]
+    is_correct = Column(Boolean, nullable=False)
     created_at = Column(DateTime, nullable=False)
