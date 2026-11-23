@@ -316,21 +316,23 @@ jobs:
             echo '[]' > release_prs/release_prs.json
           fi
 
-      # 「上次发布以来」的窗口起点：最近一次成功的生产部署时间。
+      # 「上次发布以来」的窗口起点：最近一次成功的同环境部署时间。
       # 只能在这里查：deployment 记录由 deploy job 的 environment 创建，而 plan 跑在
       # deploy 之前，所以读到的最新一条必然是上一次发布，不会把本次算进去。
+      # test 也用同环境窗口：否则固定 7 天会把上一轮 test 已部署过的 PR 重复播报。
       # 拿不到（无历史 / 权限不足）就留空，脚本自动退回固定 7 天，绝不阻断部署。
       - name: Resolve release window
         id: window
-        if: ${{ inputs.action != 'rollback' && steps.resolve.outputs.environment == 'prod' }}
+        if: ${{ inputs.action != 'rollback' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIT_REF: ${{ steps.resolve.outputs.git_ref }}
+          DEPLOY_ENV: ${{ steps.resolve.outputs.environment }}
         run: |
           set -uo pipefail
-          # 起点：最近一次成功的生产部署
+          # 起点：最近一次成功的同环境部署
           since=""
-          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=prod&per_page=8" \
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=$DEPLOY_ENV&per_page=8" \
                         --jq '.[].id' 2>/dev/null || true); do
             ok=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" \
                    --jq '[.[] | select(.state == "success")] | length' 2>/dev/null || echo 0)
@@ -347,9 +349,9 @@ jobs:
           echo "since=$since" >> "$GITHUB_OUTPUT"
           echo "until=$until" >> "$GITHUB_OUTPUT"
           if [ -n "$since" ]; then
-            echo "上次生产发布：$since（本次只统计此后的 PR）"
+            echo "上次 $DEPLOY_ENV 发布：$since（本次只统计此后的 PR）"
           else
-            echo "::warning::没取到上次生产发布时间，发行说明退回固定 7 天窗口"
+            echo "::warning::没取到上次 $DEPLOY_ENV 发布时间，发行说明退回固定 7 天窗口"
           fi
           if [ -n "$until" ]; then
             echo "部署分支 $GIT_REF 最后提交：$until（之后的 PR 不计入）"
@@ -977,8 +979,8 @@ jobs:
           # 数据库结构校验脚本：部署前置门禁由 deploy.py 从同目录调用
           cp backend/scripts/schema_sync.py _artifacts/deploy/
           cp -r deploy/assets _artifacts/deploy/assets
-          # 发布说明：prod 部署成功时通知「更新日志」卡片的内容来源（缺失不阻断构建，
-          # 此时 notify.py 会自动退回默认版面）
+          # 发布说明：test/prod 部署成功时通知「更新日志」卡片的内容来源
+          #（缺失不阻断构建，此时 notify.py 会自动退回默认版面）
           if [ -f docs/RELEASE_NOTES.md ]; then
             cp docs/RELEASE_NOTES.md _artifacts/deploy/
           fi
@@ -1007,9 +1009,9 @@ jobs:
             --tag prod-release-notes \
             --out _artifacts/deploy/RELEASE_NOTES.md
 
-      # 自动发行说明：上次生产发布以来的已合并 PR → LLM 归纳去重，成功才覆盖上一步
+      # 自动发行说明：上次同环境发布以来的已合并 PR → LLM 归纳去重，成功才覆盖上一步
       # 铺底的版本（上次发行说明或人工版）。窗口起点由 plan 的 Resolve release window
-      # 给出；test 环境没有生产发布的概念，留空即退回固定 7 天。
+      # 给出；拿不到同环境历史时留空，脚本退回固定 7 天。
       # 未配置 RELEASE_LLM_API_KEY / 无 PR / LLM 失败时静默回退上一步的内容，
       # 绝不阻断构建（脚本仅在成功时写文件，退出码 1/2 时不留半成品）。
       - name: Generate release notes (auto)

@@ -18,9 +18,9 @@
             （markdown_v2 不支持 <font> 彩色标签，勿引入）
   image     自绘卡片图（见 deploy/notify_image.py）：字号比模板卡片大 2~3 倍，
             标题取当前分支最近一条已合并 PR，可点开看原图；
-            生产环境自动换两种版面（按 ENV_NAME + 结果 + 有无发布说明决定）：
-            发布成功且有发布说明 → 「更新日志」卡片（简约风，纯文字组标题+小黑点）；
-            发布失败 → 「建议操作」卡片（红色状态+编号步骤）；
+            按环境 + 结果 + 有无发布说明自动换版面：
+            部署成功且有发布说明 → 「更新日志」卡片（test/prod 同样式）；
+            生产失败 → 「建议操作」卡片（红色状态+编号步骤）；test 失败保持 standard；
             企微 image 消息不支持跳转，因此紧接着补一条只含 Actions 链接的文本消息。
 降级链：image → card → markdown_v2。渲染不可用（缺 Pillow / 缺中文字体 / 体积超限）
 或任一形态被企微拒收（errcode != 0）时逐级降级，保证通知不丢。
@@ -179,11 +179,13 @@ def parse_release_notes(path):
 
 
 def pick_layout(ok, env_name, notes):
-    """选择 image 版面：生产成功且有发布说明 → release；生产失败 → failure-prod；否则 standard。"""
-    if env_name != "prod":
-        return "standard"
+    """选择 image 版面：部署成功且有发布说明 → release；生产失败 → failure-prod；否则 standard。
+
+    test 成功也用 release：构建阶段本就会按 test 窗口生成发行说明；
+    失败版面仍是生产专属，test 失败继续用 standard 的键值排查视图。
+    """
     if not ok:
-        return "failure-prod"
+        return "failure-prod" if env_name == "prod" else "standard"
     return "release" if notes else "standard"
 
 
