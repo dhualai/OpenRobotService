@@ -10,6 +10,7 @@ from automation.src.reporting.business_scenarios import (
     EVIDENCE_ATTACHMENT,
     SCENARIO_LABEL,
     SOURCE_LABELS,
+    USP_USAGE_ISSUE,
     record_business_evidence,
 )
 from automation.src.reporting.report_data import SOURCES_FILE
@@ -43,8 +44,8 @@ def _scenario_html(report, scenario):
 
 def test_business_report_shows_evidence_roles_and_localizes_source_groups(tmp_path):
     incident = _write_case(
-        tmp_path, "故障转工单", "incident-create", "passed",
-        [("ask", 200, "accepted"), ("create", 200, "created"), ("confirm", 200, "acknowledged")],
+        tmp_path, "提单与接单", "incident-create", "passed",
+        [("create", 200, USP_USAGE_ISSUE), ("accept", 200, "in_progress")],
         uid="a0",
     )
     pause = _write_case(
@@ -78,8 +79,10 @@ def test_business_report_shows_evidence_roles_and_localizes_source_groups(tmp_pa
     incident_html = _scenario_html(html, "incident-create")
     assert "模拟通过" in incident_html
     assert "<th>角色</th><th>动作</th><th>预期结果</th><th>实际结果</th>" in incident_html
-    assert "<td>报障人</td><td>提交转工单请求</td><td>系统创建工单</td>" in incident_html
-    assert "已创建工单（HTTP 200）" in incident_html
+    assert "<td>提单人</td><td>提交「USP 使用问题」</td>" in incident_html
+    assert "已创建「USP 使用问题」工单（HTTP 200）" in incident_html
+    assert "<td>接单人</td><td>接收同一张工单</td><td>工单进入处理中</td>" in incident_html
+    assert "处理中（HTTP 200）" in incident_html
     assert 'href="#case-a0"' in incident_html and 'id="case-a0"' in html
 
     pause_html = _scenario_html(html, "work-order-pause")
@@ -103,7 +106,7 @@ def test_business_report_shows_evidence_roles_and_localizes_source_groups(tmp_pa
 
 def test_report_keeps_skipped_missing_and_incomplete_scenarios_unverified(tmp_path):
     incident = _write_case(
-        tmp_path, "报障", "incident-create", "passed", [("ask", 200, "accepted")]
+        tmp_path, "提单", "incident-create", "passed", [("create", 200, USP_USAGE_ISSUE)]
     )
     pause = _write_case(
         tmp_path, "暂停", "work-order-pause", "skipped", [], message="USE_MOCK=0 required"
@@ -127,7 +130,7 @@ def test_evidence_omits_unrecognized_response_values(monkeypatch):
     attached = []
     monkeypatch.setattr(allure, "attach", lambda data, **kwargs: attached.append(data))
     token = "synthetic-secret-in-provider-status"
-    response = httpx.Response(200, json={"status": token, "access_token": token})
+    response = httpx.Response(200, json={"title": token, "access_token": token})
 
     record_business_evidence("incident-create", "create", response)
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 SCENARIO_LABEL = "businessScenario"
 EVIDENCE_ATTACHMENT = "业务验收证据"
+USP_USAGE_ISSUE = "USP 使用问题"
 
 SOURCE_LABELS = {
     "quality-infra": "框架与基础设施",
@@ -20,10 +21,6 @@ SOURCE_LABELS = {
 OBSERVATION_SOURCES = (SOURCE_LABELS["db"], SOURCE_LABELS["scenarios"])
 
 BUSINESS_VALUES = {
-    "accepted": "已收到诊断回复",
-    "not_accepted": "诊断请求未成功",
-    "created": "已创建工单",
-    "acknowledged": "已确认工单",
     "in_progress": "处理中",
     "pending_requested": "等待提单人确认暂停",
     "pending": "已暂停",
@@ -54,19 +51,15 @@ class BusinessScenario:
 
 SCENARIOS = {
     "incident-create": BusinessScenario(
-        "报障建单", "现场报障后创建并确认工单", SOURCE_LABELS["quality-api"],
+        "提单与接单", "提单人提交 USP 使用问题，接单人接单", SOURCE_LABELS["quality-api"],
         {
-            "ask": BusinessStep(
-                "报障人", "提交故障问题", "收到诊断回复",
-                field="success", expected_value="accepted",
-            ),
             "create": BusinessStep(
-                "报障人", "提交转工单请求", "系统创建工单",
-                field="status", expected_value="created",
+                "提单人", f"提交「{USP_USAGE_ISSUE}」", f"系统创建「{USP_USAGE_ISSUE}」工单",
+                field="title", expected_value=USP_USAGE_ISSUE,
             ),
-            "confirm": BusinessStep(
-                "报障人", "确认工单", "工单已确认",
-                field="status", expected_value="acknowledged",
+            "accept": BusinessStep(
+                "接单人", "接收同一张工单", "工单进入处理中",
+                field="status", expected_value="in_progress",
             ),
         },
     ),
@@ -110,9 +103,9 @@ def record_business_evidence(scenario_id: str, step_id: str, response) -> None:
         except ValueError:
             body = None
         raw = body.get(step.field) if isinstance(body, dict) else None
-        if step.field == "success" and isinstance(raw, bool):
-            value = "accepted" if raw else "not_accepted"
-        elif isinstance(raw, str) and raw in BUSINESS_VALUES:
+        if step.field == "title" and raw == step.expected_value:
+            value = step.expected_value
+        elif step.field == "status" and isinstance(raw, str) and raw in BUSINESS_VALUES:
             value = raw
     allure.attach(
         json.dumps({
@@ -132,7 +125,10 @@ def describe_actual(step: BusinessStep, evidence: dict) -> tuple[str, bool | Non
         return "未记录实际结果", None
     value = evidence.get("value")
     known_value = BUSINESS_VALUES.get(value) if isinstance(value, str) else None
-    if step.field:
+    if step.field == "title":
+        matches = http_status == step.http_status and value == step.expected_value
+        observation = f"已创建「{step.expected_value}」工单" if matches else "建单结果与预期不符"
+    elif step.field:
         observation = known_value or "未取得可判定的业务状态"
         matches = http_status == step.http_status and value == step.expected_value
     else:
