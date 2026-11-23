@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/projects",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTQ2MDguNjY2OTQ4OCwgImlhdCI6IDE3OTU0MTEwMDguNjY2OTQ5M30.bW9jay1zaWc"
+  },
+  "body": {
+    "name": "Test Project"
+  }
+}

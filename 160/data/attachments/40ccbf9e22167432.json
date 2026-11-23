@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/users",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTQ2MDguODIyODQ3NiwgImlhdCI6IDE3OTU0MTEwMDguODIyODQ4fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "username": "testadmin"
+  }
+}

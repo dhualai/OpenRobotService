@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTQ2MDkuNzgyODAxLCAiaWF0IjogMTc5NTQxMTAwOS43ODI4MDE0fQ.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "只有标题"
+  }
+}

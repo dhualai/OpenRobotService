@@ -1,0 +1,13 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/users",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTQ2MDguODA3NzM5NSwgImlhdCI6IDE3OTU0MTEwMDguODA3NzM5N30.bW9jay1zaWc"
+  },
+  "body": {
+    "username": "newuser",
+    "password": "pass",
+    "name": "New User",
+    "role": "engineer"
+  }
+}

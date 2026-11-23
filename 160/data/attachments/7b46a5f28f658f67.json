@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTQ2MDkuNjk4NDQ0MSwgImlhdCI6IDE3OTU0MTEwMDkuNjk4NDQ0Nn0.bW9jay1zaWc"
+  },
+  "body": {
+    "title": "文档链路测试任务",
+    "description": "文档接口测试前置"
+  }
+}

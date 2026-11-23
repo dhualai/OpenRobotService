@@ -1,0 +1,16 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/call/qa/ask/stream",
+  "reason": "OK",
+  "headers": {
+    "content-length": "73",
+    "content-type": "application/json"
+  },
+  "body": {
+    "event": "message",
+    "data": {
+      "content": "Mock stream: Tell me"
+    },
+    "done": true
+  }
+}

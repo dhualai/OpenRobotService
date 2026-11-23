@@ -1,0 +1,21 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/tasks/assignable-users",
+  "reason": "OK",
+  "headers": {
+    "content-length": "113",
+    "content-type": "application/json"
+  },
+  "body": [
+    {
+      "id": "eng-01",
+      "name": "Engineer One",
+      "role": "engineer"
+    },
+    {
+      "id": "eng-02",
+      "name": "Engineer Two",
+      "role": "engineer"
+    }
+  ]
+}
