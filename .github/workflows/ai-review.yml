@@ -1,0 +1,209 @@
+name: AI Review
+
+# AI Review（ORS-1149）：PR 合并前的非阻塞智能检视，双层设计：
+#   1) 规则快筛（自动）：pull_request 打开/更新时跑确定性规则（路径+高危写法正则），
+#      零 LLM 成本；命中 blocker 才落评论 + 推企微开源小组群，否则保持沉默；
+#   2) 深度检视（人工触发）：给 PR 加 `ai-review` 标签触发 LLM 全量检视，跑完自动摘标签。
+#      （主仓默认分支是 main 且被冻结，workflow_dispatch 按钮无法生效，故用 label 方案；
+#       未来若该文件同步到 main，可解锁下方的 workflow_dispatch 触发器。）
+#
+# 设计红线：
+#   - 全流程不阻塞合并与部署（本 workflow 失败不影响任何 required check）；
+#   - fork PR 跳过（pull_request 事件中 fork 拿不到 secrets，LLM 调用必失败）；
+#   - 检视规则从 PR base 分支 checkout 读取，PR 自身无法篡改检视规则；
+#   - LLM 密钥只走 secrets，日志不回显；deep_review 失败也发「未完成」报告。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 要检视的 PR 编号（仅当本文件在默认分支后可用）
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+# 注意：防抖分组必须放 job 级且快筛/深度分开——workflow 级同组会让
+# push 触发的快筛与 labeled 触发的深度检视互相取消（实测踩过）
+
+jobs:
+  quick-screen:
+    name: Quick screen (rules)
+    # labeled 事件走深度检视；fork PR 跳过（拿不到 secrets，且不可信）
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'labeled' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ai-review-quick-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+      cancel-in-progress: true
+    env:
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      # 双 checkout：脚本优先从 base 检出（防 PR 改脚本自豁免/滥用 secret），
+      # base 尚无脚本时（本功能自身的 PR）回退 pr-code 并告警，合入后自动消除
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base-src
+      - uses: actions/checkout@v4
+        with:
+          path: pr-code
+      - name: Resolve scripts dir
+        id: sdir
+        run: |
+          if [ -f base-src/.github/ai-review/scripts/quick_screen.py ]; then
+            echo "dir=base-src" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=pr-code" >> "$GITHUB_OUTPUT"
+            echo "::warning::base 分支尚无 ai-review 脚本，回退使用 PR 版本（本功能合入 test 后自动消除）"
+          fi
+
+      - name: Run quick screen
+        id: screen
+        # exit 10 = 命中高危；0 = 未命中或纯文档跳过；其他 = 出错（仍不阻塞）
+        run: |
+          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/quick_screen.py \
+            --out-json quick.json --out-md quick.md || code=$?
+          echo "exit_code=${code:-0}" >> "$GITHUB_OUTPUT"
+
+      - name: Post blocker comment
+        if: steps.screen.outputs.exit_code == '10'
+        continue-on-error: true
+        run: |
+          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
+            --marker "ors-ai-review:quick" --file quick.md
+
+      - name: Notify wecom (blocker only)
+        if: steps.screen.outputs.exit_code == '10'
+        continue-on-error: true
+        env:
+          NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          PR="${PR_NUMBER}"
+          {
+            echo "**AI 规则快筛发现高危项**"
+            echo "PR #${PR}《${PR_TITLE}》命中确定性高危规则："
+            python3 - <<'PY'
+          import json
+          data = json.load(open("quick.json", encoding="utf-8"))
+          for it in (data.get("blockers") or [])[:4]:
+              print(f"▪ [规则] {it['path']} {it['label']}")
+          n = len(data.get("blockers") or [])
+          if n > 4:
+              print(f"▪ …共 {n} 项")
+          PY
+            echo "详情：https://github.com/${REPO}/pull/${PR}"
+          } > wecom.md
+          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
+
+  deep-review:
+    name: Deep review (LLM)
+    # 手动入口：加 ai-review 标签（常用）；或 workflow_dispatch（文件进默认分支后可用）
+    # fork PR 跳过（同仓校验）：dispatch 无 fork 上下文不受影响
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'ai-review' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ai-review-deep-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+      cancel-in-progress: true
+    env:
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      GH_TOKEN: ${{ github.token }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+      AI_REVIEW_BASE_URL: ${{ secrets.AI_REVIEW_BASE_URL }}
+      AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
+      # 推理模型建议配 low：压 reasoning token 消耗，避免 content 被 max_tokens 截空
+      AI_REVIEW_REASONING_EFFORT: ${{ vars.AI_REVIEW_REASONING_EFFORT }}
+      AI_REVIEW_FALLBACK_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK_API_KEY }}
+      AI_REVIEW_FALLBACK_BASE_URL: ${{ secrets.AI_REVIEW_FALLBACK_BASE_URL }}
+      AI_REVIEW_FALLBACK_MODEL: ${{ vars.AI_REVIEW_FALLBACK_MODEL }}
+    steps:
+      # 拿 PR base.sha（dispatch 场景无事件上下文，用 API 查）
+      - name: Resolve PR base sha
+        id: base
+        run: |
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            sha=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.base.sha')
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 双 checkout 分离「规则源」与「脚本源」：
+      #   base-rules/ ← base 分支：规则与知识库，PR 改 docs/ai-review/ 无法篡改本次检视规则；
+      #   pr-code/    ← 默认（pull_request=merge ref；dispatch=所选分支）：待检脚本本体。
+      # 注意不能只 checkout base——脚本尚未进 test 时 base 上没有，job 会找不到文件
+      #（PR #492 首跑实测）。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base-rules
+      - uses: actions/checkout@v4
+        with:
+          path: pr-code
+
+      # 脚本目录解析：所有持有 secrets 的执行脚本（deep_review/post/notify）
+      # 一律 base-rules 优先——deep_review 手握 LLM key 且 import 同目录
+      # common/quick_screen，从 pr-code 跑则 PR 可改脚本外传密钥（AI 检视
+      # 抓出的缺口，与 edir 方案对齐后彻底消除）。base 尚无脚本时（本功能
+      # 合入 test 前的 bootstrap 窗口）回退 pr-code 并显式告警，合入后自动消除。
+      - name: Resolve exec scripts dir
+        id: edir
+        run: |
+          if [ -f base-rules/.github/ai-review/scripts/deep_review.py ]; then
+            echo "dir=base-rules" >> "$GITHUB_OUTPUT"
+            echo "脚本来源：base-rules（PR 不可篡改）"
+          else
+            echo "dir=pr-code" >> "$GITHUB_OUTPUT"
+            echo "::warning::base 分支尚无 ai-review 脚本，本次从 PR 版本执行（bootstrap 窗口期，合入 test 后自动消除）"
+          fi
+
+      - name: Run deep review
+        id: review
+        # exit 2 = LLM 双通道失败（report.md 仍会生成「未完成」报告）；0 = 正常
+        run: |
+          code=0
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/deep_review.py \
+            --rules-root base-rules/docs/ai-review \
+            --out report.md --out-inline inline.json \
+            --out-wecom wecom.md || code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Post report comment
+        continue-on-error: true
+        run: |
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
+            --marker "ors-ai-review:report" --file report.md \
+            --inline inline.json
+
+      - name: Notify wecom (blocker only)
+        if: ${{ hashFiles('wecom.md') != '' }}
+        continue-on-error: true
+        env:
+          NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
+        run: python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
+
+      # label 触发跑完自动摘标签，方便下次再次触发；手动 dispatch 无标签可摘
+      - name: Remove trigger label
+        if: github.event.action == 'labeled'
+        continue-on-error: true
+        run: gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/ai-review"
