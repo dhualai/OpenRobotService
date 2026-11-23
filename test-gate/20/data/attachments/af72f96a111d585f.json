@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/qa/ask",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MDkxMDUuMTY5NzYyOCwgImlhdCI6IDE3OTU0MDU1MDUuMTY5NzYzfQ.bW9jay1zaWc"
+  },
+  "body": {
+    "question": "AI超时测试"
+  }
+}

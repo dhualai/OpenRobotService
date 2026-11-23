@@ -1,0 +1,10 @@
+{
+  "method": "PATCH",
+  "url": "http://mock.local/api/tasks/1/status",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MDkxMDUuNTQzMTUzOCwgImlhdCI6IDE3OTU0MDU1MDUuNTQzMTU0Mn0.bW9jay1zaWc"
+  },
+  "body": {
+    "status": "in_progress"
+  }
+}

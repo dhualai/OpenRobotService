@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/admin/users/nobody",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MDkxMDQuODY2NTg0LCAiaWF0IjogMTc5NTQwNTUwNC44NjY1ODQzfQ.bW9jay1zaWc"
+  },
+  "body": {
+    "name": "x"
+  }
+}

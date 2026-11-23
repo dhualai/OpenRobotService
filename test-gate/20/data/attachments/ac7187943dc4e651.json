@@ -1,0 +1,10 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/ai/qa/ticket/steps",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidTFfYXV0byIsICJleHAiOiAxNzk1NDA5MTA1LjA1ODQ5NjcsICJpYXQiOiAxNzk1NDA1NTA1LjA1ODQ5NzJ9.bW9jay1zaWc"
+  },
+  "params": {
+    "type": "problem"
+  }
+}

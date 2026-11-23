@@ -1,0 +1,19 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/ai/task/analyze",
+  "reason": "OK",
+  "headers": {
+    "content-length": "132",
+    "content-type": "application/json"
+  },
+  "body": {
+    "task_id": 1,
+    "solution": "Mock: replace faulty sensor module",
+    "confidence": 0.92,
+    "steps": [
+      "Disconnect power",
+      "Replace sensor",
+      "Test"
+    ]
+  }
+}
