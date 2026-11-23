@@ -123,24 +123,32 @@ jobs:
             echo "sha=$sha" >> "$GITHUB_OUTPUT"
           fi
 
-      # 规则文件从 base 检出：PR 改 docs/ai-review/ 无法篡改本次检视的规则
+      # 双 checkout 分离「规则源」与「脚本源」：
+      #   base-rules/ ← base 分支：规则与知识库，PR 改 docs/ai-review/ 无法篡改本次检视规则；
+      #   pr-code/    ← 默认（pull_request=merge ref；dispatch=所选分支）：待检脚本本体。
+      # 注意不能只 checkout base——脚本尚未进 test 时 base 上没有，job 会找不到文件
+      #（PR #492 首跑实测）。
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.base.outputs.sha }}
+          path: base-rules
+      - uses: actions/checkout@v4
+        with:
+          path: pr-code
 
       - name: Run deep review
         id: review
         # exit 2 = LLM 双通道失败（report.md 仍会生成「未完成」报告）；0 = 正常
         run: |
           code=0
-          python3 .github/ai-review/scripts/deep_review.py \
-            --rules-root docs/ai-review \
+          python3 pr-code/.github/ai-review/scripts/deep_review.py \
+            --rules-root base-rules/docs/ai-review \
             --out report.md --out-wecom wecom.md || code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Post report comment
         continue-on-error: true
-        run: python3 .github/ai-review/scripts/post_comment.py \
+        run: python3 pr-code/.github/ai-review/scripts/post_comment.py \
           --marker "ors-ai-review:report" --file report.md
 
       - name: Notify wecom (blocker only)
@@ -148,7 +156,7 @@ jobs:
         continue-on-error: true
         env:
           NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
-        run: python3 .github/ai-review/scripts/notify_wecom.py --file wecom.md
+        run: python3 pr-code/.github/ai-review/scripts/notify_wecom.py --file wecom.md
 
       # label 触发跑完自动摘标签，方便下次再次触发；手动 dispatch 无标签可摘
       - name: Remove trigger label
