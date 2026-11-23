@@ -296,7 +296,7 @@ jobs:
           mkdir -p release_prs
           fetch_prs() {
             gh pr list --repo "$GITHUB_REPOSITORY" --base "$1" --state merged \
-              --limit 200 --json number,title,mergedAt,labels,headRefName
+              --limit 200 --json number,title,body,url,mergedAt,labels,headRefName
           }
           for base in test dev; do
             file="release_prs/$base.json"
@@ -920,6 +920,11 @@ jobs:
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      # 仅在生成发布说明时读取候选 PR 的改动文件，用于确认菜单模块与验证入口
+      pull-requests: read
     outputs:
       # auto = 本次由 LLM 生成；其他 = 沿用上次发行说明或人工版。
       # deploy 只在 auto 时滚存，避免把同一份内容反复写回。
@@ -1014,6 +1019,8 @@ jobs:
           RELEASE_LLM_BASE_URL: ${{ vars.RELEASE_LLM_BASE_URL }}
           RELEASE_LLM_MODEL: ${{ vars.RELEASE_LLM_MODEL }}
           RELEASE_LLM_TIMEOUT: ${{ vars.RELEASE_LLM_TIMEOUT }}
+          # gh 只读获取候选 PR 文件；不会打印 token 或完整 API 响应
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           rm -f _artifacts/deploy/RELEASE_NOTES.auto.md

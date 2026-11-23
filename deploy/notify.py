@@ -86,7 +86,7 @@ EVENT_LABELS = {"workflow_dispatch": "手动触发", "push": "推送触发", "sc
 ENV_LABELS = {"test": "测试", "prod": "生产"}
 ENV_NAMES = tuple(ENV_LABELS)
 
-# 发布说明分组固定展示顺序；文件里多写的组按出现顺序排在后面（见 docs/RELEASE_NOTES.md）
+# 历史三分类仅用于兼容旧 Release；新版菜单模块按文件出现顺序展示（见 docs/RELEASE_NOTES.md）
 RELEASE_GROUPS = ("新增功能", "体验优化", "BUG 修复")
 
 # 生产发布失败卡片（failure-prod 版面）的「建议操作」步骤
