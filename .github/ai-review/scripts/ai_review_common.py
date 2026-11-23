@@ -88,13 +88,18 @@ def is_lock_file(path):
 
 
 def split_code_and_docs(files):
-    """把变更文件分成 (代码类, 文档类)。lock 文件两边都不进。"""
+    """把变更文件分成 (代码类, 文档类)。lock 文件两边都不进。
+
+    requirements*.txt 虽是 .txt 后缀但属依赖清单，必须按代码类参与
+    快筛（否则依赖变更规则永远不触发——AI 首轮报告抓到的真 bug）。
+    """
     code, docs = [], []
     for f in files:
         path = f.get("filename", "")
         if is_lock_file(path):
             continue
-        if path.lower().endswith(DOC_SUFFIXES):
+        base = path.rsplit("/", 1)[-1]
+        if path.lower().endswith(DOC_SUFFIXES) and not base.startswith("requirements"):
             docs.append(f)
         else:
             code.append(f)

@@ -81,6 +81,13 @@ def test_dedup_same_file_same_label():
     assert len(hits) == 1
 
 
+def test_requirements_txt_not_treated_as_doc():
+    """requirements*.txt 是依赖清单不是文档，必须命中依赖规则（回归）。"""
+    r = screen([f("backend/requirements.txt", "+flask==2.0.0\n")])
+    paths = {it["path"] for it in r["warnings"]}
+    assert "backend/requirements.txt" in paths
+
+
 def test_self_dir_excluded():
     """检视器自身目录豁免：规则源码字面量与测试桩不得自我命中（PR #492 教训）。"""
     r = screen([
