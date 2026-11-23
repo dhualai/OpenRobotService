@@ -81,6 +81,17 @@ def test_dedup_same_file_same_label():
     assert len(hits) == 1
 
 
+def test_self_dir_excluded():
+    """检视器自身目录豁免：规则源码字面量与测试桩不得自我命中（PR #492 教训）。"""
+    r = screen([
+        f(".github/ai-review/scripts/quick_screen.py",
+         "+    (r\"DROP\\\\s+COLUMN|drop_column|remove_column\", \"blocker\", ...)\n"),
+        f(".github/ai-review/tests/test_quick_screen.py",
+         "+API_KEY = \"sk-abcdef1234567890abcdef\"\n"),
+    ])
+    assert r["blockers"] == [] and r["warnings"] == []
+
+
 def test_render_markdown_has_marker_and_sections():
     r = screen([f("backend/alembic/versions/x.py"),
                 f("backend/app/y.py", "+a = datetime.now()\n")])

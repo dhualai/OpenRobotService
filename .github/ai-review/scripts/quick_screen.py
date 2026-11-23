@@ -23,6 +23,9 @@ EXIT_OK = 0
 EXIT_HIT = 10          # 命中高危（blocker）
 EXIT_ERROR = 1
 
+# 检视器自身目录（含本脚本与测试），screen() 一律跳过
+SELF_DIR = ".github/ai-review/"
+
 # ---------- 路径规则 ----------
 # (glob, level, 标签, 理由)
 PATH_RULES = [
@@ -94,6 +97,11 @@ def screen(files):
       doc_only_files: 纯文档文件名列表
     Finding = {path, line, label, reason, source}
     """
+    # 自我豁免：检视器自身目录不参与快筛——规则源码里就有 drop_column 等
+    # 正则字面量、测试里有假 key 桩，不豁免必然自我命中（PR #492 实测误报）。
+    # 该目录的质量由人工 review + 深度检视兜底。
+    files = [f for f in files
+             if not f.get("filename", "").startswith(SELF_DIR)]
     code, docs = split_code_and_docs(files)
     result = {
         "skipped": not code,
