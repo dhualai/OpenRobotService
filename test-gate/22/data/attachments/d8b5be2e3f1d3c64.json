@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "title": "全链路验证任务",
+    "description": "flow demo",
+    "ticket_type": "bug"
+  }
+}

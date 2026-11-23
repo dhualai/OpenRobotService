@@ -1,0 +1,8 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "body": {
+    "title": "无权建单",
+    "description": "test"
+  }
+}
