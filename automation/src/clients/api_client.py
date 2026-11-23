@@ -10,6 +10,42 @@ from automation.src.clients.base import BaseClient
 from automation.src.utils.retry import async_retry, RetryConfig
 from automation.src.clients.exceptions import AuthenticationError, ClientConnectionError, ClientTimeoutError
 
+# ── 敏感信息脱敏（仅用于 Allure 附件，不影响实际请求） ──────────────────
+_SENSITIVE_HEADERS = {"authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"}
+_SENSITIVE_BODY_KEYS = {
+    "password", "passwd", "pwd", "token", "access_token", "refresh_token",
+    "secret", "api_key", "apikey", "credential",
+}
+
+
+def _mask_value(value: Any) -> str:
+    """保留前 10 位便于辨认，其余打码。"""
+    s = str(value)
+    if len(s) <= 12:
+        return "***"
+    return f"{s[:10]}…（已脱敏，原长 {len(s)}）"
+
+
+def _mask_headers(headers: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        k: (_mask_value(v) if str(k).lower() in _SENSITIVE_HEADERS else v)
+        for k, v in headers.items()
+    }
+
+
+def _mask_body(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if str(k).lower() in _SENSITIVE_BODY_KEYS and isinstance(v, (str, int)):
+                out[k] = _mask_value(v)
+            else:
+                out[k] = _mask_body(v)
+        return out
+    if isinstance(obj, list):
+        return [_mask_body(x) for x in obj]
+    return obj
+
 
 class ApiClient(BaseClient):
     """HTTP API client with retry, timeout, logging, and exception handling.
@@ -143,7 +179,7 @@ class ApiClient(BaseClient):
         headers = kwargs.get("headers", {})
         if headers:
             try:
-                detail["headers"] = dict(headers)
+                detail["headers"] = _mask_headers(dict(headers))
             except Exception:
                 pass
         params = kwargs.get("params", {})
@@ -154,12 +190,12 @@ class ApiClient(BaseClient):
                 pass
         json_body = kwargs.get("json")
         if json_body is not None:
-            detail["body"] = json_body
+            detail["body"] = _mask_body(json_body)
         else:
             data_body = kwargs.get("data")
             if data_body is not None:
                 try:
-                    detail["body"] = dict(data_body)
+                    detail["body"] = _mask_body(dict(data_body))
                 except Exception:
                     pass
         try:
