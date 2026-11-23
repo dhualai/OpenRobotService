@@ -23,12 +23,9 @@ class Material(BaseModel):
 class Sources(BaseModel):
     task_ids: list[int] = Field(default_factory=list, max_length=10)
     materials: list[Material] = Field(default_factory=list, max_length=10)
-    verified: bool = False
 
     @model_validator(mode="after")
     def valid_sources(self):
-        if not self.verified:
-            raise ValueError("请确认材料授权和敏感信息已核对")
         if any(task_id <= 0 for task_id in self.task_ids):
             raise ValueError("工单ID必须为正整数")
         return self

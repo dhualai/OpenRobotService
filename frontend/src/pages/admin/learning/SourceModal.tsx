@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Checkbox, Form, Input, Modal, Select, Space, Spin } from 'antd';
+import { Alert, Button, Form, Input, Modal, Select, Space, Spin } from 'antd';
 import { Plus, Trash2 } from 'lucide-react';
 import { listSourceTasks, type Material, type SourceInput, type SourceSnapshot, type SourceTask } from '@/api/learning';
 
 const STATUS_LABELS = { closed: '已关闭', archiving: '归档中', archived: '已归档' };
 const EMPTY_SOURCES: SourceSnapshot[] = [];
 
-interface SourceValues { title: string; task_ids: string[]; materials: Material[]; verified: boolean }
+interface SourceValues { title: string; task_ids: string[]; materials: Material[] }
 
 export default function SourceModal({ open, initialTitle = '', initialSources = EMPTY_SOURCES, replacing = false, onClose, onSubmit }: {
   open: boolean; initialTitle?: string; initialSources?: SourceSnapshot[]; replacing?: boolean;
@@ -27,7 +27,7 @@ export default function SourceModal({ open, initialTitle = '', initialSources = 
     if (!open) return;
     form.resetFields();
     form.setFieldsValue({ title: initialTitle, task_ids: initialSources.filter((source) => source.type === 'work_order').map((source) => String(source.id)),
-      materials: initialSources.filter((source) => source.type === 'manual').map((source) => ({ name: source.label, text: source.content, provenance: source.provenance || '' })), verified: false });
+      materials: initialSources.filter((source) => source.type === 'manual').map((source) => ({ name: source.label, text: source.content, provenance: source.provenance || '' })) });
     setKeyword(''); setPage(1); setError('');
   }, [open, initialTitle, initialSources, form]);
 
@@ -53,7 +53,7 @@ export default function SourceModal({ open, initialTitle = '', initialSources = 
       if (!values.task_ids?.length && !materials.length) { setError('至少选择一个工单或填写一份技术材料'); return; }
       if ((values.task_ids?.length || 0) + materials.length > 10) { setError('每次最多使用10份材料'); return; }
       setSaving(true); setError('');
-      await onSubmit(values.title.trim(), { task_ids: values.task_ids || [], materials, verified: values.verified });
+      await onSubmit(values.title.trim(), { task_ids: values.task_ids || [], materials });
     } catch (cause) { if (cause instanceof Error) setError(cause.message); }
     finally { setSaving(false); }
   };
@@ -67,7 +67,7 @@ export default function SourceModal({ open, initialTitle = '', initialSources = 
     onOk={save} okText={replacing ? '保存来源' : '创建草稿并继续'} confirmLoading={saving} forceRender>
     <Alert type="info" showIcon message="可合并多个相似工单，也可仅使用技术材料。原始来源不进入学习内容，AI调用前会再次脱敏。" />
     {error && <Alert type="error" role="alert" message={error} closable onClose={() => setError('')} />}
-    <Form name={replacing ? 'learning-replace-source' : 'learning-new-source'} form={form} layout="vertical" initialValues={{ task_ids: [], materials: [], verified: false }}>
+    <Form name={replacing ? 'learning-replace-source' : 'learning-new-source'} form={form} layout="vertical" initialValues={{ task_ids: [], materials: [] }}>
       <Form.Item name="title" label="知识主题" rules={[{ required: true, whitespace: true, message: '请填写要提炼的知识主题' }]}>
         <Input maxLength={255} placeholder="例如：定位异常排查时如何区分环境与配置因素" />
       </Form.Item>
@@ -90,10 +90,6 @@ export default function SourceModal({ open, initialTitle = '', initialSources = 
         </div>)}
         <Button block type="dashed" icon={<Plus size={15} />} disabled={fields.length >= 10} onClick={() => add({ name: '', provenance: '', text: '' })}>添加技术材料</Button>
       </>}</Form.List>
-      <Form.Item name="verified" valuePropName="checked" className="learning-source-verified"
-        rules={[{ validator: (_, value) => value ? Promise.resolve() : Promise.reject(new Error('请先确认材料授权和敏感信息已核对')) }]}>
-        <Checkbox>已核对材料使用授权和敏感信息；生成结果仍须人工确认</Checkbox>
-      </Form.Item>
     </Form>
   </Modal>;
 }

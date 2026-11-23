@@ -30,7 +30,7 @@ export interface ArticleContent {
 
 export interface SourceTask { id: string; title: string; status: 'closed' | 'archiving' | 'archived' }
 export interface Material { name: string; text: string; provenance: string }
-export interface SourceInput { task_ids: (number | string)[]; materials: Material[]; verified: boolean }
+export interface SourceInput { task_ids: (number | string)[]; materials: Material[] }
 export interface SourceSnapshot {
   type: 'work_order' | 'manual';
   id?: string;

@@ -53,7 +53,7 @@ def question():
 
 
 async def new_article(db):
-    return await service.create(db, administrator(), CreateArticle(title="充电故障排查", sources={"verified": True,
+    return await service.create(db, administrator(), CreateArticle(title="充电故障排查", sources={
         "materials": [{"name": "维护规范", "text": "检查供电后再检查充电触点。不得带电操作。", "provenance": "维护规范v1"}]}))
 
 
@@ -76,7 +76,7 @@ async def test_all_closed_and_later_states_are_allowed(learning_db, status):
     task, _ = seed(learning_db)
     task.status = status
     learning_db.session.commit()
-    result = await service.create(learning_db, administrator(), CreateArticle(title="提炼知识", sources={"verified": True, "task_ids": [1]}))
+    result = await service.create(learning_db, administrator(), CreateArticle(title="提炼知识", sources={"task_ids": [1]}))
     assert result["sources"][0]["type"] == "work_order"
     assert "秘密项目" not in json.dumps(result["sources"], ensure_ascii=False)
 
@@ -88,7 +88,7 @@ async def test_source_ids_remain_exact_strings_for_browser_roundtrip(learning_db
     task.description = f"工单 {task_id}：检查供电"
     learning_db.session.commit()
     article = await service.create(learning_db, administrator(), CreateArticle(title="充电故障", sources={
-        "verified": True, "task_ids": [str(task_id)]}))
+        "task_ids": [str(task_id)]}))
     assert article["sources"][0]["id"] == str(task_id)
     assert str(task_id) not in article["sources"][0]["content"]
     listed = await service.source_listing(learning_db, administrator(), str(task_id))
@@ -115,7 +115,7 @@ async def test_rejects_unclosed_tasks_and_anonymous_review_bypass(learning_db):
 async def test_multiple_tasks_and_manual_only_sources_are_supported(learning_db):
     seed(learning_db, 1)
     seed(learning_db, 2)
-    article = await service.create(learning_db, administrator(), CreateArticle(title="共同知识", sources={"verified": True, "task_ids": [1, 2, 1]}))
+    article = await service.create(learning_db, administrator(), CreateArticle(title="共同知识", sources={"task_ids": [1, 2, 1]}))
     assert len(article["sources"]) == 2
     manual = await new_article(learning_db)
     assert manual["sources"][0]["type"] == "manual"
@@ -127,7 +127,7 @@ async def test_redacts_before_model_and_preserves_candidate_until_adopted(learni
     task, _ = seed(learning_db)
     task.description = "秘密项目 提单甲 alice-account 13800138000 secret@example.com http://192.168.1.1 token=private-value"
     learning_db.session.commit()
-    article = await service.create(learning_db, administrator(), CreateArticle(title="秘密项目知识", sources={"verified": True, "task_ids": [1]}))
+    article = await service.create(learning_db, administrator(), CreateArticle(title="秘密项目知识", sources={"task_ids": [1]}))
     client = SimpleNamespace(complete=AsyncMock(return_value=content().model_dump_json()))
     monkeypatch.setattr(service, "get_llm_client", lambda: client)
     body = Generate(request_id="article-request-1", revision=article["revision"], kind="article")
@@ -225,7 +225,7 @@ async def test_generation_failure_preserves_draft_and_hides_upstream_error(learn
 
 @pytest.mark.asyncio
 async def test_generation_rechecks_new_identity_terms_before_sending_saved_sources(learning_db, monkeypatch):
-    article = await service.create(learning_db, administrator(), CreateArticle(title="充电故障", sources={"verified": True,
+    article = await service.create(learning_db, administrator(), CreateArticle(title="充电故障", sources={
         "materials": [{"name": "维护规范", "provenance": "v1", "text": "新识别身份：检查供电后再检查充电触点。"}]}))
     assert "新识别身份" in article["sources"][0]["content"]
     monkeypatch.setattr(service, "known_terms", AsyncMock(return_value=["新识别身份", "S1"]))
@@ -391,14 +391,15 @@ def test_admin_http_flow_creates_confirms_generates_and_previews(learning_db, mo
     app.dependency_overrides[get_async_db] = dependency
     model = SimpleNamespace(complete=AsyncMock(return_value=json.dumps({"questions": [question()]})))
     monkeypatch.setattr(service, "get_llm_client", lambda: model)
+    sources = {"materials": [{"name": "维护规范", "provenance": "维护规范v1", "text": "检查供电后再检查充电触点。"}]}
     with TestClient(app) as client:
-        response = client.post("/api/admin/learning/articles", json={"title": "充电故障排查", "sources": {
-            "verified": True, "materials": [{"name": "维护规范", "provenance": "维护规范v1", "text": "检查供电后再检查充电触点。"}]}})
+        response = client.post("/api/admin/learning/articles", json={"title": "充电故障排查", "sources": sources})
         assert response.status_code == 201
         article = response.json()
         base = f'/api/admin/learning/articles/{article["id"]}'
-        saved = client.put(base, json={"revision": article["revision"], "content": content().model_dump()})
+        saved = client.put(base, json={"revision": article["revision"], "content": content().model_dump(), "sources": sources})
         assert saved.status_code == 200
+        assert client.post(base + "/confirm", json={"revision": saved.json()["revision"]}).status_code == 422
         confirmed = client.post(base + "/confirm", json={"revision": saved.json()["revision"], "verified": True})
         assert confirmed.status_code == 200 and confirmed.json()["active_version"] == 1
         job = client.post(base + "/generate", json={"revision": confirmed.json()["revision"],
