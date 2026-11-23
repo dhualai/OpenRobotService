@@ -33,6 +33,7 @@ LINE = "#E6E8EB"
 GREEN = "#07C160"
 RED = "#F5222D"
 ORANGE = "#FA8C16"
+RELEASE_VERIFY_SEPARATOR = "｜验证："
 
 FONT_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
 
@@ -135,6 +136,12 @@ def _wrap(draw, text, fnt, max_w):
     return lines
 
 
+def _release_item_parts(item):
+    """新版条目拆成功能描述与验证入口；历史无分隔符条目原样展示。"""
+    text, _, verification = (item or "").partition(RELEASE_VERIFY_SEPARATOR)
+    return text.strip(), verification.strip()
+
+
 def _head_lines(draw, text, fnt, max_w, max_lines=2):
     lines = _wrap(draw, text, fnt, max_w)
     if len(lines) > max_lines:
@@ -234,12 +241,15 @@ def _link_row(d, y, f_link, color):
     return y + 46
 
 
-def _finish(img, y):
-    """裁剪到内容高度、2x 放大并做体积校验（企微 image 上限 2MB）。"""
+def _finish(img, y, palette=False):
+    """裁剪、2x 放大并校验企微 2MB 上限；长发布说明可用无损视觉调色板压缩。"""
     if y > img.height:
         raise NotifyImageError(f"内容过高（{y} > {img.height}），改用其他样式")
     img = img.crop((0, 0, W, y))
     img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)   # 2x 高清
+    if palette:
+        # 白底卡片只有文字、少量灰阶和状态色，256 色足够保留抗锯齿且不明显损失观感。
+        img = img.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)
     data = buf.getvalue()
@@ -347,6 +357,7 @@ def _render_release(ctx):
     f_sec = font(30, bold=True)
     f_grp = font(27, bold=True)
     f_item = font(25)
+    f_verify = font(22)
     f_meta = font(23)
     f_link = font(27)
 
@@ -380,13 +391,19 @@ def _render_release(ctx):
         d.text((PAD, y), title, font=f_grp, fill=INK)
         y += 50
         for item in items:
-            lines = _wrap(d, item, f_item, text_w)
+            text, verification = _release_item_parts(item)
+            lines = _wrap(d, text, f_item, text_w)
             for li, line in enumerate(lines):
                 if li == 0:
                     d.ellipse([PAD + 4, y + 17, PAD + 10, y + 23], fill=INK)   # 6px 小黑点
                 d.text((PAD + indent, y), line, font=f_item, fill=MID if li else INK)
                 y += 40
-            y += 10
+            if verification:
+                verify_lines = _wrap(d, f"验证：{verification}", f_verify, text_w - 16)
+                for line in verify_lines:
+                    d.text((PAD + indent + 16, y), line, font=f_verify, fill=SUB)
+                    y += 34
+            y += 12
         if gi < len(groups) - 1:
             y += 22
 
@@ -400,13 +417,15 @@ def _render_release(ctx):
         f"库结构 {ctx['schema_summary']}" if ctx.get("schema_summary") else "",
         f"耗时 {ctx['elapsed']}" if ctx.get("elapsed") else "",
     ) if x)
-    d.text((PAD, y), meta, font=f_meta, fill=SUB)
-    y += 44
+    for line in _wrap(d, meta, f_meta, W - 2 * PAD):
+        d.text((PAD, y), line, font=f_meta, fill=SUB)
+        y += 34
+    y += 10
 
     if ctx.get("run_url"):
         y = _link_row(d, y, f_link, GREEN)
     y += PAD
-    return _finish(img, y)
+    return _finish(img, y, palette=True)
 
 
 def _render_failure(ctx):

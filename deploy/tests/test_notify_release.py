@@ -298,6 +298,27 @@ def test_render_release_layout():
     assert png[:4] == b"\x89PNG" and len(png) <= 2 * 1024 * 1024
 
 
+def test_release_item_parts_supports_new_and_legacy_entries():
+    assert notify_image._release_item_parts(
+        "【优化】达成一致后可重新协商｜验证：系统任务 → 工单详情"
+    ) == ("【优化】达成一致后可重新协商", "系统任务 → 工单详情")
+    assert notify_image._release_item_parts("历史条目") == ("历史条目", "")
+
+
+def test_render_release_by_menu_with_verification():
+    png = _render("release", {
+        "env_name": "prod",
+        "env_label": "生产",
+        "release_date": "2026-11-23",
+        "release_notes": [
+            ("我要摇人", ["【修复】修复首页轮播展示异常｜验证：我要摇人 → 顶部轮播条"]),
+            ("系统任务", ["【优化】达成一致后可重新协商时间｜验证：系统任务 → 工单详情 → 阶段性处理"]),
+            ("后台管理", ["【功能】二维码支持自定义卡片｜验证：后台管理 → 其他 → 二维码管理"]),
+        ],
+    })
+    assert png[:4] == b"\x89PNG" and len(png) <= 2 * 1024 * 1024
+
+
 def test_render_failure_layout():
     png = _render("failure-prod", {
         "ok": False,
