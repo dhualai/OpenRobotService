@@ -1158,13 +1158,15 @@ export default function TasksView() {
   const listExtraFilters = useMemo<TicketFilterCondition[]>(() => {
     const filters: TicketFilterCondition[] = [];
     if (search) {
+      // 用户可能输入 #123 来表示工单编号，需先去掉 # 前缀再做匹配
       const keyword = search.trim();
+      const normalizedKeyword = keyword.replace(/^#/, '');
       const searchConditions: TicketFilterCondition[] = [
         { field: 'title', op: 'contains', value: keyword },
       ];
-      // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
-      if (/^\d+$/.test(keyword)) {
-        searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
+      // 纯数字关键词（含去掉 # 后的）按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
+      if (/^\d+$/.test(normalizedKeyword)) {
+        searchConditions.push({ field: 'id', op: 'eq', value: Number(normalizedKeyword) });
       }
       filters.push({ or: searchConditions });
     }
@@ -1954,7 +1956,7 @@ export default function TasksView() {
               <input
                 data-testid="tasks-search"
                 className="tasks-search"
-                placeholder="搜索工单（支持编号/标题）…"
+                placeholder="搜索工单（支持编号/标题，如 #123）…"
                 value={searchInput}
                 onChange={(e) => { setSearchInput(e.target.value); }}
               />
