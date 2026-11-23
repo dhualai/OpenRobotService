@@ -344,16 +344,17 @@ def _render_standard(ctx):
 
 
 def _render_release(ctx):
-    """生产发布成功：环境+日期头 + 大字成功 + 分组更新日志。
+    """test/prod 发布成功：环境+日期头 + 大字成功 + 分组更新日志。
 
     简约风（对齐 CodeBuddy 更新日志）：纯文字组标题、小黑点 bullet，无图标；
-    不显示版本号，只显示日期。
+    不显示版本号，只显示日期。test 的非阻塞门禁告警仍要可见，不因换版面丢失。
     """
     font, bold_stroke = _load_fonts()
     f_head = font(23, bold=True)
     f_head_r = font(23)
     f_title = font(48, bold=True)
     f_desc = font(25)
+    f_alert = font(23)
     f_sec = font(30, bold=True)
     f_grp = font(27, bold=True)
     f_item = font(25)
@@ -377,6 +378,13 @@ def _render_release(ctx):
 
     y = _status_row(d, y, f_title, f_desc, bold_stroke, True,
                     ctx.get("title") or "部署成功", _sub_text(ctx))
+
+    # test 换到更新日志版面后，非阻塞门禁/自动回滚等告警不能被藏掉
+    for alert in ctx.get("alerts") or []:
+        for line in _wrap(d, f"⚠ {alert}", f_alert, W - 2 * PAD):
+            d.text((PAD, y), line, font=f_alert, fill=ORANGE)
+            y += 32
+        y += 10
 
     # 更新日志区：标题 + 右侧条目计数
     groups = ctx.get("release_notes") or []
