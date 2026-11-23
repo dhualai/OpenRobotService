@@ -15,8 +15,8 @@ import json
 import sys
 
 from ai_review_common import (
-    fetch_pr_files, guess_line_number, is_lock_file, split_code_and_docs,
-    strip_patch_noise, utc_now_str,
+    fetch_pr_files, guess_line_number, is_lock_file, now_display_str,
+    split_code_and_docs, strip_patch_noise,
 )
 
 EXIT_OK = 0
@@ -167,8 +167,9 @@ def render_quick_markdown(result, pr_number, sha):
     """渲染快筛结果的评论段落（极简风：粗体小标题 + 小圆点条目）。"""
     lines = [
         "<!-- ors-ai-review:quick -->",
-        f"**AI 规则快筛** · PR #{pr_number}" + (f" · {sha[:8]}" if sha else "")
-        + f" · {utc_now_str()}",
+        f"🤖 **AI 规则快筛** · PR #{pr_number}"
+        + (f" · `{sha[:8]}`" if sha else "")
+        + f" · {now_display_str()}",
         "",
     ]
     if result["skipped"]:

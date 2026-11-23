@@ -18,23 +18,34 @@ def test_fingerprint_stable():
     assert a == b and a != c and len(a) == 8
 
 
-def test_report_uses_colored_alerts():
+def test_report_doc_layout():
+    """文档化排版：红黄绿固定排序（红组含快筛且最前）、无 alert 色条、建议默认展开。"""
     parsed = {
         "conclusion": "高风险",
-        "blockers": [{"location": "a.py:5", "issue": "删列",
+        "blockers": [{"location": "a.py:5", "issue": "删列" * 60,
                       "suggestion": "确认无读写"}],
         "warnings": [{"location": "b.py:1", "issue": "datetime.now",
                       "suggestion": "改 UTC"}],
         "infos": [{"location": "c.py:1", "issue": "命名", "suggestion": ""}],
     }
-    md = render_report(parsed, None, 492, "abcd1234", "deepseek-flash")
-    assert "[!CAUTION]" in md and "🔴 必须采纳" in md
-    assert "[!WARNING]" in md and "🟡 选择采纳" in md
-    assert "[!TIP]" in md and "🟢 可优化" in md
-    assert "🟢 **结论：高风险**" or "🔴 **结论：高风险**" in md
-    assert "<details><summary>💡 建议</summary>" in md
-    # 精简断言：问题行单行内，无两行式「建议：」前缀
-    assert "\n  - 建议：" not in md
+    quick = {"skipped": False, "blockers": [
+        {"path": "m.py", "label": "数据库迁移",
+         "reason": "DDL 不可自动回滚"}], "warnings": []}
+    md = render_report(parsed, quick, 492, "abcd1234", "deepseek-flash")
+    # 排序：红组（快筛在前）→ 黄 → 绿（匹配 ### 分组标题，避开表格列头）
+    assert md.index("### 🔴 规则快筛命中") < md.index("### 🔴 必须采纳")
+    assert md.index("### 🔴 必须采纳") < md.index("### 🟡 选择采纳")
+    assert md.index("### 🟡 选择采纳") < md.index("### 🟢 可优化")
+    # 无 alert 色条（用户要求去除左侧色条）
+    assert "[!CAUTION]" not in md and "[!WARNING]" not in md and "[!TIP]" not in md
+    # 内容不截断（120 字 issue 全文保留）+ 建议默认展开 + 卡通图标
+    assert "删列" * 60 in md
+    assert "<details open>" in md and "🧸" in md
+    # 上海时间：无 UTC 标注 + 计数表格 + 页脚
+    import re as _re
+    head = _re.search(r"\*\*PR #492\*\*[^\n]*", md).group(0)
+    assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", head)  # 上海时间
+    assert "| 🟢 可优化 |" in md and "🪵" in md
 
 
 def test_report_inline_paths_removed_from_summary():
@@ -65,7 +76,11 @@ def test_insert_delta_position():
             "<!-- ors-ai-review:fp=x -->\n"
             "**AI 检视报告** · PR #492\n"
             "🔴 **结论：高风险**\n")
+def test_insert_delta_by_anchor():
+    body = ("<!-- ors-ai-review:report -->\n"
+            "<!-- ors-ai-review:fp=x -->\n"
+            "<!-- ors-ai-review:delta -->\n"
+            "# 🤖 AI 检视报告\n")
     out = insert_delta(body, "> 🔄 较上次检视：**新增 1 条**")
-    lines = out.split("\n")
-    assert lines[3].startswith("🔴")          # 结论行在前
-    assert lines[4] == "> 🔄 较上次检视：**新增 1 条**"   # 增量行紧随其后
+    assert "> 🔄 较上次检视：**新增 1 条**" in out
+    assert "<!-- ors-ai-review:delta -->" not in out   # 锚点被替换

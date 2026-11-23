@@ -65,15 +65,17 @@ def fingerprint_delta(old_body, new_body):
     return f"> 🔄 较上次检视：{'，'.join(parts)}"
 
 
+DELTA_ANCHOR = "<!-- ors-ai-review:delta -->"
+
+
 def insert_delta(body, delta_line):
-    """把增量行插到「结论」行（**AI 检视报告** 标题行的下一行）之后。"""
+    """把增量行放到报告头部预留锚点处（文档结构由渲染方统一控制）。"""
+    if DELTA_ANCHOR in body:
+        return body.replace(DELTA_ANCHOR, delta_line, 1)
     lines = body.split("\n")
     for i, ln in enumerate(lines):
-        if ln.startswith("**AI 检视报告**"):
-            insert_at = i + 1
-            while insert_at < len(lines) and lines[insert_at].startswith("<!--"):
-                insert_at += 1
-            lines.insert(insert_at + 1, delta_line)
+        if "AI 检视报告" in ln:
+            lines.insert(i + 1, delta_line)
             return "\n".join(lines)
     lines.insert(min(3, len(lines)), delta_line)
     return "\n".join(lines)

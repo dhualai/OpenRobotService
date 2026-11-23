@@ -32,6 +32,17 @@ def utc_now_str():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def now_display_str():
+    """报告展示用时间：上海时区（UTC+8，无夏令时），不带 UTC 标注。
+
+    注意：这只影响「展示」（runner 时区是 UTC，必须显式转换）；
+    落库时间仍一律 UTC，两者互不冲突。
+    """
+    from datetime import timedelta
+    tz_sh = timezone(timedelta(hours=8))
+    return datetime.now(tz_sh).strftime("%Y-%m-%d %H:%M")
+
+
 def gh_api(repo, path, token, method="GET", body=None, accept=None):
     """调用 GitHub API，返回 (status, 解析后的对象或原文 str)。
 

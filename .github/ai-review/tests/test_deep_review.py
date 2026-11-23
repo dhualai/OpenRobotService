@@ -52,10 +52,17 @@ def test_render_report_full():
     }
     quick = screen([f("backend/app/y.py", "+a = datetime.now()\n")])
     md = render_report(parsed, quick, 431, "abcdef123456", "deepseek-v4-flash")
-    assert "🔴 **结论：高风险**" in md
-    assert "`a.py:52`" in md and "<details><summary>💡 建议</summary>" in md
+    # 文档化排版：标题 + 计数表格 + 红组最前（规则快筛优先于 AI 判断）
+    assert "# 🤖 AI 检视报告" in md
+    assert "**高风险**" in md and "| 🔴 必须采纳 |" in md
+    assert "`a.py:52`" in md
+    assert "<details open><summary>🧸 小D的建议</summary>" in md
     assert "🔴 规则快筛命中（确定性）" in md
     assert "deepseek-v4-flash" in md
+    import re as _re
+    head = _re.search(r"\*\*PR #431\*\*[^\n]*", md).group(0)
+    assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", head)  # 上海时间无 UTC 标注
+    assert "🪵" in md                 # 文档页脚
 
 
 def test_render_wecom_only_when_blocker():
