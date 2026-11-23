@@ -236,11 +236,11 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
     lines = [
         "<!-- ors-ai-review:report -->",
         "<!-- ors-ai-review:fp=" + ",".join(fps) + " -->",
-        "<!-- ors-ai-review:delta -->",
         "# 🤖 AI 检视报告",
         "",
         f"**PR #{pr_number}**" + (f" · `{sha[:8]}`" if sha else "")
         + f" · {now_display_str()}",
+        "<!-- ors-ai-review:delta -->",
         "",
     ]
     if parsed is None:

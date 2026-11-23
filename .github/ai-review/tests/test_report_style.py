@@ -71,11 +71,6 @@ def test_fingerprint_delta():
     assert fingerprint_delta("", new_added) is None
 
 
-def test_insert_delta_position():
-    body = ("<!-- ors-ai-review:report -->\n"
-            "<!-- ors-ai-review:fp=x -->\n"
-            "**AI 检视报告** · PR #492\n"
-            "🔴 **结论：高风险**\n")
 def test_insert_delta_by_anchor():
     body = ("<!-- ors-ai-review:report -->\n"
             "<!-- ors-ai-review:fp=x -->\n"
