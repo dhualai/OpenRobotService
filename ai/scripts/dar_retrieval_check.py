@@ -50,6 +50,9 @@ CLS = os.path.join(OUT, "conversations_classified.jsonl")
 # 人工切分/标注：随数据集放 export_dar/{env}/（与 dar_weekly/dar_studio 同源）
 MANUAL = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/manual_segmentation.json"
 CONCURRENCY = 8
+# 跳过缺口复查（KB 更新后重考未通过段）。复查结果只写 reexam_* 字段、不进直答率，
+# 跳过＝沿用历史判定，判定量可减半（1106 与 dar_l3 同一开关）
+SKIP_REEXAM = os.environ.get("DAR_SKIP_REEXAM", "").lower() in ("1", "true", "yes", "on")
 
 # chunk 首行：『{emoji路别} N（标题）：』；title 可缺（FAQ/翻译表等无名块）
 _HEAD = re.compile(r"^(?P<route>[^\d（]+?)\s*(?P<idx>\d+)?\s*(?:（(?P<title>[^）]*)）)?：\s*$")
@@ -170,11 +173,18 @@ async def main(ptr: dict | None = None):
     path = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
     jpath = path[:-5] + ".jsonl"  # 断点续跑：逐段追加；中断后重跑只补未判段
     # 增量：当天 jsonl（逐段追加，最新）+ json（快照）照旧复用；0929 起另读
-    # 最近 7 天历史产物跨天复用（按日切文件曾让每周流程永远全量重放 482 段，
-    # 用户实锤）。历史行仅当 sig 与当前完全一致才认——旧行无 sig 一律不认
-    # （保守：本轮跑完即带 sig，下次跨天即可秒复用）。
+    # 历史产物跨天复用（按日切文件曾让每周流程永远全量重放 482 段，用户实锤）。
+    # 历史行仅当 sig 与当前完全一致才认——旧行无 sig 一律不认。
+    # 1106：窗口原写死 7 天，隔一个月跑老产物全被丢、整批重判（用户实测）。
+    # 复用有三重签名硬校验，窗口只是筛文件不是安全边界 → 改 DAR_REUSE_DAYS
+    # 可配，<=0 表示不限。
+    try:
+        _reuse_days = int(os.getenv("DAR_REUSE_DAYS", "90"))
+    except ValueError:
+        _reuse_days = 90
     hist = []
-    _cutoff = (_dt.now() - _td(days=7)).strftime("%Y%m%d")
+    _cutoff = ("00000000" if _reuse_days <= 0
+               else (_dt.now() - _td(days=_reuse_days)).strftime("%Y%m%d"))
     for p in sorted(glob.glob(os.path.join(OUT, "retrieval_check_*.json*")),
                     reverse=True):
         if p in (path, jpath):
@@ -200,6 +210,11 @@ async def main(ptr: dict | None = None):
                 # 0929 用户定调：缺口复查与直答率彻底分开——这些段重考（看补的
                 # 知识有没有生效），但 verdict 恒为产生时的历史判定（漏斗/直答率/
                 # KB 缺口率口径不变），重考结果写 reexam_* 独立字段供复查报表。
+                if SKIP_REEXAM:
+                    _k = (str(old["cid"]), (old.get("q") or "")[:80])
+                    if not done_keys.get(_k):
+                        done_keys[_k] = old
+                    continue
                 reexam_old[(str(old["cid"]), (old.get("q") or "")[:80])] = old
                 continue
             if not done_keys.get((str(old["cid"]), (old.get("q") or "")[:80])):
@@ -223,8 +238,8 @@ async def main(ptr: dict | None = None):
     n_hit = sum(1 for r in rows if r.get("verdict") in ("yes", "partial", "no"))
     n_err = sum(1 for r in rows if r.get("verdict") == "error")
     if n_hit or n_err or reexam_old:
-        print(f"增量：{n_hit}/{len(rows)} 段复用已判结果（其中 {n_hist} 段来自 7 天内"
-              f"历史产物），另 {len(reexam_old)} 段安排缺口复查（结果进 reexam 字段，"
+        print(f"增量：{n_hit}/{len(rows)} 段复用已判结果（其中 {n_hist} 段来自历史产物），"
+              f"另 {len(reexam_old)} 段安排缺口复查（结果进 reexam 字段，"
               f"不影响直答率）")
     todo = [r for r in rows if r.get("verdict") not in ("yes", "partial", "no")
             or r.get("reexam")]

@@ -973,7 +973,7 @@ const WIZ = [
   {t:"导数据", ic:"📊", steps:["export","prepare"], pk:"export", d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
   {t:"L1 指标", ic:"🤖", steps:["l1"], pk:"l1", d:"LLM 逐会话切话题——跑完 L1 指标卡即时出（不等标注/周报）"},
   {t:"人工切题", ic:"✂️", steps:["tool0"], pk:"tool0", openAfter:true,
-   d:"生成切题工具（蓝色界面），只核对/修正话题边界不打标签；「保存到工作台」自动重算 L1"},
+   d:"可选步骤：生成切题工具（蓝色界面）只核对边界。标注轮里同样能调边界，想一遍过完可跳过本步直接跑第 4 步"},
   {t:"L3 预标", ic:"🏷️", steps:["l1r","retrieval","l3","tool"], pk:"l3",
    d:"按人工边界重算 L1 + 检索判定 + judge 预标，重生成标注工具（预标全程有效）"},
   {t:"人工标注", ic:"📝", label:true,
@@ -981,9 +981,45 @@ const WIZ = [
   {t:"吸收 → 周报", ic:"📋", steps:["l1r","retrieval","l3","report"], pk:"report",
    d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
 ];
+/* 1106 一键准备：把「导数据→切分→L1→切题工具」固化成一次点击（原六步保留，供单独重跑）。
+   不含 .wstep 类——loadProg 按 #wiz .wstep 与 WIZ 下标一一对应，多一个就错位。 */
+function wizQuick(){
+  const d = document.createElement("div");
+  d.style.cssText = "grid-column:1/-1;display:flex;align-items:center;gap:10px;flex-wrap:wrap;" +
+    "padding:10px 12px;margin-bottom:10px;border:1px dashed var(--line,#d9dee7);border-radius:10px";
+  const b = document.createElement("button");
+  b.className = "btn sm pri";
+  b.textContent = "⚡ 一键准备";
+  b.onclick = ()=>{
+    const w = window.open("", "_blank");  // 先占位：异步完成回调里 open 会被拦截
+    // 长流程（导数据+L1 要几分钟）占位页不能是 about:blank——用户会对着白屏以为出错
+    try{
+      if(w) w.document.write(
+        '<!doctype html><meta charset="utf-8"><title>准备中…</title>' +
+        '<body style="font:14px/1.9 system-ui,\'Segoe UI\',sans-serif;padding:40px;color:#333;max-width:600px">' +
+        '<h2 style="margin:0 0 14px">⏳ 正在准备数据</h2>' +
+        '<p>依次执行：导数据 → 切分 → L1 → 生成切题工具。<br>跑完本页会自动打开切题工具，不用守着。</p>' +
+        '<p style="color:#8a94a6">想看进度回工作台看实时日志；本页关掉也不影响流程——' +
+        '跑完后点工作台第 3 步「人工切题」的按钮同样能打开切题页。</p></body>');
+    }catch(_){}
+    runSteps(["export","prepare","l1","tool0"], null, rc=>{
+      if(rc === 0){
+        const url = `/label_tool?env=${activeEnv}&kind=bounds`;
+        if(w && !w.closed) w.location = url;
+        else toast("切题工具已生成——点第 3 步「人工切题」的按钮打开");
+      }else if(w && !w.closed){ w.close(); }
+    });
+  };
+  const s = document.createElement("span");
+  s.style.cssText = "font-size:12px;color:var(--muted,#7b8794)";
+  s.textContent = "导数据 → 切分 → L1 → 生成切题工具，一条龙；完成后自动打开切题页（下面六步仍可单独重跑）";
+  d.append(b, s);
+  return d;
+}
 function renderWiz(){
   const w = $("#wiz");
   w.innerHTML = "";
+  w.appendChild(wizQuick());
   WIZ.forEach((st, i)=>{
     const d = document.createElement("div");
     d.className = "wstep";

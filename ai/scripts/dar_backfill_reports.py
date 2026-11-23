@@ -27,7 +27,7 @@ def main():
     args = ap.parse_args()
     os.environ["DAR_ENV"] = args.env
 
-    base, user, pwd = _push_env()   # shell 环境变量优先，其次 ai/.env
+    base, user, pwd = _push_env(args.env)   # shell 环境变量优先，其次 ai/.env；base 按 env 选站
     if not (base and user and pwd):
         sys.exit("请先配 DAR_PUSH_BASE / DAR_PUSH_USER / DAR_PUSH_PASS")
 
@@ -49,7 +49,14 @@ def main():
         # 补到历史期数上会张冠李戴。老周报 json 里没有就现算一份。
         if f == files[-1] and not rep.get("workbench"):
             rep["workbench"] = _workbench_snapshot(args.env)
-        body = json.dumps({"week_date": week, "env": args.env, "payload": rep}).encode()
+        # 1106：与 dar_weekly._push_report 一致——只推后台展示需要的摘要，
+        # 完整周报 88KB 会撑爆数据库 TEXT 字段（生产实锤 1406 Data too long）
+        slim = {k: rep.get(k) for k in (
+            "date", "dar_rates", "dar_rates_same_base", "kb_gap", "wow",
+            "this_week", "manual_progress", "workbench")
+            if rep.get(k) is not None}
+        body = json.dumps({"week_date": week, "env": args.env, "payload": slim},
+                          ensure_ascii=False).encode()
         req = urllib.request.Request(f"{base}/api/admin/dashboard/dar-reports", body,
                                      {"Content-Type": "application/json",
                                       "Authorization": f"Bearer {tok}"})
