@@ -40,8 +40,10 @@ LLM_TIMEOUT = 120
 # LLM 净耗时累加（多次调用/重试合并），供报告尾部耗时明细使用
 _LLM_SECONDS = 0.0
 # 推理模型的 reasoning_content 同样计入 max_tokens，budget 给足，
-# 否则 content 会被截成空（finish_reason=length），表现为「调用成功但无输出」
-MAX_TOKENS = 16000
+# 否则 content 会被截成空（finish_reason=length），表现为「调用成功但无输出」。
+# 普通 chat 模型输出上限通常 8192，请求 16000 会被 400 拒绝（非 transient，
+# 双通道同挂即「未完成」）——按是否启用 reasoning 自适应。
+MAX_TOKENS = 16000 if os.environ.get("AI_REVIEW_REASONING_EFFORT") else 8192
 
 
 # ---------------------------------------------------------------- diff 构造
