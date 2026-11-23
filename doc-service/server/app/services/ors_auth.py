@@ -10,10 +10,15 @@ from __future__ import annotations
   但允许**提权**：历史 role 是只读（guest）而摇人吧侧已授予 ``frontend:kb:write`` 时，
   升级为 engineer 并把 ``product_all`` 授权从 read 提升到 write
   （否则「先登录、后加权限码」的用户会永远停在 guest——线上踩过）；
+  授予 ``frontend:kb:admin``（超级管理员）时升级为 admin；
 * 没有历史行 → 按摇人吧权限码映射建档：
-  - ``admin``（含 username=admin）→ role=admin，两产品 product_all + write
+  - ``admin``（含 username=admin）或 ``frontend:kb:admin`` → role=admin，两产品 product_all + write
   - ``frontend:kb:write`` / ``frontend:kb:*`` → role=engineer，两产品 product_all + write
   - 其他已登录用户 → role=guest，两产品 product_all + read（只读）
+
+注意：智库规则是「非 admin 只能编辑**自己创建的**需求」
+（policy.engine.can_edit_requirement），所以超管若只拿到写权限码会被映射成 engineer，
+仍然改不了别人创建的需求——必须靠 ``frontend:kb:admin`` 映射为 admin。
 """
 
 import logging
@@ -32,6 +37,7 @@ log = logging.getLogger("topo.ors_auth")
 PRODUCTS = ("usp", "ors")
 _VERIFY_TIMEOUT = 5.0
 KB_WRITE_PERMISSION = "frontend:kb:write"
+KB_ADMIN_PERMISSION = "frontend:kb:admin"
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,10 @@ def is_ors_admin(permissions: tuple[str, ...]) -> bool:
 
 def has_kb_write(permissions: tuple[str, ...]) -> bool:
     return _perm_matches_any(permissions, KB_WRITE_PERMISSION)
+
+
+def has_kb_admin(permissions: tuple[str, ...]) -> bool:
+    return _perm_matches_any(permissions, KB_ADMIN_PERMISSION)
 
 
 def verify_ors_token(token: str) -> OrsUser | None:
@@ -102,7 +112,7 @@ def verify_ors_token(token: str) -> OrsUser | None:
 
 
 def role_for(permissions: tuple[str, ...]) -> str:
-    if is_ors_admin(permissions):
+    if is_ors_admin(permissions) or has_kb_admin(permissions):
         return "admin"
     if has_kb_write(permissions):
         return "engineer"
@@ -136,18 +146,24 @@ def _set_product_perm(db: Session, username: str, product: str, perm: str) -> No
 
 
 def _upgrade_readonly(db: Session, row: User, user: OrsUser) -> None:
-    """只读账号在获得写权限码后提权。
+    """权限码提升带来的提权（只升不降，保住 A 方案的老用户无感）。
 
-    A 方案要求老用户不被降级，因此只在「历史是只读、目标可写」时动：
-    已有可写角色（engineer/supervisor/admin）一律原样保留。
+    两种情形：
+    1. 历史是只读（guest）而摇人吧侧已授予写权限码 → 升级为 engineer；
+    2. 摇人吧侧授予了 ``frontend:kb:admin``（超级管理员）→ 升级为 admin，
+       否则超管在智库仍是 engineer，改不了别人创建的需求（线上踩过）。
+
+    其余情况一律原样保留，不降级、不改写历史角色。
     """
-    if row.role != "guest":
-        return
     target = role_for(user.permissions)
-    if target == "guest":
+    if row.role == "guest" and target != "guest":
+        new_role = target
+    elif target == "admin" and row.role != "admin":
+        new_role = "admin"
+    else:
         return
-    log.info("upgrade readonly user %s: guest -> %s", row.username, target)
-    row.role = target
+    log.info("upgrade user %s: %s -> %s", row.username, row.role, new_role)
+    row.role = new_role
     for product in PRODUCTS:
         _set_product_perm(db, row.username, product, "write")
 
