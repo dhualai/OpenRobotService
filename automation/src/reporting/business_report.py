@@ -15,11 +15,19 @@ import datetime
 import re
 
 if __package__:
+    from .business_scenarios import (
+        EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIOS, SCENARIO_LABEL, SOURCE_LABELS,
+        describe_actual,
+    )
     from .report_data import (
         STATUS_CN, case_duration_ms, count_statuses, describe_counts, load_results,
         read_object, report_overview,
     )
 else:
+    from business_scenarios import (
+        EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIOS, SCENARIO_LABEL, SOURCE_LABELS,
+        describe_actual,
+    )
     from report_data import (
         STATUS_CN, case_duration_ms, count_statuses, describe_counts, load_results,
         read_object, report_overview,
@@ -110,9 +118,14 @@ def translate_step(raw):
 def load_att(root, step):
     """读取步骤附件：{'Request': text, 'Response': text, '断言信息': text}"""
     out = {}
-    for a in step.get('attachments') or []:
+    attachments = step.get('attachments')
+    if not isinstance(attachments, list):
+        return out
+    for a in attachments:
+        if not isinstance(a, dict):
+            continue
         src, name = a.get('source'), a.get('name')
-        if not src or not name:
+        if not isinstance(src, str) or not src or pathlib.Path(src).name != src or not name:
             continue
         p = root / src
         if p.exists():
@@ -141,24 +154,38 @@ def extract_steps(root, steps, depth=0):
     return out
 
 
-def collect(root=DEFAULT_RESULTS):
+def result_labels(result):
+    labels = result.get('labels')
+    if not isinstance(labels, list):
+        return {}
+    return {
+        item['name']: item['value'] for item in labels if isinstance(item, dict)
+        and isinstance(item.get('name'), str) and isinstance(item.get('value'), str)
+    }
+
+
+def case_anchor(result):
+    uid = result.get('uuid')
+    return f'case-{uid}' if isinstance(uid, str) and re.fullmatch(r'[a-fA-F0-9-]+', uid) else ''
+
+
+def collect(root=DEFAULT_RESULTS, *, results=None):
     scenes = collections.defaultdict(lambda: collections.defaultdict(list))
-    for d in load_results(root):
-        raw_labels = d.get('labels')
-        labels = {}
-        if isinstance(raw_labels, list):
-            labels = {
-                x['name']: x['value'] for x in raw_labels if isinstance(x, dict)
-                and isinstance(x.get('name'), str) and isinstance(x.get('value'), str)
-            }
-        feat = labels.get('feature') or '未分类'
+    for d in load_results(root) if results is None else results:
+        labels = result_labels(d)
+        source = d['source']
+        if source in OBSERVATION_SOURCES:
+            feat = source
+        else:
+            feat = labels.get('feature') or source or '来源未标注'
         story = labels.get('story') or '未标注场景'
         details = d.get('statusDetails')
         details = details if isinstance(details, dict) else {}
         scenes[feat][story].append({
             'title': d['name'],
             'status': d['status'],
-            'source': d['source'],
+            'source': source,
+            'anchor': case_anchor(d),
             'steps': extract_steps(d['directory'], d.get('steps')),
             'message': str(details.get('message') or '').strip(),
             'duration': case_duration_ms(d),
@@ -169,6 +196,101 @@ def collect(root=DEFAULT_RESULTS):
 def esc(x):
     return (str(x).replace('&', '&amp;').replace('<', '&lt;')
             .replace('>', '&gt;').replace('"', '&quot;'))
+
+
+def _business_evidence(result, scenario_id):
+    found = {}
+    nodes = [result]
+    while nodes:
+        node = nodes.pop()
+        attachments = node.get('attachments')
+        if isinstance(attachments, list):
+            for attachment in attachments:
+                if not isinstance(attachment, dict) or attachment.get('name') != EVIDENCE_ATTACHMENT:
+                    continue
+                source = attachment.get('source')
+                if not isinstance(source, str) or not source or pathlib.Path(source).name != source:
+                    continue
+                evidence = read_object(result['directory'] / source)
+                step = evidence.get('step')
+                if evidence.get('scenario') == scenario_id and isinstance(step, str):
+                    found[step] = evidence
+        steps = node.get('steps')
+        if isinstance(steps, list):
+            nodes.extend(step for step in steps if isinstance(step, dict))
+    return found
+
+
+def _business_result(case, judgements):
+    if case is None:
+        return '未验证', 'neutral', '本次没有收到该测试来源的场景结果。'
+    status = case['status']
+    if status == 'skipped':
+        detail = case.get('statusDetails')
+        message = str(detail.get('message') or '') if isinstance(detail, dict) else ''
+        if 'XFAIL' in message:
+            return '未验证', 'neutral', '预期失败，计入跳过。'
+        if 'USE_MOCK=0 required' in message:
+            return '未验证', 'neutral', '本次没有启用真实后端验证。'
+        return '未验证', 'neutral', '本次用例已跳过。'
+    if status in ('failed', 'broken') or (status == 'passed' and False in judgements):
+        return '失败', 'failure', '请查看实际结果和技术详情。'
+    if status != 'passed' or None in judgements:
+        return '未验证', 'neutral', '步骤证据不完整。'
+    label = '模拟通过' if case['source'] == SOURCE_LABELS['quality-api'] else '通过'
+    return label, 'success', ''
+
+
+def render_business_scenarios(results):
+    cases = collections.defaultdict(list)
+    for result in results:
+        scenario_id = result_labels(result).get(SCENARIO_LABEL)
+        if scenario_id in SCENARIOS:
+            cases[scenario_id].append(result)
+
+    priority = {'failed': 0, 'broken': 1, 'passed': 2, 'skipped': 3, 'unknown': 4}
+    parts = ['<section class="business-list"><h3>业务场景一览</h3>']
+    for scenario_id, scenario in SCENARIOS.items():
+        # A Mock run can collect a real-only case and skip it. Use the designated evidence source.
+        candidates = [case for case in cases[scenario_id] if case['source'] == scenario.source]
+        case = min(candidates, key=lambda record: priority[record['status']], default=None)
+        evidence = _business_evidence(case, scenario_id) if case else {}
+        observations = [
+            (step, *describe_actual(step, evidence.get(step_id, {})))
+            for step_id, step in scenario.steps.items()
+        ]
+        verdict, colour, reason = _business_result(case, [match for _, _, match in observations])
+        parts.append(
+            f'<details class="business-scenario" id="scenario-{scenario_id}">'
+            f'<summary><span class="module-name">{esc(scenario.module)}</span>'
+            f'<strong>{esc(scenario.title)}</strong>'
+            f'<span class="business-status {colour}">{verdict}</span>'
+            f'<span class="source">{esc(scenario.source)}{"（计划）" if case is None else ""}</span>'
+            '</summary><div class="business-body">'
+        )
+        if reason:
+            parts.append(f'<p class="meta">{esc(reason)}</p>')
+        parts.append(
+            '<table><thead><tr><th>角色</th><th>动作</th><th>预期结果</th>'
+            '<th>实际结果</th></tr></thead><tbody>'
+        )
+        for step, actual, match in observations:
+            colour = 'failure' if match is False and verdict == '失败' else ''
+            parts.append(
+                f'<tr><td>{esc(step.role)}</td><td>{esc(step.action)}</td>'
+                f'<td>{esc(step.expected)}</td><td class="{colour}">{esc(actual)}</td></tr>'
+            )
+        parts.append('</tbody></table>')
+        anchor = case_anchor(case) if case else ''
+        if anchor:
+            parts.append(
+                f'<p><a href="#{anchor}" '
+                'onclick="document.getElementById(this.hash.slice(1)).open = true">'
+                '查看技术详情</a></p>'
+            )
+        parts.append('</div></details>')
+    parts.append('</section>')
+    return '\n'.join(parts)
 
 
 def clip(text, limit=1800):
@@ -200,7 +322,8 @@ def main(argv=None):
     root = pathlib.Path(args.results)
     out_path = pathlib.Path(args.out)
 
-    scenes = collect(root)
+    results = load_results(root)
+    scenes = collect(root, results=results)
     all_scenes = [s for m in scenes.values() for v in m.values() for s in v]
     grand = len(all_scenes)
     bad = [s for s in all_scenes if s['status'] in ('failed', 'broken')]
@@ -219,6 +342,17 @@ def main(argv=None):
          'border:1px solid #d1d9e0;background:#fff;overflow-wrap:anywhere}',
          '.report-overview h2{margin:0 0 6px;font-size:17px}.report-overview p{margin:6px 0;font-size:14px}',
          '.gate-suites{margin-top:14px}.source{font-size:11px;color:#57606a}',
+         '.business-list{margin:22px 0}.business-list h3{font-size:17px}',
+         '.business-scenario{background:#fff;border:1px solid #d1d9e0;border-radius:9px;margin:8px 0}',
+         '.business-scenario>summary{cursor:pointer;padding:12px;display:grid;',
+         'grid-template-columns:6em minmax(13em,1fr) 5em 12em;gap:10px;align-items:center}',
+         '.business-scenario>summary .module-name::before{content:"▸";margin-right:5px}',
+         '.business-scenario[open]>summary .module-name::before{content:"▾"}',
+         '.business-scenario>summary .source{font-size:12px}',
+         '.business-body{padding:0 12px 10px}.module-name,.neutral{color:#57606a}',
+         '.business-status{font-weight:600}.success{color:#146c2e}.failure{color:#b3261e}',
+         '@media(max-width:700px){.business-scenario>summary{grid-template-columns:5em 1fr}',
+         '.business-body{overflow-x:auto}}',
          '.toc{background:#fff;border:1px solid #e3e8ee;border-radius:10px;padding:6px 20px;font-size:13px;margin:22px 0}',
          '.toc a{display:inline-block;margin:8px 18px 8px 0;color:#0969da;text-decoration:none}',
          'table{border-collapse:collapse;width:100%;background:#fff;border-radius:10px;overflow:hidden;font-size:14px}',
@@ -268,6 +402,7 @@ def main(argv=None):
     p.append('<h1>自动化测试结论报告</h1>')
     p.append(f'<div class="sub">生成时间 {now} · {len(feats)} 个业务模块</div>')
     p.append(report_overview(count_statuses(all_scenes), context, expect_gate=args.expect_gate))
+    p.append(render_business_scenarios(results))
 
     p.append('<div class="toc" style="background:#eef6ff;border-color:#c9defa">'
              '<b>怎么看到「步骤、入参、出参、断言」</b>：'
@@ -275,7 +410,7 @@ def main(argv=None):
              '每个步骤再点「查看入参 / 出参 / 断言」可看到该次请求的完整报文与断言结果。'
              '</div>')
 
-    p.append('<h3 style="font-size:15px;margin:0 0 10px">各模块情况</h3>')
+    p.append('<h3 style="font-size:15px;margin:0 0 10px">技术明细 · 各模块情况</h3>')
     p.append('<table><thead><tr><th style="width:26%">业务模块</th><th style="width:11%">场景数</th>'
              '<th style="width:32%">结果分布</th><th>测了什么</th></tr></thead><tbody>')
     for feat in feats:
@@ -309,7 +444,8 @@ def main(argv=None):
                 auto_open = is_bad or first_of_module
                 first_of_module = False
                 source = f'<span class="source">{esc(sc["source"])}</span>' if sc["source"] else ''
-                p.append(f'<details class="scene"{" open" if auto_open else ""}>')
+                anchor = f' id="{sc["anchor"]}"' if sc["anchor"] else ''
+                p.append(f'<details class="scene"{anchor}{" open" if auto_open else ""}>')
                 p.append(f'<summary><span class="sname">{esc(sc["title"])}</span>'
                          f'{source}'
                          f'<span class="tag {tag_cls}">{STATUS_CN.get(sc["status"], sc["status"])}</span></summary>')
@@ -334,11 +470,16 @@ def main(argv=None):
                         p.append('</li>')
                     p.append('</ul>')
                 else:
-                    p.append('<div class="meta">（该场景未记录分步信息）</div>')
+                    p.append('<div class="meta">仅记录用例执行结果</div>')
                 if sc['message']:
-                    p.append(f'<div class="err">{esc(sc["message"])}</div>')
+                    if is_bad:
+                        p.append(f'<div class="err">{esc(sc["message"])}</div>')
+                    elif sc['status'] == 'skipped':
+                        label = '预期失败（计入跳过）' if 'XFAIL' in sc['message'] else '跳过原因'
+                        p.append(f'<div class="meta">{label} · {esc(sc["message"])}</div>')
                 if sc["duration"] is not None:
-                    p.append(f'<div class="meta">耗时 {sc["duration"]} 毫秒</div>')
+                    elapsed = f'{sc["duration"]} 毫秒' if sc["duration"] else '不足 1 毫秒'
+                    p.append(f'<div class="meta">耗时 {elapsed}</div>')
                 p.append('</div></details>')
             p.append('</div>')
         p.append('</section>')

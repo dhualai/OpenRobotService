@@ -146,8 +146,8 @@ def test_gate_with_pytest_artifacts_and_observed_scenario(tmp_path, monkeypatch)
         html = output.read_text(encoding="utf-8")
         for expected in (
             "Test Gate 判定：通过", "结果总数 13", "通过 9", "跳过 4",
-            "Observed work order scenario", "真实工单场景（观察）",
-            "Mock API", "真实后端 Smoke", commit, "/actions/runs/12345678", "执行尝试 2",
+            "Observed work order scenario", "真实工单流程（观察项）",
+            "模拟接口测试", "真实后端冒烟检查", commit, "/actions/runs/12345678", "执行尝试 2",
         ):
             assert expected in html
 

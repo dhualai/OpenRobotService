@@ -12,8 +12,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 if __package__:
+    from .business_scenarios import SOURCE_LABELS
     from .report_data import SOURCES_FILE, run_metadata
 else:
+    from business_scenarios import SOURCE_LABELS
     from report_data import SOURCES_FILE, run_metadata
 
 
@@ -189,10 +191,12 @@ def build_summary(
 def merge_allure_artifacts(artifacts_dir: Path, destination: Path) -> None:
     """Flatten per-job and per-suite artifacts for Allure and the HTML reports."""
     destination.mkdir(parents=True, exist_ok=True)
-    suite_labels = {(suite.allure_artifact, suite.key): suite.label for suite in REQUIRED_SUITES}
+    suite_labels = {
+        (suite.allure_artifact, suite.key): SOURCE_LABELS[suite.key] for suite in REQUIRED_SUITES
+    }
     observer_labels = {
-        "allure-results-db": "DB 集成（观察）",
-        "allure-results-scenarios": "真实工单场景（观察）",
+        "allure-results-db": SOURCE_LABELS["db"],
+        "allure-results-scenarios": SOURCE_LABELS["scenarios"],
     }
     sources = {}
     for path in sorted(artifacts_dir.glob("allure-results-*/**/*")):

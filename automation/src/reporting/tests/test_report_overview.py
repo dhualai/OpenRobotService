@@ -104,9 +104,9 @@ def test_merged_metadata_uses_the_run_and_preserves_suite_sources(tmp_path, monk
     assert "Git.Branch=test" in environment
     assert f"Git.Commit={'f' * 40}" in environment
     assert "Actions.Attempt=2" in environment
-    assert "Mock API" in environment and "真实后端 Smoke" in environment
+    assert "模拟接口测试" in environment and "真实后端冒烟检查" in environment
     assert "Backend.Mode=" not in environment
     assert report_data.read_object(merged / "executor.json")["url"].endswith("/actions/runs/123")
     assert {case["name"]: case["source"] for case in report_data.load_results(merged)} == {
-        "mock-case": "Mock API", "real-case": "真实后端 Smoke",
+        "mock-case": "模拟接口测试", "real-case": "真实后端冒烟检查",
     }
