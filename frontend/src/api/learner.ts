@@ -19,6 +19,7 @@ export interface LearnerArticleSummary {
   updated_at: string;
   total_count: number;
   answered_count: number;
+  correct_count: number;   // 最后一次结果中答对的不同题目数
   completed: boolean;
 }
 
@@ -78,9 +79,42 @@ export interface LearnerProgress {
 
 export interface PageResult<Item> { items: Item[]; total: number }
 
+// 错题本
+export type WrongbookStatus = 'wrong' | 'mastered' | 'skipped';
+
+export interface WrongbookItem {
+  id: string;
+  article_id: string;
+  article_title: string;
+  article_category: string;
+  article_version: number;
+  question_id: string;
+  question: {
+    question_type: string;
+    stem: string;
+    options: { key: string; text: string }[];
+  };
+  status: WrongbookStatus;
+  wrong_count: number;
+  mastered_at: string | null;
+  last_wrong_at: string;
+}
+
+export interface WrongbookSummary {
+  total: number;
+  wrong: number;
+  mastered: number;
+  skipped: number;
+}
+
+export interface WrongbookResult {
+  items: WrongbookItem[];
+  summary: WrongbookSummary;
+}
+
 // ============ 接口函数 ============
 
-/** 获取启用中的文章列表（带每篇的答题进度） */
+/** 获取启用中的文章列表（带每篇的答题进度 + 答对数，均取最后一次结果） */
 export const listLearnerArticles = (keyword = '', page = 1) =>
   request<PageResult<LearnerArticleSummary>>(
     `/articles?${new URLSearchParams({ keyword, page: String(page) })}`
@@ -90,10 +124,23 @@ export const listLearnerArticles = (keyword = '', page = 1) =>
 export const getLearnerArticle = (id: string) =>
   request<LearnerArticleDetail>(`/articles/${id}`);
 
-/** 提交答案，返回对错 + 解析 + 正确答案 */
+/** 提交答案，返回对错 + 解析 + 正确答案。每次都写入新记录，进度取最后一次。 */
 export const submitLearnerAnswer = (articleId: string, questionId: string, answers: string[]) =>
   write<SubmitAnswerResult>(`/articles/${articleId}/answer`, { question_id: questionId, answers });
 
 /** 获取当前用户整体学习进度统计 */
 export const getLearnerProgress = () =>
   request<LearnerProgress>(`/progress`);
+
+/** 获取错题本列表 */
+export const listWrongbook = (status: WrongbookStatus | '' = '') => {
+  const params = status ? `?status=${status}` : '';
+  return request<WrongbookResult>(`/wrongbook${params}`);
+};
+
+/** 手动标记错题状态 */
+export const setWrongbookStatus = (wrongbookId: string, status: WrongbookStatus) =>
+  write<{ id: string; status: WrongbookStatus }>(
+    `/wrongbook/${wrongbookId}/status`,
+    { status },
+  );

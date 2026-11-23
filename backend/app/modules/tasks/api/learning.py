@@ -54,3 +54,26 @@ async def progress(
     actor=Depends(get_current_active_user_from_token),
 ):
     return await service.get_progress(db, actor)
+
+
+@router.get("/wrongbook")
+async def wrongbook(
+    status: str = Query("", max_length=16),
+    db=Depends(get_async_db),
+    actor=Depends(get_current_active_user_from_token),
+):
+    return await service.list_wrongbook(db, actor, status)
+
+
+@router.post("/wrongbook/{wrongbook_id}/status")
+async def wrongbook_set_status(
+    wrongbook_id: str,
+    body: "WrongbookStatusBody",
+    db=Depends(get_async_db),
+    actor=Depends(get_current_active_user_from_token),
+):
+    return await service.set_wrongbook_status(db, actor, wrongbook_id, body.status)
+
+
+class WrongbookStatusBody(BaseModel):
+    status: Literal["wrong", "mastered", "skipped"]

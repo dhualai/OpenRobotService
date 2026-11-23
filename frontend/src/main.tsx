@@ -118,6 +118,7 @@ const TaskDetailPage = lazyImport(() => import('@/pages/tasks/TaskDetailPage'));
 const OperationLogsPage = lazyImport(() => import('@/pages/tasks/OperationLogsPage'));
 const LearnerHome = lazyImport(() => import('@/pages/learning/LearnerHome'));
 const LearnerStudy = lazyImport(() => import('@/pages/learning/LearnerStudy'));
+const LearnerWrongbook = lazyImport(() => import('@/pages/learning/LearnerWrongbook'));
 // 我的历史奖励（微信商家转账 · 提现入口）：直挂根路由，保留底部 Tab 可点
 const MyRewards = lazyImport(() => import('@/pages/rewards/MyRewards'));
 // 奖励管理（微信商家转账 · 管理端）：后台管理 → 其他 → 奖励管理
@@ -217,6 +218,7 @@ const router = createBrowserRouter([
           { path: 'tasks', element: <TasksView /> },
           // 学习中心（做题人端）—— 放 tasks/:id 之前避免被 :id 贪婪匹配
           { path: 'tasks/learning', element: <LearnerHome /> },
+          { path: 'tasks/learning/wrongbook', element: <LearnerWrongbook /> },
           { path: 'tasks/learning/:articleId', element: <LearnerStudy /> },
           { path: 'tasks/:id', element: <TaskDetailPage /> },
           { path: 'tasks/:id/operations', element: <OperationLogsPage /> },

@@ -783,6 +783,248 @@
   background: #d4380d;
 }
 
+/* 错题本快捷入口 */
+.learner-wrongbook-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+.learner-wrongbook-entry:active {
+  transform: scale(0.995);
+  background: rgba(255, 255, 255, 0.32);
+}
+.learner-wrongbook-entry__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: #fff;
+}
+.learner-wrongbook-entry__text {
+  flex: 1;
+  min-width: 0;
+  color: #fff;
+}
+.learner-wrongbook-entry__text strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.learner-wrongbook-entry__text span {
+  display: block;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  line-height: 1.4;
+}
+.learner-wrongbook-entry__arrow {
+  color: rgba(255, 255, 255, 0.8);
+  flex-shrink: 0;
+}
+
+/* ========== 错题本 LearnerWrongbook ========== */
+.learner-wrongbook-hero {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px;
+  margin-top: 8px;
+}
+.learner-wrongbook-stat {
+  flex: 1;
+  background: #fff;
+  border: 1px solid rgba(232, 234, 234, 0.7);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.learner-wrongbook-stat svg {
+  color: #2d7a5f;
+  flex-shrink: 0;
+}
+.learner-wrongbook-stat__num {
+  font-size: 18px;
+  font-weight: 700;
+  color: #2b2b2b;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.learner-wrongbook-stat__label {
+  font-size: 11px;
+  color: #8a9a9a;
+  margin-top: 2px;
+}
+
+.learner-wrongbook-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 16px 10px;
+  overflow-x: auto;
+}
+.learner-wrongbook-filter {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border: 1px solid #e4eaea;
+  background: #fff;
+  border-radius: 16px;
+  font-size: 13px;
+  color: #6a7a7a;
+  cursor: pointer;
+  font-family: inherit;
+}
+.learner-wrongbook-filter.is-active {
+  background: #2d7a5f;
+  border-color: #2d7a5f;
+  color: #fff;
+}
+
+.learner-wrongbook-card {
+  background: #fff;
+  border: 1px solid rgba(232, 234, 234, 0.7);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.learner-wrongbook-card--wrong { border-left: 3px solid #d4380d; }
+.learner-wrongbook-card--mastered { border-left: 3px solid #2d7a5f; }
+.learner-wrongbook-card--skipped { border-left: 3px solid #c0c8c8; }
+
+.learner-wrongbook-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 10px;
+}
+.learner-wrongbook-card__chapter {
+  font-size: 12px;
+  color: #8a9a9a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.learner-wrongbook-card__status {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.learner-wrongbook-card__status--wrong { background: rgba(212, 56, 13, 0.1); color: #d4380d; }
+.learner-wrongbook-card__status--mastered { background: rgba(45, 122, 95, 0.1); color: #2d7a5f; }
+.learner-wrongbook-card__status--skipped { background: rgba(160, 160, 160, 0.15); color: #7a8a8a; }
+
+.learner-wrongbook-card__type {
+  display: inline-block;
+  font-size: 11px;
+  color: #d48806;
+  background: rgba(255, 165, 0, 0.12);
+  padding: 2px 8px;
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.learner-wrongbook-card__stem {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2b2b2b;
+  line-height: 1.55;
+  margin-bottom: 8px;
+}
+.learner-wrongbook-card__options {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 10px;
+  background: #fafbfb;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.learner-wrongbook-card__options li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #6a7a7a;
+  line-height: 1.5;
+  border-bottom: 1px solid #eef2f2;
+}
+.learner-wrongbook-card__options li:last-child { border-bottom: none; }
+.learner-wrongbook-card__opt-key {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  background: #eef2f2;
+  border-radius: 4px;
+  color: #6a7a7a;
+}
+
+.learner-wrongbook-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid rgba(232, 234, 234, 0.5);
+  padding-top: 10px;
+}
+.learner-wrongbook-card__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #2d7a5f;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  font-family: inherit;
+}
+.learner-wrongbook-card__actions {
+  display: inline-flex;
+  gap: 6px;
+}
+.learner-wrongbook-card__actions button {
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  border: 1px solid transparent;
+  font-weight: 500;
+}
+.learner-wrongbook-card__actions .is-master {
+  background: rgba(45, 122, 95, 0.1);
+  color: #2d7a5f;
+  border-color: rgba(45, 122, 95, 0.25);
+}
+.learner-wrongbook-card__actions .is-skip {
+  background: #f2f5f5;
+  color: #7a8a8a;
+}
+.learner-wrongbook-card__actions.is-reset {
+  background: #f2f5f5;
+  color: #7a8a8a;
+}
+
 /* 响应式：移动端左右栏变上下栏 */
 @media (max-width: 768px) {
   .learner-study__body {

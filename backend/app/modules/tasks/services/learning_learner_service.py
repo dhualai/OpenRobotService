@@ -7,11 +7,11 @@
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.models.learning import (
-    LearningAnswer, LearningArticle, LearningArticleVersion, LearningQuestion,
+    LearningAnswer, LearningArticle, LearningArticleVersion, LearningQuestion, LearningWrongBook,
 )
 from app.modules.admin.services.learning_content import reading_article
 from app.modules.admin.services.learning_service import preview_answer as shared_preview_answer
@@ -63,23 +63,43 @@ async def list_articles(db, actor, keyword: str = "", page: int = 1):
     )).all()
     total_q_map = {row.article_id: row.cnt for row in total_q}
 
-    # 当前用户的已答题数
-    answered = (await db.execute(
+    # 当前用户的"最后一次"答题结果——每道题只取最近一条记录
+    # 用 row_number() 窗口函数取 per (question_id, article_version) 的最后一条
+    last_ans_cte = (
         select(
             LearningAnswer.article_id,
             LearningAnswer.article_version,
-            func.count().label("cnt"),
+            LearningAnswer.question_id,
+            LearningAnswer.is_correct,
+            func.row_number().over(
+                partition_by=[LearningAnswer.question_id, LearningAnswer.article_version],
+                order_by=LearningAnswer.created_at.desc(),
+            ).label("rn"),
         ).where(
             LearningAnswer.user_id == user_id_val,
             LearningAnswer.article_id.in_(article_ids),
-        ).group_by(LearningAnswer.article_id, LearningAnswer.article_version)
+        ).cte("last_answers")
+    )
+
+    # 每篇文章的"最后一次答过的不同题目数"和"最后一次答对的不同题目数"
+    last_agg = (await db.execute(
+        select(
+            last_ans_cte.c.article_id,
+            last_ans_cte.c.article_version,
+            func.count().label("answered_cnt"),
+            func.sum(case((last_ans_cte.c.is_correct.is_(True), 1), else_=0)).label("correct_cnt"),
+        ).where(last_ans_cte.c.rn == 1)
+        .group_by(last_ans_cte.c.article_id, last_ans_cte.c.article_version)
     )).all()
-    answered_map: dict[tuple, int] = {(row.article_id, row.article_version): row.cnt for row in answered}
+    last_map: dict[tuple, tuple] = {
+        (row.article_id, row.article_version): (row.answered_cnt, row.correct_cnt or 0)
+        for row in last_agg
+    }
 
     items = []
     for art in articles:
         t = total_q_map.get(art.id, 0)
-        a = answered_map.get((art.id, art.active_version), 0)
+        a, c = last_map.get((art.id, art.active_version), (0, 0))
         items.append({
             "id": art.id,
             "title": art.title,
@@ -89,6 +109,7 @@ async def list_articles(db, actor, keyword: str = "", page: int = 1):
             "updated_at": art.updated_at.isoformat(),
             "total_count": t,
             "answered_count": a,
+            "correct_count": c,  # 最后一次结果中答对的
             "completed": t > 0 and a >= t,
         })
     return {"total": total, "items": items}
@@ -235,3 +256,91 @@ async def get_progress(db, actor):
         "answered_questions": int(answered),
         "correct_questions": int(correct),
     }
+
+
+async def list_wrongbook(db, actor, status: str = ""):
+    """获取用户错题本列表。
+
+    默认返回全部；status 可过滤：
+      - '' 空 → 全部
+      - wrong → 未掌握
+      - mastered → 已掌握
+      - skipped → 跳过
+    """
+    user_id = _actor_id(actor)
+    query = select(LearningWrongBook).where(LearningWrongBook.user_id == user_id)
+    if status.strip():
+        query = query.where(LearningWrongBook.status == status.strip())
+    query = query.order_by(
+        LearningWrongBook.status,   # 未掌握排前面
+        LearningWrongBook.last_wrong_at.desc(),
+    )
+    rows = (await db.execute(query)).scalars().all()
+
+    # 附带文章标题
+    article_ids = list({r.article_id for r in rows})
+    article_map = {}
+    if article_ids:
+        arts = (await db.execute(
+            select(LearningArticle.id, LearningArticle.title, LearningArticle.category)
+            .where(LearningArticle.id.in_(article_ids))
+        )).all()
+        article_map = {a.id: {"title": a.title, "category": a.category} for a in arts}
+
+    # 统计
+    counts = (await db.execute(
+        select(
+            LearningWrongBook.status,
+            func.count().label("cnt"),
+        ).where(LearningWrongBook.user_id == user_id)
+        .group_by(LearningWrongBook.status)
+    )).all()
+    count_map = {row.status: row.cnt for row in counts}
+
+    items = []
+    for r in rows:
+        art = article_map.get(r.article_id, {})
+        items.append({
+            "id": r.id,
+            "article_id": r.article_id,
+            "article_title": art.get("title", ""),
+            "article_category": art.get("category", ""),
+            "article_version": r.article_version,
+            "question_id": r.question_id,
+            "question": r.question_payload_snapshot,
+            "status": r.status,
+            "wrong_count": r.wrong_count,
+            "mastered_at": r.mastered_at.isoformat() if r.mastered_at else None,
+            "last_wrong_at": r.last_wrong_at.isoformat(),
+        })
+
+    return {
+        "items": items,
+        "summary": {
+            "total": sum(count_map.values()),
+            "wrong": count_map.get("wrong", 0),
+            "mastered": count_map.get("mastered", 0),
+            "skipped": count_map.get("skipped", 0),
+        },
+    }
+
+
+async def set_wrongbook_status(db, actor, wrongbook_id: str, status: str):
+    """用户手动标记错题状态：skipped / mastered / wrong。"""
+    user_id = _actor_id(actor)
+    if status not in ("wrong", "mastered", "skipped"):
+        raise HTTPException(422, "无效的错题状态")
+    row = (await db.execute(
+        select(LearningWrongBook).where(
+            LearningWrongBook.id == wrongbook_id,
+            LearningWrongBook.user_id == user_id,
+        )
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "错题记录不存在")
+    row.status = status
+    row.updated_at = utcnow()
+    if status == "mastered" and row.mastered_at is None:
+        row.mastered_at = utcnow()
+    await db.commit()
+    return {"id": row.id, "status": row.status}

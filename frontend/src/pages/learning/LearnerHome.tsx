@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast } from 'tdesign-mobile-react';
-import { BookOpen, RefreshCw, CheckCircle, ChevronRight, Trophy, Target, TrendingUp, Sparkles } from 'lucide-react';
+import { BookOpen, RefreshCw, CheckCircle, ChevronRight, Trophy, Target, TrendingUp, Sparkles, BookX } from 'lucide-react';
 import { listLearnerArticles, getLearnerProgress, type LearnerArticleSummary, type LearnerProgress } from '@/api/learner';
 import './learner.css';
 
@@ -82,6 +82,16 @@ export default function LearnerHome() {
               <div className="learner-stat__label">累计答对 {answered} 题</div>
             </div>
           </div>
+        </div>
+
+        {/* 错题本快捷入口 */}
+        <div className="learner-wrongbook-entry" onClick={() => navigate('/tasks/learning/wrongbook')}>
+          <div className="learner-wrongbook-entry__icon"><BookX size={22} /></div>
+          <div className="learner-wrongbook-entry__text">
+            <strong>错题本</strong>
+            <span>曾经答错的题目，可以重新做并标记掌握</span>
+          </div>
+          <ChevronRight size={18} className="learner-wrongbook-entry__arrow" />
         </div>
       </section>
 

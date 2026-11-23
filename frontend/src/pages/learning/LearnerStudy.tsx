@@ -209,13 +209,11 @@ export default function LearnerStudy() {
                   const isSelected = selected.includes(opt.key);
                   const correctKey = showResult && lastResult?.correct_answer.includes(opt.key);
                   const wrongKey = showResult && isSelected && !lastResult?.correct_answer.includes(opt.key);
-                  const wasCorrectBefore = isAnswered && answeredMap[question.id]?.is_correct;
                   return (
                     <button
                       key={opt.key}
-                      className={`learner-option ${isSelected ? 'is-selected' : ''} ${correctKey ? 'is-correct' : ''} ${wrongKey ? 'is-wrong' : ''} ${isAnswered ? 'is-locked' : ''}`}
+                      className={`learner-option ${isSelected ? 'is-selected' : ''} ${correctKey ? 'is-correct' : ''} ${wrongKey ? 'is-wrong' : ''}`}
                       onClick={() => toggleOption(opt.key)}
-                      disabled={isAnswered}
                     >
                       <span className="learner-option__key">{opt.key}</span>
                       <span className="learner-option__text">{opt.text}</span>
@@ -226,22 +224,19 @@ export default function LearnerStudy() {
                 })}
               </div>
 
-              {/* 提交按钮 / 已答状态 */}
-              {!isAnswered ? (
-                <button
-                  className={`learner-quiz__submit ${selected.length === 0 ? 'is-disabled' : ''}`}
-                  onClick={handleSubmit}
-                  disabled={selected.length === 0 || submitting}
-                >
-                  {submitting ? '提交中…' : '提交答案'}
-                </button>
-              ) : prevAnswered?.is_correct ? (
-                <div className="learner-quiz__feedback is-done-correct">
-                  <Check size={16} /> 已答对这道题
-                </div>
-              ) : (
-                <div className="learner-quiz__feedback is-done-wrong">
-                  <X size={16} /> 已答过（错了），继续下一题吧
+              {/* 提交按钮：每次都可以重做，后端取最后一次结果 */}
+              <button
+                className={`learner-quiz__submit ${selected.length === 0 || submitting ? 'is-disabled' : ''}`}
+                onClick={handleSubmit}
+                disabled={selected.length === 0 || submitting}
+              >
+                {submitting ? '提交中…' : (isAnswered ? '重新提交' : '提交答案')}
+              </button>
+              {isAnswered && prevAnswered && (
+                <div className={`learner-quiz__feedback ${prevAnswered.is_correct ? 'is-done-correct' : 'is-done-wrong'}`}>
+                  {prevAnswered.is_correct
+                    ? <><Check size={16} /> 上次答对了，再答一次也可以</>
+                    : <><X size={16} /> 上次答错了，试试能不能改对</>}
                 </div>
               )}
 
@@ -272,12 +267,10 @@ export default function LearnerStudy() {
             <div className="learner-quiz__empty">暂无题目</div>
           )}
 
-          {/* 下一题按钮 */}
-          {(showResult || isAnswered) && (
-            <button className="learner-quiz__next" onClick={goNext}>
-              {currentIndex < total - 1 ? <>下一题 <ChevronRight size={16} /></> : '全部答完，返回列表'}
-            </button>
-          )}
+          {/* 下一题按钮：每次答完/跳过都可以 */}
+          <button className="learner-quiz__next" onClick={goNext}>
+            {currentIndex < total - 1 ? <>下一题 <ChevronRight size={16} /></> : '完成所有题目'}
+          </button>
         </section>
       </div>
 
