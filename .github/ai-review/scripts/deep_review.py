@@ -192,10 +192,10 @@ def normalize_parsed(raw):
             norm["warnings"].append(item)
         else:
             norm["infos"].append(item)
-    risk = str(raw.get("risk_level", "")).lower()
-    if norm["blockers"] or risk in ("high", "critical"):
+    # 结论按条目计数硬推导，不信任 LLM 自报（出现过 🔴1 却自称「未发现」）
+    if norm["blockers"]:
         norm["conclusion"] = "高风险"
-    elif norm["warnings"] or risk == "medium":
+    elif norm["warnings"]:
         norm["conclusion"] = "有建议关注项"
     else:
         norm["conclusion"] = "未发现明显风险"

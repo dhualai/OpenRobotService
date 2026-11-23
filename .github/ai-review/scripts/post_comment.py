@@ -91,7 +91,8 @@ def post_review_inline(repo, pr, token, inline_path):
         comments.append({
             "path": it["path"],
             "line": it["line"],
-            "side": "SUPPORT",
+            # side 只接受 LEFT/RIGHT：RIGHT = diff 新侧（新增行）
+            "side": "RIGHT",
             "body": it["body"],
         })
     status, resp = gh_api(
