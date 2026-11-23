@@ -1,0 +1,12 @@
+{
+  "status_code": 404,
+  "url": "http://mock.local/api/admin/projects/999",
+  "reason": "Not Found",
+  "headers": {
+    "content-length": "30",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Project not found"
+  }
+}

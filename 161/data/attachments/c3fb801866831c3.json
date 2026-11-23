@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/admin/resource-manager/resources",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTU3NjAuOTQ5MTE5OCwgImlhdCI6IDE3OTU0MTIxNjAuOTQ5MTIwM30.bW9jay1zaWc"
+  }
+}
