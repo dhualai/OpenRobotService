@@ -9,6 +9,7 @@ from automation.src.assertions import assert_dict_contains_subset, assert_status
 from automation.src.assertions.report import flush_assert_attachment
 from automation.src.config.credentials import role_credentials
 from automation.src.reporting.api_step import api_step
+from automation.src.reporting.business_scenarios import SCENARIO_LABEL
 
 
 async def _auth_for_role(client, role: str) -> dict:
@@ -376,17 +377,25 @@ class TestFlow:
 
     @allure.story('全链路')
     @allure.title('全链路：提问→转工单→确认')
+    @allure.label(SCENARIO_LABEL, "incident-create")
     @pytest.mark.api
-    async def test_full_flow_ask_submit_ack(self, mock_api_client, mock_auth_header):
+    async def test_full_flow_ask_submit_ack(self, mock_api_client):
         """全链路：提问→转工单→确认"""
-        r = await _api(mock_api_client, 'post', '/api/call/qa/ask', step='Step 1: 提问',
-                       headers=mock_auth_header, json={'question': 'help'},
-                       expected_status=200, expected_fields={'success': True})
+        headers = await _auth_for_role(mock_api_client, 'customer')
+        diagnosis = await _api(mock_api_client, 'post', '/api/call/qa/ask', step='提交故障问题',
+                               headers=headers, json={'question': '设备故障，需要诊断'},
+                               expected_status=200, expected_fields={'success': True},
+                               business_evidence=('incident-create', 'ask'))
+        conversation_id = diagnosis.json()['conversation_id']
 
-        r = await _api(mock_api_client, 'post', '/api/ai/qa/submit', step='Step 2: 转工单',
-                       headers=mock_auth_header, json={'conversation_id': 1},
-                       expected_status=200, expected_fields={'status': 'created'})
+        created = await _api(mock_api_client, 'post', '/api/ai/qa/submit', step='提交转工单请求',
+                             headers=headers, json={'conversation_id': conversation_id},
+                             expected_status=200,
+                             expected_fields={'status': 'created', 'conversation_id': conversation_id},
+                             business_evidence=('incident-create', 'create'))
+        ticket_id = created.json()['ticket_id']
 
-        await _api(mock_api_client, 'post', '/api/ai/qa/ticket/ack', step='Step 3: 确认派单',
-                   headers=mock_auth_header, json={'ticket_id': 1},
-                   expected_status=200, expected_fields={'status': 'acknowledged'})
+        await _api(mock_api_client, 'post', '/api/ai/qa/ticket/ack', step='确认工单',
+                   headers=headers, json={'ticket_id': ticket_id},
+                   expected_status=200, expected_fields={'status': 'acknowledged', 'ticket_id': ticket_id},
+                   business_evidence=('incident-create', 'confirm'))
