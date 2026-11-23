@@ -8,6 +8,7 @@ import ArticleEditor from '../ArticleEditor';
 import LearningPreviewModal from '../LearningPreview';
 import QuestionList from '../QuestionList';
 import QuestionEditor from '../QuestionEditor';
+import SourceModal from '../SourceModal';
 
 vi.mock('@/api/learning', async (original) => ({
   ...await original<typeof import('@/api/learning')>(),
@@ -76,7 +77,7 @@ describe('题目生成管理页', () => {
     expect(await screen.findByRole('heading', { name: content.title })).toBeInTheDocument();
   });
 
-  it('允许仅用技术材料创建，并保留输入直到成功', async () => {
+  it('无需来源核验勾选即可仅用技术材料创建，并保留输入直到成功', async () => {
     vi.mocked(api.createLearningArticle).mockRejectedValueOnce(new Error('保存失败')).mockResolvedValueOnce(detail());
     wrap(<QuestionGeneration />);
     await screen.findByRole('heading', { name: content.title });
@@ -87,14 +88,36 @@ describe('题目生成管理页', () => {
     fireEvent.change(dialog.getByLabelText('材料名称'), { target: { value: '维护规范' } });
     fireEvent.change(dialog.getByLabelText('出处及版本'), { target: { value: '规范v1' } });
     fireEvent.change(dialog.getByLabelText('材料内容'), { target: { value: '先检查供电，再检查触点。' } });
-    fireEvent.click(dialog.getByRole('checkbox', { name: '已核对材料使用授权和敏感信息；生成结果仍须人工确认' }));
+    expect(dialog.queryByRole('checkbox')).not.toBeInTheDocument();
     fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
     expect(await screen.findByText('保存失败')).toBeInTheDocument();
     expect(dialog.getByLabelText('知识主题')).toHaveValue('供电排查');
     fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
     await waitFor(() => expect(api.createLearningArticle).toHaveBeenCalledTimes(2));
-    expect(api.createLearningArticle).toHaveBeenLastCalledWith('供电排查', { task_ids: [], materials: [{ name: '维护规范', provenance: '规范v1', text: '先检查供电，再检查触点。' }], verified: true });
+    expect(api.createLearningArticle).toHaveBeenLastCalledWith('供电排查', { task_ids: [], materials: [{ name: '维护规范', provenance: '规范v1', text: '先检查供电，再检查触点。' }] });
     expect(await screen.findByText('知识点与题目维护')).toBeInTheDocument();
+  });
+
+  it('调整来源无需核验勾选，保留已有材料并可直接保存', async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render(<SourceModal open replacing initialTitle={content.title} initialSources={detail().sources} onClose={vi.fn()} onSubmit={submit} />);
+    const dialog = within(screen.getByRole('dialog', { name: '调整知识点来源' }));
+    expect(dialog.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(dialog.getByLabelText('材料名称')).toHaveValue('维护规范');
+    fireEvent.change(dialog.getByLabelText('出处及版本'), { target: { value: '规范v2' } });
+    fireEvent.click(dialog.getByRole('button', { name: '保存来源' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(content.title, {
+      task_ids: [], materials: [{ name: '维护规范', provenance: '规范v2', text: '先检查供电，再检查触点。' }],
+    }));
+  });
+
+  it('移除来源核验后仍要求至少一份来源材料', async () => {
+    const submit = vi.fn();
+    render(<SourceModal open initialTitle={content.title} onClose={vi.fn()} onSubmit={submit} />);
+    const dialog = within(screen.getByRole('dialog', { name: '新建知识点 · 选择来源材料' }));
+    fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
+    expect(await dialog.findByText('至少选择一个工单或填写一份技术材料')).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
   });
 });
 
