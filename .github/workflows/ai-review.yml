@@ -51,10 +51,13 @@ jobs:
       - name: Resolve target
         id: tgt
         env:
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          SHA: ${{ github.sha }}
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            pr=$(printf '%s' "$COMMIT_MSG" | grep -oE 'ai-review PR#[0-9]+' | grep -oE '[0-9]+' | head -1)
+            # 空提交（tree 未变）的 push 事件 head_commit 为 null，改用
+            # github.sha（恒有值）主动查 commit message
+            msg=$(gh api "repos/$REPO/git/commits/$SHA" --jq '.message')
+            pr=$(printf '%s' "$msg" | grep -oE 'ai-review PR#[0-9]+' | grep -oE '[0-9]+' | head -1)
             if [ -z "$pr" ]; then
               echo "::warning::哨兵 commit 未包含 'ai-review PR#N'，跳过"
               echo "mode=skip" >> "$GITHUB_OUTPUT"
