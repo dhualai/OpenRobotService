@@ -1,7 +1,7 @@
 name: AI Review
 
 # AI Review（ORS-1149）：PR 合并前的非阻塞智能检视，双层设计：
-#   1) 规则快筛（自动）：pull_request 打开/更新时跑确定性规则（路径+高危写法正则），
+#   1) 规则快筛（自动）：PR 打开/更新时跑确定性规则（路径+高危写法正则），
 #      零 LLM 成本；命中 blocker 才落评论 + 推企微开源小组群，否则保持沉默；
 #   2) 深度检视（人工触发）：给 PR 加 `ai-review` 标签触发 LLM 全量检视，跑完自动摘标签。
 #      （主仓默认分支是 main 且被冻结，workflow_dispatch 按钮无法生效，故用 label 方案；
@@ -9,12 +9,15 @@ name: AI Review
 #
 # 设计红线：
 #   - 全流程不阻塞合并与部署（本 workflow 失败不影响任何 required check）；
-#   - fork PR 跳过（pull_request 事件中 fork 拿不到 secrets，LLM 调用必失败）；
-#   - 检视规则从 PR base 分支 checkout 读取，PR 自身无法篡改检视规则；
+#   - 用 pull_request_target 触发以支持 fork PR（usagiiiiiiii 等协作者走 fork，
+#     pull_request 事件 fork 拿不到 secrets 且 token 只读，首版直接跳过是误判）。
+#     安全前提：PR 代码零检出、零执行——diff 一律走 API 内存处理，脚本与
+#     规则全部从 base 检出，secrets 不接触任何 PR 可控内容（GitHub 官方
+#     推荐的 pull_request_target 安全姿势）；
 #   - LLM 密钥只走 secrets，日志不回显；deep_review 失败也发「未完成」报告。
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
@@ -34,11 +37,10 @@ permissions:
 jobs:
   quick-screen:
     name: Quick screen (rules)
-    # labeled 事件走深度检视；fork PR 跳过（拿不到 secrets，且不可信）
+    # labeled 事件走深度检视
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action != 'labeled' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event_name == 'pull_request_target' &&
+      github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
@@ -111,13 +113,12 @@ jobs:
   deep-review:
     name: Deep review (LLM)
     # 手动入口：加 ai-review 标签（常用）；或 workflow_dispatch（文件进默认分支后可用）
-    # fork PR 跳过（同仓校验）：dispatch 无 fork 上下文不受影响
+    # fork PR 同样支持（pull_request_target 下 secrets 可用，脚本不来自 PR）
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request_target' &&
        github.event.action == 'labeled' &&
-       github.event.label.name == 'ai-review' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+       github.event.label.name == 'ai-review')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -148,9 +149,11 @@ jobs:
             echo "sha=$sha" >> "$GITHUB_OUTPUT"
           fi
 
-      # 双 checkout 分离「规则源」与「脚本源」：
-      #   base-rules/ ← base 分支：规则与知识库，PR 改 docs/ai-review/ 无法篡改本次检视规则；
-      #   pr-code/    ← 默认（pull_request=merge ref；dispatch=所选分支）：待检脚本本体。
+      # 双 checkout 分离「规则源」与「回退脚本源」：
+      #   base-rules/ ← base 分支：规则、知识库与全部执行脚本（PR 不可篡改）；
+      #   pr-code/    ← pull_request_target 下默认检出 base 分支本身（不是 PR
+      #                 代码！PR 代码零检出，diff 全走 API），仅作 bootstrap
+      #                 窗口期的回退脚本源；dispatch 时为所选分支。
       # 注意不能只 checkout base——脚本尚未进 test 时 base 上没有，job 会找不到文件
       #（PR #492 首跑实测）。
       - uses: actions/checkout@v4
