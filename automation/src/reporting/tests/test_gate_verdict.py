@@ -208,6 +208,10 @@ def test_required_suite_artifacts_are_connected_to_enforced_verdict():
     evaluate = next(step for step in report["steps"] if step.get("id") == "gate-verdict")
     assert evaluate["if"] == "always()"
     assert evaluate["continue-on-error"] is True
+    assert "--report-context automation/output/test-gate-report.json" in evaluate["run"]
+    for step_id in ("standalone-html", "business-html"):
+        renderer = next(step for step in report["steps"] if step.get("id") == step_id)
+        assert "--context automation/output/test-gate-report.json --expect-gate" in renderer["run"]
     enforce = report["steps"][-1]
     assert enforce["if"] == "always()"
     assert enforce["env"]["VERDICT_OUTCOME"] == "${{ steps.gate-verdict.outcome }}"
