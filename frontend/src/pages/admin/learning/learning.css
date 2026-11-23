@@ -96,6 +96,18 @@
 .learning-material { padding: 16px; margin: 14px 0; border: 1px solid var(--border); border-radius: 10px; }
 .learning-source-pager, .learning-material-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
 .learning-source-pager > span { font-size: 12px; color: var(--muted-foreground); }
+.learning-source-modal .ant-modal-body { max-height: 70vh; overflow-y: auto; }
+.learning-source-option strong, .learning-source-option span { display: block; white-space: normal; overflow-wrap: anywhere; }
+.learning-source-option span { color: var(--muted-foreground); font-size: 12px; margin-top: 4px; line-height: 1.5; }
+.learning-source-section { margin: 18px 0; }
+.learning-source-section h3 { font-size: 14px; margin: 0 0 8px; }
+.learning-source-hint { color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.learning-source-card { padding: 12px; margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.learning-source-card.is-anchor { border-color: var(--blue-4); background: var(--primary-soft); }
+.learning-source-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; font-size: 13px; }
+.learning-source-card-heading strong { overflow-wrap: anywhere; }
+.learning-source-card-heading > span { flex-shrink: 0; color: var(--muted-foreground); font-size: 12px; }
+.learning-source-card > p { font-size: 13px; line-height: 1.7; margin: 8px 0; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
   .learning-page { padding: 12px 14px 24px; }
   .learning-page-top > span { display: none; }

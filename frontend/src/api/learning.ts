@@ -28,7 +28,8 @@ export interface ArticleContent {
   warnings: string[];
 }
 
-export interface SourceTask { id: string; title: string; status: 'closed' | 'archiving' | 'archived' }
+export interface SourceTask { id: string; title: string; status: 'closed' | 'archiving' | 'archived'; summary: string }
+export interface SourceRecommendations { source: SourceTask; items: SourceTask[]; matching_method: 'text' }
 export interface Material { name: string; text: string; provenance: string }
 export interface SourceInput { task_ids: (number | string)[]; materials: Material[] }
 export interface SourceSnapshot {
@@ -119,6 +120,7 @@ const query = (keyword: string, state: string, page: number) => new URLSearchPar
 
 export const listSourceTasks = (keyword = '', page = 1) =>
   request<PageResult<SourceTask>>(`/sources?${new URLSearchParams({ keyword, page: String(page) })}`);
+export const getSimilarSourceTasks = (id: string) => request<SourceRecommendations>(`/sources/${encodeURIComponent(id)}/similar`);
 export const listLearningArticles = (keyword = '', state = '', page = 1) =>
   request<PageResult<ArticleSummary>>(`/articles?${query(keyword, state, page)}`);
 export const getLearningArticle = (id: string) => request<ArticleDetail>(`/articles/${id}`);

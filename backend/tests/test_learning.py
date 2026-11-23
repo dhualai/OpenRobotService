@@ -112,6 +112,81 @@ async def test_rejects_unclosed_tasks_and_anonymous_review_bypass(learning_db):
 
 
 @pytest.mark.asyncio
+async def test_source_previews_are_brief_and_redacted(learning_db):
+    task, _ = seed(learning_db)
+    task.title = "秘密项目充电桩故障"
+    task.description = "秘密项目 提单甲 alice-account 13800138000 secret@example.com token=private-value\n" + "检查充电桩供电。" * 100
+    learning_db.session.commit()
+    result = await service.source_listing(learning_db, administrator())
+    preview = result["items"][0]
+    assert preview["id"] == "1"
+    assert "充电桩" in preview["summary"]
+    assert len(preview["summary"]) <= 241
+    assert "\n" not in preview["summary"]
+    assert preview["summary"].endswith("…")
+    for sensitive in ("秘密项目", "提单甲", "alice-account", "13800138000", "secret@example.com", "private-value"):
+        assert sensitive not in json.dumps(preview, ensure_ascii=False)
+    assert set(preview) == {"id", "title", "status", "summary"}
+
+
+@pytest.mark.asyncio
+async def test_similar_sources_rank_content_and_filter_ineligible_tasks(learning_db):
+    for task_id in range(1, 8):
+        task, report = seed(learning_db, task_id)
+        task.title = "充电桩无法启动"
+        task.description = "充电桩断电导致供电中断。秘密项目 secret@example.com"
+        if task_id == 3:
+            task.title = "充电桩接触不良"
+            task.description = "充电桩供电时触点接触不良"
+        elif task_id == 4:
+            task.title = "交换机端口丢包"
+            task.description = "交换机网络通信中断"
+        elif task_id == 5:
+            task.status = TaskStatus.RESOLVED
+        elif task_id == 6:
+            report.submit_status = "submitted"
+        elif task_id == 7:
+            task.status = TaskStatus.CLOSED
+            task.title, task.description = "充电桩供电中断", "充电桩断电"
+            learning_db.session.delete(report)
+    learning_db.session.commit()
+    result = await service.similar_source_tasks(learning_db, administrator(), 1)
+    ids = [item["id"] for item in result["items"]]
+    assert ids[0] == "2"
+    assert set(ids) == {"2", "3", "7"}
+    assert result["source"]["id"] == "1"
+    assert result["matching_method"] == "text"
+    assert all(item["summary"] for item in result["items"])
+    assert "秘密项目" not in json.dumps(result, ensure_ascii=False)
+    assert "secret@example.com" not in json.dumps(result, ensure_ascii=False)
+    assert len((await service.similar_source_tasks(learning_db, administrator(), 1, limit=1))["items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_similar_sources_enforce_anchor_access_and_handle_empty_text(learning_db):
+    task, report = seed(learning_db)
+    with pytest.raises(HTTPException) as error:
+        await service.similar_source_tasks(learning_db, actor("voter"), 1)
+    assert error.value.status_code == 403
+    task.status = TaskStatus.IN_PROGRESS
+    learning_db.session.commit()
+    with pytest.raises(HTTPException) as error:
+        await service.similar_source_tasks(learning_db, administrator(), 1)
+    assert error.value.status_code == 422
+    task.status, report.submit_status = TaskStatus.ARCHIVING, "submitted"
+    learning_db.session.commit()
+    with pytest.raises(HTTPException) as error:
+        await service.similar_source_tasks(learning_db, administrator(), 1)
+    assert error.value.status_code == 403
+    task.status, report.submit_status = TaskStatus.ARCHIVED, "approved"
+    task.title, task.description = "", ""
+    learning_db.session.commit()
+    result = await service.similar_source_tasks(learning_db, administrator(), 1)
+    assert result["items"] == []
+    assert result["source"]["summary"] == ""
+
+
+@pytest.mark.asyncio
 async def test_multiple_tasks_and_manual_only_sources_are_supported(learning_db):
     seed(learning_db, 1)
     seed(learning_db, 2)
@@ -378,6 +453,29 @@ def test_api_denies_unprivileged_direct_requests(learning_db):
     with TestClient(app) as client:
         assert client.get("/learning/articles").status_code == 403
         assert client.get("/learning/sources").status_code == 403
+        assert client.get("/learning/sources/1/similar").status_code == 403
+    app.dependency_overrides.clear()
+
+
+def test_source_recommendation_http_contract_and_limits(learning_db):
+    task_id = 9007199254740993
+    seed(learning_db, task_id)
+    seed(learning_db, 2)
+    app = FastAPI()
+    app.include_router(router, prefix="/api/admin")
+    app.dependency_overrides[get_current_active_user_from_token] = administrator
+    app.dependency_overrides[admin_actor] = administrator
+    async def dependency():
+        yield learning_db
+    app.dependency_overrides[get_async_db] = dependency
+    with TestClient(app) as client:
+        response = client.get(f"/api/admin/learning/sources/{task_id}/similar")
+        assert response.status_code == 200
+        assert response.json()["source"]["id"] == str(task_id)
+        assert response.json()["items"][0]["id"] == "2"
+        assert "summary" in response.json()["items"][0]
+        assert client.get(f"/api/admin/learning/sources/{task_id}/similar?limit=11").status_code == 422
+        assert client.get(f"/api/admin/learning/sources/{task_id}/similar?limit=0").status_code == 422
     app.dependency_overrides.clear()
 
 

@@ -12,7 +12,7 @@ import SourceModal from '../SourceModal';
 
 vi.mock('@/api/learning', async (original) => ({
   ...await original<typeof import('@/api/learning')>(),
-  listLearningArticles: vi.fn(), listLearningQuestions: vi.fn(), listSourceTasks: vi.fn(),
+  listLearningArticles: vi.fn(), listLearningQuestions: vi.fn(), listSourceTasks: vi.fn(), getSimilarSourceTasks: vi.fn(),
   getLearningArticle: vi.fn(), createLearningArticle: vi.fn(), saveLearningArticle: vi.fn(),
   generateLearning: vi.fn(), getLearningGeneration: vi.fn(), adoptLearningArticle: vi.fn(),
   confirmLearningArticle: vi.fn(), getLearningPreview: vi.fn(), answerLearningPreview: vi.fn(),
@@ -35,6 +35,9 @@ const detail = (overrides: Partial<api.ArticleDetail> = {}): api.ArticleDetail =
   active_version: 0, enabled: false, revision: 1, created_at: '2026-11-20T01:00:00', versions: [], questions: [], generations: [], audits: [], ...overrides,
 });
 const summary: api.ArticleSummary = { id: 'article-1', title: content.title, category: content.category, has_draft: true, active_version: 0, enabled: false, question_count: 0, updated_at: '2026-11-20T01:00:00' };
+const sourceTask: api.SourceTask = { id: '1', title: '充电故障', status: 'archived', summary: '充电桩断电，检查供电后仍无法启动。' };
+const relatedTask: api.SourceTask = { id: '2', title: '充电接触不良', status: 'closed', summary: '充电触点松动，设备无法正常充电。' };
+const taskSnapshots = (tasks: api.SourceTask[]): api.SourceSnapshot[] => tasks.map((task) => ({ type: 'work_order', id: task.id, marker: `S${task.id}`, label: task.title, content: task.summary }));
 const wrap = (element: React.ReactNode) => render(<MemoryRouter>{element}</MemoryRouter>);
 const getComputedStyle = window.getComputedStyle;
 
@@ -47,6 +50,7 @@ beforeEach(() => {
   vi.mocked(api.listLearningArticles).mockResolvedValue({ items: [summary], total: 1 });
   vi.mocked(api.listLearningQuestions).mockResolvedValue({ items: [question], total: 1 });
   vi.mocked(api.listSourceTasks).mockResolvedValue({ items: [], total: 0 });
+  vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [], matching_method: 'text' });
   vi.mocked(api.getLearningArticle).mockResolvedValue(detail());
 });
 
@@ -118,6 +122,75 @@ describe('题目生成管理页', () => {
     fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
     expect(await dialog.findByText('至少选择一个工单或填写一份技术材料')).toBeInTheDocument();
     expect(submit).not.toHaveBeenCalled();
+  });
+});
+
+describe('来源工单摘要与相似推荐', () => {
+  it('选中后展示摘要并查询相似工单，仅手动加入的推荐项进入来源', async () => {
+    vi.mocked(api.listSourceTasks).mockResolvedValue({ items: [sourceTask], total: 1 });
+    vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [sourceTask, relatedTask], matching_method: 'text' });
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render(<SourceModal open initialTitle={content.title} onClose={vi.fn()} onSubmit={submit} />);
+    const dialog = within(screen.getByRole('dialog'));
+    expect(api.getSimilarSourceTasks).not.toHaveBeenCalled();
+    fireEvent.mouseDown(dialog.getByRole('combobox', { name: '来源工单' }));
+    fireEvent.click(await screen.findByText('1 · 充电故障（已归档）'));
+    const selected = within(await dialog.findByRole('article', { name: '已选工单 1' }));
+    expect(selected.getByText(sourceTask.summary)).toBeInTheDocument();
+    const recommendation = within(await dialog.findByRole('article', { name: '相似工单 2' }));
+    expect(recommendation.getByText(relatedTask.summary)).toBeInTheDocument();
+    expect(dialog.queryByRole('article', { name: '相似工单 1' })).not.toBeInTheDocument();
+    expect(dialog.queryByRole('article', { name: '已选工单 2' })).not.toBeInTheDocument();
+    fireEvent.click(recommendation.getByRole('button', { name: '加入来源工单 2' }));
+    expect(await dialog.findByRole('article', { name: '已选工单 2' })).toBeInTheDocument();
+    expect(dialog.queryByRole('article', { name: '相似工单 2' })).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(content.title, { task_ids: ['1', '2'], materials: [] }));
+  });
+
+  it('切换参照工单后忽略旧请求，移除全部工单后清空推荐', async () => {
+    const third = { ...sourceTask, id: '3', title: '新的相似工单' };
+    const stale = { ...sourceTask, id: '4', title: '旧请求推荐' };
+    let resolveOld!: (result: api.SourceRecommendations) => void;
+    const oldRequest = new Promise<api.SourceRecommendations>((resolve) => { resolveOld = resolve; });
+    vi.mocked(api.getSimilarSourceTasks).mockImplementation((id) => id === '2' ? oldRequest : Promise.resolve({ source: sourceTask, items: [third], matching_method: 'text' }));
+    render(<SourceModal open initialTitle={content.title} initialSources={taskSnapshots([sourceTask, relatedTask])} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    const dialog = within(screen.getByRole('dialog'));
+    await waitFor(() => expect(api.getSimilarSourceTasks).toHaveBeenCalledWith('2'));
+    fireEvent.click(dialog.getByRole('button', { name: '查找工单 1 的相似工单' }));
+    expect(await dialog.findByRole('article', { name: '相似工单 3' })).toBeInTheDocument();
+    await act(async () => { resolveOld({ source: relatedTask, items: [stale], matching_method: 'text' }); });
+    expect(dialog.queryByText('旧请求推荐')).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 2' }));
+    fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 1' }));
+    await waitFor(() => expect(dialog.queryByRole('heading', { name: '相似工单推荐' })).not.toBeInTheDocument());
+    expect(dialog.queryByRole('article', { name: '相似工单 3' })).not.toBeInTheDocument();
+  });
+
+  it('推荐失败可重试，不阻止用已选来源创建草稿', async () => {
+    vi.mocked(api.getSimilarSourceTasks).mockRejectedValueOnce(new Error('推荐暂不可用')).mockResolvedValueOnce({ source: sourceTask, items: [relatedTask], matching_method: 'text' });
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render(<SourceModal open initialTitle={content.title} initialSources={taskSnapshots([sourceTask])} onClose={vi.fn()} onSubmit={submit} />);
+    const dialog = within(screen.getByRole('dialog'));
+    expect(await dialog.findByText('推荐暂不可用')).toBeInTheDocument();
+    expect(dialog.getByText(sourceTask.summary)).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(content.title, { task_ids: ['1'], materials: [] }));
+    fireEvent.click(dialog.getByRole('button', { name: '重试相似工单' }));
+    expect(await dialog.findByRole('article', { name: '相似工单 2' })).toBeInTheDocument();
+  });
+
+  it('来源达到十份时禁用推荐加入，无匹配时显示空状态', async () => {
+    const tasks = Array.from({ length: 9 }, (_, index) => ({ ...sourceTask, id: String(index + 1) }));
+    vi.mocked(api.getSimilarSourceTasks).mockResolvedValueOnce({ source: tasks[8], items: [{ ...relatedTask, id: '11' }], matching_method: 'text' })
+      .mockResolvedValue({ source: tasks[7], items: [], matching_method: 'text' });
+    render(<SourceModal open initialTitle={content.title} initialSources={[...taskSnapshots(tasks), detail().sources[0]]} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    const dialog = within(screen.getByRole('dialog'));
+    expect(await dialog.findByRole('button', { name: '加入来源工单 11' })).toBeDisabled();
+    fireEvent.click(dialog.getByRole('button', { name: '移除' }));
+    expect(dialog.getByRole('button', { name: '加入来源工单 11' })).toBeEnabled();
+    fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 9' }));
+    expect(await dialog.findByText('暂无相似的可用工单，可继续搜索或添加技术材料。')).toBeInTheDocument();
   });
 });
 
