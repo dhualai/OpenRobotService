@@ -42,6 +42,17 @@ jobs:
     concurrency:
       group: ai-review-${{ github.event.pull_request.number || github.sha }}
       cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+      AI_REVIEW_BASE_URL: ${{ secrets.AI_REVIEW_BASE_URL }}
+      AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
+      # 推理模型建议配 low：压 reasoning token 消耗，避免 content 被 max_tokens 截空
+      AI_REVIEW_REASONING_EFFORT: ${{ vars.AI_REVIEW_REASONING_EFFORT }}
+      AI_REVIEW_FALLBACK_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK_API_KEY }}
+      AI_REVIEW_FALLBACK_BASE_URL: ${{ secrets.AI_REVIEW_FALLBACK_BASE_URL }}
+      AI_REVIEW_FALLBACK_MODEL: ${{ vars.AI_REVIEW_FALLBACK_MODEL }}
     steps:
       # 解析检视对象：
       #   pull_request → PR 号与 base 由事件给出；快筛自动跑，
