@@ -16,7 +16,7 @@ import sys
 
 from ai_review_common import (
     fetch_pr_files, guess_line_number, is_lock_file, split_code_and_docs,
-    strip_patch_noise,
+    strip_patch_noise, utc_now_str,
 )
 
 EXIT_OK = 0
@@ -168,7 +168,7 @@ def render_quick_markdown(result, pr_number, sha):
     lines = [
         "<!-- ors-ai-review:quick -->",
         f"**AI 规则快筛** · PR #{pr_number}" + (f" · {sha[:8]}" if sha else "")
-        + f" · {__import__('ai_review_common', fromlist=['utc_now_str']).utc_now_str()}",
+        + f" · {utc_now_str()}",
         "",
     ]
     if result["skipped"]:

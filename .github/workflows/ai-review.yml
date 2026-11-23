@@ -92,11 +92,13 @@ jobs:
   deep-review:
     name: Deep review (LLM)
     # 手动入口：加 ai-review 标签（常用）；或 workflow_dispatch（文件进默认分支后可用）
+    # fork PR 跳过（同仓校验）：dispatch 无 fork 上下文不受影响
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
        github.event.action == 'labeled' &&
-       github.event.label.name == 'ai-review')
+       github.event.label.name == 'ai-review' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

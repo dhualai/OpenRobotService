@@ -52,6 +52,9 @@ def gh_api(repo, path, token, method="GET", body=None, accept=None):
     except urllib.error.HTTPError as exc:
         raw = exc.read(4000).decode("utf-8", "replace")
         status = exc.code
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        # 网络抖动不抛异常：返回合成状态码，由调用方按非 200 降级
+        return 599, str(exc)
     if accept and "diff" in accept:
         return status, raw
     try:

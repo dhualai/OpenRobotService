@@ -18,13 +18,6 @@ from ai_review_common import (
 )
 
 
-def build_default_content():
-    """未提供 --file 时，根据 --json 快筛结果生成默认文案。"""
-    import json
-    parser = argparse.ArgumentParser()
-    return parser
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", required=True, help="企微 markdown 文案文件")

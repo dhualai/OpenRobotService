@@ -359,7 +359,7 @@ def main():
         try:
             parsed = normalize_parsed(parse_llm_json(content))
             break
-        except ValueError as exc:
+        except Exception as exc:   # 结构异常（TypeError 等）同样降级，保证必出报告
             last_raw = content
             print(f"LLM 输出解析失败（第 {attempt} 次）：{exc}", file=sys.stderr)
             model_label = f"输出异常（{model_label}）"
