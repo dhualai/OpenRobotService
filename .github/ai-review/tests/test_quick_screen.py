@@ -97,5 +97,5 @@ def test_render_markdown_has_marker_and_sections():
                 f("backend/app/y.py", "+a = datetime.now()\n")])
     md = render_quick_markdown(r, 431, "abcdef123456")
     assert "<!-- ors-ai-review:quick -->" in md
-    assert "**高危**" in md and "**建议关注**" in md
+    assert "🔴 必须采纳（高危）" in md and "🟡 选择采纳（建议关注）" in md
     assert "不阻塞合并" in md

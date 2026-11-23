@@ -27,8 +27,9 @@ import urllib.error
 import urllib.request
 
 from ai_review_common import (
-    fetch_pr_files, fetch_pr_meta, guess_line_number, is_lock_file,
-    split_code_and_docs, strip_patch_noise, utc_now_str,
+    fetch_pr_files, fetch_pr_meta, finding_fingerprint, guess_line_number,
+    is_lock_file, parse_new_side_lines, split_code_and_docs,
+    strip_patch_noise, utc_now_str,
 )
 from quick_screen import screen
 
@@ -203,54 +204,88 @@ def normalize_parsed(raw):
 
 # ---------------------------------------------------------------- 报告渲染
 
-SECTIONS = (("blockers", "高危"), ("warnings", "建议关注"), ("infos", "提示"))
+# 三档分级（用户定稿语义）：红=必须采纳，黄=选择采纳，绿=可优化不必采纳
+SECTIONS = (
+    ("blockers", "🔴 必须采纳（高危）", "CAUTION"),
+    ("warnings", "🟡 选择采纳（建议关注）", "WARNING"),
+    ("infos", "🟢 可优化（不必采纳）", "TIP"),
+)
+LEVEL_EMOJI = {"高风险": "🔴", "有建议关注项": "🟡", "未发现明显风险": "🟢"}
 
 
-def render_report(parsed, quick_result, pr_number, sha, model_label):
+def _clip(text, limit):
+    text = (text or "").strip().replace("\n", " ")
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def render_report(parsed, quick_result, pr_number, sha, model_label,
+                  inline_paths=None):
+    """渲染精简版报告：三色 alert 分组 + 每条一行 + 建议折叠。
+
+    inline_paths：已发行内评论的意见指纹集合，从总结里剔除避免重复。
+    """
+    fps = []
+    if parsed:
+        for key, _t, _a in SECTIONS:
+            for it in parsed.get(key) or []:
+                fps.append(finding_fingerprint(
+                    it.get("location", it.get("path", "")), it.get("issue")))
     head = [
         "<!-- ors-ai-review:report -->",
+        "<!-- ors-ai-review:fp=" + ",".join(fps) + " -->",
         f"**AI 检视报告** · PR #{pr_number}" + (f" · {sha[:8]}" if sha else "")
         + f" · {utc_now_str()}",
         "",
     ]
     if parsed is None:
         return "\n".join(head + [
-            "**结论：本次深度检视未能完成**",
-            f"原因：{model_label}。请人工把关本次变更，或稍后重新触发"
-            "（移除后重新添加 ai-review 标签）。",
+            "⚠️ **本次深度检视未能完成**：原因 " + str(model_label)
+            + "。请人工把关，或重新添加 ai-review 标签重试。",
             "",
             "---",
-            "本报告不阻塞合并 · 由人工复核决定",
+            "不阻塞合并 · 人工复核决定",
         ])
 
-    lines = list(head)
     conclusion = parsed.get("conclusion") or "未发现明显风险"
-    n_block = len(parsed.get("blockers") or [])
-    lines.append(f"**结论：{conclusion}**（AI 检出高危 {n_block} 项、"
-                 f"建议关注 {len(parsed.get('warnings') or [])} 项）")
+    emoji = LEVEL_EMOJI.get(conclusion, "🟢")
+    lines = list(head)
+    lines.append(
+        f"{emoji} **结论：{conclusion}** —— "
+        f"🔴{len(parsed.get('blockers') or [])} · "
+        f"🟡{len(parsed.get('warnings') or [])} · "
+        f"🟢{len(parsed.get('infos') or [])}")
     lines.append("")
-    for key, title in SECTIONS:
-        items = parsed.get(key) or []
+
+    for key, title, alert in SECTIONS:
+        items = [it for it in (parsed.get(key) or [])
+                 if finding_fingerprint(
+                     it.get("location", it.get("path", "")),
+                     it.get("issue")) not in (inline_paths or set())]
         if not items:
             continue
-        lines.append(f"**{title}**")
-        lines.append("")
+        lines.append(f"> [!{alert}]")
+        lines.append(f"> **{title}**")
         for it in items:
-            loc = f"`{it.get('location', it.get('path', '未知位置'))}`"
-            issue = (it.get("issue") or "").strip()
-            sug = (it.get("suggestion") or "").strip()
-            body = issue or sug
-            lines.append(f"- {loc}：{body}" if issue else f"- {loc}")
+            loc = it.get("location") or it.get("path") or "未知位置"
+            issue = _clip(it.get("issue"), 90)
+            sug = _clip(it.get("suggestion"), 120)
+            line = f"> - `{loc}`：{issue}" if issue else f"> - `{loc}`"
             if sug and sug != issue:
-                lines.append(f"  - 建议：{sug}")
+                # alert(blockquote) 内的 details 必须行行带 > 前缀且不留空行，
+                # 否则空行截断引用块导致渲染破碎
+                line += (f"\n>   <details><summary>💡 建议</summary>\n"
+                         f">   {sug}\n"
+                         f">   </details>")
+            lines.append(line)
         lines.append("")
+
     if quick_result and (quick_result["blockers"] or quick_result["warnings"]):
-        lines.append("**规则快筛命中（确定性）**")
-        lines.append("")
+        lines.append("> [!CAUTION]")
+        lines.append("> **🔴 规则快筛命中（确定性）**")
         for it in quick_result["blockers"] + quick_result["warnings"]:
-            lines.append(f"- `{it['path']}`：{it['label']}——{it['reason']}")
+            lines.append(f"> - `{it['path']}`：{it['label']}")
         lines.append("")
-    lines += ["---", f"本报告不阻塞合并 · 由人工复核决定 · 检视模型 {model_label}"]
+    lines += ["---", f"不阻塞合并 · 人工复核决定 · {model_label}"]
     return "\n".join(lines)
 
 
@@ -291,6 +326,8 @@ def main():
     parser.add_argument("--out", default=None, help="报告 markdown 输出路径")
     parser.add_argument("--out-wecom", default=None,
                         help="存在高危项时企微文案输出路径（无高危不写文件）")
+    parser.add_argument("--out-inline", default=None,
+                        help="行内评论数据 JSON 输出路径（可落 diff 行的意见）")
     parser.add_argument("--diff-file", help="本地回放模式：从文件读 unified diff")
     parser.add_argument("--title", default="")
     parser.add_argument("--body", default="")
@@ -368,8 +405,33 @@ def main():
         with open(args.out + ".raw", "w", encoding="utf-8") as fh:
             fh.write(last_raw)
 
+    # 行内评论落点：blocker/warning 且行号落在该文件 diff 新侧行集合内才可钉行；
+    # 命中的从总结评论剔除，其余保留（绿色提示不进 Files changed，避免打扰）
+    inline_paths = set()
+    inline_items = []
+    if files and parsed:
+        side = {f.get("filename", ""): parse_new_side_lines(f.get("patch"))
+                for f in files}
+        for key in ("blockers", "warnings"):
+            for it in list(parsed.get(key) or []):
+                loc = it.get("location", "") or ""
+                path, _, ln = loc.rpartition(":")
+                if path in side and ln.isdigit() and int(ln) in side[path]:
+                    inline_paths.add(finding_fingerprint(loc, it.get("issue")))
+                    inline_items.append({
+                        "path": path, "line": int(ln), "level": key,
+                        "body": ("🔴" if key == "blockers" else "🟡")
+                                + f" **AI 检视**：{_clip(it.get('issue'), 90)}"
+                                + (f"\n\n> 💡 {_clip(it.get('suggestion'), 120)}"
+                                   if it.get("suggestion") else ""),
+                    })
+    if args.out_inline:
+        with open(args.out_inline, "w", encoding="utf-8") as fh:
+            json.dump(inline_items, fh, ensure_ascii=False, indent=2)
+        print(f"行内评论落点：{len(inline_items)} 条（其余保留在总结评论）")
+
     report = render_report(parsed, quick_result, pr or "本地回放", args.sha,
-                           model_label or "LLM 不可用")
+                           model_label or "LLM 不可用", inline_paths)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(report)

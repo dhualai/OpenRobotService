@@ -180,10 +180,11 @@ def render_quick_markdown(result, pr_number, sha):
                   "确定性规则仅覆盖路径与典型高危写法，建议合并前手动触发一次"
                   "「ai-review」标签进行 AI 深度检视。"]
         return "\n".join(lines)
-    lines.append(f"**结论：命中 {len(result['blockers'])} 项高危、"
-                 f"{len(result['warnings'])} 项建议关注（规则快筛）**")
+    lines.append(f"🔴 **规则快筛命中 {len(result['blockers'])} 项高危、"
+                 f"🟡 {len(result['warnings'])} 项建议关注**")
     lines.append("")
-    for title, key in (("高危", "blockers"), ("建议关注", "warnings")):
+    for title, key in (("🔴 必须采纳（高危）", "blockers"),
+                       ("🟡 选择采纳（建议关注）", "warnings")):
         items = result[key]
         if not items:
             continue

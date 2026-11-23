@@ -146,14 +146,16 @@ jobs:
           code=0
           python3 pr-code/.github/ai-review/scripts/deep_review.py \
             --rules-root base-rules/docs/ai-review \
-            --out report.md --out-wecom wecom.md || code=$?
+            --out report.md --out-inline inline.json \
+            --out-wecom wecom.md || code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Post report comment
         continue-on-error: true
         run: |
           python3 pr-code/.github/ai-review/scripts/post_comment.py \
-            --marker "ors-ai-review:report" --file report.md
+            --marker "ors-ai-review:report" --file report.md \
+            --inline inline.json
 
       - name: Notify wecom (blocker only)
         if: ${{ hashFiles('wecom.md') != '' }}

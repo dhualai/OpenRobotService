@@ -152,6 +152,23 @@ def wecom_markdown(webhook, content):
         return False, str(exc)
 
 
+def parse_new_side_lines(patch):
+    """解析 patch 新侧（+ 行与上下文行）的行号集合，供行内评论落点校验。"""
+    lines = set()
+    for m in re.finditer(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", patch or ""):
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) is not None else 1
+        lines.update(range(start, start + max(count, 1)))
+    return lines
+
+
+def finding_fingerprint(location, issue):
+    """意见指纹：用于两次检视间的增量对比（新增/消除）。"""
+    import hashlib
+    raw = f"{location}|{(issue or '')[:40]}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:8]
+
+
 def strip_patch_noise(patch):
     """取 patch 中的新增行（去掉行首 + 与行号头），供内容规则匹配。"""
     added = []

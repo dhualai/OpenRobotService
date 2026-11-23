@@ -52,9 +52,9 @@ def test_render_report_full():
     }
     quick = screen([f("backend/app/y.py", "+a = datetime.now()\n")])
     md = render_report(parsed, quick, 431, "abcdef123456", "deepseek-v4-flash")
-    assert "**结论：高风险**" in md
-    assert "`a.py:52`" in md and "建议：" in md
-    assert "**规则快筛命中（确定性）**" in md
+    assert "🔴 **结论：高风险**" in md
+    assert "`a.py:52`" in md and "<details><summary>💡 建议</summary>" in md
+    assert "🔴 规则快筛命中（确定性）" in md
     assert "deepseek-v4-flash" in md
 
 
