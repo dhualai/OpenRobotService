@@ -134,14 +134,14 @@ def test_scenario_artifact_matches_allure_download_and_keeps_results_flat():
         step for step in scenario_steps
         if step.get("uses", "").startswith("actions/upload-artifact@")
     ]
-    [allure_upload] = [
-        step for step in uploads if fnmatchcase(step["with"]["name"], download["pattern"])
-    ]
-    assert allure_upload["if"] == "always()"
-    # A directory-only upload puts its files at the artifact root, where Allure expects them.
-    allure_path = allure_upload["with"]["path"]
-    assert allure_path == "automation/output/allure-results-scenarios"
-    assert any(f"--alluredir={allure_path}" in step.get("run", "") for step in scenario_steps)
+    for name in ("allure-results-scenarios", "allure-results-service-account-rules"):
+        [allure_upload] = [step for step in uploads if step["with"]["name"] == name]
+        assert fnmatchcase(name, download["pattern"])
+        assert allure_upload["if"] == "always()"
+        # A directory-only upload puts its files at the artifact root.
+        allure_path = allure_upload["with"]["path"]
+        assert allure_path == f"automation/output/{name}"
+        assert any(f"--alluredir={allure_path}" in step.get("run", "") for step in scenario_steps)
     assert any(
         step["with"]["path"] == "automation/output/safe-junit/junit-scenarios.xml"
         for step in uploads

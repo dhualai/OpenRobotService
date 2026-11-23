@@ -418,6 +418,22 @@ jobs:
         run: |
           pytest automation/tests/real/test_ticket_scenarios.py -q --alluredir=automation/output/allure-results-scenarios --junitxml=automation/output/junit-scenarios.xml
 
+      - name: Run service account business rules
+        if: ${{ !cancelled() }}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest automation/tests/test_service_account_rules.py -q --allure-no-capture \
+            --alluredir=automation/output/allure-results-service-account-rules
+
+      - name: Upload service account business rules
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-service-account-rules
+          path: automation/output/allure-results-service-account-rules
+          if-no-files-found: warn
+
       - name: Upload scenario Allure results
         if: always()
         uses: actions/upload-artifact@v4

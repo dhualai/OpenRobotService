@@ -197,6 +197,7 @@ def merge_allure_artifacts(artifacts_dir: Path, destination: Path) -> None:
     observer_labels = {
         "allure-results-db": SOURCE_LABELS["db"],
         "allure-results-scenarios": SOURCE_LABELS["scenarios"],
+        "allure-results-service-account-rules": SOURCE_LABELS["service-account-rules"],
     }
     sources = {}
     for path in sorted(artifacts_dir.glob("allure-results-*/**/*")):

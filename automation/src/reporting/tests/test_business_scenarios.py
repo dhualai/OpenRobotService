@@ -6,9 +6,11 @@ import httpx
 import pytest
 
 from automation.src.reporting import business_report, standalone_report
+from automation.src.reporting.gate_verdict import merge_allure_artifacts
 from automation.src.reporting.business_scenarios import (
     EVIDENCE_ATTACHMENT,
     SCENARIO_LABEL,
+    SCENARIOS,
     SOURCE_LABELS,
     USP_USAGE_ISSUE,
     record_business_evidence,
@@ -40,6 +42,87 @@ def _write_case(root, name, scenario, status, steps, *, feature=None, message=No
 def _scenario_html(report, scenario):
     fragment = report.split(f'id="scenario-{scenario}"', 1)[1]
     return fragment.split("</details>", 1)[0]
+
+
+@pytest.mark.parametrize(("last_status", "expected"), [
+    ("passed", "通过"),
+    ("failed", "失败"),
+    ("missing", "未验证"),
+])
+def test_service_ticket_history_checks_all_steps_and_never_counts_towards_gate(
+    tmp_path, last_status, expected,
+):
+    history = tmp_path / "history"
+    history.mkdir()
+    token = "secret-from-a-ui-assertion"
+    scenario = "service-ticket-lifecycle"
+    steps = []
+    for key in SCENARIOS[scenario].steps:
+        status = last_status if key == "S17" else "passed"
+        fixture = f"abcdef{key[1:]}-attachment.json"
+        (history / fixture).write_text(json.dumps({
+            "step_id": key, "assertion": {"result": "通过", "actual": token},
+        }), encoding="utf-8")
+        steps.append({
+            "name": f"{key} 步骤", "status": status,
+            "attachments": [
+                {"name": f"{key}-断言与响应摘要", "source": fixture},
+            ] if status != "missing" else [],
+        })
+    name = "test_call_qa_to_ticket_close_regression"
+    payload = {
+        "name": "测试环境双角色工单闭环", "fullName": f"tests.ui.{name}#{name}",
+        "status": "passed", "steps": steps, "start": 1795423036000,
+        "statusDetails": {"message": token},
+    }
+    (history / "case-result.json").write_text(json.dumps(payload), encoding="utf-8")
+    (history / "other-result.json").write_text(json.dumps({
+        **payload, "fullName": "unrelated", "start": payload["start"] + 10,
+    }), encoding="utf-8")
+    report = tmp_path / "business.html"
+    business_report.main([
+        "--results", str(tmp_path / "empty"), "--expect-gate",
+        "--service-account-ui-results", str(history), "--out", str(report),
+    ])
+
+    html = report.read_text(encoding="utf-8")
+    card = _scenario_html(html, scenario)
+    assert f'">{expected}</span>' in card
+    assert "测试站独立实跑" in card and "UTC+8" in card
+    assert card.count("<tr>") == 18
+    assert ("再次打开仍显示已关闭" in card) == (last_status == "passed")
+    assert "Test Gate 判定：未验收" in html and "结果总数 0" in html
+    assert token not in html
+    assert "未验证" in _scenario_html(html, "service-learning-progress")
+
+
+def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_path):
+    artifacts = tmp_path / "artifacts"
+    observer = artifacts / "allure-results-service-account-rules"
+    observer.mkdir(parents=True)
+    scenario = "service-knowledge-finance"
+    token = "secret-from-backend-rule"
+    name = _write_case(
+        observer, "归档规则", scenario, "passed",
+        [(key, None, None) for key in SCENARIOS[scenario].steps],
+    )
+    for attachment in observer.glob("*-attachment.json"):
+        data = json.loads(attachment.read_text(encoding="utf-8"))
+        data.update(outcome="passed", raw=token)
+        attachment.write_text(json.dumps(data), encoding="utf-8")
+    merged = tmp_path / "merged"
+    merge_allure_artifacts(artifacts, merged)
+    sources = json.loads((merged / SOURCES_FILE).read_text(encoding="utf-8"))
+    output = tmp_path / "business.html"
+    business_report.main(["--results", str(merged), "--out", str(output)])
+
+    html = output.read_text(encoding="utf-8")
+    assert sources[name] == SOURCE_LABELS["service-account-rules"]
+    card = _scenario_html(html, scenario)
+    assert "服务号后台规则检查（观察项）" in card
+    assert 'class="business-status success">通过' in card
+    assert "知识已发布，三类奖励可申领" in card
+    assert token not in html
 
 
 def test_business_report_shows_evidence_roles_and_localizes_source_groups(tmp_path):

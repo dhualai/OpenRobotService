@@ -221,6 +221,82 @@ def _business_evidence(result, scenario_id):
     return found
 
 
+def load_service_account_ui(root):
+    """Read only the known lifecycle result and its assertion outcomes."""
+    scenario_id = 'service-ticket-lifecycle'
+    scenario = SCENARIOS[scenario_id]
+    case_names = {
+        f'{package}.{test}#{test}'
+        for package in ('tests.ui', 'automation.tests.ui')
+        for test in ('test_call_qa_to_ticket_close_regression', 'test_service_account_ticket_lifecycle')
+    }
+    cases = [
+        result for result in load_results(root)
+        if result.get('name') == '测试环境双角色工单闭环' and result.get('fullName') in case_names
+    ]
+    if not cases:
+        return None
+    latest = max(
+        cases, key=lambda result: result['start'] if type(result.get('start')) is int else 0,
+    )
+    evidence = {}
+    seen = set()
+    steps = latest.get('steps')
+    for node in steps if isinstance(steps, list) else []:
+        if not isinstance(node, dict):
+            continue
+        step_id = str(node.get('name', '')).partition(' ')[0]
+        if step_id not in scenario.steps:
+            continue
+        if step_id in seen:
+            evidence[step_id] = {'outcome': 'broken'}
+            continue
+        seen.add(step_id)
+        status = node.get('status')
+        if status in ('failed', 'broken', 'skipped'):
+            evidence[step_id] = {'outcome': status}
+            continue
+        attachments = node.get('attachments')
+        for attachment in attachments if isinstance(attachments, list) else []:
+            if not isinstance(attachment, dict):
+                continue
+            label = attachment.get('name')
+            if label not in (EVIDENCE_ATTACHMENT, f'{step_id}-断言与响应摘要'):
+                continue
+            source = attachment.get('source')
+            if not isinstance(source, str) or not re.fullmatch(r'[0-9a-f-]+-attachment\.json', source):
+                continue
+            summary = read_object(latest['directory'] / source)
+            if label == EVIDENCE_ATTACHMENT:
+                if (
+                    status == 'passed' and summary.get('scenario') == scenario_id
+                    and summary.get('step') == step_id and summary.get('outcome') == 'passed'
+                ):
+                    evidence[step_id] = {'outcome': 'passed'}
+                continue
+            assertion = summary.get('assertion')
+            if summary.get('step_id') == step_id and isinstance(assertion, dict):
+                if assertion.get('result') == '失败':
+                    evidence[step_id] = {'outcome': 'failed'}
+                elif status == 'passed' and assertion.get('result') == '通过' and assertion.get('actual'):
+                    evidence[step_id] = {'outcome': 'passed'}
+    # The test site's result is reference evidence. Gate totals and technical details
+    # use only the current run's results.
+    start = latest.get('start')
+    run_time = ''
+    if type(start) is int and 0 < start < 4102444800000:
+        china_time = datetime.timezone(datetime.timedelta(hours=8))
+        run_time = datetime.datetime.fromtimestamp(start / 1000, china_time).strftime(
+            ' · %Y-%m-%d %H:%M (UTC+8)',
+        )
+    return {
+        'source': scenario.source,
+        'status': latest['status'],
+        'evidence': evidence,
+        'provenance': f'测试站独立实跑{run_time}，供业务复核。本次 Test Gate 仍按本次产物判定。',
+    }
+
+
 def _business_result(case, judgements):
     if case is None:
         return '未验证', 'neutral', '本次没有收到该测试来源的场景结果。'
@@ -241,7 +317,7 @@ def _business_result(case, judgements):
     return label, 'success', ''
 
 
-def render_business_scenarios(results):
+def render_business_scenarios(results, *, service_account_ui=None):
     cases = collections.defaultdict(list)
     for result in results:
         scenario_id = result_labels(result).get(SCENARIO_LABEL)
@@ -254,7 +330,11 @@ def render_business_scenarios(results):
         # A Mock run can collect a real-only case and skip it. Use the designated evidence source.
         candidates = [case for case in cases[scenario_id] if case['source'] == scenario.source]
         case = min(candidates, key=lambda record: priority[record['status']], default=None)
-        evidence = _business_evidence(case, scenario_id) if case else {}
+        if scenario_id == 'service-ticket-lifecycle' and service_account_ui:
+            case = service_account_ui
+            evidence = case['evidence']
+        else:
+            evidence = _business_evidence(case, scenario_id) if case else {}
         observations = [
             (step, *describe_actual(step, evidence.get(step_id, {})))
             for step_id, step in scenario.steps.items()
@@ -270,6 +350,8 @@ def render_business_scenarios(results):
         )
         if reason:
             parts.append(f'<p class="meta">{esc(reason)}</p>')
+        if case and case.get('provenance'):
+            parts.append(f'<p class="meta">{esc(case["provenance"])}</p>')
         parts.append(
             '<table><thead><tr><th>角色</th><th>动作</th><th>预期结果</th>'
             '<th>实际结果</th></tr></thead><tbody>'
@@ -317,6 +399,8 @@ def main(argv=None):
                         help='输出 HTML 路径（默认 output/test-report-business.html）')
     parser.add_argument('--context', type=pathlib.Path, help='Test Gate 判定与运行信息 JSON')
     parser.add_argument('--expect-gate', action='store_true', help='缺失门禁判定时显示未验收')
+    parser.add_argument('--service-account-ui-results', type=pathlib.Path,
+                        help='独立的服务号测试站 Allure 结果目录')
     args = parser.parse_args(argv)
 
     root = pathlib.Path(args.results)
@@ -402,7 +486,11 @@ def main(argv=None):
     p.append('<h1>自动化测试结论报告</h1>')
     p.append(f'<div class="sub">生成时间 {now} · {len(feats)} 个业务模块</div>')
     p.append(report_overview(count_statuses(all_scenes), context, expect_gate=args.expect_gate))
-    p.append(render_business_scenarios(results))
+    ui_run = (
+        load_service_account_ui(args.service_account_ui_results)
+        if args.service_account_ui_results else None
+    )
+    p.append(render_business_scenarios(results, service_account_ui=ui_run))
 
     p.append('<div class="toc" style="background:#eef6ff;border-color:#c9defa">'
              '<b>怎么看到「步骤、入参、出参、断言」</b>：'
