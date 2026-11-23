@@ -1,31 +1,30 @@
 name: AI Review
 
-# AI Review（ORS-1149）：PR 合并前的非阻塞智能检视。
+# AI Review（ORS-1149）：PR 合并前的非阻塞智能检视。融合两种已实测可靠的触发：
+#   1) 标签触发（同仓 PR）：给 PR 打 `ai-review` 标签 → 深度检视；带标签的 PR
+#      在每次代码更新（synchronize）时自动升级深度检视（标签=开关）；
+#   2) 哨兵触发（fork/同仓通用）：往哨兵分支 ai-review-go 推 commit（message
+#      写 "ai-review PR#N" 点名），配套脚本 .github/ai-review/ai-review-go.ps1。
+#   fork PR 的 labeled 事件 GitHub 不派发给 base 仓库 workflow（今日 4 次实测
+#   全零），故 fork 场景用哨兵；同仓 labeled 正常。
 #
-# 触发器只用实测可靠的两类（踩坑史见文末）：
-#   1) pull_request [opened/synchronize/reopened]：规则快筛自动跑（fork PR 也
-#      能跑，但 fork 拿不到 secrets——快筛零依赖 secrets，结果以 check 形式
-#      显示在 PR Checks；深度检视与评论需要写权限/secrets，fork PR 由哨兵代跑）；
-#   2) push 到哨兵分支 ai-review-go：深度检视触发。commit message 里写
-#      "ai-review PR#495" 即可点名检视任意 PR（fork/同仓通用）。
-#      配套触发命令见 scripts/ai-review-go.md。
+# 规则快筛（opened/synchronize/reopened 自动）零依赖 secrets，fork PR 也能跑
+# （结果以 Checks 显示；评论/企微因 fork 无写权限与 secrets 自动降级）。
 #
 # 安全红线：
 #   - PR 代码零检出、零执行（diff 全走 API 内存处理）；
 #   - 检视脚本与规则从 base 快照检出，PR 无法篡改；
-#   - LLM 密钥只走 secrets，日志不回显；失败也发「未完成」报告；
+#   - LLM 密钥只走 secrets，日志不回显；deep_review 失败也发「未完成」报告；
 #   - 全流程不阻塞合并与部署。
 #
 # 踩坑史（为什么长这样）：
 #   - pull_request_target：GitHub 2026-12 起封锁公共仓库（brownout 已预演）；
-#   - labeled 触发：GitHub 对同 label 快速 add/remove/add 有事件去重，两次
-#     实测重打标签零 run（事件入账但不派发）；
-#   - workflow_run / workflow_dispatch / schedule / issue_comment：要求
-#     workflow 文件存在于默认分支 main，而 main 被保护规则冻结。
+#   - workflow_run / workflow_dispatch：要求 workflow 在默认分支 main，main 冻结；
+#   - fork PR 的 labeled 事件不派发（4 次实测）；同 label 快速摘打有事件去重。
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [ai-review-go]
 
@@ -55,18 +54,23 @@ jobs:
       AI_REVIEW_FALLBACK_MODEL: ${{ vars.AI_REVIEW_FALLBACK_MODEL }}
     steps:
       # 解析检视对象：
-      #   pull_request → PR 号与 base 由事件给出；快筛自动跑，
-      #                  若 PR 带 ai-review 标签则升级为深度检视；
-      #   push 哨兵   → 从 head commit message 解析 "ai-review PR#N"，
+      #   pull_request → PR 号与 base 由事件给出；快筛自动跑。
+      #     深度检视升级条件（满足其一）：事件本身是打 ai-review 标签（labeled），
+      #     或 PR 已带该标签（synchronize 更新时自动升级，标签=开关）。
+      #     fork PR 不升级（无 secrets，深度检视会静默失败），由哨兵代跑。
+      #   push 哨兵   → 从推送 commit（github.sha 恒有值；空提交的 head_commit
+      #                  为 null 不可依赖）的 message 解析 "ai-review PR#N"，
       #                  恒为深度检视（secrets 在此上下文完整可用）。
       - name: Resolve target
         id: tgt
         env:
           SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # 空提交（tree 未变）的 push 事件 head_commit 为 null，改用
-            # github.sha（恒有值）主动查 commit message
+          if [ "$EVENT_NAME" = "push" ]; then
             msg=$(gh api "repos/$REPO/git/commits/$SHA" --jq '.message')
             pr=$(printf '%s' "$msg" | grep -oE 'ai-review PR#[0-9]+' | grep -oE '[0-9]+' | head -1)
             if [ -z "$pr" ]; then
@@ -81,6 +85,15 @@ jobs:
             echo "mode=auto" >> "$GITHUB_OUTPUT"
             echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
             echo "base_ref=${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+            labeled_run=false
+            if [ "$ACTION" = "labeled" ] && [ "$LABEL_NAME" = "ai-review" ]; then
+              labeled_run=true
+            fi
+            # fork PR 不做深度升级（无 secrets 必失败）；fork 的深度检视走哨兵
+            if [ "$HEAD_REPO" != "$REPO" ]; then
+              labeled_run=false
+            fi
+            echo "labeled_run=$labeled_run" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Resolve PR base sha
@@ -115,9 +128,12 @@ jobs:
         if: steps.tgt.outputs.mode == 'auto'
         env:
           PR: ${{ steps.tgt.outputs.pr }}
+          LABELED_RUN: ${{ steps.tgt.outputs.labeled_run }}
         run: |
-          # 带 ai-review 标签的 PR，每次更新自动升级深度检视（fork PR 无
-          # secrets，此分支自动退化为纯快筛——LLM 调用会因缺 key 跳过）
+          if [ "$LABELED_RUN" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           n=$(gh api "repos/$REPO/issues/$PR/labels/ai-review" --jq '.name' 2>/dev/null || true)
           if [ "$n" = "ai-review" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -125,7 +141,7 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ---------------- 规则快筛（pull_request 自动） ----------------
+      # ---------------- 规则快筛（自动，非深度模式） ----------------
       - name: Run quick screen
         id: screen
         if: steps.tgt.outputs.mode == 'auto' && steps.deep.outputs.run != 'true'
@@ -173,7 +189,7 @@ jobs:
           } > wecom.md
           python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
 
-      # ---------------- 深度检视（哨兵 push 或带标签的 PR 更新） ----------------
+      # ---------------- 深度检视（标签触发或哨兵触发） ----------------
       - name: Run deep review
         id: review
         if: >-
@@ -212,4 +228,11 @@ jobs:
           NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
         run: python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
 
-
+      # 标签触发跑完自动摘标签（下次再打即再次触发）；
+      # 哨兵触发无标签、带标签的 synchronize 升级不摘（保留开关语义）
+      - name: Remove trigger label
+        if: steps.tgt.outputs.labeled_run == 'true'
+        continue-on-error: true
+        env:
+          PR: ${{ steps.tgt.outputs.pr }}
+        run: gh api -X DELETE "repos/$REPO/issues/$PR/labels/ai-review"
