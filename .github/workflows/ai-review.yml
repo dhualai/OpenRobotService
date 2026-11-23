@@ -1,24 +1,24 @@
 name: AI Review
 
-# AI Review（ORS-1149）：PR 合并前的非阻塞智能检视，双层设计：
-#   1) 规则快筛（自动）：PR 打开/更新时跑确定性规则（路径+高危写法正则），
-#      零 LLM 成本；命中 blocker 才落评论 + 推企微开源小组群，否则保持沉默；
-#   2) 深度检视（人工触发）：给 PR 加 `ai-review` 标签触发 LLM 全量检视，跑完自动摘标签。
-#      （主仓默认分支是 main 且被冻结，workflow_dispatch 按钮无法生效，故用 label 方案；
-#       未来若该文件同步到 main，可解锁下方的 workflow_dispatch 触发器。）
+# AI Review（ORS-1149）执行端：由 AI Review Request（pull_request 触发的
+# 轻量请求器）通过 workflow_run 在【主仓上下文】跟随运行。
 #
-# 设计红线：
-#   - 全流程不阻塞合并与部署（本 workflow 失败不影响任何 required check）；
-#   - 用 pull_request_target 触发以支持 fork PR（usagiiiiiiii 等协作者走 fork，
-#     pull_request 事件 fork 拿不到 secrets 且 token 只读，首版直接跳过是误判）。
-#     安全前提：PR 代码零检出、零执行——diff 一律走 API 内存处理，脚本与
-#     规则全部从 base 检出，secrets 不接触任何 PR 可控内容（GitHub 官方
-#     推荐的 pull_request_target 安全姿势）；
-#   - LLM 密钥只走 secrets，日志不回显；deep_review 失败也发「未完成」报告。
+# 为什么拆成两个 workflow：GitHub 自 2026-12 起分批封锁公共仓库的
+# pull_request_target（brownout 已于 11-09/11-16 预演），workflow_run 模式
+# 是 fork 安全的标准替代——本 workflow 的 secrets/token 与 PR 来源无关，
+# fork PR 与同仓 PR 一并覆盖。
+#
+# 安全红线（与 Request 器配合后成立）：
+#   - PR 代码零检出、零执行：diff 一律走 API 内存处理；base-rules/ 与
+#     pr-code/（base 分支检出，仅作脚本回退源）都不含 PR 代码；
+#   - 检视脚本与规则从 base 检出，PR 无法篡改检视规则或执行体；
+#   - LLM 密钥只走 secrets，日志不回显；deep_review 失败也发「未完成」报告；
+#   - 全流程不阻塞合并与部署（本 workflow 不是任何 required check）。
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
+  workflow_run:
+    workflows: ["AI Review Request"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -30,70 +30,121 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-
-# 注意：防抖分组必须放 job 级且快筛/深度分开——workflow 级同组会让
-# push 触发的快筛与 labeled 触发的深度检视互相取消（实测踩过）
+  actions: read
 
 jobs:
-  quick-screen:
-    name: Quick screen (rules)
-    # labeled 事件走深度检视
+  ai-review:
+    name: AI Review
+    # dispatch = 手动点名深度检视；workflow_run = 请求器成功完成后跟随
     if: >-
-      github.event_name == 'pull_request_target' &&
-      github.event.action != 'labeled'
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
+    # 防抖按 PR 维度：请求器 artifact 里才含 PR 号，此处以请求 run 维度分组，
+    # 连续 push 的防抖由请求器的 cancel-in-progress 兜底（被取消不会成功）
     concurrency:
-      group: ai-review-quick-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
-      cancel-in-progress: true
+      group: ai-review-run-${{ github.event.workflow_run.id || github.run_id }}
+      cancel-in-progress: false
     env:
       REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
       GH_TOKEN: ${{ github.token }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+      AI_REVIEW_BASE_URL: ${{ secrets.AI_REVIEW_BASE_URL }}
+      AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
+      # 推理模型建议配 low：压 reasoning token 消耗，避免 content 被 max_tokens 截空
+      AI_REVIEW_REASONING_EFFORT: ${{ vars.AI_REVIEW_REASONING_EFFORT }}
+      AI_REVIEW_FALLBACK_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK_API_KEY }}
+      AI_REVIEW_FALLBACK_BASE_URL: ${{ secrets.AI_REVIEW_FALLBACK_BASE_URL }}
+      AI_REVIEW_FALLBACK_MODEL: ${{ vars.AI_REVIEW_FALLBACK_MODEL }}
     steps:
-      # 双 checkout：脚本优先从 base 检出（防 PR 改脚本自豁免/滥用 secret），
-      # base 尚无脚本时（本功能自身的 PR）回退 pr-code 并告警，合入后自动消除
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: base-src
-      - uses: actions/checkout@v4
-        with:
-          path: pr-code
-      - name: Resolve scripts dir
-        id: sdir
+      # 解析请求：dispatch 合成深度检视请求；workflow_run 下载请求器 artifact
+      - name: Resolve request
+        id: req
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          if [ -f base-src/.github/ai-review/scripts/quick_screen.py ]; then
-            echo "dir=base-src" >> "$GITHUB_OUTPUT"
+          if [ -n "${{ inputs.pr_number }}" ]; then
+            echo "pr=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+            echo "action=labeled" >> "$GITHUB_OUTPUT"   # dispatch = 深度检视
+            echo "base_ref=test" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          name=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts | map(select(.name | startswith("ai-review-request-")))[0].name')
+          if [ -z "$name" ]; then
+            echo "::warning::请求器未产出 artifact（可能被防抖取消），跳过"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh run download "$RUN_ID" -R "$REPO" -n "$name" -D reqart
+          echo "pr=$(jq -r .pr_number reqart/request.json)" >> "$GITHUB_OUTPUT"
+          echo "action=$(jq -r .action reqart/request.json)" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$(jq -r .base_ref reqart/request.json)" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(jq -r .head_sha reqart/request.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Skip check
+        if: steps.req.outputs.skip == 'true'
+        run: echo "跳过（防抖取消的请求）" && exit 0
+
+      # base.sha 统一走 API（事件上下文不再可用）
+      - name: Resolve PR base sha
+        id: base
+        run: |
+          echo "sha=$(gh api "repos/$REPO/pulls/$PR" --jq '.base.sha')" >> "$GITHUB_OUTPUT"
+
+      # 双 checkout：base-rules/ = base 快照（规则+知识库+执行脚本，PR 不可篡改）；
+      # pr-code/ = base 分支检出（仅作 bootstrap 回退脚本源，不含 PR 代码）
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base-rules
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/${{ steps.req.outputs.base_ref }}
+          path: pr-code
+
+      # 脚本目录解析：持有 secrets 的执行脚本一律 base-rules 优先；
+      # base 尚无脚本时（bootstrap 窗口）回退 pr-code 并显式告警
+      - name: Resolve exec scripts dir
+        id: edir
+        run: |
+          if [ -f base-rules/.github/ai-review/scripts/deep_review.py ]; then
+            echo "dir=base-rules" >> "$GITHUB_OUTPUT"
           else
             echo "dir=pr-code" >> "$GITHUB_OUTPUT"
-            echo "::warning::base 分支尚无 ai-review 脚本，回退使用 PR 版本（本功能合入 test 后自动消除）"
+            echo "::warning::base 分支尚无 ai-review 脚本，回退使用 base 分支版本（bootstrap 窗口）"
           fi
 
+      # ---------------- 规则快筛（opened/synchronize/reopened） ----------------
       - name: Run quick screen
         id: screen
+        if: steps.req.outputs.action != 'labeled'
         # exit 10 = 命中高危；0 = 未命中或纯文档跳过；其他 = 出错（仍不阻塞）
         run: |
-          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/quick_screen.py \
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/quick_screen.py \
             --out-json quick.json --out-md quick.md || code=$?
           echo "exit_code=${code:-0}" >> "$GITHUB_OUTPUT"
 
-      - name: Post blocker comment
-        if: steps.screen.outputs.exit_code == '10'
+      - name: Post blocker comment (quick)
+        if: >-
+          steps.req.outputs.action != 'labeled' &&
+          steps.screen.outputs.exit_code == '10'
         continue-on-error: true
         run: |
-          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
             --marker "ors-ai-review:quick" --file quick.md
 
-      - name: Notify wecom (blocker only)
-        if: steps.screen.outputs.exit_code == '10'
+      - name: Notify wecom (quick blocker only)
+        if: >-
+          steps.req.outputs.action != 'labeled' &&
+          steps.screen.outputs.exit_code == '10'
         continue-on-error: true
         env:
           NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |
-          PR="${PR_NUMBER}"
+          PR="${{ steps.req.outputs.pr }}"
           {
             echo "**AI 规则快筛发现高危项**"
             echo "PR #${PR}《${PR_TITLE}》命中确定性高危规则："
@@ -108,80 +159,15 @@ jobs:
           PY
             echo "详情：https://github.com/${REPO}/pull/${PR}"
           } > wecom.md
-          python3 ${{ steps.sdir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
 
-  deep-review:
-    name: Deep review (LLM)
-    # 手动入口：加 ai-review 标签（常用）；或 workflow_dispatch（文件进默认分支后可用）
-    # fork PR 同样支持（pull_request_target 下 secrets 可用，脚本不来自 PR）
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request_target' &&
-       github.event.action == 'labeled' &&
-       github.event.label.name == 'ai-review')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: ai-review-deep-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
-      cancel-in-progress: true
-    env:
-      REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-      GH_TOKEN: ${{ github.token }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
-      AI_REVIEW_BASE_URL: ${{ secrets.AI_REVIEW_BASE_URL }}
-      AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
-      # 推理模型建议配 low：压 reasoning token 消耗，避免 content 被 max_tokens 截空
-      AI_REVIEW_REASONING_EFFORT: ${{ vars.AI_REVIEW_REASONING_EFFORT }}
-      AI_REVIEW_FALLBACK_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK_API_KEY }}
-      AI_REVIEW_FALLBACK_BASE_URL: ${{ secrets.AI_REVIEW_FALLBACK_BASE_URL }}
-      AI_REVIEW_FALLBACK_MODEL: ${{ vars.AI_REVIEW_FALLBACK_MODEL }}
-    steps:
-      # 拿 PR base.sha（dispatch 场景无事件上下文，用 API 查）
-      - name: Resolve PR base sha
-        id: base
-        run: |
-          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
-            echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
-          else
-            sha=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.base.sha')
-            echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          fi
-
-      # 双 checkout 分离「规则源」与「回退脚本源」：
-      #   base-rules/ ← base 分支：规则、知识库与全部执行脚本（PR 不可篡改）；
-      #   pr-code/    ← pull_request_target 下默认检出 base 分支本身（不是 PR
-      #                 代码！PR 代码零检出，diff 全走 API），仅作 bootstrap
-      #                 窗口期的回退脚本源；dispatch 时为所选分支。
-      # 注意不能只 checkout base——脚本尚未进 test 时 base 上没有，job 会找不到文件
-      #（PR #492 首跑实测）。
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.base.outputs.sha }}
-          path: base-rules
-      - uses: actions/checkout@v4
-        with:
-          path: pr-code
-
-      # 脚本目录解析：所有持有 secrets 的执行脚本（deep_review/post/notify）
-      # 一律 base-rules 优先——deep_review 手握 LLM key 且 import 同目录
-      # common/quick_screen，从 pr-code 跑则 PR 可改脚本外传密钥（AI 检视
-      # 抓出的缺口，与 edir 方案对齐后彻底消除）。base 尚无脚本时（本功能
-      # 合入 test 前的 bootstrap 窗口）回退 pr-code 并显式告警，合入后自动消除。
-      - name: Resolve exec scripts dir
-        id: edir
-        run: |
-          if [ -f base-rules/.github/ai-review/scripts/deep_review.py ]; then
-            echo "dir=base-rules" >> "$GITHUB_OUTPUT"
-            echo "脚本来源：base-rules（PR 不可篡改）"
-          else
-            echo "dir=pr-code" >> "$GITHUB_OUTPUT"
-            echo "::warning::base 分支尚无 ai-review 脚本，本次从 PR 版本执行（bootstrap 窗口期，合入 test 后自动消除）"
-          fi
-
+      # ---------------- 深度检视（labeled / dispatch） ----------------
       - name: Run deep review
         id: review
+        if: steps.req.outputs.action == 'labeled'
+        env:
+          PR_NUMBER: ${{ steps.req.outputs.pr }}
+          HEAD_SHA: ${{ steps.req.outputs.head_sha }}
         # exit 2 = LLM 双通道失败（report.md 仍会生成「未完成」报告）；0 = 正常
         run: |
           code=0
@@ -192,21 +178,28 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Post report comment
+        if: steps.req.outputs.action == 'labeled'
         continue-on-error: true
+        env:
+          PR_NUMBER: ${{ steps.req.outputs.pr }}
         run: |
           python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
             --marker "ors-ai-review:report" --file report.md \
             --inline inline.json
 
-      - name: Notify wecom (blocker only)
-        if: ${{ hashFiles('wecom.md') != '' }}
+      - name: Notify wecom (deep blocker only)
+        if: >-
+          steps.req.outputs.action == 'labeled' &&
+          hashFiles('wecom.md') != ''
         continue-on-error: true
         env:
           NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
         run: python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
 
-      # label 触发跑完自动摘标签，方便下次再次触发；手动 dispatch 无标签可摘
+      # 深度检视跑完自动摘标签，方便下次再次触发
       - name: Remove trigger label
-        if: github.event.action == 'labeled'
+        if: steps.req.outputs.action == 'labeled'
         continue-on-error: true
+        env:
+          PR_NUMBER: ${{ steps.req.outputs.pr }}
         run: gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/ai-review"
