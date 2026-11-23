@@ -37,11 +37,13 @@ if (-not $ref) {
   $ref = $init.sha
 }
 
-# 2. 在哨兵分支上追加一个空提交，message 点名 PR（push 事件触发检视）
-$parentTree = (GhApi GET "repos/$Repo/git/commits/$ref").tree.sha
+# 2. 在哨兵分支上追加空提交，message 点名 PR（push 事件触发检视）。
+# tree 必须取 test 最新——push 事件加载的 workflow 定义来自该 tree，
+# 若沿用 parent tree 会把定义永远钉在首次创建时的版本
+$testTree = (GhApi GET "repos/$Repo/git/ref/heads/test").object.tree.sha
 $commit = GhApi POST "repos/$Repo/git/commits" @{
   message = "ai-review PR#$Pr"
-  tree    = $parentTree
+  tree    = $testTree
   parents = @($ref)
 }
 GhApi PATCH "repos/$Repo/git/refs/heads/ai-review-go" @{ sha = $commit.sha } | Out-Null
