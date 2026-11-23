@@ -1,0 +1,7 @@
+{
+  "method": "DELETE",
+  "url": "http://mock.local/api/admin/roles/1",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTUyNTUuNzc2Mzk2NSwgImlhdCI6IDE3OTU0MTE2NTUuNzc2Mzk3fQ.bW9jay1zaWc"
+  }
+}

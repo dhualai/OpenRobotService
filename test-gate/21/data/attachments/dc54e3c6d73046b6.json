@@ -1,0 +1,14 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/auth/login",
+  "reason": "OK",
+  "headers": {
+    "content-length": "373",
+    "content-type": "application/json"
+  },
+  "body": {
+    "access_token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTUyNTUuNTk1ODM4OCwgImlhdCI6IDE3OTU0MTE2NTUuNTk1ODM5M30.bW9jay1zaWc",
+    "token_type": "bearer",
+    "refresh_token": "eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluOnJlZnJlc2giLCAiZXhwIjogMTc5NTQxNTI1NS41OTU4NjI5LCAiaWF0IjogMTc5NTQxMTY1NS41OTU4NjN9.bW9jay1zaWc"
+  }
+}

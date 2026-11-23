@@ -1,0 +1,10 @@
+{
+  "method": "PATCH",
+  "url": "http://mock.local/api/tasks/1/assign",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTUyNTYuMzM5MzU5NSwgImlhdCI6IDE3OTU0MTE2NTYuMzM5MzU5OH0.bW9jay1zaWc"
+  },
+  "body": {
+    "assigned_to": "engineer"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/qa/ask",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTUyNTUuOTg0OTY2OCwgImlhdCI6IDE3OTU0MTE2NTUuOTg0OTY3Mn0.bW9jay1zaWc"
+  },
+  "body": {
+    "question": ""
+  }
+}

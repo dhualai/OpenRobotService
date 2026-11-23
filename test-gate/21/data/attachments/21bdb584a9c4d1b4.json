@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/admin/roles",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTUyNTUuNzcwNTEyOCwgImlhdCI6IDE3OTU0MTE2NTUuNzcwNTEzfQ.bW9jay1zaWc"
+  }
+}

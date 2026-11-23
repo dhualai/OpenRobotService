@@ -1,0 +1,7 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/1/ai-assign",
+  "headers": {
+    "Authorization": "Bearer eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAidGVzdGFkbWluIiwgImV4cCI6IDE3OTU0MTUyNTYuMzk4ODMzLCAiaWF0IjogMTc5NTQxMTY1Ni4zOTg4MzM4fQ.bW9jay1zaWc"
+  }
+}
