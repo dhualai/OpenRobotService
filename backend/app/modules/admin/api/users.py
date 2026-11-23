@@ -769,11 +769,13 @@ async def approve_option(
             obj = sync_db.query(Project).filter(Project.id == target_id).first()
         if not obj:
             raise HTTPException(status_code=404, detail="记录不存在")
-        if obj.status == 'approved':
-            raise HTTPException(status_code=400, detail="该记录已审核通过")
 
-        # 管理员可调整名称
-        if new_name and new_name != obj.name:
+        # 幂等：实体已被其他请求置为 approved（并发/重试/工单被 reopen 后的二次点击），
+        # 跳过名称/代码调整（已终态不应再改名），继续走兜底关工单 + 返回，避免前端报 400
+        already_approved = obj.status == 'approved'
+
+        # 管理员可调整名称（仅实体尚未终态时允许）
+        if not already_approved and new_name and new_name != obj.name:
             if target_type == 'company':
                 existing = sync_db.query(Company).filter(Company.name == new_name).first()
             elif target_type == 'department':
@@ -787,20 +789,25 @@ async def approve_option(
                 raise HTTPException(status_code=400, detail=f"名称「{new_name}」已存在")
             obj.name = new_name
 
-        # 项目额外支持调整 code
-        if target_type == 'project' and new_code and new_code != obj.code:
+        # 项目额外支持调整 code（同样仅在实体未终态时允许）
+        if not already_approved and target_type == 'project' and new_code and new_code != obj.code:
             existing = sync_db.query(Project).filter(Project.code == new_code).first()
             if existing:
                 raise HTTPException(status_code=400, detail=f"项目代码「{new_code}」已存在")
             obj.code = new_code
 
-        obj.status = 'approved'
-        obj.approved_by = current_user.get('username', '')
-        if target_type == 'project':
-            obj.approved_at = time.time()
+        # 仅在首次审核时写入状态/审核人/审核时间；幂等重试保留原始审计字段
+        if not already_approved:
+            obj.status = 'approved'
+            obj.approved_by = current_user.get('username', '')
+            if target_type == 'project':
+                obj.approved_at = time.time()
+            else:
+                obj.approved_at = datetime.now()
+            sync_db.commit()
         else:
-            obj.approved_at = datetime.now()
-        sync_db.commit()
+            # 实体已是 approved，本次可能仍需要一次 commit（若上面名称/code 被跳过则为空事务，无副作用）
+            sync_db.commit()
 
         # ── 实体审核通过后，自动关闭对应审核工单（兜底：防止前端两步请求时序不一致导致工单残留） ──
         approval_type_map = {'company': 'new_company', 'department': 'new_department', 'project': 'new_project'}
@@ -851,17 +858,22 @@ async def reject_option(
             obj = sync_db.query(Project).filter(Project.id == target_id).first()
         if not obj:
             raise HTTPException(status_code=404, detail="记录不存在")
-        if obj.status == 'rejected':
-            raise HTTPException(status_code=400, detail="该记录已被驳回")
 
-        obj.status = 'rejected'
-        obj.approved_by = current_user.get('username', '')
-        if target_type == 'project':
-            obj.approved_at = time.time()
+        # 幂等：实体已被其他请求置为 rejected（并发/重试/工单被 reopen 后的二次点击），
+        # 跳过审计字段写入（保留原始驳回人/驳回时间/驳回原因），继续走兜底关工单 + 返回
+        already_rejected = obj.status == 'rejected'
+
+        if not already_rejected:
+            obj.status = 'rejected'
+            obj.approved_by = current_user.get('username', '')
+            if target_type == 'project':
+                obj.approved_at = time.time()
+            else:
+                obj.approved_at = datetime.now()
+            obj.reject_reason = reason or None
+            sync_db.commit()
         else:
-            obj.approved_at = datetime.now()
-        obj.reject_reason = reason or None
-        sync_db.commit()
+            sync_db.commit()
 
         # ── 实体驳回后，自动关闭对应审核工单（兜底：防止前端两步请求时序不一致导致工单残留） ──
         approval_type_map = {'company': 'new_company', 'department': 'new_department', 'project': 'new_project'}
