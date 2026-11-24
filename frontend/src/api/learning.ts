@@ -29,7 +29,7 @@ export interface ArticleContent {
 }
 
 export interface SourceTask { id: string; title: string; status: 'closed' | 'archiving' | 'archived'; summary: string }
-export interface SourceRecommendations { source: SourceTask; items: SourceTask[]; matching_method: 'text' }
+export interface SourceRecommendations { source: SourceTask; items: SourceTask[]; matching_method: 'vector'; retrieval_status: 'ok' | 'unavailable' }
 export interface Material { name: string; text: string; provenance: string }
 export interface SourceInput { task_ids: (number | string)[]; materials: Material[] }
 export interface SourceSnapshot {

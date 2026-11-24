@@ -78,6 +78,7 @@ from app.services.redispatch_tip_service import (  # 派单说明：列表/气�
 )
 
 from app.modules.tasks.services.knowledge_review import raw_access_guard, project_task_list
+from app.modules.tasks.services import similar_tickets
 
 router = APIRouter(tags=["tasks"], dependencies=[Depends(raw_access_guard)])
 
@@ -1359,22 +1360,9 @@ async def _hydrate_similar_from_db(
     min_score 给定时先过滤再截断（与 SIMILAR_TICKET_MIN_COSINE≈0.55 同量级）。
     """
     from app.modules.tasks.models.ticket import Task
-    ids = []
-    seen = set()
-    src_by_tid: Dict[int, dict] = {}
-    for it in items or []:
-        if not isinstance(it, dict):
-            continue
-        raw = it.get("task_id")
-        try:
-            tid = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if tid == exclude_id or tid in seen:
-            continue
-        seen.add(tid)
-        ids.append(tid)
-        src_by_tid[tid] = it
+    hits = similar_tickets.filter_similar_ticket_hits(items or [], exclude_id, min_score)
+    ids = [hit["task_id"] for hit in hits]
+    src_by_tid = {hit["task_id"]: hit for hit in hits}
     if not ids:
         return []
     stmt = select(Task).where(Task.id.in_(ids), Task.id != exclude_id)
@@ -1410,14 +1398,12 @@ async def _hydrate_similar_from_db(
             continue
         src = src_by_tid.get(tid) or {}
         item = _similar_item_from_task(t)
-        item["score"] = round(float(src.get("score") or 0), 4)
+        item["score"] = src["score"]
         item["verified"] = src.get("verified") or "unknown"
         # 卡正文（问题/根因/解决三段式，已 approved 的沉淀卡=全公司共享资产），
         # 归档人弹层内直接对照；脱敏口径与标题一致
         item["summary"] = str(src.get("summary") or "")[:600]
         item["image_paths"] = (similar_images.get(tid) or [])[:3]
-        if min_score is not None and item["score"] < min_score:
-            continue
         out.append(item)
         if len(out) >= limit:
             break
@@ -1464,7 +1450,6 @@ async def get_similar_tasks(
       Qdrant 不可用即返回空列表，不用 MySQL 兜底。排除自身、跨项目可分享。
     """
     import logging
-    import httpx
     from app.modules.tasks.models.ticket import Task
     logger = logging.getLogger(__name__)
     scope_norm = (scope or "remind").strip().lower()
@@ -1489,16 +1474,10 @@ async def get_similar_tasks(
         items: list = []
         retrieval_available = False
         try:
-            url = f"{settings.AI_SERVICE_URL.rstrip('/')}/api/ai/task/tickets/similar"
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                resp = await client.get(url, params={"task_id": task_id, "limit": cap})
-            if resp.status_code == 200:
-                payload = resp.json() if resp.content else {}
-                if int(payload.get("code") or 0) == 0:
-                    retrieval_available = True
-                    data = payload.get("data") or {}
-                    items = await _hydrate_similar_from_db(
-                        db, data.get("similar") or [], task_id, cap, min_score=floor)
+            hits, retrieval_status = await similar_tickets.fetch_similar_ticket_hits(task_id, cap)
+            if retrieval_status == "ok":
+                retrieval_available = True
+                items = await _hydrate_similar_from_db(db, hits, task_id, cap, min_score=floor)
         except Exception as e:
             logger.warning(f"相似工单向量检索不可用，返回空: task_id={task_id}, error={e}")
 

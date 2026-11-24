@@ -21,6 +21,7 @@ from app.modules.tasks.api.task import (
     _similar_item_from_task,
 )
 from app.modules.tasks.models.ticket import TaskStatus
+from app.modules.tasks.services import similar_tickets
 
 
 def _db_with(report_rows, user_rows):
@@ -163,6 +164,7 @@ def _wire(monkeypatch, calls):
     monkeypatch.setattr("app.modules.tasks.services.knowledge_review.review_detail", AsyncMock(return_value={}))
 
     async def fake_hydrate(db, items, exclude_id, limit, min_score=None):
+        calls["hydrated"] = (items, exclude_id, limit, min_score)
         return [{"task_id": 101, "title": "旧相似", "status": "closed",
                  "project_name": "", "archived": False, "score": 0.72,
                  "verified": "confirmed"}]
@@ -226,3 +228,76 @@ async def test_endpoint_unknown_scope_falls_back_to_remind_without_reports(monke
 
     assert out["scope"] == "remind"
     assert "attached" not in calls  # remind 深度不补报告
+
+
+@pytest.mark.asyncio
+async def test_review_endpoint_uses_shared_vector_retrieval_and_review_threshold(monkeypatch):
+    calls = {}
+    _wire(monkeypatch, calls)
+    hits = [{"task_id": 101, "score": 0.72}]
+    fetch = AsyncMock(return_value=(hits, "ok"))
+    monkeypatch.setattr(similar_tickets, "fetch_similar_ticket_hits", fetch)
+    db = AsyncMock()
+    db.get = AsyncMock(return_value=SimpleNamespace(title="充电失败", description="描述"))
+    db.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: SimpleNamespace(id=1, submit_status="submitted")))
+    result = await task_api.get_similar_tasks(task_id=1, limit=8, min_score=0.55, scope="review", db=db)
+    fetch.assert_awaited_once_with(1, 8)
+    assert calls["hydrated"] == (hits, 1, 8, similar_tickets.REVIEW_SIMILAR_MIN_SCORE)
+    assert result["retrieval_status"] == "ok"
+    assert calls["attached"] == [101]
+
+
+def test_shared_hit_filter_preserves_vector_order_and_review_score_floor():
+    hits = [
+        {"task_id": 1, "score": 0.99}, {"task_id": "3", "score": 0.55},
+        {"task_id": 2, "score": 0.94}, {"task_id": 3, "score": 0.99},
+        {"task_id": 4, "score": 0.54}, {"task_id": "invalid", "score": 0.99},
+        {"task_id": 5, "score": "invalid"}, {"task_id": 6, "score": float("nan")},
+        {"task_id": 7, "score": float("inf")}, None,
+    ]
+    result = similar_tickets.filter_similar_ticket_hits(hits, 1, similar_tickets.REVIEW_SIMILAR_MIN_SCORE)
+    assert [hit["task_id"] for hit in result] == [3, 2]
+    assert [hit["score"] for hit in result] == [0.55, 0.94]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code,payload,expected_status", [
+    (200, {"code": 0, "data": {"similar": [{"task_id": 101, "score": 0.72}]}}, "ok"),
+    (200, {"code": 0, "data": {"similar": []}}, "ok"),
+    (200, {"code": 1, "message": "private-upstream-error"}, "unavailable"),
+    (503, {}, "unavailable"),
+    (200, {"code": 0, "data": {"similar": "invalid"}}, "unavailable"),
+    (200, [], "unavailable"),
+])
+async def test_shared_retrieval_protocol(monkeypatch, status_code, payload, expected_status):
+    calls = {}
+
+    class Client(_FakeClient):
+        def __init__(self, **kwargs):
+            calls["options"] = kwargs
+
+        async def get(self, url, params=None):
+            calls["request"] = (url, params)
+            return SimpleNamespace(status_code=status_code, json=lambda: payload)
+
+    monkeypatch.setattr("httpx.AsyncClient", Client)
+    items, retrieval_status = await similar_tickets.fetch_similar_ticket_hits(9007199254740993, 30)
+    assert retrieval_status == expected_status
+    assert calls["options"] == {"timeout": 12.0}
+    assert calls["request"] == (
+        f"{similar_tickets.settings.AI_SERVICE_URL.rstrip('/')}/api/ai/task/tickets/similar",
+        {"task_id": 9007199254740993, "limit": 30},
+    )
+    expected_items = payload["data"]["similar"] if expected_status == "ok" else []
+    assert items == expected_items
+
+
+@pytest.mark.asyncio
+async def test_shared_retrieval_unavailable_on_network_failure(monkeypatch, caplog):
+    class Client(_FakeClient):
+        async def get(self, url, params=None):
+            raise RuntimeError("private-upstream-error")
+
+    monkeypatch.setattr("httpx.AsyncClient", Client)
+    assert await similar_tickets.fetch_similar_ticket_hits(1, 10) == ([], "unavailable")
+    assert "private-upstream-error" not in caplog.text
