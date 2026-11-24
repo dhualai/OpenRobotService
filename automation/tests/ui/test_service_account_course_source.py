@@ -49,6 +49,8 @@ def test_published_course_question_source(ui_regression_runtime):
     observed = {}
     landing = f"{runtime.gateway_url}/tasks/learning"
     list_visible = False
+    expected_course = os.getenv("UI_COURSE_PROBE_ID")
+    progress = {}
     course_id = ""
     title = ""
     article_version = None
@@ -85,10 +87,15 @@ def test_published_course_question_source(ui_regression_runtime):
                 if not isinstance(item, dict):
                     continue
                 candidate = item.get("id")
-                if isinstance(candidate, str) and IDENTIFIER.fullmatch(candidate):
+                if (
+                    isinstance(candidate, str) and IDENTIFIER.fullmatch(candidate)
+                    and (not expected_course or candidate == expected_course)
+                ):
                     course_id = candidate
                     title = str(item.get("title", ""))[:150]
                     article_version = item.get("active_version")
+                    if expected_course:
+                        progress = {key: item.get(key) for key in ("answered_count", "total_count", "correct_count")}
                     break
             if course_id:
                 route = f"{ARTICLE_LIST}/{course_id}"
@@ -101,6 +108,12 @@ def test_published_course_question_source(ui_regression_runtime):
                     key = question.get("id") if isinstance(question, dict) else None
                     if isinstance(key, str) and IDENTIFIER.fullmatch(key):
                         question_ids.append(key)
+                if expected_course:
+                    footer = page.locator(".learner-footer__count")
+                    footer.wait_for(timeout=12_000)
+                    shown = re.fullmatch(r"(\d+)\s*/\s*(\d+)", footer.inner_text().strip())
+                    if shown:
+                        progress["detail_answered"] = int(shown[1])
         except PlaywrightTimeoutError:
             pass
     finally:
@@ -115,4 +128,10 @@ def test_published_course_question_source(ui_regression_runtime):
             "article_version": article_version,
             "question_ids": question_ids,
             "observed_source_fields": observed,
+            "course_progress": progress,
         }, ensure_ascii=False), encoding="utf-8")
+    if expected_course:
+        assert course_id == expected_course
+        assert all(type(progress.get(key)) is int for key in (
+            "answered_count", "total_count", "correct_count", "detail_answered",
+        ))

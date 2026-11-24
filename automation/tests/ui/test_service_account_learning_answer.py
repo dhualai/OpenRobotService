@@ -68,6 +68,7 @@ def test_confirmed_course_submission_scoring_and_progress(ui_regression_runtime)
             option.click()
             with _capture(page, origin, f"{article_route}/answer", "POST") as captured:
                 page.locator(".learner-quiz__submit").click()
+            evidence["submit_http_status"] = captured.value.status
             result = _data(captured.value)
             evidence["submitted"] += 1
             submission = captured.value.request.post_data_json
