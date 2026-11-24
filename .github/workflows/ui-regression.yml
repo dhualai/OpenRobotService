@@ -12,6 +12,10 @@ on:
         description: "直连已部署测试站，核对部署源码后运行"
         type: boolean
         default: false
+      learner_only:
+        description: "只验证已确认测试课程的答题、评分和进度"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -166,6 +170,7 @@ jobs:
         env:
           UI_REGRESSION_DEPLOYED: ${{ inputs.direct_test_site && '1' || '0' }}
           UI_COURSE_PROBE_OUTPUT: automation/output/ui-business-evidence/course-source.json
+          UI_LEARNER_EVIDENCE_OUTPUT: ${{ inputs.direct_test_site && inputs.learner_only && 'automation/output/ui-business-evidence/learner-course-run.json' || '' }}
           UI_REGRESSION_U1_PASSWORD: ${{ secrets.REAL_U1_PASSWORD }}
           UI_REGRESSION_U2_PASSWORD: ${{ secrets.REAL_U2_PASSWORD }}
           UI_REGRESSION_CLEANUP_PASSWORD: ${{ secrets.UI_REGRESSION_CLEANUP_PASSWORD }}
@@ -174,6 +179,9 @@ jobs:
           set -o pipefail
           mkdir -p automation/output
           cases=(automation/tests/ui/test_service_account_ticket_lifecycle.py)
+          if [ -n "$UI_LEARNER_EVIDENCE_OUTPUT" ]; then
+            cases=(automation/tests/ui/test_service_account_learning_answer.py)
+          fi
           if [ "$UI_REGRESSION_DEPLOYED" = 1 ]; then
             cases=(automation/tests/ui/test_service_account_course_source.py "${cases[@]}")
           else
@@ -194,6 +202,7 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import json
           import subprocess
           from pathlib import Path
           from automation.src.reporting.business_report import export_service_account_ui
@@ -215,6 +224,10 @@ jobs:
                       application_trees_match=os.environ["APP_TREES_MATCH"] == "true" and not deployment_drift,
                       deployment_drift=deployment_drift)
           export_service_account_ui(root, out, meta)
+          learner_file = out / "learner-course-run.json"
+          if learner_file.is_file():
+              learner = read_object(learner_file)
+              learner_file.write_text(json.dumps({"run": meta, "course": learner}, ensure_ascii=False), encoding="utf-8")
           PY
 
       - name: Upload business UI results
@@ -225,6 +238,7 @@ jobs:
           path: |
             automation/output/ui-business-evidence/service-account-ui-run.json
             automation/output/ui-business-evidence/course-source.json
+            automation/output/ui-business-evidence/learner-course-run.json
           if-no-files-found: warn
           overwrite: true
 
