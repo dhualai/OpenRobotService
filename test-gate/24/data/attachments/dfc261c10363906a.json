@@ -1,0 +1,11 @@
+{
+  "method": "PATCH",
+  "url": "http://localhost:8400/api/tasks/2/status",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "status": "pending_requested",
+    "pause_reason": "自动化验证：等待外部资料补充"
+  }
+}

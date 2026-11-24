@@ -1,0 +1,10 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/ai/qa/ask/stream",
+  "reason": "OK",
+  "headers": {
+    "content-type": "text/event-stream",
+    "content-length": "508"
+  },
+  "body": "[unstructured response body omitted]"
+}
