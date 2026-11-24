@@ -55,6 +55,11 @@ class BusinessScenario:
     flow_title: str = ""
     planned_steps: tuple[tuple[BusinessStep, str], ...] = ()
     trigger: str = ""
+    # 这条流程在门禁里的证据级别：
+    #   P1 断言 -> 有阻塞的接口/步骤断言，失败即挡发布
+    #   观察项   -> 只有后台规则或观察项证据，失败不挡发布
+    #   （本次没跑或证据对不上时，渲染层会覆盖成「未验证」）
+    coverage: str = "P1 断言"
 
 
 SCENARIOS = {
@@ -140,6 +145,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
         },
         flow_title="知识沉淀 → 内容审核 → 财务审核 → 奖励",
         trigger="处理人在已关闭工单提交知识沉淀报告",
+        coverage="观察项",
     ),
     "service-learning": BusinessScenario(
         "服务号学习", "整理知识、审核出题与后台答题预览", SOURCE_LABELS["service-account-rules"],
@@ -151,6 +157,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
         },
         flow_title="选材 → AI 出题 → 审核启用 → 学习答题",
         trigger="内容管理员选择工单或技术材料并创建学习文章",
+        coverage="观察项",
         planned_steps=(
             (
                 BusinessStep("学员", "打开课程、答题并刷新", "成绩和课程进度可在重新打开后查看"),
@@ -166,6 +173,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
         },
         flow_title="高价值问题 → 用户解答 → 评选 → 奖励",
         trigger="专区管理员发布高价值问题",
+        coverage="观察项",
     ),
 }
 SCENARIOS.update(SERVICE_ACCOUNT_SCENARIOS)

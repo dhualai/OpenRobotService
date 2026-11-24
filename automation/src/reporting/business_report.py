@@ -70,6 +70,11 @@ TICKET_API_EVIDENCE = (
      'real', ('S09', 'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17')),
 )
 
+# 技术明细按「摇人吧」服务号的功能入口命名；键仍用用例里的 allure feature 标签。
+MODULE_DISPLAY = {
+    '后台管理': '知识库',
+}
+
 FEATURE_INFO = {
     '我要摇人': ('用户端入口', '用户通过智能对话描述问题，系统识别意图后自动创建工单'),
     '系统任务': ('工单全生命周期', '创建、查询、指派、状态流转、催办、评论、关闭等核心处理流程'),
@@ -609,6 +614,7 @@ def render_business_scenarios(results, *, service_account_ui=None, learner_cours
             f'<summary><span class="module-name">{esc(scenario.module)}</span>'
             f'<strong>{esc(scenario.flow_title or scenario.title)}</strong>'
             f'<span class="business-status {colour}">{verdict}</span>'
+            f'<span class="coverage">{esc("未验证" if verdict == "本次未运行" else scenario.coverage)}</span>'
             f'<span class="business-snapshot">触发 · {esc(scenario.trigger)}'
             f'<br>{"测试站独立实跑" if learner else "本次验证"} · {esc(checked)}'
             f'{f"<br>卡点 · {esc(reason)}" if reason else ""}</span>'
@@ -774,6 +780,8 @@ def main(argv=None):
          'padding:8px 11px;font-size:11.5px;line-height:1.5;overflow:auto;max-height:280px;color:#3d4450}',
          '.err{background:#fdf3f3;border-left:3px solid #cf222e;padding:9px 13px;margin-top:10px;'
          'font-size:12.5px;color:#8b2222;border-radius:4px;white-space:pre-wrap;word-break:break-word}',
+         '.coverage{font-size:11px;color:#57606a;border:1px solid #d1d9e0;border-radius:10px;'
+         'padding:1px 7px;white-space:nowrap}',
          '.meta{font-size:11.5px;color:#8b949e;margin-top:8px}',
          '.note{background:#fff;border-left:3px solid #d0a215;padding:11px 15px;font-size:12.5px;'
          'color:#5c4a12;border-radius:4px;margin-top:18px}',
@@ -808,20 +816,21 @@ def main(argv=None):
         counts = count_statuses(s for items in scenes[feat].values() for s in items)
         mtotal = sum(counts.values())
         pos, desc = FEATURE_INFO.get(feat, ('', '该模块的业务流程与接口行为'))
-        p.append(f'<tr><td class="mod">{esc(feat)}<small>{esc(pos)}</small></td>'
+        shown = MODULE_DISPLAY.get(feat, feat)
+        p.append(f'<tr><td class="mod">{esc(shown)}<small>{esc(pos)}</small></td>'
                  f'<td>{mtotal}</td><td>{esc(describe_counts(counts))}</td><td>{esc(desc)}</td></tr>')
     p.append('</tbody></table>')
 
     p.append('<div class="toc">快速跳转：')
     for i, feat in enumerate(feats):
-        p.append(f'<a href="#m{i}">{esc(feat)}</a>')
+        p.append(f'<a href="#m{i}">{esc(MODULE_DISPLAY.get(feat, feat))}</a>')
     p.append('</div>')
 
     for i, feat in enumerate(feats):
         pos, desc = FEATURE_INFO.get(feat, ('', ''))
         mtotal = sum(len(v) for v in scenes[feat].values())
         p.append(f'<section class="module" id="m{i}">')
-        p.append(f'<h3>{esc(feat)}<span>{mtotal} 个场景</span></h3>')
+        p.append(f'<h3>{esc(MODULE_DISPLAY.get(feat, feat))}<span>{mtotal} 个场景</span></h3>')
         p.append(f'<p class="mdesc">{esc(desc)}</p>')
         first_of_module = True
         for story, items in sorted(scenes[feat].items(), key=lambda kv: -len(kv[1])):

@@ -183,6 +183,7 @@ def test_learner_course_evidence_shows_progress_without_passing_release_gate(tmp
     html = report.read_text(encoding="utf-8")
     card = _scenario_html(html, "service-learning")
     assert "测试 &lt;课程&gt; v1" in card
+    assert 'class="coverage">观察项' in card
     assert "源码核对 &lt;普通学员&gt;" in card and "learning.py#L42" in card
     assert "部署提交待核对" not in card
     assert "javascript:alert(1)" not in html
