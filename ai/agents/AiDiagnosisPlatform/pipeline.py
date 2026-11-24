@@ -3777,7 +3777,20 @@ class AiDiagnosisPlatform:
                 logger.warning(f"[retrieve] {domain} 域双路检索失败: {type(e).__name__}: {str(e)[:300]}")
                 return [], []
 
-        _domains = list(domains) if domains else [("team", 5), ("company", 4), ("industry", 3)]
+        # 1106：常规会话查 company 域时排除车型专有库（XQE 等 vehicle_only 标记的
+        # chunk）——没报车型的用户不该命中车型专题知识（与通用知识重复占位、
+        # 还可能串答别的车型的故障）。扫车型码进定制模式的会话走
+        # _vehicle_mode_domains，按 sub_domain 定向检索，不经过这里。
+        def _no_vehicle_only():
+            try:
+                from qdrant_client import models as qm
+                return qm.Filter(must_not=[qm.FieldCondition(
+                    key="vehicle_only", match=qm.MatchValue(value=True))])
+            except Exception:
+                return None
+
+        _domains = list(domains) if domains else [
+            ("team", 5), ("company", 4, _no_vehicle_only()), ("industry", 3)]
         # 配额元素支持二元 (domain, top_k) 或三元 (domain, top_k, qdrant_filter)
         def _norm(t):
             return (t[0], t[1], t[2]) if len(t) > 2 else (t[0], t[1], None)

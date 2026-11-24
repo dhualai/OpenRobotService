@@ -107,12 +107,15 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             source_file = str(rel).replace("\\", "/")
             # 0917 公司域品牌目录（自研车/华睿/科钛/通用）：sub_domain 剥掉品牌段
             # 保持叶子名稳定（vehicle_errors 等过滤器零迁移），品牌信息走 payload.brand
+            # 1106：支持 vehicle/{品牌}/{子目录} 三层（车端资料归档到 vehicle 下）
+            _BRANDS = ("自研车", "华睿", "科钛", "通用",
+                       "xmover", "huarui", "ksec", "common")
             if self._domain == "company" and "/" in sub_domain:
-                first = sub_domain.split("/", 1)[0]
-                # 中英文名都认（磁盘目录改过名，两种都得剥）
-                if first in ("自研车", "华睿", "科钛", "通用",
-                             "xmover", "huarui", "ksec", "common"):
-                    sub_domain = sub_domain.split("/", 1)[1]
+                _parts = sub_domain.split("/")
+                if len(_parts) >= 3 and _parts[0] == "vehicle" and _parts[1] in _BRANDS:
+                    sub_domain = "/".join(_parts[2:])
+                elif _parts[0] in _BRANDS:
+                    sub_domain = "/".join(_parts[1:])
 
             try:
                 content = md_file.read_text(encoding="utf-8")
@@ -921,6 +924,14 @@ class KBDomainIngester(BaseIngester[KBEntry]):
         # 判定规则按 0916 用户定稿：实施类按目录，原理/参数类自研专属，错误码/IO 通用。
         if self._domain == "company":
             payload["brand"] = entry.brand or self._infer_brand(entry.sub_domain, str(entry.source_file))
+        # 1106：车型专有库标记。company 下第一段目录全大写即车型目录（XQE 等，
+        # 未来新车型自动生效）。常规会话检索时排除（must_not vehicle_only），
+        # 只有扫车型码进入定制模式的会话按 sub_domain 定向检索——否则没报车型
+        # 的用户也会命中车型专题知识，与通用知识重复占位且可能串答。
+        if self._domain == "company":
+            _first = str(entry.source_file).split("/", 1)[0]
+            if _first and _first.isupper():
+                payload["vehicle_only"] = True
         if entry.images:
             payload["images"] = entry.images
         if entry.section:

@@ -413,6 +413,14 @@ export default function Dashboard() {
               <span style={{ fontSize: 18 }}>📥</span>
               <span style={{ fontSize: 15 }}>数据导入</span>
             </div>
+            {/* 知识库浏览（ORS-716）：服务器 kb 目录的目录树 + md 预览 */}
+            <div
+              onClick={() => { setDataResourceSheetVisible(false); navigate('/admin/kb'); }}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 8px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+            >
+              <span style={{ fontSize: 18 }}>📚</span>
+              <span style={{ fontSize: 15 }}>知识库</span>
+            </div>
             <div
               onClick={() => setDataResourceSheetVisible(false)}
               style={{ textAlign: 'center', padding: '14px 0', color: '#999', fontSize: 15, cursor: 'pointer' }}
