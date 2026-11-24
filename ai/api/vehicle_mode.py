@@ -149,15 +149,21 @@ async def _lookup_qrcode(scene: str):
 # 车型 → 知识库目录映射 + 手册清单
 # ============================================================
 def model_to_subpath(model: str) -> str:
-    """车型 → company 域下的知识库子目录名。XQE → XQE；未来新车型零改动。
+    """车型 → company 域下的知识库子目录：vehicle_models/{车型}。
 
-    车型知识不建独立顶层域（0930 用户定稿）：kb/company/{车型}/ 入库归
-    company 域，payload sub_domain="{车型}"，检索按此过滤（车型目录平铺，无子层级）。
+    0930 定稿：车型知识不建独立顶层域，挂 company 域、payload sub_domain 定向过滤。
+    1106：统一收到 company/vehicle_models/ 下——原平铺在 company 顶层（company/XQE），
+    车型一多就和产品目录、车端资料混在一起。sub_domain 带 vehicle_models/ 前缀，
+    检索过滤与排查时能一眼区分车型库。
 
-    ⚠️ 这是**精确**目录口径（只去空格+大写）：录入串与目录名不逐字符相等就落空
-    （生产实证：XQE122 / xqe122-2 / XQC 全部命中不到，详见 resolve_model_dirs）。
-    模糊匹配走 resolve_model_dirs（ORS-1082），本函数保留为兜底。"""
-    return (model or "").strip().upper()
+    ⚠️ 这是**精确**目录口径（只去空格+大写，再加 vehicle_models/ 前缀）：录入串与
+    目录名不逐字符相等就落空（生产实证：XQE122 / xqe122-2 / XQC 全部命中不到，
+    详见 resolve_model_dirs）。模糊匹配走 resolve_model_dirs（ORS-1082），本函数兜底。
+
+    空车型必须返回空串——调用方用 `if not sub: return []` 兜底，
+    否则会退化成扫整个车型目录。"""
+    m = (model or "").strip().upper()
+    return f"vehicle_models/{m}" if m else ""
 
 
 def model_to_domain(model: str) -> str:
@@ -207,22 +213,27 @@ _MODEL_DIRS_CACHE: Dict[str, tuple] = {}
 
 
 def _company_model_dirs(kb_root: Optional[Path] = None) -> List[str]:
-    """列 kb/company/ 下的一级目录名（车系目录候选），带 mtime 缓存。
+    """列 company 域下的车型目录候选（**裸目录名**，用于匹配），带 mtime 缓存。
 
+    1160 起车型统一收在 company/vehicle_models/ 下，所以候选 = vehicle_models/*
+    的子目录 + company 直属的其他目录（product_catalog 这类平铺目录，66 款车型
+    平铺，模糊匹配第 4 级要靠它）。容器目录 vehicle_models 本身不算候选。
     目录不存在 → 空列表（KB 未初始化时手册是可选能力，不阻塞模式注册）。"""
-    root = (kb_root or _default_kb_root()) / "company"
+    company = (kb_root or _default_kb_root()) / "company"
     try:
-        mtime = root.stat().st_mtime
+        mtime = company.stat().st_mtime
     except OSError:
         return []
-    key = str(root)
+    key = str(company)
     cached = _MODEL_DIRS_CACHE.get(key)
     if cached and cached[0] == mtime:
         return cached[1]
-    try:
-        dirs = sorted(p.name for p in root.iterdir() if p.is_dir())
-    except OSError:
-        dirs = []
+    dirs: List[str] = []
+    vm = company / "vehicle_models"
+    if vm.is_dir():
+        dirs += sorted(p.name for p in vm.iterdir() if p.is_dir())
+    dirs += sorted(p.name for p in company.iterdir()
+                   if p.is_dir() and p.name != "vehicle_models")
     _MODEL_DIRS_CACHE[key] = (mtime, dirs)
     return dirs
 
@@ -242,8 +253,12 @@ def resolve_model_dirs(model: str, kb_root: Optional[Path] = None) -> Dict[str, 
         return {"family": "", "dirs": [], "files": {}, "primary": ""}
     norm = _norm_model(raw)
     family = model_family(raw)
-    dirs = _company_model_dirs(kb_root)
+    dirs = _company_model_dirs(kb_root)      # 裸目录名（匹配用）
     root = (kb_root or _default_kb_root()) / "company"
+
+    def rel(name: str) -> str:
+        """裸目录名 → 相对 company 域的路径：车系目录在 vehicle_models/ 下。"""
+        return f"vehicle_models/{name}" if (root / "vehicle_models" / name).is_dir() else name
 
     # L1/L2：目录名精确 / 归一化相等
     exact = [d for d in dirs if d.upper() == raw.upper()]
@@ -254,7 +269,7 @@ def resolve_model_dirs(model: str, kb_root: Optional[Path] = None) -> Dict[str, 
         # L3：族键同名目录 = 车系手册全集（XQE）
         fam_dirs = [d for d in dirs if d.upper() == family]
         if fam_dirs:
-            hit = list(dict.fromkeys(fam_dirs + exact))
+            hit = [rel(x) for x in dict.fromkeys(fam_dirs + exact)]
             return {"family": family, "dirs": hit, "files": {}, "primary": hit[0]}
 
         # L4：族键无同名目录 → 找「{族}{数字}」形态型号文件所在目录
@@ -263,26 +278,29 @@ def resolve_model_dirs(model: str, kb_root: Optional[Path] = None) -> Dict[str, 
         flat_dirs: List[str] = []
         flat_files: Dict[str, List[str]] = {}
         for d in dirs:
-            sub = root / d
+            rd = rel(d)
+            sub = root / rd
             if not sub.is_dir():
                 continue
             hits = [f.name for f in sorted(sub.glob("*.md")) if pat.match(f.stem)]
             if not hits:
                 continue
-            flat_dirs.append(d)
-            flat_files[d] = hits
+            flat_dirs.append(rd)
+            flat_files[rd] = hits
         if flat_dirs:
-            hit = list(dict.fromkeys(flat_dirs + exact))
+            hit = list(dict.fromkeys(flat_dirs + [rel(x) for x in exact]))
             files = {d: flat_files[d] for d in flat_dirs if d in flat_files}
             return {"family": family, "dirs": hit, "files": files, "primary": hit[0]}
 
     # L5：只精确/归一化命中（族键无对应目录）
     if exact:
-        return {"family": family, "dirs": exact, "files": {}, "primary": exact[0]}
+        hit = [rel(x) for x in exact]
+        return {"family": family, "dirs": hit, "files": {}, "primary": hit[0]}
     # 兜底：原值当目录名——KB 未建该车系时行为与旧版一致（不阻塞注册，只是
     # 手册空 + 检索 0 召回，AI 如实说未收录）
     up = raw.upper()
-    return {"family": family, "dirs": [up] if up else [], "files": {}, "primary": up}
+    return {"family": family, "dirs": [f"vehicle_models/{up}"] if up else [],
+            "files": {}, "primary": f"vehicle_models/{up}" if up else ""}
 
 
 # 引导设施文档（不走 SOP 外显按钮）：分叉树=对话引导题的内容源、故障码表=
@@ -661,8 +679,11 @@ async def register_mode(req: ModeConfirmRequest,
 
     # 车型以库内那行为准（录入界面必填，正常不会为空）；为空时用弹窗确认值兜底。
     # 归一到大写：prompt 里的「车型 xxx」与 KB 入库口径一致（小写会失配）。
+    # 注意这里存的是**车型本身**（XQE），不是子目录（vehicle_models/XQE）——
+    # 下游 resolve_model_dirs / model_to_subpath 会自己拼 vehicle_models/ 前缀，
+    # 存成子目录会被二次拼接成 vehicle_models/VEHICLE_MODELS/XQE，过滤成空集。
     raw_model = (row.vehicle_model or "").strip() or (req.model or "").strip()
-    model_key = model_to_subpath(raw_model)
+    model_key = raw_model.upper()
     if not model_key:
         logger.warning(
             f"[vehicle_mode] 车型为空拦截: scene={scene}, session={req.session_id}",

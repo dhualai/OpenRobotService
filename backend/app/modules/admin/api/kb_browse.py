@@ -34,6 +34,7 @@ DIR_LABELS = {
     "sink_cards": "工单沉淀",
     # 公司知识
     "product_catalog": "产品目录",
+    "vehicle_models": "车型专题",
     "vehicle": "车端资料",
     "common": "通用资料",
     "huarui": "华睿",
