@@ -1,0 +1,1 @@
+INFO     automation.clients.MySQLClient:mysql_client.py:59 MySQL client disconnected

@@ -1,0 +1,10 @@
+{
+  "method": "PATCH",
+  "url": "http://mock.local/api/tasks/1/status",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "status": "closed"
+  }
+}
