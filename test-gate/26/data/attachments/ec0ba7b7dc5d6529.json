@@ -1,0 +1,20 @@
+{
+  "status_code": 422,
+  "url": "http://mock.local/api/tasks/cuiban-notification",
+  "reason": "Unprocessable Entity",
+  "headers": {
+    "content-length": "62",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": [
+      {
+        "loc": [
+          "body",
+          "task_id"
+        ],
+        "msg": "field required"
+      }
+    ]
+  }
+}

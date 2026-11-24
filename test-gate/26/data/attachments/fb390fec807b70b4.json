@@ -1,0 +1,14 @@
+{
+  "method": "POST",
+  "url": "http://localhost:8400/api/tasks/",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "title": "AUTO-SCENARIO-unsolvable-057f2f41",
+    "description": "业务场景自动化验证，可安全删除。",
+    "ticket_type": "problem",
+    "project_name": "摇人吧服务号-测试",
+    "project_id": "Leo_test"
+  }
+}

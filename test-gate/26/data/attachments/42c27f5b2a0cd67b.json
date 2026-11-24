@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "title": "文档链路测试任务",
+    "description": "文档接口测试前置"
+  }
+}

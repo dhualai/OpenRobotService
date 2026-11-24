@@ -1,0 +1,2 @@
+2026-11-24 03:51:56 | [32mINFO | automation.clients.MySQLClient | Connected to MySQL: localhost:3306/helpdesk_test
+2026-11-24 03:51:56 | [32mINFO | automation.clients.MySQLClient | MySQL client disconnected
