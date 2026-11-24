@@ -98,7 +98,7 @@ def test_incomplete_required_suite_is_unverified(
     contract_line = next(line for line in summary.splitlines() if line.startswith("| OpenAPI 契约"))
     assert "| 未验收 |" in contract_line
     assert reason in contract_line
-    assert "| Mock API | 通过 |" in summary
+    assert "| 主流程接口 | 通过 |" in summary
 
 
 @pytest.mark.parametrize("result_tag", ["failure", "error"])
@@ -114,7 +114,7 @@ def test_junit_test_failure_is_preserved(gate_artifacts, result_tag):
         junit_dir, allure_dir, {"quality-gate": "failure", "real-smoke": "success"}
     )
     assert status == FAILED
-    assert "| Mock API | 失败 | 1 | 0 | 1 | 1 条失败或错误 |" in summary
+    assert "| 主流程接口 | 失败 | 1 | 0 | 1 | 1 条失败或错误 |" in summary
 
 
 def test_known_failure_is_visible_when_other_evidence_is_missing(gate_artifacts):
@@ -132,7 +132,7 @@ def test_known_failure_is_visible_when_other_evidence_is_missing(gate_artifacts)
     )
     assert status == UNVERIFIED
     assert "未验收（同时存在已确认的测试失败）" in summary
-    assert "| Mock API | 失败 |" in summary
+    assert "| 主流程接口 | 失败 |" in summary
     assert "| OpenAPI 契约 | 未验收 |" in summary
 
 

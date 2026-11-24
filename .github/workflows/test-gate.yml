@@ -118,11 +118,22 @@ jobs:
         run: |
           pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/ai_metrics/tests/ automation/src/runtime/tests/ automation/src/client/tests/ automation/src/contract/tests/ automation/src/remote/tests/ automation/src/ticket_pipeline/tests/ automation/src/reporting/tests/ automation/ci_ai_gen/tests/ automation/mcp_server/tests/ automation/tests/infrastructure/ automation/src/mocks/tests/ -q --alluredir=automation/output/allure-results/quality-infra --junitxml=automation/output/junit-quality-infra.xml
 
-      - name: Run API mock tests
+      # 三层口径见 automation/docs/task-test-gate-three-tier.md：
+      # 主流程（-m flow）阻塞门禁；其余接口用例只进报告技术明细，不阻塞。
+      - name: Run main-flow API tests
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest automation/tests/ -m api -q --alluredir=automation/output/allure-results/quality-api --junitxml=automation/output/junit-quality-api.xml
+          pytest automation/tests/ -m flow -q --alluredir=automation/output/allure-results/quality-api --junitxml=automation/output/junit-quality-api.xml
+
+      - name: Run remaining API tests (advisory)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        continue-on-error: true
+        run: |
+          pytest automation/tests/ -m "api and not flow" -q \
+            --alluredir=automation/output/allure-results/quality-detail \
+            --junitxml=automation/output/junit-quality-detail.xml
 
       - name: Upload Allure results
         if: always()

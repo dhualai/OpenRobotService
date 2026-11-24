@@ -1,6 +1,6 @@
 # Test Gate 三层门禁设计（待确认）
 
-> 状态：设计稿，未实现。按 `automation/AGENTS.md` 的流程，确认后再改代码。
+> 状态：CI 侧（标记机制、门禁判定、工作流拆分）已实现；报告侧（首页精简、命名、分组）待 #499 合入后做。
 > 关联：[#508](https://github.com/dhualai/OpenRobotService/pull/508)（部署提速，已在分支上）、[#499](https://github.com/dhualai/OpenRobotService/pull/499)（业务报告，未合入）。
 
 ## 1. 背景
