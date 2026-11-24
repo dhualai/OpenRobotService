@@ -369,17 +369,19 @@ jobs:
           retention-days: 1
 
   # ---------------- 测试门禁（托管 runner） ----------------
-  gate:
-    name: Test gate (pytest + vitest)
+  # 后端单测与前端单测原本串行在一个 job 里（84s + 123s = 218s），是部署墙钟的
+  # 主要瓶颈：deploy 要等 gate，而 gate 里两步互相不依赖。拆成两个并行 job 后
+  # 关键路径降到约 123s，两步仍然是「非阻塞、只标注」的语义不变。
+  gate_backend:
+    name: Backend tests (pytest)
     needs: plan
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' && needs.plan.outputs.skip_gate != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # 两步测试的 outcome 交给 deploy 标注：continue-on-error 后 job 结果恒为 success，
+    # outcome 交给 deploy 标注：continue-on-error 后 job 结果恒为 success，
     # 只有 outcome 能区分「真跑过且通过」与「跑过但有失败用例」。
     outputs:
       pytest_outcome: ${{ steps.pytest.outcome }}
-      vitest_outcome: ${{ steps.vitest.outcome }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -406,12 +408,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
       # 非阻塞（2026-10-08）：失败只红步骤、不红 job，deploy 照常放行（详见文件头说明）。
       # 上游用例漂移造成的红与本次发布源码无关，但必须留在日志里可查，故只降级不删除。
       - name: Backend tests (pytest)
@@ -427,21 +423,38 @@ jobs:
           pip install -r requirements.txt -r requirements-test.txt
           pytest --ignore=tests/tasks -q
 
+      - name: AI component notice
+        if: ${{ needs.plan.outputs.components == 'ai' }}
+        run: echo "::notice::AI 组件无自动门禁（ai/tests 依赖外部服务），本次跳过测试，请确认已人工验证"
+
+  gate_frontend:
+    name: Frontend tests (vitest)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' && needs.plan.outputs.skip_gate != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      vitest_outcome: ${{ steps.vitest.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.git_ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       # 同上：前端 vitest 也非阻塞（该套件无法只排除单条用例，故在 job 层面降级）。
       - name: Frontend tests (vitest)
         id: vitest
         continue-on-error: true
         if: ${{ needs.plan.outputs.components == 'all' || needs.plan.outputs.components == 'frontend' }}
-        env:
-          CI: "true"
         run: |
           set -euo pipefail
           npm ci --prefix frontend
           npm run test --prefix frontend
-
-      - name: AI component notice
-        if: ${{ needs.plan.outputs.components == 'ai' }}
-        run: echo "::notice::AI 组件无自动门禁（ai/tests 依赖外部服务），本次跳过测试，请确认已人工验证"
 
   # ---------------- 自动化质量门禁（框架自测 + 业务回归 Mock） ----------------
   # 原 test.yml 的 test-infra + test-api 合并而来；与 build 并行，非阻断
@@ -507,11 +520,17 @@ jobs:
         run: |
           pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/ai_metrics/tests/ automation/src/runtime/tests/ automation/src/client/tests/ automation/src/contract/tests/ automation/src/remote/tests/ automation/src/ticket_pipeline/tests/ automation/src/reporting/tests/ automation/ci_ai_gen/tests/ automation/mcp_server/tests/ automation/tests/infrastructure/ automation/src/mocks/tests/ -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-infra.xml
 
-      - name: Run API mock tests
+      # 只跑主流程相关的接口用例（清单见 automation/ci/flow-tests.txt）。其余接口回归
+      # 留在 push 到 test 的 Test Gate 与夜间任务里，部署链路不再为重复用例付时间。
+      # 清单按 node id 列出：用例改名或删除时 pytest 直接报错，不会静默漏跑。
+      - name: Run main-flow API tests
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest automation/tests/ -m api -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-api.xml
+          set -euo pipefail
+          mapfile -t FLOW < automation/ci/flow-tests.txt
+          echo "main-flow api cases: ${#FLOW[@]}"
+          pytest "${FLOW[@]}" -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-api.xml
 
       - name: Upload Allure results
         if: always()
@@ -1065,10 +1084,10 @@ jobs:
   # ---------------- 下载 artifact + 本机部署（自托管 runner） ----------------
   deploy:
     name: Deploy (self-hosted)
-    # gate 与 build 并行后，deploy 同时等两者：build 产物到位 + gate 结果为准入
-    # （skip_gate=true 时 gate 为 skipped，走 needs.plan.outputs.skip_gate 分支）。
-    needs: [plan, gate, build]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.action == 'deploy' && (needs.plan.outputs.skip_gate == 'true' || needs.gate.result == 'success') }}
+    # build 与两个单测 job 并行后，deploy 等三者：build 产物到位 + 单测结果为准入
+    # （skip_gate=true 时单测 job 为 skipped，走 needs.plan.outputs.skip_gate 分支）。
+    needs: [plan, gate_backend, gate_frontend, build]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.action == 'deploy' && (needs.plan.outputs.skip_gate == 'true' || (needs.gate_backend.result == 'success' && needs.gate_frontend.result == 'success')) }}
     runs-on: [self-hosted, ors-verify]
     timeout-minutes: 30
     environment: ${{ needs.plan.outputs.environment }}
@@ -1315,8 +1334,8 @@ jobs:
           GIT_REF: ${{ needs.plan.outputs.git_ref }}
           COMMIT_SHA: ${{ needs.plan.outputs.git_sha }}
           SKIP_GATE: ${{ needs.plan.outputs.skip_gate }}
-          PYTEST_OUTCOME: ${{ needs.gate.outputs.pytest_outcome }}
-          VITEST_OUTCOME: ${{ needs.gate.outputs.vitest_outcome }}
+          PYTEST_OUTCOME: ${{ needs.gate_backend.outputs.pytest_outcome }}
+          VITEST_OUTCOME: ${{ needs.gate_frontend.outputs.vitest_outcome }}
           JOB_STATUS: ${{ job.status }}
         run: |
           set -uo pipefail
@@ -1410,8 +1429,8 @@ jobs:
           GIT_REF: ${{ needs.plan.outputs.git_ref }}
           COMMIT_SHA: ${{ needs.plan.outputs.git_sha }}
           SKIP_GATE: ${{ needs.plan.outputs.skip_gate }}
-          PYTEST_OUTCOME: ${{ needs.gate.outputs.pytest_outcome }}
-          VITEST_OUTCOME: ${{ needs.gate.outputs.vitest_outcome }}
+          PYTEST_OUTCOME: ${{ needs.gate_backend.outputs.pytest_outcome }}
+          VITEST_OUTCOME: ${{ needs.gate_frontend.outputs.vitest_outcome }}
           AUTO_ROLLBACK: ${{ env.DEPLOY_AUTO_ROLLBACK }}
           # 数据库结构处理结果：通知卡片据此展示「自动补列 / 已中止」等状态
           SCHEMA_MODE: ${{ env.DEPLOY_SCHEMA_MODE }}
