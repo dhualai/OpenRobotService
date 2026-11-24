@@ -359,7 +359,9 @@ export default function TicketDashboard() {
             {(() => {
               const wb = dar.workbench;
               if (wb?.hero?.length) {
-                // 有工作台快照：整块按工作台首页那张卡渲染，数字与工作台完全一致
+                // 有工作台快照：整块按工作台首页那张卡渲染，数字与工作台完全一致。
+                // 1106：去掉口径说明副标题与标注进度/数据版本——后台只给数字，
+                // 说明文字（"与漏斗同口径…真值…"）和内部进度不该展示给领导看。
                 const main = wb.hero.find((c) => c.label.includes('L2')) || wb.hero[0];
                 const rest = [...wb.hero.filter((c) => c !== main), ...(wb.small || [])];
                 return (
@@ -372,26 +374,16 @@ export default function TicketDashboard() {
                         {main.label} · 端到端直答率
                       </span>
                     </div>
-                    {main.sub && (
-                      <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
-                        {main.sub}
-                      </div>
-                    )}
                     <div
                       className="mac-stat-row"
                       style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}
                     >
                       {rest.map((c) => (
-                        <div key={c.label} title={c.sub || ''}>
+                        <div key={c.label}>
                           <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>{c.label}</div>
                           <div style={{ fontSize: 16, fontWeight: 600 }}>{c.value}</div>
                         </div>
                       ))}
-                    </div>
-                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
-                      {wb.manual_progress && <>人工标注进度：{wb.manual_progress}</>}
-                      {wb.manual_progress && wb.export_at && <> · </>}
-                      {wb.export_at && <>数据版本：{wb.export_at}</>}
                     </div>
                   </>
                 );
@@ -436,11 +428,6 @@ export default function TicketDashboard() {
                       </div>
                     )}
                   </div>
-                  {dar.manual_progress && (
-                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
-                      人工标注进度：{dar.manual_progress}
-                    </div>
-                  )}
                 </>
               );
             })()}
