@@ -3912,6 +3912,41 @@ html, body, #root {
 .task-timeline__group:last-child .task-timeline__line {
   padding-bottom: 4px;
 }
+/* 顶栏切换：工单任务 / 学习任务 */
+.tasks-top-tabs {
+  display: flex;
+  padding: 0 14px;
+  background: #fff;
+  border-bottom: 1px solid rgba(232, 234, 234, 0.8);
+}
+.tasks-top-tabs__item {
+  flex: 1;
+  padding: 12px 0;
+  background: none;
+  border: none;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--muted-foreground, #8a9a9a);
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s ease;
+}
+.tasks-top-tabs__item.is-active {
+  color: #2b2b2b;
+  font-weight: 600;
+}
+.tasks-top-tabs__item.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 24px;
+  height: 3px;
+  background: #2d7a5f;
+  border-radius: 2px;
+}
+
 .tasks-view__filters {
   flex-shrink: 0;
   z-index: 5;

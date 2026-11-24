@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { navigateInWechat, setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
 import {
@@ -883,6 +883,7 @@ function FilterMenuDropdown({
 
 export default function TasksView() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
   const adminRequest = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
@@ -1947,6 +1948,26 @@ export default function TasksView() {
           </div>
         }
       />
+
+      {/* 顶栏切换：工单任务 / 学习任务 */}
+      <div className="tasks-top-tabs" role="tablist" aria-label="系统任务切换">
+        <button
+          role="tab"
+          aria-selected={!location.pathname.startsWith('/tasks/learning')}
+          className={`tasks-top-tabs__item ${!location.pathname.startsWith('/tasks/learning') ? 'is-active' : ''}`}
+          onClick={() => navigate('/tasks')}
+        >
+          工单任务
+        </button>
+        <button
+          role="tab"
+          aria-selected={location.pathname.startsWith('/tasks/learning')}
+          className={`tasks-top-tabs__item ${location.pathname.startsWith('/tasks/learning') ? 'is-active' : ''}`}
+          onClick={() => navigate('/tasks/learning')}
+        >
+          学习任务
+        </button>
+      </div>
 
       {/* 筛选区（搜索 + 状态 tab）：固定在滚动区外，不随列表滚动上移（对齐历史工单） */}
       <div className="tasks-view__filters">

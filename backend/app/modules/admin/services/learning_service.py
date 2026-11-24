@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.llm_client import get_llm_client
 from app.models.identity import UserDB
-from app.models.learning import LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration, LearningQuestion
+from app.models.learning import LearningAnswer, LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration, LearningQuestion, LearningWrongBook
 from app.models.task import ArchiveReport, Task, TaskStatus
 from app.modules.admin.api.auth import has_permission_code
 from app.modules.admin.services.knowledge_service import actor_identities
@@ -579,5 +579,52 @@ async def preview_answer(db, actor, article_id, question_id, answers):
         raise HTTPException(422, "请选择有效且不重复的答案")
     if question.payload["question_type"] != "multiple_choice" and len(answers) != 1:
         raise HTTPException(422, "单选和判断题只能选择一个答案")
-    return {"is_correct": set(answers) == set(question.payload["correct_answer"]),
+
+    is_correct = set(answers) == set(question.payload["correct_answer"])
+    user_id = str(actor.get("id") or actor.get("username") or "")
+    now = utcnow()
+
+    # 1) 每次答都写入新记录（允许多次，进度取最后一次）
+    db.add(LearningAnswer(
+        user_id=user_id, article_id=article_id,
+        article_version=article.active_version, question_id=question_id,
+        answers=list(answers), is_correct=is_correct,
+        created_at=now,
+    ))
+
+    # 2) 自动维护错题本
+    wrongbook = (await db.execute(
+        select(LearningWrongBook).where(
+            LearningWrongBook.user_id == user_id,
+            LearningWrongBook.question_id == question_id,
+            LearningWrongBook.article_version == article.active_version,
+        )
+    )).scalar_one_or_none()
+
+    if not is_correct:
+        # 答错了 → 错题本里要么新建要么更新 wrong_count
+        snapshot = {k: question.payload[k] for k in ("question_type", "stem", "options")}
+        if wrongbook is None:
+            db.add(LearningWrongBook(
+                user_id=user_id, article_id=article_id,
+                article_version=article.active_version, question_id=question_id,
+                question_payload_snapshot=snapshot, status="wrong",
+                wrong_count=1, mastered_at=None,
+                last_wrong_at=now, created_at=now, updated_at=now,
+            ))
+        else:
+            wrongbook.status = "wrong"
+            wrongbook.wrong_count = (wrongbook.wrong_count or 0) + 1
+            wrongbook.last_wrong_at = now
+            wrongbook.updated_at = now
+    else:
+        # 答对了 → 如果在错题本里，则标记为已掌握
+        if wrongbook is not None and wrongbook.status != "mastered":
+            wrongbook.status = "mastered"
+            wrongbook.mastered_at = now
+            wrongbook.updated_at = now
+
+    await db.commit()
+
+    return {"is_correct": is_correct,
         **{key: question.payload[key] for key in ("correct_answer", "explanation", "source_excerpt")}}
