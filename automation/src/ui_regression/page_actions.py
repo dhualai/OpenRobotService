@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from playwright.sync_api import (
     Error as PlaywrightError,
@@ -17,6 +17,11 @@ def default_end_time(days: int = 7) -> str:
     """Return the date format accepted by the stage DatePicker."""
 
     return (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+
+
+def _calendar_month_direction(target: date, visible_dates: list[str]) -> str:
+    first_shown = min(date.fromisoformat(value) for value in visible_dates)
+    return "prev" if target < first_shown else "next"
 
 
 class UiPageActions:
@@ -214,15 +219,16 @@ class UiPageActions:
 
         target_date = datetime.strptime(value, "%Y-%m-%d %H:%M").date()
         date_cell = popup.locator(f'td[title="{target_date.isoformat()}"]')
-        month_button = (
-            popup.locator("button.ant-picker-header-next-btn")
-            if target_date >= datetime.now().date()
-            else popup.locator("button.ant-picker-header-prev-btn")
-        )
         for _ in range(24):
             if date_cell.count():
                 break
-            month_button.click()
+            visible_dates = popup.locator("td[title]").evaluate_all(
+                r"(cells) => cells.map(cell => cell.title).filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value))"
+            )
+            if not visible_dates:
+                raise AssertionError("日期控件未显示可选日期")
+            direction = _calendar_month_direction(target_date, visible_dates)
+            popup.locator(f"button.ant-picker-header-{direction}-btn").click()
             self.page.wait_for_timeout(300)
         if not date_cell.count():
             raise AssertionError(f"日期控件中找不到目标日期：{target_date.isoformat()}")
