@@ -50,3 +50,4 @@ automation/tests/tasks/test_tasks_code.py::TestTaskFlow::test_full_flow_create_t
 automation/tests/tasks/test_tasks_documents_code.py::TestTaskDocuments::test_task_respond
 automation/tests/tasks/test_tasks_documents_code.py::TestTaskDocuments::test_complete_step_not_agreed
 automation/tests/tasks/test_tasks_documents_code.py::TestTaskDocuments::test_complete_step_ok
+automation/tests/tasks/test_tasks_code.py::TestTaskFlow::test_submit_usp_usage_issue_and_engineer_accepts
