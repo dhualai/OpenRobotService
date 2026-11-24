@@ -91,7 +91,9 @@ def _linked_text(label, url) -> str:
     return f'<a href="{escape(href, quote=True)}">{text}</a>' if href else text
 
 
-def report_overview(counts: Counter[str], context: dict, *, expect_gate: bool = False) -> str:
+def report_overview(
+    counts: Counter[str], context: dict, *, expect_gate: bool = False, compact: bool = False,
+) -> str:
     verdict = context.get("verdict")
     has_verdict = isinstance(verdict, str) and verdict in GATE_CN
     if has_verdict:
@@ -106,8 +108,10 @@ def report_overview(counts: Counter[str], context: dict, *, expect_gate: bool = 
     bits = [
         '<section class="report-overview">',
         f"<h2>{escape(title)}</h2>",
-        f"<p>结果总数 {total} · {escape(counts_text)}</p>",
     ]
+    if compact:
+        bits.append('<details><summary>查看门禁与运行明细</summary>')
+    bits.append(f"<p>结果总数 {total} · {escape(counts_text)}</p>")
     if expect_gate and not has_verdict:
         bits.append("<p>未收到有效门禁判定。</p>")
 
@@ -140,6 +144,8 @@ def report_overview(counts: Counter[str], context: dict, *, expect_gate: bool = 
                 )
                 bits.append("<tr>" + "".join(f"<td>{escape(str(v))}</td>" for v in values) + "</tr>")
         bits.append("</tbody></table>")
+    if compact:
+        bits.append("</details>")
     bits.append("</section>")
     return "\n".join(bits)
 

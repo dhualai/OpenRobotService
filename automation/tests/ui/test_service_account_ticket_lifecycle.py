@@ -165,7 +165,8 @@ def test_service_account_ticket_lifecycle(ui_regression_runtime: UiRegressionRun
             try:
                 with allure.step("清理本次测试数据"):
                     result = cleanup.cleanup(
-                        ticket_id=ticket_id, conversation_id=reporter.conversation_id,
+                        ticket_id=None if os.getenv("UI_REGRESSION_DEPLOYED") == "1" else ticket_id,
+                        conversation_id=reporter.conversation_id,
                     )
                     if result.warnings:
                         allure.attach("部分测试数据待清理", name="清理告警")

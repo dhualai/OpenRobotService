@@ -18,6 +18,11 @@ on:
       - "ai/**"
       - ".github/workflows/test-gate.yml"
   workflow_dispatch:
+    inputs:
+      ui_evidence_run_id:
+        description: "同一提交的 UI Regression 运行编号，用于关联页面证据"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -465,6 +470,7 @@ jobs:
     permissions:
       # 发布到 gh-pages 分支需要写权限
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -485,6 +491,16 @@ jobs:
           pattern: gate-junit-*
           merge-multiple: true
           path: automation/output/gate-junit
+
+      - name: Download approved UI run evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.ui_evidence_run_id != '' }}
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: service-account-ui-evidence
+          path: automation/output/ui-business-evidence
+          run-id: ${{ inputs.ui_evidence_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Evaluate required suites
         id: gate-verdict
@@ -585,10 +601,15 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
+          ui_args=()
+          if [ -f automation/output/ui-business-evidence/service-account-ui-run.json ]; then
+            ui_args=(--service-account-ui-results automation/output/ui-business-evidence
+                      --service-account-ui-environment service-account-test)
+          fi
           python3 automation/src/reporting/business_report.py \
             --results automation/output/allure-results \
             --context automation/output/test-gate-report.json --expect-gate \
-            --out automation/output/test-report-business.html
+            --out automation/output/test-report-business.html "${ui_args[@]}"
 
       - name: Upload business report
         id: business-upload

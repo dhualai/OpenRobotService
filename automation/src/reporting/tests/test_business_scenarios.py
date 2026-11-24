@@ -46,11 +46,12 @@ def _scenario_html(report, scenario):
 
 @pytest.mark.parametrize(("last_status", "expected"), [
     ("passed", "通过"),
-    ("failed", "失败"),
-    ("missing", "未验证"),
+    ("failed", "受阻"),
+    ("missing", "部分验证"),
 ])
-def test_service_ticket_history_checks_all_steps_and_never_counts_towards_gate(
-    tmp_path, last_status, expected,
+@pytest.mark.parametrize("origin", ["current", "matching_app", "old_commit", "wrong_environment", "legacy"])
+def test_service_ticket_evidence_checks_scope_and_never_counts_towards_gate(
+    tmp_path, last_status, expected, origin,
 ):
     history = tmp_path / "history"
     history.mkdir()
@@ -69,7 +70,10 @@ def test_service_ticket_history_checks_all_steps_and_never_counts_towards_gate(
                 {"name": f"{key}-断言与响应摘要", "source": fixture},
             ] if status != "missing" else [],
         })
-    name = "test_call_qa_to_ticket_close_regression"
+    name = (
+        "test_call_qa_to_ticket_close_regression" if origin == "legacy"
+        else "test_service_account_ticket_lifecycle"
+    )
     payload = {
         "name": "测试环境双角色工单闭环", "fullName": f"tests.ui.{name}#{name}",
         "status": "passed", "steps": steps, "start": 1795423036000,
@@ -79,16 +83,43 @@ def test_service_ticket_history_checks_all_steps_and_never_counts_towards_gate(
     (history / "other-result.json").write_text(json.dumps({
         **payload, "fullName": "unrelated", "start": payload["start"] + 10,
     }), encoding="utf-8")
+    commit = "a" * 40
+    environment = "service-account-test"
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({"run": {"commit": commit}}), encoding="utf-8")
+    if origin != "legacy":
+        evidence_dir = tmp_path / "evidence"
+        business_report.export_service_account_ui(history, evidence_dir, {
+            "commit": "b" * 40 if origin == "old_commit" else commit,
+            "deployment_commit": "b" * 40 if origin in ("old_commit", "matching_app") else commit,
+            "application_trees_match": origin in ("old_commit", "matching_app"),
+            "environment": "other-test" if origin == "wrong_environment" else environment,
+            "run_id": "123",
+            "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/123",
+        })
+        assert token not in (evidence_dir / business_report.UI_RUN_FILE).read_text(encoding="utf-8")
+    else:
+        evidence_dir = history
     report = tmp_path / "business.html"
     business_report.main([
         "--results", str(tmp_path / "empty"), "--expect-gate",
-        "--service-account-ui-results", str(history), "--out", str(report),
+        "--context", str(context), "--service-account-ui-environment", environment,
+        "--service-account-ui-results", str(evidence_dir), "--out", str(report),
     ])
 
     html = report.read_text(encoding="utf-8")
     card = _scenario_html(html, scenario)
-    assert f'">{expected}</span>' in card
-    assert "测试站独立实跑" in card and "UTC+8" in card
+    if origin in ("current", "matching_app"):
+        assert f'">{expected}</span>' in card
+        assert "本次提交页面实跑" in card and "/actions/runs/123" in card
+        if origin == "matching_app":
+            assert "测试站部署 bbbbbbbb" in card
+        if last_status != "passed":
+            assert "卡点 · 关闭步骤" in card
+    else:
+        assert '">本次未运行</span>' in card
+        assert "历史参考" in card
+    assert "UTC+8" in card
     assert card.count("<tr>") == 18
     assert ("再次打开仍显示已关闭" in card) == (last_status == "passed")
     assert "Test Gate 判定：未验收" in html and "结果总数 0" in html
@@ -121,11 +152,47 @@ def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_
     assert sources[name] == SOURCE_LABELS["service-account-rules"]
     card = _scenario_html(html, scenario)
     assert "服务号后台规则检查（观察项）" in card
-    assert 'class="business-status success">通过' in card
+    assert 'class="business-status neutral">部分验证' in card
     assert "<th>角色</th><th>动作</th><th>预期结果</th><th>实际结果</th>" in card
     assert 'href="#case-a0"' in card and 'id="case-a0"' in html
     assert "知识已发布，三类奖励可申领" in card
     assert token not in html
+
+
+def test_ticket_shows_interface_evidence_and_requires_current_ui(tmp_path):
+    files = {
+        "mock-result.json": (
+            "a0", "Mock 工单闭环",
+            "tests.business_chain.test_call_to_ticket_close.TestCallToTicketClose#test_call_qa_to_ticket_close",
+            "quality-api",
+        ),
+        "real-result.json": (
+            "b0", "真实建单后回读",
+            "tests.real.test_real_backend_smoke#test_task_create_and_get",
+            "real",
+        ),
+        "contract-result.json": (
+            "c0", "健康接口契约",
+            "tests.contract.test_openapi_contract#test_openapi_contract_smoke",
+            "contract",
+        ),
+    }
+    for filename, (uid, name, full_name, source) in files.items():
+        (tmp_path / filename).write_text(json.dumps({
+            "uuid": uid, "name": name, "fullName": full_name, "status": "passed",
+        }), encoding="utf-8")
+    (tmp_path / SOURCES_FILE).write_text(json.dumps({
+        filename: SOURCE_LABELS[item[3]] for filename, item in files.items()
+    }), encoding="utf-8")
+    output = tmp_path / "business.html"
+    business_report.main(["--results", str(tmp_path), "--out", str(output)])
+    html = output.read_text(encoding="utf-8")
+    card = _scenario_html(html, "service-ticket-lifecycle")
+    assert 'class="business-status neutral">部分验证' in card
+    assert "本次提交的页面闭环待验证" in card
+    assert 'href="#case-a0"' in card and 'href="#case-b0"' in card
+    assert card.count('href="#case-b0"') == 1
+    assert 'href="#case-c0"' not in card and 'id="case-c0"' in html
 
 
 def test_business_overview_lists_service_account_flows_and_preserves_source_groups(tmp_path):
@@ -185,7 +252,7 @@ def test_business_overview_lists_service_account_flows_and_preserves_source_grou
 
     groups = business_report.collect(tmp_path)
     assert set(groups) == {
-        "模拟接口测试", "真实工单流程（观察项）", "后台管理",
+        "我要摇人", "系统任务", "后台管理",
         "知识库数据库检查（观察项）", "来源未标注",
     }
     assert "Observed work orders" not in html and "DB checks" not in html
@@ -221,7 +288,7 @@ def test_report_keeps_skipped_missing_and_incomplete_scenarios_unverified(tmp_pa
     html = output.read_text(encoding="utf-8")
 
     finance_html = _scenario_html(html, "service-knowledge-finance")
-    assert "未验证" in finance_html and "步骤证据不完整" in finance_html
+    assert "部分验证" in finance_html and "步骤证据不完整" in finance_html
     assert "未记录实际结果" in finance_html
     assert "本次用例已跳过" in _scenario_html(html, "service-challenge")
     learning_html = _scenario_html(html, "service-learning")

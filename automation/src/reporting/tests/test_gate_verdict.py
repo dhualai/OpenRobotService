@@ -181,6 +181,7 @@ def test_required_suite_artifacts_are_connected_to_enforced_verdict():
     download = {
         step["with"]["pattern"]: step["with"]
         for step in report["steps"] if step.get("uses", "").startswith("actions/download-artifact@")
+        and "pattern" in step["with"]
     }
     assert download["allure-results-*"]["merge-multiple"] is False
     assert download["gate-junit-*"]["merge-multiple"] is True
@@ -221,3 +222,28 @@ def test_required_suite_artifacts_are_connected_to_enforced_verdict():
         step = next(step for step in report["steps"] if step.get("id") == step_name)
         assert step["continue-on-error"] is True
     assert "exit 1" in enforce["run"]
+
+
+def test_business_report_can_load_evidence_from_a_selected_ui_run():
+    workflows = Path(__file__).resolve().parents[4] / ".github/workflows"
+    gate = yaml.safe_load((workflows / "test-gate.yml").read_text(encoding="utf-8"))
+    ui = yaml.safe_load((workflows / "ui-regression.yml").read_text(encoding="utf-8"))
+    report = gate["jobs"]["allure-report"]
+    [download] = [
+        step for step in report["steps"]
+        if step.get("with", {}).get("name") == "service-account-ui-evidence"
+    ]
+    assert report["permissions"]["actions"] == "read"
+    assert download["with"]["run-id"] == "${{ inputs.ui_evidence_run_id }}"
+    assert download["continue-on-error"] is True
+    business = next(step for step in report["steps"] if step.get("id") == "business-html")
+    assert "--service-account-ui-environment service-account-test" in business["run"]
+    ui_steps = ui["jobs"]["ui-regression"]["steps"]
+    assert any("test_service_account_ticket_lifecycle.py" in step.get("run", "") for step in ui_steps)
+    [upload] = [
+        step for step in ui_steps if step.get("with", {}).get("name") == "service-account-ui-evidence"
+    ]
+    assert "inputs.deployment_commit == github.sha" in upload["if"]
+    assert any(path.endswith("/service-account-ui-run.json") for path in upload["with"]["path"].splitlines())
+    verify = next(step for step in ui_steps if step.get("id") == "verify-deployment")
+    assert 'git diff --quiet "$UI_DEPLOYMENT_COMMIT" HEAD -- frontend backend ai deploy doc-service' in verify["run"]

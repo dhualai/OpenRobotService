@@ -54,6 +54,7 @@ class BusinessScenario:
     steps: dict[str, BusinessStep]
     flow_title: str = ""
     planned_steps: tuple[tuple[BusinessStep, str], ...] = ()
+    trigger: str = ""
 
 
 SCENARIOS = {
@@ -128,6 +129,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
             ), 1)
         },
         flow_title="提单 → 派单 → 处理 → 关闭",
+        trigger="提单人在「我要摇人」确认报障工单",
     ),
     "service-knowledge-finance": BusinessScenario(
         "知识库", "工单知识归档、发布与奖励审核", SOURCE_LABELS["service-account-rules"],
@@ -137,6 +139,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
             "reject": checked_step("财务审核人", "在独立工单中拒绝奖励", "知识不发布，奖励不进入可申领", "知识未发布，奖励已拒绝"),
         },
         flow_title="知识沉淀 → 内容审核 → 财务审核 → 奖励",
+        trigger="处理人在已关闭工单提交知识沉淀报告",
     ),
     "service-learning": BusinessScenario(
         "服务号学习", "整理知识、审核出题与后台答题预览", SOURCE_LABELS["service-account-rules"],
@@ -147,6 +150,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
             "score": checked_step("后台预览者", "提交多选题答案", "答案集合完全匹配才得分，预览不保存成绩", "少选未得分，重复选项被拒绝，完整答案得分，预览未留存"),
         },
         flow_title="选材 → AI 出题 → 审核启用 → 学习答题",
+        trigger="内容管理员选择工单或技术材料并创建学习文章",
         planned_steps=(
             (
                 BusinessStep("学员", "打开课程、答题并刷新", "成绩和课程进度可在重新打开后查看"),
@@ -161,6 +165,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
             "settle": checked_step("用户与系统", "作答点赞，截止后评选", "按答案点赞选出最佳答案，奖励待财务审核且只入账一次", "选出了获赞答案，唯一一条奖励记录待财务审核"),
         },
         flow_title="高价值问题 → 用户解答 → 评选 → 奖励",
+        trigger="专区管理员发布高价值问题",
     ),
 }
 SCENARIOS.update(SERVICE_ACCOUNT_SCENARIOS)

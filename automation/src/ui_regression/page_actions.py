@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import time
 from datetime import datetime, timedelta
 
 from playwright.sync_api import (
+    Error as PlaywrightError,
     Locator,
     Page,
-    Response,
     TimeoutError as PlaywrightTimeoutError,
     expect,
 )
@@ -30,10 +29,18 @@ class UiPageActions:
 
     def login(self, username: str, password: str) -> None:
         self.page.goto(f"{self.base_url}/login?debug=true", wait_until="domcontentloaded")
+        if not self.page.url.startswith(f"{self.base_url}/"):
+            raise AssertionError("登录页跳出了已配置的测试站")
         self.page.get_by_test_id("login-username").fill(username)
-        self.page.get_by_test_id("login-password").fill(password)
+        try:
+            self.page.get_by_test_id("login-password").fill(password)
+        except PlaywrightError:
+            raise AssertionError("无法填写测试站口令输入框") from None
         self.page.get_by_test_id("login-submit").click()
-        self.page.wait_for_url(lambda url: "/login" not in url, timeout=20_000)
+        self.page.wait_for_url(
+            lambda url: url.startswith(f"{self.base_url}/") and "/login" not in url,
+            timeout=20_000,
+        )
         self._wait_for_login_success_toast()
 
     def start_new_conversation(self) -> None:
@@ -49,7 +56,11 @@ class UiPageActions:
             )
         ) as response_info:
             self.page.get_by_test_id("chat-send").first.click()
-        conversation_id = response_info.value.json().get("id")
+        response = response_info.value
+        if not response.ok:
+            raise AssertionError(f"创建会话失败: HTTP {response.status}")
+        body = response.json()
+        conversation_id = body.get("id") or (body.get("data") or {}).get("id")
         if conversation_id is not None:
             self.conversation_id = int(conversation_id)
         expect(self.page.get_by_test_id("chat-transfer-ticket")).to_be_visible(
@@ -73,10 +84,15 @@ class UiPageActions:
         )
         confirm_button = self.page.get_by_test_id("chat-ticket-confirm")
         expect(confirm_button).to_be_enabled(timeout=10_000)
-        response = self._click_and_wait_for_response(
-            confirm_button,
-            "/api/ai/qa/ticket/confirm",
-        )
+        with self.page.expect_response(
+            lambda response: (
+                response.request.method == "POST"
+                and response.url.split("?", 1)[0].endswith("/api/ai/qa/ticket/confirm")
+            ),
+            timeout=45_000,
+        ) as response_info:
+            confirm_button.click()
+        response = response_info.value
         if response.status != 200:
             raise AssertionError(f"确认提单失败: HTTP {response.status}")
         data = response.json().get("data") or {}
@@ -246,46 +262,3 @@ class UiPageActions:
                 target = marker.locator("xpath=.//button[1]")
         expect(target).to_be_visible(timeout=20_000)
         return target
-
-    def _click_and_wait_for_response(
-        self,
-        target: Locator,
-        url_fragment: str,
-        timeout_ms: int = 30_000,
-    ) -> Response:
-        request_seen = False
-        response_holder: dict[str, Response] = {}
-
-        def on_request(request) -> None:
-            nonlocal request_seen
-            if url_fragment in request.url:
-                request_seen = True
-
-        def on_response(response: Response) -> None:
-            if url_fragment in response.url:
-                response_holder["value"] = response
-
-        self.page.on("request", on_request)
-        self.page.on("response", on_response)
-        started = time.monotonic()
-        deadline = started + timeout_ms / 1000
-        retried = False
-        try:
-            target.click()
-            while time.monotonic() < deadline:
-                if "value" in response_holder:
-                    return response_holder["value"]
-                if (
-                    not request_seen
-                    and not retried
-                    and time.monotonic() - started >= 2
-                ):
-                    target.click()
-                    retried = True
-                self.page.wait_for_timeout(100)
-            raise PlaywrightTimeoutError(
-                f"点击后未收到接口响应：{url_fragment}"
-            )
-        finally:
-            self.page.remove_listener("request", on_request)
-            self.page.remove_listener("response", on_response)

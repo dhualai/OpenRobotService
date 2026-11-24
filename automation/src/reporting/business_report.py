@@ -12,6 +12,7 @@ import argparse
 import pathlib
 import collections
 import datetime
+import json
 import re
 
 if __package__:
@@ -20,8 +21,8 @@ if __package__:
         SOURCE_LABELS, describe_actual,
     )
     from .report_data import (
-        STATUS_CN, case_duration_ms, count_statuses, describe_counts, load_results,
-        read_object, report_overview,
+        STATUS_CN, _linked_text, case_duration_ms, count_statuses, describe_counts, load_results,
+        read_object, report_overview, run_metadata,
     )
 else:
     from business_scenarios import (
@@ -29,12 +30,42 @@ else:
         SOURCE_LABELS, describe_actual,
     )
     from report_data import (
-        STATUS_CN, case_duration_ms, count_statuses, describe_counts, load_results,
-        read_object, report_overview,
+        STATUS_CN, _linked_text, case_duration_ms, count_statuses, describe_counts, load_results,
+        read_object, report_overview, run_metadata,
     )
 
 DEFAULT_RESULTS = pathlib.Path('output/allure-results')
 DEFAULT_OUT = pathlib.Path('output/test-report-business.html')
+UI_RUN_FILE = 'service-account-ui-run.json'
+TICKET_SCENARIO = 'service-ticket-lifecycle'
+TICKET_PHASES = {
+    **dict.fromkeys(('S01', 'S02', 'S03', 'S04', 'S05'), '提单'),
+    **dict.fromkeys(('S06', 'S07', 'S08', 'S09'), '派单'),
+    **dict.fromkeys(('S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16'), '处理'),
+    'S17': '关闭',
+}
+PAGE_GAPS = {
+    'service-knowledge-finance': '提交沉淀至奖励可申领的页面闭环待验证',
+    'service-learning': '学员答题、评分与进度待验证',
+    'service-challenge': '发布至奖励待财务审核的页面闭环待验证',
+}
+BUSINESS_MODULES = {
+    'incident-create': '我要摇人',
+    'work-order-pause': '系统任务',
+    'admin-permissions': '后台管理',
+    TICKET_SCENARIO: '我要摇人',
+    'service-knowledge-finance': '知识库',
+    'service-learning': '题目生成',
+    'service-challenge': '高价值问题',
+}
+TICKET_API_EVIDENCE = (
+    ('test_call_to_ticket_close.TestCallToTicketClose#test_call_qa_to_ticket_close',
+     'quality-api', ('S03', 'S04', 'S05', 'S08', 'S09', 'S10', 'S11', 'S12',
+                     'S13', 'S14', 'S15', 'S16', 'S17')),
+    ('test_real_backend_smoke#test_task_create_and_get', 'real', ('S05',)),
+    ('test_ticket_lifecycle_real.TestTicketLifecycleReal#test_ticket_lifecycle_real',
+     'real', ('S09', 'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17')),
+)
 
 FEATURE_INFO = {
     '我要摇人': ('用户端入口', '用户通过智能对话描述问题，系统识别意图后自动创建工单'),
@@ -174,7 +205,10 @@ def collect(root=DEFAULT_RESULTS, *, results=None):
     for d in load_results(root) if results is None else results:
         labels = result_labels(d)
         source = d['source']
-        if source in OBSERVATION_SOURCES:
+        module = BUSINESS_MODULES.get(labels.get(SCENARIO_LABEL))
+        if module:
+            feat = module
+        elif source in OBSERVATION_SOURCES:
             feat = source
         else:
             feat = labels.get('feature') or source or '来源未标注'
@@ -221,9 +255,9 @@ def _business_evidence(result, scenario_id):
     return found
 
 
-def load_service_account_ui(root):
+def _load_raw_service_account_ui(root):
     """Read only the known lifecycle result and its assertion outcomes."""
-    scenario_id = 'service-ticket-lifecycle'
+    scenario_id = TICKET_SCENARIO
     scenario = SERVICE_ACCOUNT_SCENARIOS[scenario_id]
     case_names = {
         f'{package}.{test}#{test}'
@@ -280,26 +314,82 @@ def load_service_account_ui(root):
                     evidence[step_id] = {'outcome': 'failed'}
                 elif status == 'passed' and assertion.get('result') == '通过' and assertion.get('actual'):
                     evidence[step_id] = {'outcome': 'passed'}
-    # The test site's result is reference evidence. Gate totals and technical details
-    # use only the current run's results.
-    start = latest.get('start')
+    return {
+        'fullName': latest['fullName'], 'status': latest['status'],
+        'start': latest.get('start'), 'evidence': evidence,
+    }
+
+
+def export_service_account_ui(root, out, run):
+    """Publish only step outcomes and provenance from the UI regression."""
+    case = _load_raw_service_account_ui(root)
+    if case:
+        out.mkdir(parents=True, exist_ok=True)
+        payload = {**run, 'case': case}
+        (out / UI_RUN_FILE).write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+
+
+def load_service_account_ui(root, *, commit='', environment=''):
+    run = read_object(root / UI_RUN_FILE)
+    artifact_case = run.get('case')
+    case = artifact_case if isinstance(artifact_case, dict) else _load_raw_service_account_ui(root)
+    if not case:
+        return None
+    full_name = case.get('fullName')
+    deployed = run.get('deployment_commit')
+    matching_deployment = (
+        deployed == commit
+        or (
+            run.get('application_trees_match') is True and isinstance(deployed, str)
+            and bool(re.fullmatch(r'[a-fA-F0-9]{40}|[a-fA-F0-9]{64}', deployed))
+        )
+    )
+    current = (
+        isinstance(artifact_case, dict)
+        and isinstance(commit, str)
+        and bool(re.fullmatch(r'[a-fA-F0-9]{40}|[a-fA-F0-9]{64}', commit))
+        and run.get('commit') == commit and matching_deployment
+        and bool(environment) and run.get('environment') == environment
+        and isinstance(run.get('run_id'), str) and run['run_id'].isdigit()
+        and isinstance(full_name, str)
+        and full_name.endswith('.test_service_account_ticket_lifecycle#test_service_account_ticket_lifecycle')
+    )
+    evidence = {}
+    if isinstance(case.get('evidence'), dict):
+        for key, outcome in case['evidence'].items():
+            value = outcome.get('outcome') if isinstance(outcome, dict) else None
+            if key in TICKET_PHASES and isinstance(value, str) and value in STATUS_CN:
+                evidence[key] = {'outcome': value}
+    status = case.get('status')
+    start = case.get('start')
     run_time = ''
     if type(start) is int and 0 < start < 4102444800000:
         china_time = datetime.timezone(datetime.timedelta(hours=8))
         run_time = datetime.datetime.fromtimestamp(start / 1000, china_time).strftime(
             ' · %Y-%m-%d %H:%M (UTC+8)',
         )
+    run_url = run.get('run_url', '')
+    if not current or not isinstance(run_url, str) or not re.fullmatch(
+        rf'https://[\w.-]+/[\w.-]+/[\w.-]+/actions/runs/{run.get("run_id", "")}', run_url,
+    ):
+        run_url = ''
+    deploy_note = f' · 测试站部署 {deployed[:8]}' if current and deployed != commit else ''
     return {
-        'source': scenario.source,
-        'status': latest['status'],
+        'source': SOURCE_LABELS['service-account-ui'],
+        'status': status if isinstance(status, str) and status in STATUS_CN else 'unknown',
         'evidence': evidence,
-        'provenance': f'测试站独立实跑{run_time}，供业务复核。本次 Test Gate 仍按本次产物判定。',
+        'current': current,
+        'provenance': (
+            f'本次提交页面实跑 · 运行 {run["run_id"]} · {environment}{deploy_note}{run_time}'
+            if current else f'测试站独立实跑{run_time}（历史参考）'
+        ),
+        'run_url': run_url,
     }
 
 
 def _business_result(case, judgements):
     if case is None:
-        return '未验证', 'neutral', '本次没有收到该测试来源的场景结果。'
+        return '本次未运行', 'neutral', '本次没有收到场景结果。'
     status = case['status']
     if status == 'skipped':
         detail = case.get('statusDetails')
@@ -308,13 +398,42 @@ def _business_result(case, judgements):
             return '未验证', 'neutral', '预期失败，计入跳过。'
         if 'USE_MOCK=0 required' in message:
             return '未验证', 'neutral', '本次没有启用真实后端验证。'
-        return '未验证', 'neutral', '本次用例已跳过。'
+        return '本次未运行', 'neutral', '本次用例已跳过。'
     if status in ('failed', 'broken') or (status == 'passed' and False in judgements):
-        return '失败', 'failure', '请查看实际结果和技术详情。'
+        return '受阻', 'failure', '用例断言未通过。'
     if status != 'passed' or None in judgements:
-        return '未验证', 'neutral', '步骤证据不完整。'
+        return '部分验证', 'neutral', '步骤证据不完整。'
     label = '模拟通过' if case['source'] == SOURCE_LABELS['quality-api'] else '通过'
     return label, 'success', ''
+
+
+def _ticket_api_evidence(results):
+    evidence = collections.defaultdict(list)
+    for result in results:
+        full_name = result.get('fullName')
+        if not isinstance(full_name, str):
+            continue
+        for case_name, source, steps in TICKET_API_EVIDENCE:
+            if full_name.endswith(case_name) and result['source'] == SOURCE_LABELS[source]:
+                for step_id in steps:
+                    evidence[step_id].append(result)
+    return evidence
+
+
+def _evidence_links(cases):
+    links = []
+    for case in cases:
+        label = f'{case["name"]}（{case["source"]} · {STATUS_CN[case["status"]]}）'
+        anchor = case_anchor(case)
+        if anchor:
+            links.append(
+                f'<a href="#{anchor}" '
+                'onclick="document.getElementById(this.hash.slice(1)).open = true">'
+                f'{esc(label)}</a>'
+            )
+        else:
+            links.append(esc(label))
+    return '<br>'.join(links)
 
 
 def render_business_scenarios(results, *, service_account_ui=None):
@@ -325,47 +444,75 @@ def render_business_scenarios(results, *, service_account_ui=None):
             cases[scenario_id].append(result)
 
     priority = {'failed': 0, 'broken': 1, 'passed': 2, 'skipped': 3, 'unknown': 4}
+    ticket_api = _ticket_api_evidence(results)
     parts = ['<section class="business-list"><h3>业务场景一览</h3>']
     for scenario_id, scenario in SERVICE_ACCOUNT_SCENARIOS.items():
         # A Mock run can collect a real-only case and skip it. Use the designated evidence source.
         candidates = [case for case in cases[scenario_id] if case['source'] == scenario.source]
         case = min(candidates, key=lambda record: priority[record['status']], default=None)
-        if scenario_id == 'service-ticket-lifecycle' and service_account_ui:
+        if scenario_id == TICKET_SCENARIO and service_account_ui and service_account_ui['current']:
             case = service_account_ui
             evidence = case['evidence']
         else:
             evidence = _business_evidence(case, scenario_id) if case else {}
         observations = [
-            (step, *describe_actual(step, evidence.get(step_id, {})))
+            (step_id, step, *describe_actual(step, evidence.get(step_id, {})))
             for step_id, step in scenario.steps.items()
         ]
-        verdict, colour, reason = _business_result(case, [match for _, _, match in observations])
-        if scenario.planned_steps and colour == 'success':
-            verdict, colour, reason = '部分验证', 'neutral', '已验证的步骤通过，待验证步骤见下表。'
+        verdict, colour, reason = _business_result(case, [match for _, _, _, match in observations])
+        if scenario_id == TICKET_SCENARIO:
+            if case is None and any(
+                check['status'] in ('passed', 'failed', 'broken')
+                for checks in ticket_api.values() for check in checks
+            ):
+                verdict, colour, reason = '部分验证', 'neutral', '本次提交的页面闭环待验证'
+            elif case is not None:
+                target = False if colour == 'failure' else None
+                phase = next((TICKET_PHASES.get(key) for key, _, _, match in observations
+                              if match is target), None)
+                if phase and colour != 'success':
+                    reason = f'{phase}步骤断言未通过' if target is False else f'{phase}步骤缺少验证证据'
+        if scenario_id in PAGE_GAPS and colour == 'success':
+            verdict, colour, reason = '部分验证', 'neutral', PAGE_GAPS[scenario_id]
+        passed = sum(match is True for _, _, _, match in observations)
+        if case:
+            checked = f'{passed}/{len(observations)} 个断言通过'
+        else:
+            checked = '有接口检查结果' if verdict == '部分验证' else '无本次验证结果'
         observations.extend(
-            (step, f'未验证（{source}）', None) for step, source in scenario.planned_steps
+            ('', step, f'未验证（{source}）', None) for step, source in scenario.planned_steps
         )
         parts.append(
             f'<details class="business-scenario" id="scenario-{scenario_id}">'
             f'<summary><span class="module-name">{esc(scenario.module)}</span>'
             f'<strong>{esc(scenario.flow_title or scenario.title)}</strong>'
             f'<span class="business-status {colour}">{verdict}</span>'
-            f'<span class="source">{esc(scenario.source)}{"（计划）" if case is None else ""}</span>'
+            f'<span class="business-snapshot">触发 · {esc(scenario.trigger)}'
+            f'<br>本次验证 · {esc(checked)}'
+            f'{f"<br>卡点 · {esc(reason)}" if reason else ""}</span>'
             '</summary><div class="business-body">'
         )
-        if reason:
-            parts.append(f'<p class="meta">{esc(reason)}</p>')
         if case and case.get('provenance'):
-            parts.append(f'<p class="meta">{esc(case["provenance"])}</p>')
+            parts.append(f'<p class="meta">{_linked_text(case["provenance"], case.get("run_url", ""))}</p>')
+        history = service_account_ui if scenario_id == TICKET_SCENARIO and case is None else None
+        if history:
+            parts.append(f'<p class="meta">{esc(history["provenance"])}</p>')
         parts.append(
             '<table><thead><tr><th>角色</th><th>动作</th><th>预期结果</th>'
-            '<th>实际结果</th></tr></thead><tbody>'
+            f'<th>{"历史实际" if history else "实际结果"}</th><th>相关测试</th></tr></thead><tbody>'
         )
-        for step, actual, match in observations:
-            colour = 'failure' if match is False and verdict == '失败' else ''
+        for key, step, actual, match in observations:
+            if history:
+                actual, match = describe_actual(step, history['evidence'].get(key, {}))
+            step_color = 'failure' if match is False else ''
+            if scenario_id == TICKET_SCENARIO:
+                related = ticket_api.get(key, [])
+            else:
+                related = [case] if case and key else []
             parts.append(
                 f'<tr><td>{esc(step.role)}</td><td>{esc(step.action)}</td>'
-                f'<td>{esc(step.expected)}</td><td class="{colour}">{esc(actual)}</td></tr>'
+                f'<td>{esc(step.expected)}</td><td class="{step_color}">{esc(actual)}</td>'
+                f'<td>{_evidence_links(related)}</td></tr>'
             )
         parts.append('</tbody></table>')
         anchor = case_anchor(case) if case else ''
@@ -406,6 +553,8 @@ def main(argv=None):
     parser.add_argument('--expect-gate', action='store_true', help='缺失门禁判定时显示未验收')
     parser.add_argument('--service-account-ui-results', type=pathlib.Path,
                         help='独立的服务号测试站 Allure 结果目录')
+    parser.add_argument('--service-account-ui-environment', default='',
+                        help='当前验收所需的服务号页面测试环境标识')
     args = parser.parse_args(argv)
 
     root = pathlib.Path(args.results)
@@ -417,6 +566,8 @@ def main(argv=None):
     grand = len(all_scenes)
     bad = [s for s in all_scenes if s['status'] in ('failed', 'broken')]
     context = read_object(args.context) if args.context else {}
+    run = context.get('run')
+    commit = run.get('commit', '') if isinstance(run, dict) else run_metadata()['commit']
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
     feats = sorted(scenes.keys(), key=lambda k: -sum(len(v) for v in scenes[k].values()))
 
@@ -434,13 +585,15 @@ def main(argv=None):
          '.business-list{margin:22px 0}.business-list h3{font-size:17px}',
          '.business-scenario{background:#fff;border:1px solid #d1d9e0;border-radius:9px;margin:8px 0}',
          '.business-scenario>summary{cursor:pointer;padding:12px;display:grid;',
-         'grid-template-columns:6em minmax(13em,1fr) 5em 12em;gap:10px;align-items:center}',
+         'grid-template-columns:6em minmax(13em,1fr) minmax(6em,auto);gap:8px 10px;align-items:center}',
+         '.business-snapshot{grid-column:2/-1;color:#57606a;font-size:13px}',
          '.business-scenario>summary .module-name::before{content:"▸";margin-right:5px}',
          '.business-scenario[open]>summary .module-name::before{content:"▾"}',
          '.business-scenario>summary .source{font-size:12px}',
          '.business-body{padding:0 12px 10px}.module-name,.neutral{color:#57606a}',
          '.business-status{font-weight:600}.success{color:#146c2e}.failure{color:#b3261e}',
-         '@media(max-width:700px){.business-scenario>summary{grid-template-columns:5em 1fr}',
+         '@media(max-width:700px){.business-scenario>summary{grid-template-columns:5em minmax(0,1fr)}',
+         '.business-snapshot{grid-column:1/-1}',
          '.business-body{overflow-x:auto}}',
          '.toc{background:#fff;border:1px solid #e3e8ee;border-radius:10px;padding:6px 20px;font-size:13px;margin:22px 0}',
          '.toc a{display:inline-block;margin:8px 18px 8px 0;color:#0969da;text-decoration:none}',
@@ -489,10 +642,11 @@ def main(argv=None):
          '</style></head><body><div class="wrap">']
 
     p.append('<h1>自动化测试结论报告</h1>')
-    p.append(f'<div class="sub">生成时间 {now} · {len(feats)} 个业务模块</div>')
-    p.append(report_overview(count_statuses(all_scenes), context, expect_gate=args.expect_gate))
+    p.append(report_overview(count_statuses(all_scenes), context, expect_gate=args.expect_gate, compact=True))
     ui_run = (
-        load_service_account_ui(args.service_account_ui_results)
+        load_service_account_ui(
+            args.service_account_ui_results, commit=commit, environment=args.service_account_ui_environment,
+        )
         if args.service_account_ui_results else None
     )
     p.append(render_business_scenarios(results, service_account_ui=ui_run))
@@ -504,6 +658,7 @@ def main(argv=None):
              '</div>')
 
     p.append('<h3 style="font-size:15px;margin:0 0 10px">技术明细 · 各模块情况</h3>')
+    p.append(f'<div class="sub">生成时间 {now} · {len(feats)} 个业务模块</div>')
     p.append('<table><thead><tr><th style="width:26%">业务模块</th><th style="width:11%">场景数</th>'
              '<th style="width:32%">结果分布</th><th>测了什么</th></tr></thead><tbody>')
     for feat in feats:

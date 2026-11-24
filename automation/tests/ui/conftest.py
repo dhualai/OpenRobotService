@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
 
@@ -19,6 +20,9 @@ from automation.src.ui_regression.config import UiRegressionConfig
 from automation.src.ui_regression.db_cleanup import DatabaseCleanupConfig
 from automation.src.ui_regression.gateway import create_app
 from automation.src.ui_regression.tunnels import UiTunnelManager
+
+
+TEST_SITE = "https://usp.ep-zl.com/t"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -72,23 +76,16 @@ def _wait_for_gateway(url: str, server: uvicorn.Server, timeout: float = 30.0) -
     raise RuntimeError(f"UI regression Gateway did not start: {last_error}")
 
 
-@pytest.fixture(scope="session")
-def ui_regression_runtime() -> Iterator[UiRegressionRuntime]:
-    if os.getenv("UI_REGRESSION_E2E", "0") != "1":
-        pytest.skip("UI_REGRESSION_E2E=1 is required")
-
+@contextmanager
+def _ui_target():
+    if os.getenv("UI_REGRESSION_DEPLOYED") == "1":
+        yield f"{TEST_SITE}/app", TEST_SITE, "", None
+        return
     config = UiRegressionConfig.from_env()
     if not config.frontend_dist.joinpath("index.html").is_file():
         pytest.fail(f"frontend dist is missing: {config.frontend_dist}")
     if not config.ssh_host or not config.ssh_user:
         pytest.fail("UI_REGRESSION_SSH_HOST and UI_REGRESSION_SSH_USER are required")
-
-    u1_username = os.getenv("UI_REGRESSION_U1_USERNAME", "")
-    u1_password = os.getenv("UI_REGRESSION_U1_PASSWORD", "")
-    u2_username = os.getenv("UI_REGRESSION_U2_USERNAME", "")
-    u2_password = os.getenv("UI_REGRESSION_U2_PASSWORD", "")
-    if not all((u1_username, u1_password, u2_username, u2_password)):
-        pytest.fail("U1/U2 UI regression credentials are required")
 
     tunnel_manager = UiTunnelManager(config)
     backend_url, ai_url = tunnel_manager.start()
@@ -126,49 +123,57 @@ def ui_regression_runtime() -> Iterator[UiRegressionRuntime]:
         daemon=True,
     )
     server_thread.start()
-    _wait_for_gateway(gateway_url, server)
+    try:
+        _wait_for_gateway(gateway_url, server)
+        yield gateway_url, backend_url, ai_url, db_cleanup_config
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=10)
+        tunnel_manager.stop()
 
-    playwright = sync_playwright().start()
-    headless = os.getenv("UI_REGRESSION_HEADLESS", "1") not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
-    browser = playwright.chromium.launch(headless=headless)
-    context_options = {
+
+@pytest.fixture(scope="session")
+def ui_regression_runtime() -> Iterator[UiRegressionRuntime]:
+    if os.getenv("UI_REGRESSION_E2E", "0") != "1":
+        pytest.skip("UI_REGRESSION_E2E=1 is required")
+
+    u1_username = os.getenv("UI_REGRESSION_U1_USERNAME", "")
+    u1_password = os.getenv("UI_REGRESSION_U1_PASSWORD", "")
+    u2_username = os.getenv("UI_REGRESSION_U2_USERNAME", "")
+    u2_password = os.getenv("UI_REGRESSION_U2_PASSWORD", "")
+    if not all((u1_username, u1_password, u2_username, u2_password)):
+        pytest.fail("U1/U2 UI regression credentials are required")
+    if u1_username == u2_username:
+        pytest.fail("The two test roles require different accounts")
+
+    headless = os.getenv("UI_REGRESSION_HEADLESS", "1") not in {"0", "false", "no", "off"}
+    options = {
         "viewport": {"width": 430, "height": 932},
         "locale": "zh-CN",
         "timezone_id": "Asia/Shanghai",
     }
-    u1_context = browser.new_context(**context_options)
-    u2_context = browser.new_context(**context_options)
-    u1_page = u1_context.new_page()
-    u2_page = u2_context.new_page()
-
-    try:
-        yield UiRegressionRuntime(
-            gateway_url=gateway_url,
-            backend_url=backend_url,
-            ai_url=ai_url,
-            browser=browser,
-            u1_context=u1_context,
-            u2_context=u2_context,
-            u1_page=u1_page,
-            u2_page=u2_page,
-            u1_username=u1_username,
-            u1_password=u1_password,
-            u2_username=u2_username,
-            u2_password=u2_password,
-            cleanup_username=os.getenv("UI_REGRESSION_CLEANUP_USERNAME", ""),
-            cleanup_password=os.getenv("UI_REGRESSION_CLEANUP_PASSWORD", ""),
-            db_cleanup_config=db_cleanup_config,
-        )
-    finally:
-        u1_context.close()
-        u2_context.close()
-        browser.close()
-        playwright.stop()
-        server.should_exit = True
-        server_thread.join(timeout=10)
-        tunnel_manager.stop()
+    with _ui_target() as target, sync_playwright() as playwright:
+        gateway_url, backend_url, ai_url, db_cleanup_config = target
+        browser = playwright.chromium.launch(headless=headless)
+        try:
+            u1_context = browser.new_context(**options)
+            u2_context = browser.new_context(**options)
+            yield UiRegressionRuntime(
+                gateway_url=gateway_url,
+                backend_url=backend_url,
+                ai_url=ai_url,
+                browser=browser,
+                u1_context=u1_context,
+                u2_context=u2_context,
+                u1_page=u1_context.new_page(),
+                u2_page=u2_context.new_page(),
+                u1_username=u1_username,
+                u1_password=u1_password,
+                u2_username=u2_username,
+                u2_password=u2_password,
+                cleanup_username=os.getenv("UI_REGRESSION_CLEANUP_USERNAME", ""),
+                cleanup_password=os.getenv("UI_REGRESSION_CLEANUP_PASSWORD", ""),
+                db_cleanup_config=db_cleanup_config,
+            )
+        finally:
+            browser.close()
