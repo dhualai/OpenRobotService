@@ -8,8 +8,8 @@ from datetime import timedelta, timezone
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 
-from app.core.user_identity import is_admin_user
 from app.core.config import settings
+from app.modules.admin.api.auth import has_permission_code
 from app.models.identity import UserDB
 from app.models.knowledge import KnowledgeLike, KnowledgeLikeEvent
 from app.models.knowledge_challenge import (
@@ -46,8 +46,13 @@ def ensure_enabled():
         raise HTTPException(409, "高价值问题专区暂未开放新参与")
 
 
+# 高价值问题专区管理权限编码
+PERM_KNOWLEDGE_CHALLENGE_MANAGE = "backend:knowledge-challenge:manage"
+
+
 def can_manage(actor):
-    return is_admin_user(actor) or actor.get("can_manage_knowledge_challenges") is True
+    """是否可管理高价值问题专区：持有权限编码或遗留的 can_manage 硬编码字段。"""
+    return has_permission_code(actor, PERM_KNOWLEDGE_CHALLENGE_MANAGE) or actor.get("can_manage_knowledge_challenges") is True
 
 
 def require_admin(actor):

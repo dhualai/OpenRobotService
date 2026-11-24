@@ -10,6 +10,50 @@ from automation.src.clients.base import BaseClient
 from automation.src.utils.retry import async_retry, RetryConfig
 from automation.src.clients.exceptions import AuthenticationError, ClientConnectionError, ClientTimeoutError
 
+# Apply redaction only to report data. Callers still receive the original response.
+_REDACTED = "***"
+_SENSITIVE_HEADERS = {
+    "authorization", "cookie", "set-cookie", "proxy-authorization",
+    "x-api-key", "x-auth-token", "x-access-token", "x-refresh-token",
+}
+_SENSITIVE_BODY_KEYS = {
+    "password", "passwd", "pwd", "token", "accesstoken", "refreshtoken",
+    "idtoken", "sessiontoken", "secret", "clientsecret", "apikey",
+    "credential", "credentials", "authorization", "cookie", "setcookie",
+}
+
+
+def _attachment_url(url: str) -> str:
+    """Keep the request path while omitting URL components that can carry credentials."""
+    try:
+        return str(httpx.URL(url).copy_with(username=None, password=None, query=None, fragment=None))
+    except httpx.InvalidURL:
+        return _REDACTED
+
+
+def _mask_headers(headers: Dict[str, Any]) -> Dict[str, Any]:
+    masked = {}
+    for key, value in headers.items():
+        name = str(key).lower()
+        if name in _SENSITIVE_HEADERS:
+            value = _REDACTED
+        elif name in {"location", "content-location"}:
+            value = _attachment_url(str(value))
+        masked[key] = value
+    return masked
+
+
+def _mask_body(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        masked = {}
+        for key, value in obj.items():
+            name = str(key).lower().replace("_", "").replace("-", "")
+            masked[key] = _REDACTED if name in _SENSITIVE_BODY_KEYS else _mask_body(value)
+        return masked
+    if isinstance(obj, list):
+        return [_mask_body(x) for x in obj]
+    return obj
+
 
 class ApiClient(BaseClient):
     """HTTP API client with retry, timeout, logging, and exception handling.
@@ -95,7 +139,7 @@ class ApiClient(BaseClient):
             self._allure_attach_response(response)
 
             if response.status_code in (401, 403) and self._raise_auth_errors:
-                raise AuthenticationError(f"Authentication failed: {response.status_code} {response.text}")
+                raise AuthenticationError(f"Authentication failed: HTTP {response.status_code}")
 
             return response
 
@@ -134,32 +178,32 @@ class ApiClient(BaseClient):
     # ── Allure attachments ──────────────────────────────────────────────
 
     def _allure_attach_request(self, method: str, url: str, **kwargs: Any) -> None:
-        """Attach the full request (url/headers/params/body) as a single attachment."""
+        """Attach the request with sensitive fields masked."""
         full_url = f"{self._cfg.base_url.rstrip('/')}/{url}"
         detail: Dict[str, Any] = {
             "method": method.upper(),
-            "url": full_url,
+            "url": _attachment_url(full_url),
         }
         headers = kwargs.get("headers", {})
         if headers:
             try:
-                detail["headers"] = dict(headers)
+                detail["headers"] = _mask_headers(dict(headers))
             except Exception:
                 pass
         params = kwargs.get("params", {})
         if params:
             try:
-                detail["params"] = dict(params)
+                detail["params"] = _mask_body(dict(params))
             except Exception:
                 pass
         json_body = kwargs.get("json")
         if json_body is not None:
-            detail["body"] = json_body
+            detail["body"] = _mask_body(json_body)
         else:
             data_body = kwargs.get("data")
             if data_body is not None:
                 try:
-                    detail["body"] = dict(data_body)
+                    detail["body"] = _mask_body(dict(data_body))
                 except Exception:
                     pass
         try:
@@ -172,7 +216,7 @@ class ApiClient(BaseClient):
             pass
 
     def _allure_attach_response(self, response: httpx.Response) -> None:
-        """Attach the full response (status/headers/body) as a single attachment."""
+        """Attach response metadata and its redacted structured body."""
         try:
             status_code = response.status_code
         except Exception:
@@ -180,7 +224,7 @@ class ApiClient(BaseClient):
 
         detail: Dict[str, Any] = {
             "status_code": status_code,
-            "url": str(getattr(response, "url", "")),
+            "url": _attachment_url(str(getattr(response, "url", ""))),
         }
         try:
             detail["reason"] = str(response.reason_phrase)
@@ -189,18 +233,22 @@ class ApiClient(BaseClient):
         try:
             resp_headers = dict(response.headers)
             if resp_headers:
-                detail["headers"] = resp_headers
+                detail["headers"] = _mask_headers(resp_headers)
         except Exception:
             pass
         try:
-            body_text = response.text
+            has_body = bool(response.content)
         except Exception:
-            body_text = ""
-        if body_text:
+            has_body = False
+        if has_body:
             try:
-                detail["body"] = response.json()
-            except (json.JSONDecodeError, ValueError, TypeError):
-                detail["body"] = body_text
+                body = response.json()
+            except (ValueError, TypeError):
+                body = None
+            if isinstance(body, (dict, list)):
+                detail["body"] = _mask_body(body)
+            else:
+                detail["body"] = "[unstructured response body omitted]"
         try:
             allure.attach(
                 json.dumps(detail, indent=2, ensure_ascii=False, default=str),

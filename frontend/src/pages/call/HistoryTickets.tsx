@@ -108,7 +108,8 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     } = {};
     if (statusFilter) f.status = statusFilter;
     else f.exclude_status = 'closed';
-    if (search.trim()) f.keyword = search.trim();
+    // 用户可能输入 #123 来表示工单编号，需先去掉 # 前缀再传给后端
+    if (search.trim()) f.keyword = search.trim().replace(/^#/, '');
     if (!isAdmin && username) f.username = username;
     // 关注维度与「看谁的工单」解耦：viewer 恒传当前登录用户（admin 虽不过滤创建者，
     // 但仍需回填自己的星标态）；followed 为独立的「我关注的」开关，与状态筛选叠加。
@@ -368,7 +369,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           <Search className="history-search__icon" size={16} strokeWidth={2} />
           <input
             className="history-search"
-            placeholder="搜索工单编号/标题/描述…"
+            placeholder="搜索工单编号/标题/描述（如 #123）…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />

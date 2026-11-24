@@ -70,6 +70,10 @@ class WechatQrcode(Base):
     # ── 扫码跳转配置 ──
     redirect_url = Column(String(512), nullable=True, comment="扫码后跳转 URL（覆盖默认 /app/call）")
 
+    # ── 扫码卡片自定义（特殊码如「新用户注册」「忘记密码」用；留空走原有分支逻辑） ──
+    card_title = Column(String(128), nullable=True, comment="扫码推送图文卡片标题（留空按 project_code 等字段推导）")
+    card_description = Column(Text, nullable=True, comment="扫码推送图文卡片描述（留空按 project_code 等字段推导）")
+
     # ── 操作人 ──
     created_by = Column(String(64), nullable=True, comment="创建人 username")
     published_by = Column(String(64), nullable=True, comment="发布人 username")

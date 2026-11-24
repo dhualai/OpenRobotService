@@ -1,0 +1,38 @@
+# 智库（doc-service）test 环境独立 Postgres。
+#
+# 与严青的 topo-ng 栈**完全隔离**：独立项目名、独立数据卷、独立端口（仅绑 127.0.0.1）。
+# - 绝不与 topo-ng-db 共用数据卷或数据库；
+# - 绝不执行 `docker compose down -v`（会抹掉整库）；
+# - 5433 只绑 127.0.0.1，不对公网/内网其他主机暴露。
+#
+# 用法：
+#   cd doc-service/deploy/ors
+#   KB_PG_PASSWORD='<随机长口令>' docker compose -f docker-compose.kb-test.yml up -d
+#   KB_PG_PASSWORD='<同一个口令>' docker compose -f docker-compose.kb-test.yml ps
+#
+# 口令只需在首次 up 时生效（写进卷的 POSTGRES_PASSWORD），之后请离线保管。
+
+name: kb-portal-test
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: kb-portal-test-db
+    environment:
+      POSTGRES_USER: topo
+      POSTGRES_PASSWORD: ${KB_PG_PASSWORD:?must set KB_PG_PASSWORD}
+      POSTGRES_DB: topo
+    ports:
+      # 只绑回环：智库 API 以 usp-a 身份本机连接，不需要跨主机访问
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - kb_portal_test_pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U topo -d topo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  kb_portal_test_pg_data:

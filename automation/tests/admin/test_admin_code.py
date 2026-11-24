@@ -8,6 +8,7 @@ import pytest
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
 from automation.src.config.credentials import role_credentials
+from automation.src.reporting.api_step import api_step
 
 
 async def _auth_for_role(client, role: str) -> dict:
@@ -18,15 +19,10 @@ async def _auth_for_role(client, role: str) -> dict:
 
 async def _api(client, method: str, path: str, step: str = '', headers=None,
                expected_status: int | None = None, expected_fields: dict | None = None, **kwargs):
-    """Send a request wrapped in an Allure step block; assertions run inside the step."""
-    with allure.step(step or f'{method.upper()} {path}'):
-        r = await client.request(method, path, headers=headers, **kwargs)
-        if expected_status is not None:
-            assert_status_code(r, expected_status)
-        if expected_fields:
-            assert_dict_contains_subset(r.json(), expected_fields)
-        flush_assert_attachment()
-        return r
+    """委托统一上报：自动附加入参、出参、断言。"""
+    return await api_step(client, method, path, step=step, headers=headers,
+                          expected_status=expected_status,
+                          expected_fields=expected_fields, **kwargs)
 
 
 @allure.feature('后台管理')

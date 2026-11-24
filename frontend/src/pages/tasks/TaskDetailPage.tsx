@@ -34,8 +34,7 @@ import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canE
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
-import MDEditor from '@uiw/react-md-editor';
-import '@uiw/react-md-editor/markdown-editor.css';
+import ArchiveReportRichEditor, { type ArchiveReportRichEditorHandle } from '@/shared/components/ArchiveReportRichEditor';
 import { archiveGenerateStream, fetchWithAuth, taskDiscussStream } from '@/api/ai';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { getProjectMembers } from '@/api/projects';
@@ -350,6 +349,12 @@ export default function TaskDetailPage() {
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
+  // 项目加入审核单（metadata_info.approval_kind === 'project_join_request'）
+  const [joinApprovalRole, setJoinApprovalRole] = useState<string | null>(null);
+  const [joinApproving, setJoinApproving] = useState(false);
+  const [joinApprovalRoles, setJoinApprovalRoles] = useState<{ id: string; name: string }[]>([]);
+  const [joinRolePopupVisible, setJoinRolePopupVisible] = useState(false);
+
   // ── 归档流程 state ──
   const [archiveEditorVisible, setArchiveEditorVisible] = useState(false);
   const [archiveReportContent, setArchiveReportContent] = useState('');
@@ -366,11 +371,11 @@ export default function TaskDetailPage() {
   // 只有「有没有、是哪几张」。score 为 dense 余弦，仅用于请求侧 min_score。
   const [archiveSimilar, setArchiveSimilar] = useState<ArchiveSimilarItem[]>([]);
   const [archiveSimilarLoading, setArchiveSimilarLoading] = useState(false);
-  // ORS-1010：报告预览/编辑切换（生成完默认预览——用户先看到渲染结果含图片）
-  const [archiveReportPreview, setArchiveReportPreview] = useState(false);
   // ORS-1010：报告插图上传（走评论附件接口拿 object_path，正文插 markdown）
   const [uploadingReportImage, setUploadingReportImage] = useState(false);
   const reportImageInputRef = useRef<HTMLInputElement | null>(null);
+  // RichEditor ref：用于插入上传好的图片
+  const archiveEditorRef = useRef<ArchiveReportRichEditorHandle | null>(null);
   // ORS-1010：展开查看卡正文（问题/根因/解决）的条目
   const [expandedSimilar, setExpandedSimilar] = useState<Set<number>>(new Set());
   // 检索成功完成（retrieval_status=ok）：0 条也显示"未发现"提示，让功能存在感在；
@@ -761,7 +766,7 @@ export default function TaskDetailPage() {
       setArchiveSimilar(list.slice(0, 5));
       setArchiveSimilarReady(res?.retrieval_status !== 'unavailable');
     } catch {
-      setArchiveSimilar([]); setArchiveReportPreview(false); // 静默降级：相似提示拿不到不影响知识沉淀
+      setArchiveSimilar([]); // 静默降级：相似提示拿不到不影响知识沉淀
       setArchiveSimilarReady(false);
     } finally {
       setArchiveSimilarLoading(false);
@@ -769,27 +774,42 @@ export default function TaskDetailPage() {
   }, []);
 
   // ── 开始归档（closed → archiving）──
-  /** ORS-1010：报告插图上传——走评论附件接口拿 object_path，正文插相对路径
-      markdown（预览/审核/知识卡全链路 AuthImage 可渲染）。多张逐张传，
-      追加到正文末尾；失败 toast 不中断 */
-  const handleReportImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    e.target.value = ''; // 允许重复选同一文件
+  /** ORS-1010：报告插图上传——走评论附件接口拿 object_path，通过 RichEditor ref 插到光标位置。
+      多张逐张传，外部按钮 / 粘贴 / 拖拽统一入口。失败 toast 不中断 */
+  const handleReportImageUpload = async (files: File[]) => {
     if (!files.length) return;
     setUploadingReportImage(true);
     try {
-      const inserts: string[] = [];
+      const inserts: { path: string; name: string }[] = [];
       for (const f of files) {
         const objectPath = await uploadCommentAttachment(f, `report-${Date.now()}`);
-        inserts.push(`![${f.name}](/api/tasks/attachments/download?path=${encodeURIComponent(objectPath)})`);
+        inserts.push({ path: objectPath, name: f.name });
       }
-      setArchiveReportContent((prev) => `${prev || ''}${prev?.trim() ? '\n' : ''}${inserts.join('\n')}\n`);
+      // RichEditor 就绪 → 插入光标位置；未就绪（极罕见）→ 降级：拼 Markdown 文本末尾
+      if (archiveEditorRef.current && !archiveEditorRef.current.focus) {
+        archiveEditorRef.current.insertImages(inserts);
+      } else if (archiveEditorRef.current && archiveEditorRef.current.insertImages) {
+        archiveEditorRef.current.insertImages(inserts);
+      } else {
+        // 兜底：直接改 state（RichEditor 有 useEffect 同步 value → setContent）
+        const mdStrings = inserts.map(({ path, name }) =>
+          `![${name}](/api/tasks/attachments/download?path=${encodeURIComponent(path)})`
+        );
+        setArchiveReportContent((prev) => `${prev || ''}${prev?.trim() ? '\n' : ''}${mdStrings.join('\n')}\n`);
+      }
       Toast({ message: `已插入 ${inserts.length} 张图片`, theme: 'success' });
     } catch (err) {
       Toast({ message: `图片上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setUploadingReportImage(false);
     }
+  };
+
+  /** 文件选择 input 触发的上传（保持旧签名，内部归一到 handleReportImageUpload） */
+  const handleReportImageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // 允许重复选同一文件
+    handleReportImageUpload(files);
   };
 
   // ── 开始归档（closed → archiving）──
@@ -803,7 +823,7 @@ export default function TaskDetailPage() {
       setArchiveEditorMode('edit');
       setArchiveEditorVisible(true);
       // ORS-1010：相似工单与 AI 初稿并行拉取（失败静默，编辑器不等它）
-      setArchiveSimilar([]); setArchiveReportPreview(false);
+      setArchiveSimilar([]);
       void fetchArchiveSimilar(Number(detail.id));
 
       const existing = ticket.current_archive_report?.content || '';
@@ -846,7 +866,6 @@ export default function TaskDetailPage() {
     async function runGenerate() {
     setArchiveGenerating(true);
     setArchiveGenStatus('AI 正在为您总结知识沉淀报告…');
-    setArchiveReportPreview(false);
     let acc = '';
     try {
       await archiveGenerateStream(
@@ -859,7 +878,6 @@ export default function TaskDetailPage() {
           onDone: () => {
             setArchiveGenerating(false);
             setArchiveGenStatus('');
-            setArchiveReportPreview(true); // 生成完默认预览：先看渲染结果（含图片）
             // ORS-1035：服务端生成写回推进了 revision，重取最新版报告同步本地
             // （内容+版本号），否则保存必撞「已被他人修改」、重开弹窗见旧内容
             request<Ticket>(`/archive-report/${Number(taskDetail.id)}/archive-report`)
@@ -1033,7 +1051,7 @@ export default function TaskDetailPage() {
     }
     setArchiveEditorVisible(true);
     // ORS-1010：编辑/再编辑打开时后台带出相似工单（失败静默）
-    setArchiveSimilar([]); setArchiveReportPreview(false);
+    setArchiveSimilar([]);
     void fetchArchiveSimilar(Number(detail.id));
   };
 
@@ -1157,6 +1175,97 @@ export default function TaskDetailPage() {
     new_project: '项目',
   };
 
+  // ===== 项目加入审核单（扫码注册用户申请加入项目） =====
+  // metadata_info.approval_kind = 'project_join_request' 时识别；与 approval_type 独立不冲突
+  const joinApprovalInfo = (() => {
+    const meta = detail?.metadata_info || {};
+    if (meta.approval_kind !== 'project_join_request') return null;
+    return {
+      applicantUsername: String(meta.applicant_username || ''),
+      applicantName: String(meta.applicant_name || ''),
+      targetProjectId: String(meta.target_project_id || ''),
+      targetProjectCode: String(meta.target_project_code || ''),
+      targetProjectName: String(meta.target_project_name || ''),
+    };
+  })();
+
+  // 拉项目角色列表（role_type === 'project'），供审核人点"通过"时选择角色
+  const fetchJoinRoles = async () => {
+    try {
+      const data = await adminRequest<{ id: string; name: string; role_type?: string }[]>('/roles/');
+      const roles = (Array.isArray(data) ? data : []).filter((r) => r.role_type === 'project');
+      setJoinApprovalRoles(roles);
+    } catch {
+      Toast({ message: '加载角色列表失败', theme: 'error' });
+    }
+  };
+
+  // 审核通过：先调 assign-roles 给申请人授角色，再关单
+  const handleJoinApprove = async () => {
+    if (!joinApprovalInfo) return;
+    if (!joinApprovalRole) { Toast({ message: '请选择项目角色', theme: 'warning' }); return; }
+    if (!joinApprovalInfo.targetProjectId) { Toast({ message: '项目信息缺失，无法授权', theme: 'error' }); return; }
+    setJoinApproving(true);
+    try {
+      // 1. 给用户授项目角色（复用 ProjectPeople 里的 assign-roles API）
+      //    send_notify=true 会让后端在成功后自动发模板 12 微信通知
+      //    ProjectPeople 手动分配默认 send_notify=false → 不发，互不干扰
+      await adminRequest('/users/project/assign-roles', {
+        method: 'POST',
+        body: JSON.stringify({
+          project_id: joinApprovalInfo.targetProjectId,
+          organization_ids: [{
+            user_name: joinApprovalInfo.applicantUsername,
+            role_id: joinApprovalRole,
+          }],
+          send_notify: true,
+          notify_project_name: joinApprovalInfo.targetProjectName,
+          notify_project_code: joinApprovalInfo.targetProjectCode,
+          notify_ticket_id: detail!.id,
+        }),
+      });
+      // 2. 关单（通知已由 assign-roles 后端自动发出，前端无需二次发送）
+      await request(`/${detail!.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'closed' }),
+      });
+      Toast({ message: '已通过并授予项目角色', theme: 'success' });
+      setJoinApprovalRole(null);
+      setJoinRolePopupVisible(false);
+      await refreshDetail();
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setJoinApproving(false);
+    }
+  };
+
+  // 驳回：只关单 + 可选写评论，不调 admin reject API（join 审核无对应 admin 实体）
+  const handleJoinReject = async () => {
+    if (!joinApprovalInfo) return;
+    if (!rejectReason.trim()) { Toast({ message: '请填写驳回原因', theme: 'warning' }); return; }
+    setApproving(true);
+    try {
+      // 驳回原因作为评论写入，保留审计痕迹
+      await request(`/${detail!.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content: `【审核驳回】${rejectReason.trim()}`, is_public: true, attachments: [] }),
+      });
+      await request(`/${detail!.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'closed' }),
+      });
+      Toast({ message: '已驳回', theme: 'success' });
+      setShowRejectPopup(false);
+      setRejectReason('');
+      await refreshDetail();
+    } catch (err) {
+      Toast({ message: `驳回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setApproving(false);
+    }
+  };
+
   const handleApprove = async () => {
     if (!approvalInfo) return;
     setApproving(true);
@@ -1164,10 +1273,9 @@ export default function TaskDetailPage() {
       await adminRequest(`/users/options/${approvalTargetType(approvalInfo)}/${approvalInfo.targetId}/approve`, {
         method: 'PUT',
       });
-      await request(`/${detail!.id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'closed' }),
-      });
+      // 后端 approve_option 已幂等处理并通过兜底 SQL 自动关单，此处前端 PATCH 为 best-effort，
+      // 失败不影响结果，避免 Step 2 丢包时误弹"审核失败"
+      try { await request(`/${detail!.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'closed' }) }); } catch { /* swallow */ }
       Toast({ message: '已审核通过', theme: 'success' });
       await refreshDetail();
     } catch (err) {
@@ -1195,10 +1303,8 @@ export default function TaskDetailPage() {
         method: 'PUT',
         body: JSON.stringify(body),
       });
-      await request(`/${detail!.id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'closed' }),
-      });
+      // 同 handleApprove：后端兜底关单，前端 PATCH best-effort
+      try { await request(`/${detail!.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'closed' }) }); } catch { /* swallow */ }
       Toast({ message: '已调整并审核通过', theme: 'success' });
       setShowAdjustPopup(false);
       setAdjustName('');
@@ -1212,6 +1318,11 @@ export default function TaskDetailPage() {
   };
 
   const handleReject = async () => {
+    // 项目加入审核单用独立驳回逻辑（不调 admin reject API，只关单 + 写评论）
+    if (!approvalInfo && joinApprovalInfo) {
+      await handleJoinReject();
+      return;
+    }
     if (!approvalInfo) return;
     if (!rejectReason.trim()) {
       Toast({ message: '请填写驳回原因', theme: 'warning' });
@@ -1223,10 +1334,8 @@ export default function TaskDetailPage() {
         method: 'PUT',
         body: JSON.stringify({ reason: rejectReason.trim() }),
       });
-      await request(`/${detail!.id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'closed' }),
-      });
+      // 同上：后端兜底关单，前端 PATCH best-effort
+      try { await request(`/${detail!.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'closed' }) }); } catch { /* swallow */ }
       Toast({ message: '已驳回', theme: 'success' });
       setShowRejectPopup(false);
       setRejectReason('');
@@ -2051,8 +2160,8 @@ export default function TaskDetailPage() {
         </div>
 
         {/* 工单阶段性处理（协商节点）：抽到共享组件 StepNegotiationCard，与历史工单详情页复用。
-            审核型工单（metadata_info 含 approval_type）不展示，走下方专门的审核卡片。 */}
-        {!approvalInfo && (
+            审核型工单（approval_type 或 approval_kind=project_join_request）不展示，走下方专门的审核卡片。 */}
+        {!approvalInfo && !joinApprovalInfo && (
           <StepNegotiationCard
             negotiation={negotiation}
             detail={detail}
@@ -2159,6 +2268,69 @@ export default function TaskDetailPage() {
                       variant="outline"
                       disabled={approving}
                       onClick={() => setShowRejectPopup(true)}
+                      style={{ borderRadius: '999px' }}
+                    >
+                      驳回
+                    </Button>
+                  </div>
+                );
+              }
+              return (
+                <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
+                  审核操作由工单处理人或管理员完成
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* 项目加入审核单：扫码注册用户申请加入指定项目
+            metadata_info.approval_kind === 'project_join_request' 时识别；与 approval_type 独立不冲突
+            审核人点"通过"→弹角色选择→调 assign-roles API 给用户授项目角色 →关单
+            点"驳回"→复用现有驳回弹窗（handleReject 自动分支到 handleJoinReject） */}
+        {joinApprovalInfo && (
+          <div className="detail-card" style={{ border: '1.5px solid #22c55e' }}>
+            <h4 className="detail-card__h" style={{ color: '#16a34a', display: 'flex', alignItems: 'center', gap: 6 }}>
+              👥 项目加入审核
+            </h4>
+            <div style={{ fontSize: 13, color: 'var(--foreground)', lineHeight: 1.8, marginBottom: 16 }}>
+              <div><strong>申请人：</strong>{joinApprovalInfo.applicantName}（{joinApprovalInfo.applicantUsername}）</div>
+              <div><strong>申请项目：</strong>{joinApprovalInfo.targetProjectName}（{joinApprovalInfo.targetProjectCode}）</div>
+              <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
+                请选择项目角色后点"通过"，系统将自动为申请人完成项目授权
+              </div>
+            </div>
+            {(() => {
+              const isClosed = ['closed'].includes((detail.status || '').toLowerCase());
+              if (isClosed) {
+                return (
+                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', textAlign: 'center', padding: '8px 0' }}>
+                    该审核单已处理完毕
+                  </div>
+                );
+              }
+              if (getCurrentUserRoles().isAssignee || hasPermission('backend:tasks:operate')) {
+                return (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Button
+                      block
+                      theme="primary"
+                      loading={joinApproving}
+                      onClick={async () => {
+                        // 打开角色选择弹窗前先拉一次最新角色列表
+                        await fetchJoinRoles();
+                        setJoinRolePopupVisible(true);
+                      }}
+                      style={{ borderRadius: '999px', backgroundColor: '#16a34a', color: '#fff', border: 'none' }}
+                    >
+                      通过并授权角色
+                    </Button>
+                    <Button
+                      block
+                      theme="danger"
+                      variant="outline"
+                      disabled={joinApproving}
+                      onClick={() => { setRejectReason(''); setShowRejectPopup(true); }}
                       style={{ borderRadius: '999px' }}
                     >
                       驳回
@@ -2645,7 +2817,7 @@ export default function TaskDetailPage() {
                         : '请填写该工单的解决方式'
                   }
                   autosize={{ minRows: 4, maxRows: 8 }}
-                  maxlength={1000}
+                  maxlength={10000}
                 />
               )}
             </div>
@@ -2890,17 +3062,91 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 驳回原因弹窗 */}
+      {/* 角色选择弹窗（项目加入审核单通过时弹出，让审核人选择授予申请人的项目角色） */}
+      <Popup
+        visible={joinRolePopupVisible}
+        onClose={() => { if (!joinApproving) { setJoinRolePopupVisible(false); } }}
+        placement="bottom"
+        showOverlay
+      >
+        <div style={{ width: '100%', padding: 20, boxSizing: 'border-box', maxHeight: '70vh', overflowY: 'auto', background: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20 }}>
+          {/* 顶部拖拽指示条 */}
+          <div style={{ width: 36, height: 4, background: '#ddd', borderRadius: 2, margin: '0 auto 12px' }} />
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4, textAlign: 'center' }}>
+            选择项目角色
+          </div>
+          {joinApprovalInfo && (
+            <div style={{ fontSize: 12, color: '#999', marginBottom: 16, textAlign: 'center' }}>
+              为「{joinApprovalInfo.applicantName}」选择在「{joinApprovalInfo.targetProjectName}」中的角色
+            </div>
+          )}
+          {joinApprovalRoles.length === 0 ? (
+            <div style={{ padding: 20, textAlign: 'center', color: '#999', fontSize: 13 }}>
+              暂无可选的项目角色，请在用户管理中先创建项目角色
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {joinApprovalRoles.map((role) => (
+                <div
+                  key={role.id}
+                  onClick={() => setJoinApprovalRole(role.id)}
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: joinApprovalRole === role.id ? '#16a34a' : '#f9f9f9',
+                    color: joinApprovalRole === role.id ? '#fff' : '#333',
+                    fontWeight: joinApprovalRole === role.id ? 600 : 400,
+                    border: joinApprovalRole === role.id ? '2px solid #16a34a' : '2px solid transparent',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <span>{role.name}</span>
+                  {joinApprovalRole === role.id && <span>✓</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+            <Button
+              block
+              theme="default"
+              variant="outline"
+              disabled={joinApproving}
+              onClick={() => { setJoinRolePopupVisible(false); }}
+            >
+              取消
+            </Button>
+            <Button
+              block
+              theme="primary"
+              loading={joinApproving}
+              disabled={!joinApprovalRole || joinApprovalRoles.length === 0}
+              onClick={handleJoinApprove}
+            >
+              确认通过
+            </Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 驳回原因弹窗（公司/部门审核 + 项目加入审核 共用） */}
       <Popup
         visible={showRejectPopup}
-        onClose={() => { if (!approving) { setShowRejectPopup(false); setRejectReason(''); } }}
+        onClose={() => { if (!approving && !joinApproving) { setShowRejectPopup(false); setRejectReason(''); } }}
         placement="bottom"
         showOverlay
       >
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">驳回审核</h4>
           <p style={{ color: 'var(--muted-foreground)', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            确定要驳回{approvalInfo ? approvalLabelMap[approvalInfo.type] : '该对象'}「{approvalInfo?.targetName}」的录入申请吗？
+            {joinApprovalInfo
+              ? <>确定要驳回用户「{joinApprovalInfo.applicantName}（{joinApprovalInfo.applicantUsername}）」加入项目「{joinApprovalInfo.targetProjectName}」的申请吗？</>
+              : <>确定要驳回{approvalInfo ? approvalLabelMap[approvalInfo.type] : '该对象'}「{approvalInfo?.targetName}」的录入申请吗？</>
+            }
           </p>
           <Form initialData={{}}>
             <FormItem label="驳回原因" name="rejectReason" labelAlign="top" requiredMark>
@@ -2914,8 +3160,8 @@ export default function TaskDetailPage() {
             </FormItem>
           </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" disabled={approving} onClick={() => { setShowRejectPopup(false); setRejectReason(''); }}>取消</Button>
-            <Button theme="danger" loading={approving} onClick={handleReject} disabled={!rejectReason.trim()}>确认驳回</Button>
+            <Button theme="default" disabled={approving || joinApproving} onClick={() => { setShowRejectPopup(false); setRejectReason(''); }}>取消</Button>
+            <Button theme="danger" loading={approving || joinApproving} onClick={handleReject} disabled={!rejectReason.trim()}>确认驳回</Button>
           </div>
         </div>
       </Popup>
@@ -2964,15 +3210,15 @@ export default function TaskDetailPage() {
       {/* ── 知识沉淀报告编辑器 Popup ── */}
       <Popup
         visible={archiveEditorVisible}
-        onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}
+        onClose={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}
         placement="bottom"
         showOverlay
       >
         {/* ORS-1010：编辑器+相似工单块易超 88vh，ticket-edit-form 类本身不滚动
             （滚动在其 __body 子层，本弹窗未用）——底部内容曾被硬裁（1010 用户
             iOS 实测提示语只剩半句）。内联开启滚动。 */}
-        <div className="ticket-edit-form" style={{ display: 'flex', flexDirection: 'column', maxHeight: '88vh', overflow: 'hidden' }}>
-          <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>×</span>
+        <div className="ticket-edit-form" style={{ display: 'flex', flexDirection: 'column', maxHeight: '88vh', overflow: 'hidden', padding: '16px 20px' }}>
+          <span className="ticket-edit-form__close" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>×</span>
           <h4 style={{ margin: '0 0 12px', fontSize: 15 }}>
             {archiveEditorMode === 'review' ? '知识沉淀报告审核' : (detail?.current_archive_report?.submit_status === 'rejected' ? '修改知识沉淀报告' : '编写知识沉淀报告')}
           </h4>
@@ -3082,7 +3328,7 @@ export default function TaskDetailPage() {
                     accept="image/*"
                     multiple
                     style={{ display: 'none' }}
-                    onChange={handleReportImageUpload}
+                    onChange={handleReportImageInputChange}
                   />
                 </div>
               </div>
@@ -3099,33 +3345,16 @@ export default function TaskDetailPage() {
                     <MarkdownRenderer content={archiveReportContent} streaming />
                   )}
                 </div>
-              ) : archiveReportPreview ? (
-                /* ORS-1010 预览态：渲染版（图片可见），可切回编辑 */
-                <div style={{ height: 380, overflowY: 'auto', border: '1px solid var(--border, #d8e0ea)', borderRadius: 6, padding: '12px 16px' }}>
-                  <MarkdownRenderer content={archiveReportContent} />
-                </div>
               ) : (
-                // ORS-1010 精简：MDEditor 工具栏整排删除，写作不需要二十个格式图标
-                <MDEditor
-                  commands={[]}
-                  extraCommands={[]}
-                  height={380}
+                /* ORS-1142：WYSIWYG 富文本编辑器，底层持久化 Markdown */
+                <ArchiveReportRichEditor
+                  ref={archiveEditorRef}
                   value={archiveReportContent}
-                  onChange={(v) => setArchiveReportContent(v || '')}
-                  preview="edit"
+                  onChange={setArchiveReportContent}
+                  onUploadImages={handleReportImageUpload}
                 />
               )}
               </div>
-              {!archiveGenerating && (
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                  <span
-                    onClick={() => setArchiveReportPreview((v) => !v)}
-                    style={{ fontSize: 12, color: 'var(--brand, #266fe8)', cursor: 'pointer' }}
-                  >
-                    {archiveReportPreview ? '✎ 切换到编辑' : '👁 切换到预览（看图片）'}
-                  </span>
-                </div>
-              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingTop: 12 }}>
                 <Button size="small" theme="default" onClick={handleSaveArchiveDraft} loading={archiveLoading} disabled={archiveGenerating}>保存草稿</Button>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -3136,14 +3365,12 @@ export default function TaskDetailPage() {
             </>
           ) : (
             <>
-              {/* ORS-1035：报告用 MarkdownRenderer 展示——内嵌的相对路径图片
-                  （attachments/download）走 AuthImage 带登录态加载；MDEditor
-                  的 img 无鉴权渲染会 401 */}
-              <MarkdownRenderer content={archiveReportContent} />
+              {/* ORS-1142：审核人只读查看（WYSIWYG 所见即所得） */}
+              <ArchiveReportRichEditor value={archiveReportContent} onChange={() => {}} readOnly />
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
-                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); }}>关闭</Button>
+                <Button size="small" theme="default" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); }}>关闭</Button>
                 <Button size="small" theme="primary" onClick={handleArchiveApprove} loading={archiveLoading}>通过知识沉淀</Button>
-                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveReportPreview(false); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回知识沉淀</Button>
+                <Button size="small" theme="danger" onClick={() => { setArchiveEditorVisible(false); setArchiveSimilar([]); setArchiveRejectReason(''); setShowArchiveRejectPopup(true); }}>驳回知识沉淀</Button>
               </div>
             </>
           )}

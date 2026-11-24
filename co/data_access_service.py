@@ -30,21 +30,25 @@ MQTT_CONFIG = {
 SUBSCRIBE_TOPIC = 'data/1.0/EP/+/+'
 
 
-# 项目标识映射表: MQTT topic中的project段(=project.system_id) → 系统内project编号(project.id/code)
+# 项目标识映射表: MQTT topic中的project段 → 系统内project编号(project.id/code)
 # 未在映射表中的project将被丢弃，不入库。
 # 映射不再硬编码，改为从数据库 project 表动态加载（模型定义见同目录 db.py 的 Project）：
-#   key   = project.system_id（MQTT/外部系统标识，如 AJNQ）
-#   value = project.id（系统内项目编号，如 24；与 code 一致）
-# 仅要求 system_id 非空；内存缓存 + 定时刷新，DB 不可用时沿用上次缓存。
+#   key 1 = project.system_id（MQTT/外部系统标识，如 AJNQ）→ value = project.id
+#   key 2 = project.id      （MQTT topic 也可直接塞 project.id 本身）→ value = project.id（自映射）
+# 全部记录均参与构建；内存缓存 + 定时刷新，DB 不可用时沿用上次缓存。
 PROJECT_MAPPING_REFRESH_SECONDS = 300
 _project_mapping = {}
 _project_mapping_loaded_at = 0.0
 
 
 def load_project_mapping(force: bool = False) -> dict:
-    """从 project 表加载 {system_id: project_id} 映射。
+    """从 project 表加载映射字典，同时支持 system_id 和 id 两种 key。
 
-    - 仅要求 system_id 非空（不过滤 status）
+    对每条 project 记录，向字典写入两条映射：
+      1. system_id → id  （原有路径，MQTT 发布方塞外部标识时命中）
+      2. id → id         （新增路径，MQTT 发布方直接塞 project.id 时命中）
+
+    - 不做 WHERE 过滤，取全部记录（保证 system_id 为空但 id 有值的项目也能通过 id 命中）
     - 缓存 TTL 为 PROJECT_MAPPING_REFRESH_SECONDS；force=True 强制刷新（如 MQTT 重连后）
     - 查询失败时保留旧缓存并返回，保证 DB 短暂不可用不影响消息转发
     """
@@ -54,29 +58,35 @@ def load_project_mapping(force: bool = False) -> dict:
     try:
         db = SessionLocal()
         try:
-            rows = db.query(
-                Project.system_id, Project.id
-            ).filter(Project.system_id.isnot(None)).all()
+            rows = db.query(Project.system_id, Project.id).all()
         finally:
             db.close()
 
         mapping = {}
         for system_id, project_id in rows:
-            if not system_id or not project_id:
+            if not project_id:
                 continue
-            key = str(system_id).strip()
-            if not key:
-                continue
-            value = str(project_id).strip()
-            if key in mapping and mapping[key] != value:
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [WARN] system_id={key} "
-                      f"对应多个项目编号({mapping[key]} / {value})，以后者为准")
-            mapping[key] = value
+            id_value = str(project_id).strip()
+
+            # 1) id → id 自映射（新增路径：MQTT topic 直接塞 project.id 时命中）
+            if id_value in mapping and mapping[id_value] != id_value:
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [WARN] id={id_value} "
+                      f"对应多个映射值({mapping[id_value]} / {id_value})，以后者为准")
+            mapping[id_value] = id_value
+
+            # 2) system_id → id 映射（原有路径：MQTT topic 塞外部标识时命中）
+            if system_id:
+                sys_key = str(system_id).strip()
+                if sys_key:
+                    if sys_key in mapping and mapping[sys_key] != id_value:
+                        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [WARN] system_id={sys_key} "
+                              f"对应多个项目编号({mapping[sys_key]} / {id_value})，以后者为准")
+                    mapping[sys_key] = id_value
 
         _project_mapping = mapping
         _project_mapping_loaded_at = time.time()
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 项目映射加载成功: "
-              f"共{len(mapping)}条")
+              f"共{len(mapping)}条 (id自映射+system_id映射)")
     except Exception as e:
         # DB 不可用时沿用旧缓存；重置计时避免每条消息都打 DB
         _project_mapping_loaded_at = time.time()

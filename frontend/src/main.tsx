@@ -116,6 +116,9 @@ const TicketDetailPage = lazyImport(() => import('@/pages/call/TicketDetailPage'
 const TasksView = lazyImport(() => import('@/pages/tasks/TasksView'));
 const TaskDetailPage = lazyImport(() => import('@/pages/tasks/TaskDetailPage'));
 const OperationLogsPage = lazyImport(() => import('@/pages/tasks/OperationLogsPage'));
+const LearnerHome = lazyImport(() => import('@/pages/learning/LearnerHome'));
+const LearnerStudy = lazyImport(() => import('@/pages/learning/LearnerStudy'));
+const LearnerWrongbook = lazyImport(() => import('@/pages/learning/LearnerWrongbook'));
 // 我的历史奖励（微信商家转账 · 提现入口）：直挂根路由，保留底部 Tab 可点
 const MyRewards = lazyImport(() => import('@/pages/rewards/MyRewards'));
 // 奖励管理（微信商家转账 · 管理端）：后台管理 → 其他 → 奖励管理
@@ -131,6 +134,7 @@ const KnowledgeQuestionDetail = lazyImport(() => import('@/pages/admin/Knowledge
 const KnowledgeContributorPage = lazyImport(() => import('@/pages/admin/KnowledgeContributorPage'));
 const KnowledgeReviewPage = lazyImport(() => import('@/pages/admin/KnowledgeReviewPage'));
 const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
+const QuestionGeneration = lazyImport(() => import('@/pages/admin/learning/QuestionGeneration'));
 const DispatchDev = lazyImport(() => import('@/pages/admin/DispatchDev'));
 const TaskPolicyPage = lazyImport(() => import('@/pages/admin/TaskPolicyPage'));
 const QrcodeManage = lazyImport(() => import('@/pages/admin/QrcodeManage'));
@@ -212,6 +216,10 @@ const router = createBrowserRouter([
           { path: 'call/history', element: <HistoryTicketsPage /> },
           { path: 'call/ticket/:id', element: <TicketDetailPage /> },
           { path: 'tasks', element: <TasksView /> },
+          // 学习中心（做题人端）—— 放 tasks/:id 之前避免被 :id 贪婪匹配
+          { path: 'tasks/learning', element: <LearnerHome /> },
+          { path: 'tasks/learning/wrongbook', element: <LearnerWrongbook /> },
+          { path: 'tasks/learning/:articleId', element: <LearnerStudy /> },
           { path: 'tasks/:id', element: <TaskDetailPage /> },
           { path: 'tasks/:id/operations', element: <OperationLogsPage /> },
           // 我的历史奖励（微信商家转账 · 立即提现）
@@ -249,6 +257,7 @@ const router = createBrowserRouter([
               // 次级入口：三大功能传统列表页 + 管理员工具
               { path: 'entries', element: <AdminEntries /> },
               { path: 'entries/:category', element: <AdminEntries /> },
+              { path: 'question-generation', element: <QuestionGeneration /> },
               {
                 element: <AdminLayout />,
                 children: [

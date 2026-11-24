@@ -8,8 +8,8 @@
 // username 为系统内用户标识，只读展示；USP 账号根据姓名拼音自动生成（只读）；USP 密码以哈希存储，前端不回显。
 // 后端返回 external_credentials.usp.password 为 "-" 哨兵表示已设置密码，前端据此判断是否必填。
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Input, Button, Dialog, Toast, Popup } from 'tdesign-mobile-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Input, Button, Dialog, Toast, Popup, Loading } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import FilterableSelect from '@/shared/components/FilterableSelect';
 import { UserCircleIcon, AddIcon } from 'tdesign-icons-react';
@@ -20,6 +20,8 @@ import {
   getMyTimezone, updateMyTimezone, detectTimezone,
   type MyProfile, type OrgOption, type ProfileFieldOptions,
 } from '@/api/profile';
+import { getProjects, getMyProjects } from '@/api/projects';
+import { createTicket } from '@/api/ticket';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { buildWechatAuthUrl, buildStateFromPath } from '@/shared/utils/url';
@@ -56,7 +58,30 @@ function formatTime(raw: string): string {
 
 export default function UserProfile() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { username, name, avatarResourceId, setProfile, logout, hasPermission } = useAuthStore();
+
+  // 扫码进入链路：URL 带 scene 参数时，保存后弹出"应用状态检查"弹窗
+  const sceneParam = searchParams.get('scene') || searchParams.get('scene_str') || null;
+
+  // ── 扫码进入引导：蒙层 + 白色曲线框高亮对应区域 ──
+  const [highlightTarget, setHighlightTarget] = useState<null | 'name' | 'password'>(null);
+  const [highlightRect, setHighlightRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const guideShownRef = useRef(false);
+  const nameSectionRef = useRef<HTMLDivElement>(null);
+  const uspPasswordSectionRef = useRef<HTMLDivElement>(null);
+
+  // ── 「应用状态检查」弹窗状态 ──
+  const [appCheckVisible, setAppCheckVisible] = useState(false);
+  const [projectList, setProjectList] = useState<{ id: string; project_code: string; name: string; contact_person?: string | null; contact_person_id?: string | null }[]>([]);
+  const [projectNames, setProjectNames] = useState<string[]>([]);
+  const [myProjectCodes, setMyProjectCodes] = useState<string[]>([]); // 当前用户已有关联项目的 project_code 集
+  const [appCheckLoading, setAppCheckLoading] = useState(false);
+  const [selectedProjectName, setSelectedProjectName] = useState('');
+  const [appCheckStep, setAppCheckStep] = useState<'select' | 'checking' | 'in-project' | 'applying' | 'apply-done' | 'apply-failed'>('select');
+  const [applyResult, setApplyResult] = useState<{ ticketId?: number; contactPerson?: string; contactPersonId?: string; projectName?: string } | null>(null);
+  // 项目搜索关键词：只有用户输入了才显示下拉选项
+  const [projectSearchKeyword, setProjectSearchKeyword] = useState('');
 
   // 表单草稿
   const [nameDraft, setNameDraft] = useState(name);
@@ -201,6 +226,58 @@ export default function UserProfile() {
     });
   }, [loading]);
 
+  // ── 引导蒙层核心：根据 target 读取对应 DOM 节点的 getBoundingClientRect，设置蒙层位置 ──
+  const focusGuide = useCallback((target: 'name' | 'password') => {
+    const el = target === 'name' ? nameSectionRef.current : uspPasswordSectionRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    // 四周多留 6px padding，让曲线框不紧贴内容
+    setHighlightRect({
+      left: r.left - 6 + window.scrollX,
+      top: r.top - 6 + window.scrollY,
+      width: r.width + 12,
+      height: r.height + 12,
+    });
+    setHighlightTarget(target);
+    // 滚到目标区域中间，保证可见
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, []);
+
+  // 扫码进入（URL 带 scene 参数）时：页面加载完自动开启「蒙层引导」
+  useEffect(() => {
+    if (loading) return;
+    if (!sceneParam) return;
+    if (guideShownRef.current) return;
+    // 等布局 + 头像上传等异步渲染稳定后再定位
+    const t = setTimeout(() => {
+      guideShownRef.current = true;
+      focusGuide('name');
+    }, 300);
+    return () => clearTimeout(t);
+  }, [loading, sceneParam, focusGuide]);
+
+  // 引导显示期间，监听 scroll / resize 实时更新曲线框位置
+  useEffect(() => {
+    if (!highlightTarget) return;
+    const updateRect = () => {
+      const el = highlightTarget === 'name' ? nameSectionRef.current : uspPasswordSectionRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setHighlightRect({
+        left: r.left - 6 + window.scrollX,
+        top: r.top - 6 + window.scrollY,
+        width: r.width + 12,
+        height: r.height + 12,
+      });
+    };
+    window.addEventListener('scroll', updateRect, true);
+    window.addEventListener('resize', updateRect);
+    return () => {
+      window.removeEventListener('scroll', updateRect, true);
+      window.removeEventListener('resize', updateRect);
+    };
+  }, [highlightTarget]);
+
   // 当前公司下的部门选项（级联过滤）
   const departmentOptions = useMemo(() => {
     return departmentsByCompany[companyNameDraft] || [];
@@ -326,6 +403,96 @@ export default function UserProfile() {
     }
   }, [addInputValue, addingField, companyIdDraft, companyNameDraft]);
 
+  // 应用状态检查弹窗：搜索关键词变化时模糊匹配（只在有输入时才展示结果）
+  const filteredProjectNames = useMemo(() => {
+    const kw = projectSearchKeyword.trim().toLowerCase();
+    if (!kw) return []; // 没输入就不展示任何选项
+    return projectNames.filter((name) => name.toLowerCase().includes(kw));
+  }, [projectNames, projectSearchKeyword]);
+
+  // 应用状态检查：选中项目后处理
+  const handleAppCheckProjectConfirm = useCallback(async () => {
+    if (!selectedProjectName) {
+      Toast({ message: '请先选择项目', theme: 'warning' });
+      return;
+    }
+    // 从 "项目名（project_code）" 反查 project_code
+    const matched = projectList.find((p) => `${p.name}（${p.project_code}）` === selectedProjectName);
+    if (!matched) {
+      Toast({ message: '未找到对应项目', theme: 'error' });
+      return;
+    }
+    setAppCheckStep('checking');
+
+    // 检查当前用户是否在该项目中
+    const inProject = myProjectCodes.includes(matched.project_code);
+
+    if (inProject) {
+      // 在项目中 → 直接引导同步
+      setAppCheckStep('in-project');
+      setApplyResult({ projectName: matched.name });
+      return;
+    }
+
+    // 不在项目中 → 找对接人，创建工单
+    setAppCheckStep('applying');
+    const contactPersonId = matched.contact_person_id;
+    const contactPerson = matched.contact_person || contactPersonId || '项目对接人';
+
+    if (!contactPersonId) {
+      // 项目没配对接人 → 降级提示，不创建工单
+      setAppCheckStep('apply-failed');
+      setApplyResult({
+        contactPerson,
+        projectName: matched.name,
+      });
+      return;
+    }
+
+    try {
+      const ticket = await createTicket({
+        title: `【申请加入项目】${matched.name}`,
+        description: `用户 ${username}（${name || username}）申请加入项目「${matched.name}」（${matched.project_code}），请审核是否将其添加为项目成员。`,
+        ticket_type: 'support',
+        priority: 'medium',
+        project_name: matched.name,
+        project_id: matched.project_code,
+        assigned_to: contactPersonId,
+        // 扩展元数据：标识为"项目加入审核单"，审核人点通过时自动触发角色授权
+        metadata_info: {
+          approval_kind: 'project_join_request',
+          applicant_username: username,
+          applicant_name: name || username,
+          target_project_id: matched.id,        // admin 主键（assign-roles API 要用）
+          target_project_code: matched.project_code,
+          target_project_name: matched.name,
+        },
+      });
+      setAppCheckStep('apply-done');
+      setApplyResult({
+        ticketId: ticket.id,
+        contactPerson,
+        contactPersonId,
+        projectName: matched.name,
+      });
+    } catch (err) {
+      console.error('[AppCheck] 创建申请工单失败', err);
+      setAppCheckStep('apply-failed');
+      setApplyResult({
+        contactPerson,
+        contactPersonId,
+        projectName: matched.name,
+      });
+    }
+  }, [selectedProjectName, projectList, myProjectCodes, username, name]);
+
+  // 弹窗关闭：在 project_code 基础上加上 selectedProjectName 避免 lint 警告，同时 nav 回 call
+  const handleAppCheckClose = useCallback(() => {
+    setAppCheckVisible(false);
+    setAppCheckStep('select');
+    setTimeout(() => navigate('/app/call', { replace: true }), 300);
+  }, [navigate]);
+
   const saveProfile = useCallback(async () => {
     const trimmedName = (nameDraft || '').trim();
     if (!trimmedName) {
@@ -396,7 +563,26 @@ export default function UserProfile() {
       setUspPasswordConfirmDraft('');
       if (trimmedName !== name) setProfile({ name: trimmedName });
       Toast({ message: '保存成功', theme: 'success' });
-      navigate('/app/call', { replace: true });
+
+      // 扫码进入链路：URL 带 scene 参数时，保存后弹出"应用状态检查"弹窗
+      if (sceneParam) {
+        setAppCheckVisible(true);
+        setAppCheckStep('select');
+        setSelectedProjectName('');
+        setApplyResult(null);
+        // 预加载项目列表 + 我的项目（供弹窗内检查用户是否在项目中）
+        setAppCheckLoading(true);
+        Promise.all([
+          getProjects('', 0, 500).catch(() => []),
+          getMyProjects(false).catch(() => []),
+        ]).then(([allProjects, myProjects]) => {
+          setProjectList(allProjects || []);
+          setProjectNames((allProjects || []).map((p) => `${p.name}（${p.project_code}）`));
+          setMyProjectCodes((myProjects || []).map((p) => p.project_code));
+        }).finally(() => setAppCheckLoading(false));
+      } else {
+        setTimeout(() => navigate('/app/call', { replace: true }), 1000);
+      }
     } catch (err) {
       Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -522,14 +708,16 @@ export default function UserProfile() {
           <div style={{ fontSize: 14, color: '#333' }}>{loading ? '加载中...' : username}</div>
         </Field>
 
-        <Field label="姓名" required>
-          <ClearableInput
-            value={nameDraft}
-            onChange={(v) => setNameDraft(String(v))}
-            placeholder="请输入姓名，便于同事识别"
-            maxlength={20}
-          />
-        </Field>
+        <div ref={nameSectionRef}>
+          <Field label="姓名" required>
+            <ClearableInput
+              value={nameDraft}
+              onChange={(v) => setNameDraft(String(v))}
+              placeholder="请输入姓名，便于同事识别"
+              maxlength={20}
+            />
+          </Field>
+        </div>
 
         <Field label="公司" hint="选填">
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -621,7 +809,7 @@ export default function UserProfile() {
         </Field>
       </div>
 
-      <div style={{ background: '#fff', borderRadius: 12, padding: 16, marginTop: 16 }}>
+      <div ref={uspPasswordSectionRef} style={{ background: '#fff', borderRadius: 12, padding: 16, marginTop: 16 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: '#333', marginBottom: 4 }}>
           USP 账户
         </div>
@@ -702,6 +890,351 @@ export default function UserProfile() {
           </div>
         </div>
       </Popup>
+
+      {/* 「应用状态检查」弹窗：扫码进入后引导用户完成项目注册 */}
+      <Popup
+        visible={appCheckVisible}
+        placement="bottom"
+        destroyOnClose
+        onClose={handleAppCheckClose}
+      >
+        <div style={{ width: '100%', padding: 20, boxSizing: 'border-box', maxHeight: '75vh', overflowY: 'auto', background: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20 }}>
+          {/* 顶部拖拽指示条 */}
+          <div style={{ width: 36, height: 4, background: '#ddd', borderRadius: 2, margin: '0 auto 12px' }} />
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4, textAlign: 'center' }}>
+            应用状态检查
+          </div>
+          <div style={{ fontSize: 12, color: '#999', marginBottom: 16, textAlign: 'center' }}>
+            请选择你要注册登录的项目
+          </div>
+
+          {/* 步骤 1：加载 / 搜索 + 选择项目 */}
+          {appCheckStep === 'select' && (
+            <>
+              {appCheckLoading ? (
+                <Loading text="正在加载项目列表…" />
+              ) : projectNames.length === 0 ? (
+                <div style={{ color: '#999', textAlign: 'center', padding: 20 }}>
+                  暂无可选项目
+                </div>
+              ) : (
+                <>
+                  {/* 搜索输入框（聚焦在上半区，不触发二级弹窗） */}
+                  <div style={{ position: 'relative' }}>
+                    <ClearableInput
+                      value={projectSearchKeyword}
+                      onChange={(v) => {
+                        setProjectSearchKeyword(String(v));
+                        // 用户改了搜索词就清掉之前的选中
+                        if (selectedProjectName) setSelectedProjectName('');
+                      }}
+                      placeholder="输入项目名或编号搜索…"
+                      autofocus
+                    />
+
+                    {/* 已选中项目的 chips 提示 */}
+                    {selectedProjectName && (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          padding: '8px 12px',
+                          background: '#e8f3ff',
+                          color: '#1a73e8',
+                          borderRadius: 8,
+                          fontSize: 13,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <span>✅ 已选：{selectedProjectName}</span>
+                        <span
+                          style={{ cursor: 'pointer', fontSize: 16 }}
+                          onClick={() => setSelectedProjectName('')}
+                        >
+                          ✕
+                        </span>
+                      </div>
+                    )}
+
+                    {/* 搜索结果下拉（只有输入关键词才展示） */}
+                    {projectSearchKeyword.trim() && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          maxHeight: 200,
+                          overflowY: 'auto',
+                          border: '1px solid #eee',
+                          borderRadius: 10,
+                          background: '#fafafa',
+                        }}
+                      >
+                        {filteredProjectNames.length === 0 ? (
+                          <div style={{ padding: 16, textAlign: 'center', color: '#999', fontSize: 13 }}>
+                            未找到匹配项目
+                          </div>
+                        ) : (
+                          filteredProjectNames.map((name) => (
+                            <div
+                              key={name}
+                              onClick={() => {
+                                setSelectedProjectName(name);
+                                // 选完保留搜索词让用户看到上下文，也可清空
+                              }}
+                              style={{
+                                padding: '12px 14px',
+                                borderBottom: '1px solid #eee',
+                                fontSize: 14,
+                                color: selectedProjectName === name ? '#1a73e8' : '#333',
+                                fontWeight: selectedProjectName === name ? 600 : 400,
+                                background: selectedProjectName === name ? '#e8f3ff' : '#fff',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {name}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+
+                    {/* 未输入时的引导提示 */}
+                    {!projectSearchKeyword.trim() && !selectedProjectName && (
+                      <div style={{ marginTop: 10, fontSize: 12, color: '#aaa', textAlign: 'center' }}>
+                        请输入项目名或编号开始搜索
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+              <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+                <Button block theme="default" variant="outline" onClick={handleAppCheckClose}>
+                  稍后再说
+                </Button>
+                <Button
+                  block
+                  theme="primary"
+                  onClick={handleAppCheckProjectConfirm}
+                  loading={appCheckLoading}
+                  disabled={!selectedProjectName}
+                >
+                  确认项目
+                </Button>
+              </div>
+            </>
+          )}
+
+          {/* 步骤 2：检查中 */}
+          {appCheckStep === 'checking' && (
+            <div style={{ padding: 40, textAlign: 'center' }}>
+              <Loading text="检查你的项目权限…" />
+            </div>
+          )}
+
+          {/* 步骤 3a：用户已在项目中 → 引导同步 */}
+          {appCheckStep === 'in-project' && applyResult && (
+            <>
+              <div style={{ fontSize: 14, color: '#333', lineHeight: 1.8, marginBottom: 12 }}>
+                <div>✅ 你已在项目「<strong>{applyResult.projectName}</strong>」中。</div>
+                <div style={{ marginTop: 8 }}>请按以下图示操作：</div>
+                <div style={{ marginTop: 8 }}>
+                  点击 USP 界面的【<strong>更新</strong>】→【<strong>同步</strong>】后，即可登录。
+                </div>
+              </div>
+              <img
+                src={`${import.meta.env.BASE_URL}update_users.png`}
+                alt="更新-同步操作指引"
+                style={{ width: '100%', borderRadius: 8, border: '1px solid #eee' }}
+              />
+              <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+                <Button block theme="primary" onClick={handleAppCheckClose}>
+                  我已知晓
+                </Button>
+              </div>
+            </>
+          )}
+
+          {/* 步骤 3b：申请工单已创建 → 等待审核 */}
+          {appCheckStep === 'apply-done' && applyResult && (
+            <>
+              <div style={{ fontSize: 14, color: '#333', lineHeight: 1.8, marginBottom: 12 }}>
+                <div>✅ 项目加入申请已为你发起。</div>
+                {applyResult.ticketId && (
+                  <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                    工单号 #{applyResult.ticketId}
+                  </div>
+                )}
+                <div style={{ marginTop: 8 }}>
+                  等待 <strong>{applyResult.contactPerson}</strong> 审核通过后，请按图示操作：
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  点击 USP 界面的【<strong>更新</strong>】→【<strong>同步</strong>】后，即可登录。
+                </div>
+              </div>
+              <img
+                src={`${import.meta.env.BASE_URL}update_users.png`}
+                alt="更新-同步操作指引"
+                style={{ width: '100%', borderRadius: 8, border: '1px solid #eee' }}
+              />
+              <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+                <Button block theme="primary" onClick={handleAppCheckClose}>
+                  我已知晓
+                </Button>
+              </div>
+            </>
+          )}
+
+          {/* 步骤 3c：申请失败（无对接人 / 工单创建失败） */}
+          {appCheckStep === 'apply-failed' && applyResult && (
+            <>
+              <div style={{ fontSize: 14, color: '#333', lineHeight: 1.8, marginBottom: 12 }}>
+                {!applyResult.contactPersonId ? (
+                  <>
+                    <div>⚠️ 项目「<strong>{applyResult.projectName}</strong>」暂未配置对接人。</div>
+                    <div style={{ marginTop: 8 }}>
+                      请联系 <strong>{applyResult.contactPerson}</strong> 或项目管理员，手动将你添加为项目成员。
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>❌ 申请工单创建失败，请稍后重试。</div>
+                    <div style={{ marginTop: 8 }}>
+                      你也可以直接联系 <strong>{applyResult.contactPerson}</strong>（{applyResult.contactPersonId}）手动添加。
+                    </div>
+                  </>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+                <Button block theme="default" variant="outline" onClick={handleAppCheckClose}>
+                  稍后再说
+                </Button>
+                <Button
+                  block
+                  theme="primary"
+                  onClick={() => {
+                    setAppCheckStep('select');
+                    setApplyResult(null);
+                  }}
+                >
+                  重新选择
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </Popup>
+
+      {/* ── 扫码进入引导蒙层：box-shadow 挖洞 + 白色曲线框 ── */}
+      {highlightTarget && highlightRect && (
+        <>
+          {/* 白色曲线框 + box-shadow 向外扩散形成半透明蒙层（pointer-events: none 让点击穿透到高亮区） */}
+          <div
+            style={{
+              position: 'fixed',
+              left: highlightRect.left,
+              top: highlightRect.top,
+              width: highlightRect.width,
+              height: highlightRect.height,
+              border: '3px solid #fff',
+              borderRadius: 16,
+              // box-shadow 向外扩散 9999px，形成全屏半透明遮罩，同时高亮区自然"挖洞"
+              boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.6)',
+              pointerEvents: 'none',
+              zIndex: 9998,
+              // 白色曲线呼吸动画
+              animation: 'guide-pulse 2s ease-in-out infinite',
+            }}
+          />
+
+          {/* 底部固定提示条（pointer-events: auto，按钮可点） */}
+          <div
+            style={{
+              position: 'fixed',
+              bottom: 24,
+              left: 16,
+              right: 16,
+              maxWidth: 420,
+              margin: '0 auto',
+              padding: '16px 20px',
+              background: '#fff',
+              borderRadius: 14,
+              boxShadow: '0 6px 24px rgba(0,0,0,0.25)',
+              zIndex: 9999,
+              pointerEvents: 'auto',
+            }}
+          >
+            {highlightTarget === 'name' ? (
+              <>
+                <div style={{ fontSize: 15, fontWeight: 600, color: '#333', marginBottom: 6 }}>
+                  👋 第 1 步 / 共 2 步
+                </div>
+                <div style={{ fontSize: 13, color: '#666', lineHeight: 1.7 }}>
+                  请在上方<strong>白色框</strong>内输入你的<strong>真实姓名</strong>。
+                  <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>
+                    姓名会自动用于生成你的 USP 账号（拼音）。
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 15, fontWeight: 600, color: '#333', marginBottom: 6 }}>
+                  🔐 第 2 步 / 共 2 步
+                </div>
+                <div style={{ fontSize: 13, color: '#666', lineHeight: 1.7 }}>
+                  请在上方<strong>白色框</strong>内设置你的<strong>USP 密码</strong>。
+                  <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>
+                    密码要求：至少 8 位，同时包含字母、数字和特殊字符。
+                  </div>
+                </div>
+              </>
+            )}
+            <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+              <Button
+                theme="default"
+                variant="outline"
+                size="small"
+                block
+                onClick={() => {
+                  setHighlightTarget(null);
+                  setHighlightRect(null);
+                }}
+              >
+                跳过引导
+              </Button>
+              {highlightTarget === 'name' ? (
+                <Button
+                  theme="primary"
+                  size="small"
+                  block
+                  onClick={() => focusGuide('password')}
+                >
+                  下一步
+                </Button>
+              ) : (
+                <Button
+                  theme="primary"
+                  size="small"
+                  block
+                  onClick={() => {
+                    setHighlightTarget(null);
+                    setHighlightRect(null);
+                  }}
+                >
+                  我已知晓
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* 曲线框呼吸动画 keyframes（全局注入一次即可） */}
+          <style>{`
+            @keyframes guide-pulse {
+              0%, 100% { box-shadow: 0 0 0 9999px rgba(0,0,0,0.6), 0 0 0 0 rgba(255,255,255,0.7); }
+              50%      { box-shadow: 0 0 0 9999px rgba(0,0,0,0.6), 0 0 0 12px rgba(255,255,255,0); }
+            }
+          `}</style>
+        </>
+      )}
     </div>
   );
 }
