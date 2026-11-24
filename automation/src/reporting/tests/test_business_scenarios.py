@@ -49,7 +49,9 @@ def _scenario_html(report, scenario):
     ("failed", "受阻"),
     ("missing", "部分验证"),
 ])
-@pytest.mark.parametrize("origin", ["current", "matching_app", "old_commit", "wrong_environment", "legacy"])
+@pytest.mark.parametrize(
+    "origin", ["current", "matching_app", "deployment_drift", "old_commit", "wrong_environment", "legacy"],
+)
 def test_service_ticket_evidence_checks_scope_and_never_counts_towards_gate(
     tmp_path, last_status, expected, origin,
 ):
@@ -92,7 +94,8 @@ def test_service_ticket_evidence_checks_scope_and_never_counts_towards_gate(
         business_report.export_service_account_ui(history, evidence_dir, {
             "commit": "b" * 40 if origin == "old_commit" else commit,
             "deployment_commit": "b" * 40 if origin in ("old_commit", "matching_app") else commit,
-            "application_trees_match": origin in ("old_commit", "matching_app"),
+            "application_trees_match": origin in ("old_commit", "matching_app", "deployment_drift"),
+            "deployment_drift": origin == "deployment_drift",
             "environment": "other-test" if origin == "wrong_environment" else environment,
             "run_id": "123",
             "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/123",
@@ -116,6 +119,10 @@ def test_service_ticket_evidence_checks_scope_and_never_counts_towards_gate(
             assert "测试站部署 bbbbbbbb" in card
         if last_status != "passed":
             assert "卡点 · 关闭步骤" in card
+    elif origin == "deployment_drift":
+        assert '">部分验证</span>' in card
+        assert "测试站部署提交待核对" in card
+        assert "本次提交的测试脚本已实跑" in card
     else:
         assert '">本次未运行</span>' in card
         assert "历史参考" in card

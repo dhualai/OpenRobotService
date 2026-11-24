@@ -194,16 +194,27 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import subprocess
           from pathlib import Path
           from automation.src.reporting.business_report import export_service_account_ui
-          from automation.src.reporting.report_data import run_metadata
+          from automation.src.reporting.report_data import read_object, run_metadata
 
           root = Path("automation/output/allure-results-ui-regression-combined")
+          out = Path("automation/output/ui-business-evidence")
           meta = run_metadata()
+          revision = os.environ["UI_DEPLOYMENT_COMMIT"]
+          probe = read_object(out / "course-source.json")
+          learner_route = "/t/api/tasks/learning/articles"
+          expected_learner_api = subprocess.run(
+              ["git", "cat-file", "-e", f"{revision}:backend/app/modules/tasks/api/learning.py"],
+              capture_output=True, check=False,
+          ).returncode == 0
+          deployment_drift = learner_route in probe.get("observed_source_fields", {}) and not expected_learner_api
           meta.update(environment="service-account-test",
-                      deployment_commit=os.environ["UI_DEPLOYMENT_COMMIT"],
-                      application_trees_match=os.environ["APP_TREES_MATCH"] == "true")
-          export_service_account_ui(root, Path("automation/output/ui-business-evidence"), meta)
+                      deployment_commit=revision,
+                      application_trees_match=os.environ["APP_TREES_MATCH"] == "true" and not deployment_drift,
+                      deployment_drift=deployment_drift)
+          export_service_account_ui(root, out, meta)
           PY
 
       - name: Upload business UI results

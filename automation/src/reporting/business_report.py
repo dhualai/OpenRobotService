@@ -344,16 +344,17 @@ def load_service_account_ui(root, *, commit='', environment=''):
             and bool(re.fullmatch(r'[a-fA-F0-9]{40}|[a-fA-F0-9]{64}', deployed))
         )
     )
-    current = (
+    fresh = (
         isinstance(artifact_case, dict)
         and isinstance(commit, str)
         and bool(re.fullmatch(r'[a-fA-F0-9]{40}|[a-fA-F0-9]{64}', commit))
-        and run.get('commit') == commit and matching_deployment
+        and run.get('commit') == commit
         and bool(environment) and run.get('environment') == environment
         and isinstance(run.get('run_id'), str) and run['run_id'].isdigit()
         and isinstance(full_name, str)
         and full_name.endswith('.test_service_account_ticket_lifecycle#test_service_account_ticket_lifecycle')
     )
+    current = fresh and matching_deployment and run.get('deployment_drift') is not True
     evidence = {}
     if isinstance(case.get('evidence'), dict):
         for key, outcome in case['evidence'].items():
@@ -369,20 +370,24 @@ def load_service_account_ui(root, *, commit='', environment=''):
             ' · %Y-%m-%d %H:%M (UTC+8)',
         )
     run_url = run.get('run_url', '')
-    if not current or not isinstance(run_url, str) or not re.fullmatch(
+    if not fresh or not isinstance(run_url, str) or not re.fullmatch(
         rf'https://[\w.-]+/[\w.-]+/[\w.-]+/actions/runs/{run.get("run_id", "")}', run_url,
     ):
         run_url = ''
     deploy_note = f' · 测试站部署 {deployed[:8]}' if current and deployed != commit else ''
+    if current:
+        provenance = f'本次提交页面实跑 · 运行 {run["run_id"]} · {environment}{deploy_note}{run_time}'
+    elif fresh:
+        provenance = f'本次提交的测试脚本已实跑 · 运行 {run["run_id"]} · 站点部署提交待核对{run_time}'
+    else:
+        provenance = f'测试站独立实跑{run_time}（历史参考）'
     return {
         'source': SOURCE_LABELS['service-account-ui'],
         'status': status if isinstance(status, str) and status in STATUS_CN else 'unknown',
         'evidence': evidence,
         'current': current,
-        'provenance': (
-            f'本次提交页面实跑 · 运行 {run["run_id"]} · {environment}{deploy_note}{run_time}'
-            if current else f'测试站独立实跑{run_time}（历史参考）'
-        ),
+        'fresh': fresh,
+        'provenance': provenance,
         'run_url': run_url,
     }
 
@@ -461,7 +466,9 @@ def render_business_scenarios(results, *, service_account_ui=None):
         ]
         verdict, colour, reason = _business_result(case, [match for _, _, _, match in observations])
         if scenario_id == TICKET_SCENARIO:
-            if case is None and any(
+            if case is None and service_account_ui and service_account_ui['fresh']:
+                verdict, colour, reason = '部分验证', 'neutral', '测试站部署提交待核对'
+            elif case is None and any(
                 check['status'] in ('passed', 'failed', 'broken')
                 for checks in ticket_api.values() for check in checks
             ):
@@ -477,6 +484,9 @@ def render_business_scenarios(results, *, service_account_ui=None):
         passed = sum(match is True for _, _, _, match in observations)
         if case:
             checked = f'{passed}/{len(observations)} 个断言通过'
+        elif scenario_id == TICKET_SCENARIO and service_account_ui and service_account_ui['fresh']:
+            completed = sum(step['outcome'] == 'passed' for step in service_account_ui['evidence'].values())
+            checked = f'测试站实跑 {completed}/{len(observations)} 步通过'
         else:
             checked = '有接口检查结果' if verdict == '部分验证' else '无本次验证结果'
         observations.extend(
@@ -496,10 +506,13 @@ def render_business_scenarios(results, *, service_account_ui=None):
             parts.append(f'<p class="meta">{_linked_text(case["provenance"], case.get("run_url", ""))}</p>')
         history = service_account_ui if scenario_id == TICKET_SCENARIO and case is None else None
         if history:
-            parts.append(f'<p class="meta">{esc(history["provenance"])}</p>')
+            parts.append(f'<p class="meta">{_linked_text(history["provenance"], history["run_url"])}</p>')
+        observation_heading = '实际结果'
+        if history:
+            observation_heading = '测试站实际' if history['fresh'] else '历史实际'
         parts.append(
             '<table><thead><tr><th>角色</th><th>动作</th><th>预期结果</th>'
-            f'<th>{"历史实际" if history else "实际结果"}</th><th>相关测试</th></tr></thead><tbody>'
+            f'<th>{observation_heading}</th><th>相关测试</th></tr></thead><tbody>'
         )
         for key, step, actual, match in observations:
             if history:
