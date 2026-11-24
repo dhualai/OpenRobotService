@@ -134,6 +134,63 @@ def test_service_ticket_evidence_checks_scope_and_never_counts_towards_gate(
     assert "未验证（服务号测试站页面）" in _scenario_html(html, "service-learning")
 
 
+@pytest.mark.parametrize("course_outcome", ["blocked", "progress_mismatch", "passed"])
+def test_learner_course_evidence_shows_progress_without_passing_release_gate(tmp_path, course_outcome):
+    environment = "service-account-test"
+    evidence = {
+        "run": {
+            "commit": "b" * 40, "run_id": "123", "environment": environment,
+            "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/123",
+        },
+        "course": {
+            "course_id": "course", "course_title": "测试 <课程>", "course_version": 1,
+            "total": 2, "submitted": 2, "scored": 2, "correct": 1, "persisted": 2,
+            "list_progress": "passed", "detail_progress": "passed" if course_outcome == "passed" else "failed",
+            "detail_answered": 2 if course_outcome == "passed" else 0, "answers": "synthetic-test-secret",
+        },
+    }
+    if course_outcome == "blocked":
+        evidence["course"].update(submitted=0, scored=0, correct=0, persisted=0, submit_http_status=403,
+                                  list_progress="unknown", detail_progress="unknown")
+        (tmp_path / business_report.LEARNER_READBACK_FILE).write_text(json.dumps({
+            "course_id": "course", "article_version": 1,
+            "course_progress": {"answered_count": 0, "total_count": 2, "detail_answered": 0},
+            "run": {"run_id": "124", "environment": environment,
+                    "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/124"},
+        }), encoding="utf-8")
+    (tmp_path / business_report.LEARNER_RUN_FILE).write_text(
+        json.dumps(evidence), encoding="utf-8",
+    )
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({"run": {"commit": "a" * 40}}), encoding="utf-8")
+    report = tmp_path / "business.html"
+    business_report.main([
+        "--results", str(tmp_path), "--expect-gate", "--context", str(context),
+        "--service-account-learner-results", str(tmp_path),
+        "--service-account-ui-environment", environment, "--out", str(report),
+    ])
+
+    html = report.read_text(encoding="utf-8")
+    card = _scenario_html(html, "service-learning")
+    assert "测试 &lt;课程&gt; v1" in card
+    assert "测试脚本 bbbbbbbb" in card and "/actions/runs/123" in card
+    if course_outcome == "blocked":
+        assert "提交答案受阻（HTTP 403）" in card
+        assert "只读回查：课程列表显示 0/2 题，重新打开后页面显示 0/2 题" in card
+        assert "/actions/runs/124" in card
+    else:
+        assert "提交成功 2/2 题" in card and "实际答对 1 题" in card
+        assert "课程列表回查 2/2 题，显示已完成" in card
+        detail_answered = 2 if course_outcome == "passed" else 0
+        assert f"重新打开后的页面显示 {detail_answered}/2 题" in card
+        assert ("答题进度显示不一致" in card) == (course_outcome == "progress_mismatch")
+    expected = 'neutral">部分验证' if course_outcome == "passed" else 'failure">受阻'
+    assert f'"business-status {expected}' in card
+    assert "Test Gate 判定：未验收" in html
+    assert "synthetic-test-secret" not in html
+    assert business_report.load_learner_course(tmp_path, environment="different-test") is None
+
+
 def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_path):
     artifacts = tmp_path / "artifacts"
     observer = artifacts / "allure-results-service-account-rules"

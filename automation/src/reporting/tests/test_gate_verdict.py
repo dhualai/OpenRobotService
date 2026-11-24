@@ -229,15 +229,17 @@ def test_business_report_can_load_evidence_from_a_selected_ui_run():
     gate = yaml.safe_load((workflows / "test-gate.yml").read_text(encoding="utf-8"))
     ui = yaml.safe_load((workflows / "ui-regression.yml").read_text(encoding="utf-8"))
     report = gate["jobs"]["allure-report"]
-    [download] = [
-        step for step in report["steps"]
+    downloads = {
+        step["with"]["run-id"]: step for step in report["steps"]
         if step.get("with", {}).get("name") == "service-account-ui-evidence"
-    ]
+    }
     assert report["permissions"]["actions"] == "read"
-    assert download["with"]["run-id"] == "${{ inputs.ui_evidence_run_id }}"
-    assert download["continue-on-error"] is True
+    assert set(downloads) == {"${{ inputs.ui_evidence_run_id }}", "${{ inputs.learner_evidence_run_id }}"}
+    assert all(step["continue-on-error"] for step in downloads.values())
+    assert len({step["with"]["path"] for step in downloads.values()}) == 2
     business = next(step for step in report["steps"] if step.get("id") == "business-html")
     assert "--service-account-ui-environment service-account-test" in business["run"]
+    assert "--service-account-learner-results automation/output/ui-learner-evidence" in business["run"]
     ui_steps = ui["jobs"]["ui-regression"]["steps"]
     assert any("test_service_account_ticket_lifecycle.py" in step.get("run", "") for step in ui_steps)
     [upload] = [

@@ -17,7 +17,7 @@ import re
 
 if __package__:
     from .business_scenarios import (
-        EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIO_LABEL, SERVICE_ACCOUNT_SCENARIOS,
+        BusinessStep, EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIO_LABEL, SERVICE_ACCOUNT_SCENARIOS,
         SOURCE_LABELS, describe_actual,
     )
     from .report_data import (
@@ -26,7 +26,7 @@ if __package__:
     )
 else:
     from business_scenarios import (
-        EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIO_LABEL, SERVICE_ACCOUNT_SCENARIOS,
+        BusinessStep, EVIDENCE_ATTACHMENT, OBSERVATION_SOURCES, SCENARIO_LABEL, SERVICE_ACCOUNT_SCENARIOS,
         SOURCE_LABELS, describe_actual,
     )
     from report_data import (
@@ -37,7 +37,10 @@ else:
 DEFAULT_RESULTS = pathlib.Path('output/allure-results')
 DEFAULT_OUT = pathlib.Path('output/test-report-business.html')
 UI_RUN_FILE = 'service-account-ui-run.json'
+LEARNER_RUN_FILE = 'learner-course-run.json'
+LEARNER_READBACK_FILE = 'course-progress-run.json'
 TICKET_SCENARIO = 'service-ticket-lifecycle'
+LEARNING_SCENARIO = 'service-learning'
 TICKET_PHASES = {
     **dict.fromkeys(('S01', 'S02', 'S03', 'S04', 'S05'), '提单'),
     **dict.fromkeys(('S06', 'S07', 'S08', 'S09'), '派单'),
@@ -46,7 +49,7 @@ TICKET_PHASES = {
 }
 PAGE_GAPS = {
     'service-knowledge-finance': '提交沉淀至奖励可申领的页面闭环待验证',
-    'service-learning': '学员答题、评分与进度待验证',
+    LEARNING_SCENARIO: '学员答题、评分与进度待验证',
     'service-challenge': '发布至奖励待财务审核的页面闭环待验证',
 }
 BUSINESS_MODULES = {
@@ -441,7 +444,93 @@ def _evidence_links(cases):
     return '<br>'.join(links)
 
 
-def render_business_scenarios(results, *, service_account_ui=None):
+def load_learner_course(root, *, environment=''):
+    data = read_object(root / LEARNER_RUN_FILE)
+    run, course = data.get('run'), data.get('course')
+    if (
+        not isinstance(run, dict) or not isinstance(course, dict) or not environment
+        or run.get('environment') != environment
+    ):
+        return None
+    revision = run.get('commit')
+    run_id = run.get('run_id')
+    if (
+        not isinstance(revision, str) or not re.fullmatch(r'[a-fA-F0-9]{40}|[a-fA-F0-9]{64}', revision)
+        or not isinstance(run_id, str) or not re.fullmatch(r'\d+', run_id)
+        or not isinstance(course.get('course_title'), str)
+        or type(course.get('course_version')) is not int
+    ):
+        return None
+    counters = ('total', 'submitted', 'scored', 'correct', 'persisted')
+    if any(type(course.get(key)) is not int or course[key] < 0 for key in counters):
+        return None
+    total, submitted, scored, correct, persisted = (course[key] for key in counters)
+    if not 0 <= correct <= scored <= submitted <= total or persisted > total:
+        return None
+    http_status = course.get('submit_http_status')
+    rejected = type(http_status) is int and 400 <= http_status <= 599
+    list_progress = course.get('list_progress') == 'passed' and total > 0 and persisted == total
+    detail_progress = course.get('detail_progress')
+    detail_answered = course.get('detail_answered')
+    detail_text = '重新打开后的页面进度待验证'
+    if type(detail_answered) is int and 0 <= detail_answered <= total:
+        detail_text = f'重新打开后的页面显示 {detail_answered}/{total} 题'
+    elif detail_progress == 'passed':
+        detail_text = f'重新打开后的页面显示 {total}/{total} 题'
+    outcome = None if detail_progress == 'unknown' else detail_progress == 'passed' and list_progress
+    run_url = run.get('run_url', '')
+    if not isinstance(run_url, str) or not re.fullmatch(
+        rf'https://[\w.-]+/[\w.-]+/[\w.-]+/actions/runs/{run_id}', run_url,
+    ):
+        run_url = ''
+    progress = f'课程列表回查 {persisted}/{total} 题，显示已完成。' if list_progress else ''
+    readback = read_object(root / LEARNER_READBACK_FILE)
+    check, check_run = readback.get('course_progress'), readback.get('run')
+    readback_link = ''
+    if (
+        total and isinstance(check, dict) and isinstance(check_run, dict)
+        and check_run.get('environment') == environment and check_run.get('run_id') != run_id
+        and course.get('course_id') and readback.get('course_id') == course['course_id']
+        and readback.get('article_version') == course['course_version'] and check.get('total_count') == total
+        and all(type(check.get(key)) is int and 0 <= check[key] <= total for key in ('answered_count', 'detail_answered'))
+    ):
+        progress = f'只读回查：课程列表显示 {check["answered_count"]}/{total} 题，'
+        detail_text = f'重新打开后页面显示 {check["detail_answered"]}/{total} 题'
+        check_id, check_url = check_run.get('run_id'), check_run.get('run_url')
+        if (
+            isinstance(check_id, str) and check_id.isdigit() and isinstance(check_url, str)
+            and re.fullmatch(rf'https://[\w.-]+/[\w.-]+/[\w.-]+/actions/runs/{check_id}', check_url)
+        ):
+            readback_link = _linked_text(f'课程进度只读回查 · 运行 {check_id}', check_url)
+    submit_text = f'提交成功 {submitted}/{total} 题' if total else '未取得课程详情'
+    if rejected:
+        submit_text += f'，提交接口返回 HTTP {http_status}'
+    reason = '学员实跑的站点版本归属待核对'
+    if outcome is False:
+        reason = '重新打开课程后，答题进度显示不一致'
+    if total and submitted < total:
+        reason = f'提交答案受阻（HTTP {http_status}）' if rejected else '答题提交未完成，评分与进度保存未验证'
+    return {
+        'provenance': f'测试站学员实跑 · {course["course_title"][:150]} v{course["course_version"]}'
+                      f' · 测试脚本 {revision[:8]} · 运行 {run_id} · 站点版本归属待核对',
+        'run_url': run_url,
+        'readback_link': readback_link,
+        'summary': f'学员提交 {submitted}/{total} 题，评分反馈核对 {scored}/{total} 题' if total else '学员侧实跑未完成',
+        'reason': reason,
+        'blocked': rejected or outcome is False,
+        'steps': [
+            ('', BusinessStep('学员', '打开课程并提交答案', '课程接收本次提交'),
+             submit_text, bool(total and submitted == total)),
+            ('', BusinessStep('学员', '查看评分和答题反馈', '页面反馈与提交后返回的评分一致'),
+             f'核对 {scored}/{total} 题，实际答对 {correct} 题' if scored else '未完成评分核对',
+             bool(total and scored == total) if submitted else None),
+            ('', BusinessStep('学员', '返回学习中心并重新打开课程', '课程列表和答题页均能回查进度'),
+             progress + detail_text, outcome),
+        ],
+    }
+
+
+def render_business_scenarios(results, *, service_account_ui=None, learner_course=None):
     cases = collections.defaultdict(list)
     for result in results:
         scenario_id = result_labels(result).get(SCENARIO_LABEL)
@@ -452,6 +541,7 @@ def render_business_scenarios(results, *, service_account_ui=None):
     ticket_api = _ticket_api_evidence(results)
     parts = ['<section class="business-list"><h3>业务场景一览</h3>']
     for scenario_id, scenario in SERVICE_ACCOUNT_SCENARIOS.items():
+        learner = learner_course if scenario_id == LEARNING_SCENARIO else None
         # A Mock run can collect a real-only case and skip it. Use the designated evidence source.
         candidates = [case for case in cases[scenario_id] if case['source'] == scenario.source]
         case = min(candidates, key=lambda record: priority[record['status']], default=None)
@@ -481,17 +571,25 @@ def render_business_scenarios(results, *, service_account_ui=None):
                     reason = f'{phase}步骤断言未通过' if target is False else f'{phase}步骤缺少验证证据'
         if scenario_id in PAGE_GAPS and colour == 'success':
             verdict, colour, reason = '部分验证', 'neutral', PAGE_GAPS[scenario_id]
+        if learner and colour != 'failure':
+            verdict, colour = ('受阻', 'failure') if learner['blocked'] else ('部分验证', 'neutral')
+            reason = learner['reason']
         passed = sum(match is True for _, _, _, match in observations)
-        if case:
+        if learner:
+            checked = learner['summary']
+        elif case:
             checked = f'{passed}/{len(observations)} 个断言通过'
         elif scenario_id == TICKET_SCENARIO and service_account_ui and service_account_ui['fresh']:
             completed = sum(step['outcome'] == 'passed' for step in service_account_ui['evidence'].values())
             checked = f'测试站实跑 {completed}/{len(observations)} 步通过'
         else:
             checked = '有接口检查结果' if verdict == '部分验证' else '无本次验证结果'
-        observations.extend(
-            ('', step, f'未验证（{source}）', None) for step, source in scenario.planned_steps
-        )
+        if learner:
+            observations.extend(learner['steps'])
+        else:
+            observations.extend(
+                ('', step, f'未验证（{source}）', None) for step, source in scenario.planned_steps
+            )
         parts.append(
             f'<details class="business-scenario" id="scenario-{scenario_id}">'
             f'<summary><span class="module-name">{esc(scenario.module)}</span>'
@@ -507,6 +605,10 @@ def render_business_scenarios(results, *, service_account_ui=None):
         history = service_account_ui if scenario_id == TICKET_SCENARIO and case is None else None
         if history:
             parts.append(f'<p class="meta">{_linked_text(history["provenance"], history["run_url"])}</p>')
+        if learner:
+            parts.append(f'<p class="meta">{_linked_text(learner["provenance"], learner["run_url"])}</p>')
+            if learner['readback_link']:
+                parts.append(f'<p class="meta">{learner["readback_link"]}</p>')
         observation_heading = '实际结果'
         if history:
             observation_heading = '测试站实际' if history['fresh'] else '历史实际'
@@ -565,7 +667,9 @@ def main(argv=None):
     parser.add_argument('--context', type=pathlib.Path, help='Test Gate 判定与运行信息 JSON')
     parser.add_argument('--expect-gate', action='store_true', help='缺失门禁判定时显示未验收')
     parser.add_argument('--service-account-ui-results', type=pathlib.Path,
-                        help='独立的服务号测试站 Allure 结果目录')
+                        help='独立的服务号测试站实跑证据目录')
+    parser.add_argument('--service-account-learner-results', type=pathlib.Path,
+                        help='独立的学员答题实跑证据目录')
     parser.add_argument('--service-account-ui-environment', default='',
                         help='当前验收所需的服务号页面测试环境标识')
     args = parser.parse_args(argv)
@@ -662,7 +766,9 @@ def main(argv=None):
         )
         if args.service_account_ui_results else None
     )
-    p.append(render_business_scenarios(results, service_account_ui=ui_run))
+    learner_root = args.service_account_learner_results or args.service_account_ui_results
+    learner_course = load_learner_course(learner_root, environment=args.service_account_ui_environment) if learner_root else None
+    p.append(render_business_scenarios(results, service_account_ui=ui_run, learner_course=learner_course))
 
     p.append('<div class="toc" style="background:#eef6ff;border-color:#c9defa">'
              '<b>怎么看到「步骤、入参、出参、断言」</b>：'
