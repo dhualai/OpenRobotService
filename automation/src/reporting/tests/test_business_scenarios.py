@@ -46,11 +46,14 @@ def _scenario_html(report, scenario):
 
 @pytest.mark.parametrize(("last_status", "expected"), [
     ("passed", "通过"),
-    ("failed", "失败"),
-    ("missing", "未验证"),
+    ("failed", "受阻"),
+    ("missing", "部分验证"),
 ])
-def test_service_ticket_history_checks_all_steps_and_never_counts_towards_gate(
-    tmp_path, last_status, expected,
+@pytest.mark.parametrize(
+    "origin", ["current", "matching_app", "deployment_drift", "old_commit", "wrong_environment", "legacy"],
+)
+def test_service_ticket_evidence_checks_scope_and_never_counts_towards_gate(
+    tmp_path, last_status, expected, origin,
 ):
     history = tmp_path / "history"
     history.mkdir()
@@ -69,7 +72,10 @@ def test_service_ticket_history_checks_all_steps_and_never_counts_towards_gate(
                 {"name": f"{key}-断言与响应摘要", "source": fixture},
             ] if status != "missing" else [],
         })
-    name = "test_call_qa_to_ticket_close_regression"
+    name = (
+        "test_call_qa_to_ticket_close_regression" if origin == "legacy"
+        else "test_service_account_ticket_lifecycle"
+    )
     payload = {
         "name": "测试环境双角色工单闭环", "fullName": f"tests.ui.{name}#{name}",
         "status": "passed", "steps": steps, "start": 1795423036000,
@@ -79,21 +85,110 @@ def test_service_ticket_history_checks_all_steps_and_never_counts_towards_gate(
     (history / "other-result.json").write_text(json.dumps({
         **payload, "fullName": "unrelated", "start": payload["start"] + 10,
     }), encoding="utf-8")
+    commit = "a" * 40
+    environment = "service-account-test"
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({"run": {"commit": commit}}), encoding="utf-8")
+    if origin != "legacy":
+        evidence_dir = tmp_path / "evidence"
+        business_report.export_service_account_ui(history, evidence_dir, {
+            "commit": "b" * 40 if origin == "old_commit" else commit,
+            "deployment_commit": "b" * 40 if origin in ("old_commit", "matching_app") else commit,
+            "application_trees_match": origin in ("old_commit", "matching_app", "deployment_drift"),
+            "deployment_drift": origin == "deployment_drift",
+            "environment": "other-test" if origin == "wrong_environment" else environment,
+            "run_id": "123",
+            "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/123",
+        })
+        assert token not in (evidence_dir / business_report.UI_RUN_FILE).read_text(encoding="utf-8")
+    else:
+        evidence_dir = history
     report = tmp_path / "business.html"
     business_report.main([
         "--results", str(tmp_path / "empty"), "--expect-gate",
-        "--service-account-ui-results", str(history), "--out", str(report),
+        "--context", str(context), "--service-account-ui-environment", environment,
+        "--service-account-ui-results", str(evidence_dir), "--out", str(report),
     ])
 
     html = report.read_text(encoding="utf-8")
     card = _scenario_html(html, scenario)
-    assert f'">{expected}</span>' in card
-    assert "测试站独立实跑" in card and "UTC+8" in card
+    if origin in ("current", "matching_app"):
+        assert f'">{expected}</span>' in card
+        assert "本次提交页面实跑" in card and "/actions/runs/123" in card
+        if origin == "matching_app":
+            assert "测试站部署 bbbbbbbb" in card
+        if last_status != "passed":
+            assert "卡点 · 关闭步骤" in card
+    elif origin == "deployment_drift":
+        assert '">部分验证</span>' in card
+        assert "测试站部署提交待核对" in card
+        assert "本次提交的测试脚本已实跑" in card
+    else:
+        assert '">本次未运行</span>' in card
+        assert "历史参考" in card
+    assert "UTC+8" in card
     assert card.count("<tr>") == 18
     assert ("再次打开仍显示已关闭" in card) == (last_status == "passed")
     assert "Test Gate 判定：未验收" in html and "结果总数 0" in html
     assert token not in html
     assert "未验证（服务号测试站页面）" in _scenario_html(html, "service-learning")
+
+
+@pytest.mark.parametrize("course_outcome", ["blocked", "progress_mismatch", "passed"])
+def test_learner_course_evidence_shows_progress_without_passing_release_gate(tmp_path, course_outcome):
+    environment = "service-account-test"
+    evidence = {
+        "run": {
+            "commit": "b" * 40, "run_id": "123", "environment": environment,
+            "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/123",
+        },
+        "course": {
+            "course_id": "course", "course_title": "测试 <课程>", "course_version": 1,
+            "total": 2, "submitted": 2, "scored": 2, "correct": 1, "persisted": 2,
+            "list_progress": "passed", "detail_progress": "passed" if course_outcome == "passed" else "failed",
+            "detail_answered": 2 if course_outcome == "passed" else 0, "answers": "synthetic-test-secret",
+        },
+    }
+    if course_outcome == "blocked":
+        evidence["course"].update(submitted=0, scored=0, correct=0, persisted=0, submit_http_status=403,
+                                  list_progress="unknown", detail_progress="unknown")
+        (tmp_path / business_report.LEARNER_READBACK_FILE).write_text(json.dumps({
+            "course_id": "course", "article_version": 1,
+            "course_progress": {"answered_count": 0, "total_count": 2, "detail_answered": 0},
+            "run": {"run_id": "124", "environment": environment,
+                    "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/124"},
+        }), encoding="utf-8")
+    (tmp_path / business_report.LEARNER_RUN_FILE).write_text(
+        json.dumps(evidence), encoding="utf-8",
+    )
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({"run": {"commit": "a" * 40}}), encoding="utf-8")
+    report = tmp_path / "business.html"
+    business_report.main([
+        "--results", str(tmp_path), "--expect-gate", "--context", str(context),
+        "--service-account-learner-results", str(tmp_path),
+        "--service-account-ui-environment", environment, "--out", str(report),
+    ])
+
+    html = report.read_text(encoding="utf-8")
+    card = _scenario_html(html, "service-learning")
+    assert "测试 &lt;课程&gt; v1" in card
+    assert "测试脚本 bbbbbbbb" in card and "/actions/runs/123" in card
+    if course_outcome == "blocked":
+        assert "提交答案受阻（HTTP 403）" in card
+        assert "只读回查：课程列表显示 0/2 题，重新打开后页面显示 0/2 题" in card
+        assert "/actions/runs/124" in card
+    else:
+        assert "提交成功 2/2 题" in card and "实际答对 1 题" in card
+        assert "课程列表回查 2/2 题，显示已完成" in card
+        detail_answered = 2 if course_outcome == "passed" else 0
+        assert f"重新打开后的页面显示 {detail_answered}/2 题" in card
+        assert ("答题进度显示不一致" in card) == (course_outcome == "progress_mismatch")
+    expected = 'neutral">部分验证' if course_outcome == "passed" else 'failure">受阻'
+    assert f'"business-status {expected}' in card
+    assert "Test Gate 判定：未验收" in html
+    assert "synthetic-test-secret" not in html
+    assert business_report.load_learner_course(tmp_path, environment="different-test") is None
 
 
 def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_path):
@@ -121,11 +216,47 @@ def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_
     assert sources[name] == SOURCE_LABELS["service-account-rules"]
     card = _scenario_html(html, scenario)
     assert "服务号后台规则检查（观察项）" in card
-    assert 'class="business-status success">通过' in card
+    assert 'class="business-status neutral">部分验证' in card
     assert "<th>角色</th><th>动作</th><th>预期结果</th><th>实际结果</th>" in card
     assert 'href="#case-a0"' in card and 'id="case-a0"' in html
     assert "知识已发布，三类奖励可申领" in card
     assert token not in html
+
+
+def test_ticket_shows_interface_evidence_and_requires_current_ui(tmp_path):
+    files = {
+        "mock-result.json": (
+            "a0", "Mock 工单闭环",
+            "tests.business_chain.test_call_to_ticket_close.TestCallToTicketClose#test_call_qa_to_ticket_close",
+            "quality-api",
+        ),
+        "real-result.json": (
+            "b0", "真实建单后回读",
+            "tests.real.test_real_backend_smoke#test_task_create_and_get",
+            "real",
+        ),
+        "contract-result.json": (
+            "c0", "健康接口契约",
+            "tests.contract.test_openapi_contract#test_openapi_contract_smoke",
+            "contract",
+        ),
+    }
+    for filename, (uid, name, full_name, source) in files.items():
+        (tmp_path / filename).write_text(json.dumps({
+            "uuid": uid, "name": name, "fullName": full_name, "status": "passed",
+        }), encoding="utf-8")
+    (tmp_path / SOURCES_FILE).write_text(json.dumps({
+        filename: SOURCE_LABELS[item[3]] for filename, item in files.items()
+    }), encoding="utf-8")
+    output = tmp_path / "business.html"
+    business_report.main(["--results", str(tmp_path), "--out", str(output)])
+    html = output.read_text(encoding="utf-8")
+    card = _scenario_html(html, "service-ticket-lifecycle")
+    assert 'class="business-status neutral">部分验证' in card
+    assert "本次提交的页面闭环待验证" in card
+    assert 'href="#case-a0"' in card and 'href="#case-b0"' in card
+    assert card.count('href="#case-b0"') == 1
+    assert 'href="#case-c0"' not in card and 'id="case-c0"' in html
 
 
 def test_business_overview_lists_service_account_flows_and_preserves_source_groups(tmp_path):
@@ -185,7 +316,7 @@ def test_business_overview_lists_service_account_flows_and_preserves_source_grou
 
     groups = business_report.collect(tmp_path)
     assert set(groups) == {
-        "模拟接口测试", "真实工单流程（观察项）", "后台管理",
+        "我要摇人", "系统任务", "后台管理",
         "知识库数据库检查（观察项）", "来源未标注",
     }
     assert "Observed work orders" not in html and "DB checks" not in html
@@ -221,7 +352,7 @@ def test_report_keeps_skipped_missing_and_incomplete_scenarios_unverified(tmp_pa
     html = output.read_text(encoding="utf-8")
 
     finance_html = _scenario_html(html, "service-knowledge-finance")
-    assert "未验证" in finance_html and "步骤证据不完整" in finance_html
+    assert "部分验证" in finance_html and "步骤证据不完整" in finance_html
     assert "未记录实际结果" in finance_html
     assert "本次用例已跳过" in _scenario_html(html, "service-challenge")
     learning_html = _scenario_html(html, "service-learning")

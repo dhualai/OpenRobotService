@@ -1,13 +1,30 @@
 name: UI Regression
 
-# 注意：SSH 隧道链路已下线（TEST_SSH_PRIVATE_KEY 已删除），当前只保留手动触发。
-# 待原仓库注册 self-hosted runner 并切换为直连模式后，恢复 push 触发。
+# 手动验证已部署测试站，或选择本地前端加 SSH 网关。
 on:
   workflow_dispatch:
+    inputs:
+      deployment_commit:
+        description: "完整提交号，取自测试站此次部署记录"
+        type: string
+        required: false
+      direct_test_site:
+        description: "直连已部署测试站，核对部署源码后运行"
+        type: boolean
+        default: false
+      learner_only:
+        description: "只验证已确认测试课程的答题、评分和进度"
+        type: boolean
+        default: false
+      learner_readback_only:
+        description: "只读回查已确认测试课程的学习进度"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   actions: read
+  deployments: read
 
 concurrency:
   group: ui-regression-test
@@ -28,6 +45,7 @@ env:
   UI_REGRESSION_TUNNEL_TIMEOUT: "60"
   UI_REGRESSION_U1_USERNAME: ${{ vars.UI_REGRESSION_U1_USERNAME || 'u1_auto' }}
   UI_REGRESSION_U2_USERNAME: ${{ vars.UI_REGRESSION_U2_USERNAME || 'u2_auto' }}
+  UI_REGRESSION_U2_DISPLAY_NAME: ${{ vars.UI_REGRESSION_U2_DISPLAY_NAME || '自动化处理人' }}
   UI_REGRESSION_CLEANUP_USERNAME: ${{ vars.UI_REGRESSION_CLEANUP_USERNAME || 'admin' }}
   UI_REGRESSION_DB_CLEANUP_ENABLED: "1"
   UI_REGRESSION_DB_HOST: "127.0.0.1"
@@ -54,6 +72,7 @@ jobs:
 
       - name: Validate required configuration
         env:
+          UI_REGRESSION_DEPLOYED: ${{ inputs.direct_test_site && '1' || '0' }}
           TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
           UI_REGRESSION_U1_PASSWORD: ${{ secrets.REAL_U1_PASSWORD }}
           UI_REGRESSION_U2_PASSWORD: ${{ secrets.REAL_U2_PASSWORD }}
@@ -62,13 +81,12 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for name in \
-            TEST_SSH_PRIVATE_KEY \
-            UI_REGRESSION_SSH_HOST \
-            UI_REGRESSION_U1_PASSWORD \
-            UI_REGRESSION_U2_PASSWORD \
-            UI_REGRESSION_CLEANUP_PASSWORD \
-            UI_REGRESSION_DB_PASSWORD
+          required=(UI_REGRESSION_U1_PASSWORD UI_REGRESSION_U2_PASSWORD)
+          if [ "$UI_REGRESSION_DEPLOYED" != 1 ]; then
+            required+=(TEST_SSH_PRIVATE_KEY UI_REGRESSION_SSH_HOST
+                       UI_REGRESSION_CLEANUP_PASSWORD UI_REGRESSION_DB_PASSWORD)
+          fi
+          for name in "${required[@]}"
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::$name is not configured"
@@ -77,17 +95,48 @@ jobs:
           done
           test "$missing" -eq 0
 
+      - name: Verify active test deployment
+        id: verify-deployment
+        if: inputs.direct_test_site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UI_DEPLOYMENT_COMMIT: ${{ inputs.deployment_commit }}
+        run: |
+          set -euo pipefail
+          [[ "$UI_DEPLOYMENT_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          base="repos/$GITHUB_REPOSITORY/deployments"
+          active=""
+          for id in $(gh api "$base?environment=test&per_page=10" --jq '.[].id'); do
+            state=$(gh api "$base/$id/statuses?per_page=1" --jq '.[0].state // ""')
+            if [ "$state" = success ]; then
+              active=$(gh api "$base/$id" --jq .sha)
+              break
+            fi
+          done
+          if [ "$active" != "$UI_DEPLOYMENT_COMMIT" ]; then
+            echo "::error::The selected SHA differs from the active test deployment."
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "$UI_DEPLOYMENT_COMMIT"
+          if ! git diff --quiet "$UI_DEPLOYMENT_COMMIT" HEAD -- frontend backend ai deploy doc-service; then
+            echo "::error::The deployed application source differs from the workflow checkout."
+            exit 1
+          fi
+          echo "app_matches=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/setup-node@v4
+        if: ${{ !inputs.direct_test_site }}
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install Java and Allure CLI
+        if: ${{ !inputs.direct_test_site }}
         run: |
           sudo apt-get update
           sudo apt-get install -y default-jre-headless
@@ -99,9 +148,11 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Install frontend dependencies
+        if: ${{ !inputs.direct_test_site }}
         run: npm ci --prefix frontend
 
       - name: Prepare SSH key
+        if: ${{ !inputs.direct_test_site }}
         env:
           TEST_SSH_PRIVATE_KEY: ${{ secrets.TEST_SSH_PRIVATE_KEY }}
         run: |
@@ -112,13 +163,19 @@ jobs:
           echo "UI_REGRESSION_SSH_KEY=$HOME/.ssh/ci_key" >> "$GITHUB_ENV"
 
       - name: Preflight real environment SSH forwards
+        if: ${{ !inputs.direct_test_site }}
         run: python automation/scripts/cli-check-ui-regression-ssh.py
 
       - name: Build frontend
+        if: ${{ !inputs.direct_test_site }}
         run: npm run build --prefix frontend
 
       - name: Run UI regression
         env:
+          UI_REGRESSION_DEPLOYED: ${{ inputs.direct_test_site && '1' || '0' }}
+          UI_COURSE_PROBE_OUTPUT: automation/output/ui-business-evidence/course-source.json
+          UI_COURSE_PROBE_ID: ${{ inputs.direct_test_site && inputs.learner_readback_only && '1bf21e0f66a14c2db18d18a7cbf3ce6c' || '' }}
+          UI_LEARNER_EVIDENCE_OUTPUT: ${{ inputs.direct_test_site && inputs.learner_only && !inputs.learner_readback_only && 'automation/output/ui-business-evidence/learner-course-run.json' || '' }}
           UI_REGRESSION_U1_PASSWORD: ${{ secrets.REAL_U1_PASSWORD }}
           UI_REGRESSION_U2_PASSWORD: ${{ secrets.REAL_U2_PASSWORD }}
           UI_REGRESSION_CLEANUP_PASSWORD: ${{ secrets.UI_REGRESSION_CLEANUP_PASSWORD }}
@@ -126,20 +183,81 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p automation/output
+          cases=(automation/tests/ui/test_service_account_ticket_lifecycle.py)
+          if [ -n "$UI_LEARNER_EVIDENCE_OUTPUT" ]; then
+            cases=(automation/tests/ui/test_service_account_learning_answer.py)
+          fi
+          if [ -n "$UI_COURSE_PROBE_ID" ]; then
+            cases=(automation/tests/ui/test_service_account_course_source.py)
+          elif [ "$UI_REGRESSION_DEPLOYED" = 1 ]; then
+            cases=(automation/tests/ui/test_service_account_course_source.py "${cases[@]}")
+          else
+            cases+=(automation/tests/ui/test_real_safe_api_smoke.py)
+          fi
           pytest \
-            automation/tests/ui/test_call_qa_to_ticket_close_regression.py \
-            automation/tests/ui/test_real_safe_api_smoke.py \
+            "${cases[@]}" \
             -m "e2e or smoke" \
-            -q \
+            -q --no-trace --allure-no-capture \
             --alluredir=automation/output/allure-results-ui-regression-combined \
             --junitxml=automation/output/junit-ui-regression.xml
+
+      - name: Record business evidence origin
+        if: ${{ !cancelled() && (steps.verify-deployment.outputs.app_matches == 'true' || (!inputs.direct_test_site && inputs.deployment_commit == github.sha)) }}
+        env:
+          UI_DEPLOYMENT_COMMIT: ${{ inputs.deployment_commit }}
+          APP_TREES_MATCH: ${{ steps.verify-deployment.outputs.app_matches }}
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import subprocess
+          from pathlib import Path
+          from automation.src.reporting.business_report import export_service_account_ui
+          from automation.src.reporting.report_data import read_object, run_metadata
+
+          root = Path("automation/output/allure-results-ui-regression-combined")
+          out = Path("automation/output/ui-business-evidence")
+          meta = run_metadata()
+          revision = os.environ["UI_DEPLOYMENT_COMMIT"]
+          probe = read_object(out / "course-source.json")
+          learner_route = "/t/api/tasks/learning/articles"
+          expected_learner_api = subprocess.run(
+              ["git", "cat-file", "-e", f"{revision}:backend/app/modules/tasks/api/learning.py"],
+              capture_output=True, check=False,
+          ).returncode == 0
+          deployment_drift = learner_route in probe.get("observed_source_fields", {}) and not expected_learner_api
+          meta.update(environment="service-account-test",
+                      deployment_commit=revision,
+                      application_trees_match=os.environ["APP_TREES_MATCH"] == "true" and not deployment_drift,
+                      deployment_drift=deployment_drift)
+          export_service_account_ui(root, out, meta)
+          learner_file = out / "learner-course-run.json"
+          if learner_file.is_file():
+              learner = read_object(learner_file)
+              learner_file.write_text(json.dumps({"run": meta, "course": learner}, ensure_ascii=False), encoding="utf-8")
+          if probe.get("course_progress"):
+              probe_file = out / "course-source.json"
+              probe_file.write_text(json.dumps({**probe, "run": meta}, ensure_ascii=False), encoding="utf-8")
+          PY
+
+      - name: Upload business UI results
+        if: ${{ !cancelled() && (steps.verify-deployment.outputs.app_matches == 'true' || (!inputs.direct_test_site && inputs.deployment_commit == github.sha)) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-account-ui-evidence
+          path: |
+            automation/output/ui-business-evidence/service-account-ui-run.json
+            automation/output/ui-business-evidence/course-source.json
+            automation/output/ui-business-evidence/learner-course-run.json
+          if-no-files-found: warn
+          overwrite: true
 
       - name: Ensure Allure results directory
         if: always()
         run: mkdir -p automation/output/allure-results-ui-regression-combined
 
       - name: Generate Allure report
-        if: always()
+        if: ${{ always() && !inputs.direct_test_site }}
         run: |
           allure generate \
             automation/output/allure-results-ui-regression-combined \
@@ -147,7 +265,7 @@ jobs:
             --clean
 
       - name: Upload Allure report
-        if: always()
+        if: ${{ always() && !inputs.direct_test_site }}
         uses: actions/upload-artifact@v4
         with:
           name: allure-report-ui-regression-${{ github.run_number }}

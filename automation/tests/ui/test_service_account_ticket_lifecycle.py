@@ -78,8 +78,15 @@ def test_service_account_ticket_lifecycle(ui_regression_runtime: UiRegressionRun
         pytest.skip("UI_REGRESSION_U2_DISPLAY_NAME is required")
     run_id = f"ui-{datetime.now():%Y%m%d%H%M%S}-{secrets.token_hex(3)}"
     title = f"自动化链路验证-{run_id}"
-    description = f"[指定处理人：{assignee}]\nUSP 使用问题。模拟报障，仅用于测试。"
-    question = f"请为 Leo_test（{PROJECT}）生成报障（problem）工单草稿。标题：{title}。{description}"
+    description = (
+        f"[指定处理人：{assignee}]\n"
+        "USP 使用问题。模拟机器人无法启动，故障码 E1001，已尝试重启仍无效。"
+        "仅用于测试，无现场设备。"
+    )
+    question = (
+        f"请为项目 Leo_test（{PROJECT}）生成报障（problem）工单草稿。"
+        f"标题：{title}。{description} 请直接生成工单草稿。"
+    )
     resolution = "测试环境双角色回归，模拟故障已解决。"
     reporter = UiPageActions(runtime.u1_page, runtime.gateway_url)
     handler = UiPageActions(runtime.u2_page, runtime.gateway_url)
@@ -96,7 +103,7 @@ def test_service_account_ticket_lifecycle(ui_regression_runtime: UiRegressionRun
             reporter.send_question(question)
             assert reporter.conversation_id is not None
         with _step("S04"):
-            reporter.ensure_ticket_draft_modal()
+            reporter.ensure_ticket_draft_modal(project_name=PROJECT)
             _prepare_draft(reporter.page, title, description)
         with _step("S05"):
             ticket_id = reporter.confirm_ticket(title)
@@ -165,7 +172,8 @@ def test_service_account_ticket_lifecycle(ui_regression_runtime: UiRegressionRun
             try:
                 with allure.step("清理本次测试数据"):
                     result = cleanup.cleanup(
-                        ticket_id=ticket_id, conversation_id=reporter.conversation_id,
+                        ticket_id=None if os.getenv("UI_REGRESSION_DEPLOYED") == "1" else ticket_id,
+                        conversation_id=reporter.conversation_id,
                     )
                     if result.warnings:
                         allure.attach("部分测试数据待清理", name="清理告警")
