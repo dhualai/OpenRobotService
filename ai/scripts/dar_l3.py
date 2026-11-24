@@ -85,10 +85,14 @@ RETRIEVAL = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
 JUDGE_OUT = os.path.join(OUT, f"l3_judge_{_dt.now():%Y%m%d}.json")      # 校准结果（按日滚动）
 ALL_OUT = os.path.join(OUT, f"l3_judge_all_{_dt.now():%Y%m%d}.json")    # 预标结果
 # 并发：网关限流/本地嵌入式 qdrant 扛不住时可 DAR_L3_CONC=4 降并发
+# 1106：默认 8 → 16，单条约 80 秒（检索+判定），870 条要 2.4 小时，翻倍并发可减半
 try:
     CONCURRENCY = max(1, int(os.environ.get("DAR_L3_CONC") or 8))
 except ValueError:
     CONCURRENCY = 8
+# 跳过缺口复查（KB 更新后「原来没通过、现在重考一遍」的段）。复查结果只写
+# reexam_pre、不进直答率——跳过＝沿用旧判定，判定量可减半。DAR_SKIP_REEXAM=1 开启
+SKIP_REEXAM = os.environ.get("DAR_SKIP_REEXAM", "").lower() in ("1", "true", "yes", "on")
 
 
 def _latest_judge():
@@ -277,12 +281,20 @@ async def main():
     # 增量：jsonl（逐段追加，最新）+ json 快照（上次全量）双源收已判段，jsonl
     # 覆盖 json。不再「产物存在就整段跳过 LLM」——段根/模型变更后重跑即自动
     # 补判差异段（旧行为必须手工删文件才重判，0909 两次踩坑）。
-    # 0929 跨天增量：另读最近 7 天历史产物（按日切文件曾让每周流程全量重判）。
+    # 0929 跨天增量：另读历史产物（按日切文件曾让每周流程全量重判）。
     # 复用硬校验：行级 model/kb/prompt_ver 与当前全同才认——换模型/换知识库/
     # 改判据自动全量，混口径的旧预标不进周报。
+    # 1106：窗口原写死 7 天，隔一个月跑老产物全被丢、整批重判（用户实测）。
+    # 复用本身有三重签名硬校验，窗口只筛文件不是安全边界 → DAR_REUSE_DAYS 可配，
+    # <=0 表示不限（读全部历史产物）。
     jpath = out_path[:-5] + ".jsonl"
     pat = "l3_judge_all_*" if all_mode else "l3_judge_[0-9]*"
-    _cutoff = (_dt.now() - _td(days=7)).strftime("%Y%m%d")
+    try:
+        _reuse_days = int(os.getenv("DAR_REUSE_DAYS", "90"))
+    except ValueError:
+        _reuse_days = 90
+    _cutoff = ("00000000" if _reuse_days <= 0
+               else (_dt.now() - _td(days=_reuse_days)).strftime("%Y%m%d"))
     hist = []
     for p in sorted(glob.glob(os.path.join(OUT, pat + ".json*")), reverse=True):
         if p in (out_path, jpath):
@@ -312,6 +324,13 @@ async def main():
             # company 指针更新后 479 段全量重跑，174 个通过段陪葬）
             _old_pass = (old.get("pre") or old.get("lab")) in ("直接提单", "直答正确")
             if old.get("kb") != KB_TAG and not _old_pass:
+                # 1106：DAR_SKIP_REEXAM 时跳过缺口复查——直接沿用旧判定。
+                # 复查结果本就不进直答率（只写 reexam_pre），跳过只少一份复查报表。
+                if SKIP_REEXAM:
+                    _k = (str(old["cid"]), int(old["astart"]))
+                    if not done_keys.get(_k):
+                        done_keys[_k] = old
+                    continue
                 reexam_old[(str(old["cid"]), int(old["astart"]))] = old
                 continue
             if not done_keys.get((str(old["cid"]), int(old["astart"]))):
@@ -319,7 +338,7 @@ async def main():
             done_keys[(str(old["cid"]), int(old["astart"]))] = old
     rows = list(done_keys.values())
     todo = [s for s in exam if (str(s["cid"]), int(s["astart"])) not in done_keys]
-    print(f"增量：复用已判 {len(done_keys)} 段（其中 {n_hist} 段来自 7 天内历史产物），"
+    print(f"增量：复用已判 {len(done_keys)} 段（其中 {n_hist} 段来自历史产物），"
           f"补跑 {len(todo)} 段；校验口径 model={llm.model}｜kb={KB_TAG[:40]}｜判据={PROMPT_VER}"
           + ("｜历史行签名不合的已自动重判" if n_hist != len(done_keys) else ""))
 

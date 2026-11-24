@@ -107,8 +107,8 @@ export default function SourceModal({ open, initialTitle = '', initialSources = 
         <Input maxLength={255} placeholder="例如：定位异常排查时如何区分环境与配置因素" />
       </Form.Item>
       <Form.Item name="task_ids" label="来源工单" extra="允许已关闭、归档中、已归档；可跨页多选，无工单也可使用下方技术材料。">
-        <Select mode="multiple" showSearch filterOption={false} placeholder="按工单编号或标题搜索" loading={loading}
-          onSearch={(value) => { setKeyword(value); setPage(1); }}
+        <Select mode="multiple" showSearch filterOption={false} placeholder="按工单编号（如 #123）或标题搜索" loading={loading}
+          onSearch={(value) => { setKeyword(value.trim().replace(/^#/, '')); setPage(1); }}
           onSelect={(id: string) => setAnchorId(id)}
           options={[...displayed.values()].map((task) => ({ value: task.id, label: `${task.id} · ${task.title}（${task.status ? STATUS_LABELS[task.status] : '待查询'}）`, summary: task.summary }))}
           optionRender={(option) => <div className="learning-source-option"><strong>{option.label}</strong><span>{option.data.summary || '暂无简要描述'}</span></div>}

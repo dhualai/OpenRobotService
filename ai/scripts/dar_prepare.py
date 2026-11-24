@@ -24,6 +24,9 @@ ENV = os.environ.get("DAR_ENV", "test")
 DATA = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}"
 OUT = os.path.join(DATA, "processed")
 TICKET_WINDOW = timedelta(minutes=30)  # 回合→工单归属近似窗口
+# 助手消息距上一条超过此间隔 = 新一轮的开场（如用户点按钮触发、隔天再来），
+# 不能并进上一轮的回答，否则本轮用户提问失去上文（1106 用户实锤 cid 292）
+ROUND_GAP = timedelta(hours=6)
 
 
 def load(name):
@@ -36,6 +39,25 @@ def ts(s):
         return datetime.fromisoformat((s or "").split(".")[0])
     except ValueError:
         return None
+
+
+UTC_OFFSET = timedelta(hours=8)
+
+
+def _to_local(rows, *fields):
+    """生产库 created_at 存的是 naive UTC，直接当本地时间用会差 8 小时——用户实锤
+    「不可能有人早上五六点来对话」（06:26 实际是 14:26，与服务器 NOW() 一比即知）。
+    读入时统一转北京时间，按原格式回写字符串：同秒比较/排序等字符串逻辑不变，
+    ts() 解析出来随之正确；工单归属窗口等都用相对差值，本来就不受固定偏移影响。"""
+    for r in rows:
+        for f in fields:
+            v = r.get(f)
+            if not v:
+                continue
+            t = ts(v)
+            if t is not None:
+                r[f] = (t + UTC_OFFSET).strftime("%Y-%m-%d %H:%M:%S")
+    return rows
 
 
 def parse_meta(s):
@@ -123,9 +145,9 @@ def _ticket_action(text):
 
 def main():
     users = load("users")
-    convs = load("conversations")
-    msgs = load("messages")
-    tasks = load("tasks")
+    convs = _to_local(load("conversations"), "created_at")
+    msgs = _to_local(load("messages"), "created_at")
+    tasks = _to_local(load("tasks"), "created_at")
 
     testers = {u["id"]: u["name"] for u in users if u["name"] in TESTER_NAMES}
     print(f"测试名单对上 {len(testers)}/{len(TESTER_NAMES)}: {sorted(testers.values())}")
@@ -173,7 +195,10 @@ def main():
             conv_tasks = task_by_sess.get(sess, [])
             rounds = []
             cur = None
+            prev_at = None
+            lead = []  # 孤立助手消息：等下一个用户提问，拼进它的 q 前导
             for m in by_conv.get(c["id"], []):
+                m_at = ts(m.get("created_at"))
                 if m["role"] == "USER":
                     if cur:
                         rounds.append(cur)
@@ -185,9 +210,17 @@ def main():
                                      if isinstance(f, dict) and f.get("object_path")]
                         except Exception:
                             files = []
-                    cur = {"q": m["content"] or "", "a": [], "a_seg": [],
+                    q = m["content"] or ""
+                    if lead:
+                        # 1106：孤立助手消息并到本轮提问之前——否则它会被挂进
+                        # 上一轮的回答里，本轮提问看上去没头没尾（用户实锤
+                        # cid 292：10/21 的项目确认塞进了 9/30 那一轮，隔 21 天）。
+                        # 不新增轮次，astart/bounds 索引全部不变。
+                        q = "【AI 先问】" + " ／ ".join(lead) + "\n" + q
+                        lead = []
+                    cur = {"q": q, "a": [], "a_seg": [],
                            "at": m["created_at"], "task_ids": [], "files": files}
-                elif m["role"] == "ASSISTANT" and cur is not None:
+                elif m["role"] == "ASSISTANT":
                     text = m["content"] or ""
                     # 项目选择题候选（0907 按钮版题面无编号列表）：候选列表在消息
                     # metadata_.project_choices（前端持久化、服务端题面不落）——此前
@@ -208,12 +241,22 @@ def main():
                     seg = {"text": text, "at": m["created_at"]}
                     if act:
                         seg.update({"action": "ticket_draft", **act})
-                    cur["a_seg"].append(seg)
-                    # 工单动作 JSON 不进 a（L1/L3 prompt 噪音、走查页视觉合并的元凶）
-                    if not act:
-                        cur["a"].append(text)
+                    gap_big = (prev_at is not None and m_at is not None
+                               and (m_at - prev_at) > ROUND_GAP)
+                    # 工单动作 JSON 照旧挂当前轮（它不是对话内容，不该进 q 前导）
+                    if not act and (cur is None or gap_big):
+                        lead.append(text)
+                    elif cur is not None:
+                        cur["a_seg"].append(seg)
+                        # 工单动作 JSON 不进 a（L1/L3 prompt 噪音、走查页视觉合并的元凶）
+                        if not act:
+                            cur["a"].append(text)
+                prev_at = m_at
             if cur:
                 rounds.append(cur)
+            if lead and rounds:
+                # 会话末尾的孤立助手消息：没有下一次提问可挂，补到最后一段保留
+                rounds[-1]["a"].append(" ／ ".join(lead))
             for r in rounds:
                 r["a"] = [a for a in r["a"] if a.strip()]
                 r["a_seg"] = [s for s in r["a_seg"] if s["text"].strip()]

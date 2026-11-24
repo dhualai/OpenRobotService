@@ -961,8 +961,8 @@ export default function RelationBlock({
     if (searchTimer.current) clearTimeout(searchTimer.current);
     if (!v.trim()) { setSearchResults([]); setShowDropdown(false); setEmptyHint(''); return; }
     const kw = v.trim();
-    // 判断是否 ID 检索：必须 #数字 前缀
-    const idMatch = kw.match(/^#(\d+)$/);
+    // 判断是否 ID 检索：纯数字 或 #数字 前缀（与 TasksView 行为一致）
+    const idMatch = kw.match(/^#?(\d+)$/);
     const isIdLookup = !!idMatch;
     searchTimer.current = setTimeout(async () => {
       setSearching(true);

@@ -2817,7 +2817,7 @@ export default function TaskDetailPage() {
                         : '请填写该工单的解决方式'
                   }
                   autosize={{ minRows: 4, maxRows: 8 }}
-                  maxlength={1000}
+                  maxlength={10000}
                 />
               )}
             </div>
