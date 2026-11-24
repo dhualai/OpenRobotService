@@ -469,6 +469,28 @@ export interface DarReportSummary {
   env: string;
   /** 三口径文本（L1/L2/L3），dar_weekly 原样 */
   dar_rates: Record<string, string>;
+  /** 同分母三口径文本："29.2%（312/1069）"——分子分母就从这个原文里取 */
+  dar_rates_same_base?: Record<string, string>;
+  /** 直答率（工作台口径）：分母=漏斗已判定三层，与工作台首页那张卡同数 */
+  l2_funnel?: { base?: string; L2_人工?: string };
+  /** 上周（自然周：上周一~上周日）的同分母口径，dar_weekly 生成时算好 */
+  last_week?: {
+    from: string;
+    to: string;
+    base?: string;
+    L1_段级?: string;
+    L2_人工?: string;
+    L3_AI同段?: string;
+  };
+  /** 最近 8 个完整自然周的同分母口径（时间正序），周选择 + 趋势图 */
+  weekly_series?: Array<{
+    from: string;
+    to: string;
+    base?: string;
+    L1_段级?: string;
+    L2_人工?: string;
+    L3_AI同段?: string;
+  }>;
   /** 环比（同分母）：{ "L2_人工": { prev, curr, delta }, ... } */
   wow: Record<string, { prev: number; curr: number; delta: number }>;
   kb_gap: string | null;

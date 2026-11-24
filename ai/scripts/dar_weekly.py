@@ -201,10 +201,13 @@ def step_l1_replay():
         STEPS["l1"]()
 
 
-def _same_denominator_compare(judge_rows):
+def _same_denominator_compare(judge_rows, since=None, until=None):
     """同分母对比：基准=真实组人工已标段（直答正确/未直答/未覆盖，剔除直接提单）。
     L1=段内未出单占比（基础公式段级投影）；L2=人工直答正确占比（端到端口径）；
-    L3=AI 预标直答正确占比（AI 判成直接提单的段留在分母但不得分——惩罚偏宽）。"""
+    L3=AI 预标直答正确占比（AI 判成直接提单的段留在分母但不得分——惩罚偏宽）。
+
+    since/until：按**段落起始时间**过滤 [since, until)，用于算「上周」这类自然周窗口；
+    不传则统计全部已标段（累计口径）。"""
     if not os.path.exists(MANUAL) or not os.path.exists(SPLIT):
         return None
     # AI 预标按段归属：--all 预标用 AI topic 切分（段首≠人工段首），
@@ -276,6 +279,11 @@ def _same_denominator_compare(judge_rows):
             ticketed = any(start and t and t >= start and
                            (t.timestamp() <= end if isinstance(end, float) else t <= end)
                            for t in tasks if t)
+            # 自然周窗口：按段落起始时间归周（段跨周时归到它开始的那一周）
+            if since is not None and (start is None or start < since):
+                continue
+            if until is not None and (start is None or start >= until):
+                continue
             n += 1
             l1 += 0 if ticketed else 1
             l2 += 1 if lab == "直答正确" else 0
@@ -288,6 +296,71 @@ def _same_denominator_compare(judge_rows):
         "L2_人工": f"{l2 / n * 100:.1f}%（{l2}/{n}）",
         "L3_AI同段": f"{l3 / n * 100:.1f}%（{l3}/{n}）",
     }
+
+
+def _last_week_window(now=None):
+    """上一个完整自然周 [上周一 00:00, 本周一 00:00)。
+
+    1124 用户口径：周按时间算——今天是周二（11-24），上周就是 11-16~11-22。
+    周一当天跑周报时，「上周」同样是上周一~上周日（本自然周还没过完）。
+    """
+    now = now or _dt.now()
+    this_monday = (now - _td(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return this_monday - _td(days=7), this_monday
+
+
+def _funnel_l2(env, weeks=8, now=None):
+    """直答率（工作台口径）+ 最近 N 个完整自然周的序列。
+
+    **口径必须与工作台首页那张卡逐字一致**（1124 用户实锤：工作台 27.5%（205/746），
+    周报同分母口径算出的是 30.6%（243/795），两个数并排出现没法解释）：
+      分母 = 漏斗「已判定」三层 answered/unanswered/uncovered（人工优先·AI预标兜底）
+      分子 = 其中 eff == 直答正确
+    直接复用 dar_studio._seg_rows（漏斗六层的数据源），不在这里另拼一套分母。
+
+    返回 (all_block, series)；series 按时间正序，每项 {from,to,base,L2_人工}。
+    """
+    try:
+        import dar_studio
+        rows, _meta = dar_studio._seg_rows(env)
+    except Exception as e:
+        print(f"（工作台口径直答率算不出来，跳过：{e}）")
+        return None, []
+    if not rows:
+        return None, []
+
+    def pts(x):
+        try:
+            return _dt.fromisoformat((x or "")[:19].replace("T", " "))
+        except ValueError:
+            return None
+
+    qa = []
+    for r in rows:
+        if r.get("layer") in ("answered", "unanswered", "uncovered"):
+            qa.append((pts(r.get("at")), r.get("eff")))
+    if not qa:
+        return None, []
+
+    def block(items):
+        n = len(items)
+        ok = sum(1 for _t, e in items if e == "直答正确")
+        return {"base": f"{n} 段", "L2_人工": f"{ok / n * 100:.1f}%（{ok}/{n}）"}
+
+    all_block = block(qa)
+    _lw_from, this_monday = _last_week_window(now)
+    series = []
+    for i in range(weeks):
+        until = this_monday - _td(days=7 * i)
+        since = until - _td(days=7)
+        seg = [(t, e) for t, e in qa if t and since <= t < until]
+        if not seg:
+            continue
+        series.append({"from": since.strftime("%m-%d"),
+                       "to": (until - _td(days=1)).strftime("%m-%d"),
+                       **block(seg)})
+    return all_block, list(reversed(series))
 
 
 def _load_csv_rows():
@@ -814,6 +887,20 @@ def step_report():
         print(f"  L2_人工              ：{same['L2_人工']}")
         print(f"  L3_AI同段            ：{same['L3_AI同段']}")
 
+    # 直答率（工作台口径）+ 近 8 个完整自然周：后台区块的「全部」与周选择/趋势图。
+    # 口径必须与工作台首页那张卡一致（见 _funnel_l2 注释），否则两个界面数字打架。
+    all_l2, series = _funnel_l2(ENV, weeks=8)
+    if all_l2:
+        rep["l2_funnel"] = all_l2
+        print(f"\n直答率（工作台口径）：{all_l2['L2_人工']}")
+    if series:
+        rep["weekly_series"] = series
+        rep["last_week"] = {"from": series[-1]["from"], "to": series[-1]["to"],
+                            **series[-1]}
+        print(f"\n== 近 {len(series)} 周（工作台口径）==")
+        for w in series:
+            print(f"  {w['from']}~{w['to']}：{w['L2_人工']}")
+
     # ---- 六项指标增强：KB 缺口 / 下钻矩阵 / 解决轮次 / 转单质量 / 预标 precision / 失败清单 ----
     kb = (rep.get("retrieval_no_rate") or {}).get("真实组")
     if kb is not None:
@@ -993,9 +1080,11 @@ def _push_report(rep: dict):
         # 数据库 TEXT 字段（64KB 上限，生产实锤 1406 Data too long），而后台
         # _summary 只读 dar_rates/kb_gap/wow/this_week/manual_progress/workbench。
         # 完整周报留在本地 processed/weekly_*.json，需要细节时从那里取。
+        # 1124：直答率区块新增 l2_funnel / last_week / weekly_series 三个字段。
         slim = {k: rep.get(k) for k in (
-            "date", "dar_rates", "dar_rates_same_base", "kb_gap", "wow",
-            "this_week", "manual_progress", "workbench")
+            "date", "dar_rates", "dar_rates_same_base", "l2_funnel",
+            "last_week", "weekly_series",
+            "kb_gap", "wow", "this_week", "manual_progress", "workbench")
             if rep.get(k) is not None}
         body = json.dumps({
             "week_date": rep.get("date", "").replace("-", ""),

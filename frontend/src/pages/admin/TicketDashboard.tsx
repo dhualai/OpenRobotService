@@ -7,6 +7,7 @@
 // 数据走 /dashboard/summary-all 聚合接口，与首页共用 dashboardCache
 // （先渲染上次快照、返回后覆盖刷新）；②③④ 沿用原首页权限（frontend:admin:other:show），① 所有人可见。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Navbar } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { getTicketStatusCount, TICKET_STATUS_LIST } from '@/shared/constants/dashboard';
@@ -197,6 +198,8 @@ export default function TicketDashboard() {
 
   // AI 直答率周报（dar_weekly 自动推送到后端，最新一期；无数据时区块整体隐藏）
   const [dar, setDar] = useState<DarReportSummary | null>(null);
+  // 直答率区块的时间区间选择：'all' = 全部累计，数字 = weekly_series 的下标
+  const [darSel, setDarSel] = useState<'all' | number>('all');
   useEffect(() => {
     if (!canAccessAdminEntries) return;
     fetchDarLatest('prod').then(setDar);
@@ -348,91 +351,138 @@ export default function TicketDashboard() {
             </section>
           </>
         )}
-        {canAccessAdminEntries && dar && (
-          <section className="mac-card mac-card--pad" style={{ marginTop: 12 }}>
-            <div className="mac-source-block__title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span>AI 直答率</span>
-              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
-                {dar.week_date.slice(0, 4)}-{dar.week_date.slice(4, 6)}-{dar.week_date.slice(6, 8)} 周报
-              </span>
-            </div>
-            {(() => {
-              const wb = dar.workbench;
-              if (wb?.hero?.length) {
-                // 有工作台快照：整块按工作台首页那张卡渲染，数字与工作台完全一致。
-                // 1106：去掉口径说明副标题与标注进度/数据版本——后台只给数字，
-                // 说明文字（"与漏斗同口径…真值…"）和内部进度不该展示给领导看。
-                const main = wb.hero.find((c) => c.label.includes('L2')) || wb.hero[0];
-                const rest = [...wb.hero.filter((c) => c !== main), ...(wb.small || [])];
-                return (
-                  <>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '10px 0 2px' }}>
-                      <span style={{ fontSize: 34, fontWeight: 700, color: 'var(--primary)', lineHeight: 1 }}>
-                        {main.value}
-                      </span>
-                      <span style={{ fontSize: 13, color: 'var(--muted-foreground, #98a2b3)' }}>
-                        {main.label} · 端到端直答率
-                      </span>
-                    </div>
-                    <div
-                      className="mac-stat-row"
-                      style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}
-                    >
-                      {rest.map((c) => (
-                        <div key={c.label}>
-                          <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>{c.label}</div>
-                          <div style={{ fontSize: 16, fontWeight: 600 }}>{c.value}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                );
-              }
-              const wowL2 = dar.wow?.['L2_人工'];
-              const up = wowL2 ? wowL2.delta >= 0 : true;
-              return (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '10px 0 2px' }}>
-                    {/* 主口径：端到端直答率（L2 人工，同分母环比取整） */}
-                    <span style={{ fontSize: 34, fontWeight: 700, color: 'var(--primary)', lineHeight: 1 }}>
-                      {wowL2 ? `${wowL2.curr.toFixed(1)}%` : (dar.dar_rates?.['L2_人工'] || '—').split('｜')[0].replace('端到端 ', '')}
-                    </span>
-                    <span style={{ fontSize: 13, color: 'var(--muted-foreground, #98a2b3)' }}>端到端直答率（人工口径）</span>
-                    {wowL2 && (
-                      <span style={{ fontSize: 13, fontWeight: 600, color: up ? '#1f8a5a' : '#d9534f' }}>
-                        {up ? '↑' : '↓'} {Math.abs(wowL2.delta).toFixed(1)}pp
-                      </span>
-                    )}
-                  </div>
-                  <div className="mac-stat-row" style={{ marginTop: 10 }}>
-                    {wowL2 && (
-                      <div>
-                        <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>上周</div>
-                        <div style={{ fontSize: 16, fontWeight: 600 }}>{wowL2.prev.toFixed(1)}%</div>
-                      </div>
-                    )}
-                    {dar.wow?.['L3_AI同段'] && (
-                      <div>
-                        <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>L3 AI 参考</div>
-                        <div style={{ fontSize: 16, fontWeight: 600 }}>{dar.wow['L3_AI同段'].curr.toFixed(1)}%</div>
-                      </div>
-                    )}
-                    <div>
-                      <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>KB 缺口率</div>
-                      <div style={{ fontSize: 16, fontWeight: 600 }}>{(dar.kb_gap || '—').split('（')[0]}</div>
-                    </div>
-                    {dar.this_week?.n_segs != null && (
-                      <div>
-                        <div style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>本周新增</div>
-                        <div style={{ fontSize: 16, fontWeight: 600 }}>{dar.this_week.n_convs ?? '—'} 会话 / {dar.this_week.n_segs} 段</div>
-                      </div>
-                    )}
-                  </div>
-                </>
-              );
-            })()}
-          </section>
-        )}
+        {canAccessAdminEntries && dar && (() => {
+          // 领导只看直答率：默认全部累计，点一周看那一周；下面配近 8 周趋势。
+          // 口径统一 L2（人工标注、端到端、同分母）：
+          //   全部 = dar_rates_same_base.L2_人工（累计，"29.2%（312/1069）"）
+          //   周   = weekly_series[i].L2_人工（自然周：上周一~上周日）
+          const parseRate = (s?: string) => {
+            if (!s) return null;
+            const m = /([\d.]+)%\s*[（(](\d+)\/(\d+)[）)]/.exec(s);
+            if (m) return { pct: m[1], num: m[2] as string | null, den: m[3] as string | null };
+            const p = /([\d.]+)%/.exec(s);
+            return p ? { pct: p[1], num: null as string | null, den: null as string | null } : null;
+          };
+          const all = parseRate(dar.l2_funnel?.['L2_人工'])
+            || parseRate(dar.dar_rates_same_base?.['L2_人工'])
+            || parseRate(dar.dar_rates?.['L2_人工']);
+          const weeks = (dar.weekly_series ?? []).flatMap((w) => {
+            const r = parseRate(w['L2_人工']);
+            return r ? [{ from: w.from, to: w.to, ...r }] : [];
+          });
+          const selIdx = typeof darSel === 'number' && darSel < weeks.length ? darSel : null;
+          const cur = selIdx != null ? weeks[selIdx] : all;
+          const curLabel = selIdx != null ? `${weeks[selIdx].from}~${weeks[selIdx].to}` : '全部累计';
+          // 选项按时间从近到远排（最近的一周在最左），折线图仍按时间从左到右
+          const chipWeeks = weeks.map((w, i) => ({ w, i })).reverse();
+
+          const chip = (key: 'all' | number, label: string, active: boolean) => (
+            <button
+              key={String(key)}
+              type="button"
+              onClick={() => setDarSel(key)}
+              style={{
+                flex: '0 0 auto', padding: '4px 10px', borderRadius: 999, fontSize: 12, cursor: 'pointer',
+                border: `1px solid ${active ? 'var(--primary)' : 'var(--mac-border, #e6e8ec)'}`,
+                background: active ? 'var(--primary)' : 'transparent',
+                color: active ? '#fff' : 'var(--muted-foreground, #98a2b3)',
+                fontWeight: active ? 600 : 400,
+              }}
+            >
+              {label}
+            </button>
+          );
+
+          // 趋势：单序列折线，无图例（标题已说明），末点直接标值；纵轴按区间缩放并注明
+          let trend: ReactNode = null;
+          if (weeks.length >= 2) {
+            const vals = weeks.map((w) => Number(w.pct));
+            const W = 320, H = 54, PAD = 8;
+            const mn = Math.min(...vals), mx = Math.max(...vals);
+            const span = Math.max(mx - mn, 1);
+            const x = (i: number) => PAD + (i * (W - PAD * 2)) / (vals.length - 1);
+            const y = (v: number) => H - PAD - ((v - mn) / span) * (H - PAD * 2);
+            trend = (
+              <>
+                <svg
+                  viewBox={`0 0 ${W} ${H}`}
+                  width="100%"
+                  height={H}
+                  role="img"
+                  aria-label={`近 ${vals.length} 周直答率：${weeks.map((w) => `${w.from} ${w.pct}%`).join('，')}`}
+                  style={{ display: 'block', marginTop: 10 }}
+                >
+                  <polyline
+                    points={vals.map((v, i) => `${x(i)},${y(v)}`).join(' ')}
+                    fill="none"
+                    stroke="var(--primary)"
+                    strokeWidth={2}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                  {vals.map((v, i) => (
+                    <g key={i} onClick={() => setDarSel(i)} style={{ cursor: 'pointer' }}>
+                      <rect x={x(i) - 18} y={0} width={36} height={H} fill="transparent" />
+                      <circle
+                        cx={x(i)}
+                        cy={y(v)}
+                        r={selIdx === i ? 4.5 : 3}
+                        fill={selIdx === i ? 'var(--primary)' : '#fff'}
+                        stroke="var(--primary)"
+                        strokeWidth={1.6}
+                      />
+                      <title>{`${weeks[i].from}~${weeks[i].to}：${v}%`}</title>
+                    </g>
+                  ))}
+                  <text
+                    x={x(vals.length - 1)}
+                    y={y(vals[vals.length - 1]) - 9}
+                    textAnchor="end"
+                    fontSize={11}
+                    fontWeight={600}
+                    fill="var(--primary)"
+                  >
+                    {vals[vals.length - 1]}%
+                  </text>
+                </svg>
+                <div style={{ fontSize: 11, color: 'var(--muted-foreground, #98a2b3)', marginTop: 2 }}>
+                  近 {weeks.length} 周 {weeks[0].from}~{weeks[weeks.length - 1].to}，区间 {mn}% ~ {mx}%（纵轴按此区间缩放）
+                </div>
+              </>
+            );
+          }
+
+          return (
+            <section className="mac-card mac-card--pad" style={{ marginTop: 12 }}>
+              <div className="mac-source-block__title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span>AI 直答率</span>
+                <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
+                  {dar.week_date.slice(0, 4)}-{dar.week_date.slice(4, 6)}-{dar.week_date.slice(6, 8)} 周报
+                </span>
+              </div>
+              {weeks.length > 0 && (
+                <div
+                  style={{
+                    display: 'flex', gap: 6, marginTop: 10, overflowX: 'auto',
+                    paddingBottom: 2, WebkitOverflowScrolling: 'touch',
+                  }}
+                >
+                  {chip('all', '全部', selIdx == null)}
+                  {chipWeeks.map(({ w, i }) => chip(i, w.from, selIdx === i))}
+                </div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 10 }}>
+                <span style={{ fontSize: 30, fontWeight: 700, color: 'var(--primary)', lineHeight: 1.2 }}>
+                  {cur ? `${cur.pct}%` : '—'}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
+                  {cur && cur.num && cur.den ? `${cur.num} / ${cur.den} 段` : '—'} · {curLabel}
+                </span>
+              </div>
+              {trend}
+            </section>
+          );
+        })()}
         {canViewAll && <QuestionModuleCard key={username} />}
       </div>
     </div>
