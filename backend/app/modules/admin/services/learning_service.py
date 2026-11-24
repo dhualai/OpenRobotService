@@ -194,9 +194,15 @@ async def change_article(db, article, revision, **values):
         raise HTTPException(409, "文章已被修改，请刷新后重试；当前编辑内容尚未覆盖")
 
 
-async def current_version(db, article, version=None):
-    row = (await db.execute(select(LearningArticleVersion).where(LearningArticleVersion.article_id == article.id,
-        LearningArticleVersion.version == (version or article.active_version)))).scalar_one_or_none()
+async def current_version(db, article, version=None, *, lock=False):
+    query = select(LearningArticleVersion).where(
+        LearningArticleVersion.article_id == article.id,
+        LearningArticleVersion.version == (version or article.active_version),
+    )
+    if lock:
+        # The question lookup can establish a snapshot before the article lock was acquired.
+        query = query.with_for_update(read=True)
+    row = (await db.execute(query)).scalar_one_or_none()
     if not row:
         raise HTTPException(422, "请先确认知识点文章")
     return row
@@ -476,6 +482,22 @@ async def question_row(db, actor, question_id):
     return question
 
 
+async def lock_question_with_article(db, actor, question_id):
+    manager(actor)
+    article_id = (await db.execute(
+        select(LearningQuestion.article_id).where(LearningQuestion.id == question_id)
+    )).scalar_one_or_none()
+    if article_id is None:
+        raise HTTPException(404, "题目不存在")
+
+    # Match the lock order of publishing articles and submitting learner answers.
+    article = await article_row(db, actor, article_id)
+    question = await question_row(db, actor, question_id)
+    if question.article_id != article.id:
+        raise HTTPException(404, "题目不存在")
+    return article, question
+
+
 async def change_question(db, question, revision, **values):
     result = await db.execute(update(LearningQuestion).where(LearningQuestion.id == question.id,
         LearningQuestion.revision == revision).values(**values, revision=revision + 1, updated_at=utcnow())
@@ -485,9 +507,8 @@ async def change_question(db, question, revision, **values):
 
 
 async def save_question(db, actor, question_id, body):
-    question = await question_row(db, actor, question_id)
-    article = await article_row(db, actor, question.article_id)
-    version = await current_version(db, article)
+    article, question = await lock_question_with_article(db, actor, question_id)
+    version = await current_version(db, article, lock=True)
     terms = await known_terms(db, version.snapshot["sources"])
     payload = validate_question(sanitize(body.content.model_dump(), terms), version.snapshot["content"])
     await change_question(db, question, body.revision, payload=payload, article_version=article.active_version,
@@ -499,13 +520,12 @@ async def save_question(db, actor, question_id, body):
 
 
 async def question_action(db, actor, question_id, body):
-    question = await question_row(db, actor, question_id)
-    article = await article_row(db, actor, question.article_id)
+    article, question = await lock_question_with_article(db, actor, question_id)
     action = body.action
     if action not in ("disable", "reject"):
         if not article.enabled or question.article_version != article.active_version:
             raise HTTPException(422, "文章已停用或版本已更新，请重新核验题目")
-        version = await current_version(db, article)
+        version = await current_version(db, article, lock=True)
         validate_question(question.payload, version.snapshot["content"])
     if action == "submit":
         if question.review_status not in ("draft", "rejected"):
@@ -574,6 +594,12 @@ async def preview_answer(db, actor, article_id, question_id, answers):
     question = await question_row(db, actor, question_id)
     if question.article_id != article_id or question.article_version != article.active_version:
         raise HTTPException(422, "题目不属于当前文章版本")
+    user_id = str(actor.get("id") or actor.get("username") or "")
+    return await grade_and_record_answer(db, user_id, article, question, answers)
+
+
+async def grade_and_record_answer(db, user_id, article, question, answers, *, current_answer=None):
+    """Grade an eligible question selected by the caller and save the result."""
     options = {option["key"] for option in question.payload["options"]}
     if not answers or len(set(answers)) != len(answers) or not set(answers).issubset(options):
         raise HTTPException(422, "请选择有效且不重复的答案")
@@ -581,16 +607,19 @@ async def preview_answer(db, actor, article_id, question_id, answers):
         raise HTTPException(422, "单选和判断题只能选择一个答案")
 
     is_correct = set(answers) == set(question.payload["correct_answer"])
-    user_id = str(actor.get("id") or actor.get("username") or "")
     now = utcnow()
+    article_id, question_id = article.id, question.id
 
-    # 1) 每次答都写入新记录（允许多次，进度取最后一次）
-    db.add(LearningAnswer(
-        user_id=user_id, article_id=article_id,
-        article_version=article.active_version, question_id=question_id,
-        answers=list(answers), is_correct=is_correct,
-        created_at=now,
-    ))
+    if current_answer is None:
+        db.add(LearningAnswer(
+            user_id=user_id, article_id=article_id,
+            article_version=article.active_version, question_id=question_id,
+            answers=list(answers), is_correct=is_correct, created_at=now,
+        ))
+    else:
+        current_answer.answers = list(answers)
+        current_answer.is_correct = is_correct
+        current_answer.created_at = now
 
     # 2) 自动维护错题本
     wrongbook = (await db.execute(
@@ -598,7 +627,7 @@ async def preview_answer(db, actor, article_id, question_id, answers):
             LearningWrongBook.user_id == user_id,
             LearningWrongBook.question_id == question_id,
             LearningWrongBook.article_version == article.active_version,
-        )
+        ).with_for_update()
     )).scalar_one_or_none()
 
     if not is_correct:
