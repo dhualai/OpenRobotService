@@ -574,6 +574,12 @@ async def preview_answer(db, actor, article_id, question_id, answers):
     question = await question_row(db, actor, question_id)
     if question.article_id != article_id or question.article_version != article.active_version:
         raise HTTPException(422, "题目不属于当前文章版本")
+    user_id = str(actor.get("id") or actor.get("username") or "")
+    return await grade_and_record_answer(db, user_id, article, question, answers)
+
+
+async def grade_and_record_answer(db, user_id, article, question, answers, *, current_answer=None):
+    """Grade an eligible question selected by the caller and save the result."""
     options = {option["key"] for option in question.payload["options"]}
     if not answers or len(set(answers)) != len(answers) or not set(answers).issubset(options):
         raise HTTPException(422, "请选择有效且不重复的答案")
@@ -581,16 +587,19 @@ async def preview_answer(db, actor, article_id, question_id, answers):
         raise HTTPException(422, "单选和判断题只能选择一个答案")
 
     is_correct = set(answers) == set(question.payload["correct_answer"])
-    user_id = str(actor.get("id") or actor.get("username") or "")
     now = utcnow()
+    article_id, question_id = article.id, question.id
 
-    # 1) 每次答都写入新记录（允许多次，进度取最后一次）
-    db.add(LearningAnswer(
-        user_id=user_id, article_id=article_id,
-        article_version=article.active_version, question_id=question_id,
-        answers=list(answers), is_correct=is_correct,
-        created_at=now,
-    ))
+    if current_answer is None:
+        db.add(LearningAnswer(
+            user_id=user_id, article_id=article_id,
+            article_version=article.active_version, question_id=question_id,
+            answers=list(answers), is_correct=is_correct, created_at=now,
+        ))
+    else:
+        current_answer.answers = list(answers)
+        current_answer.is_correct = is_correct
+        current_answer.created_at = now
 
     # 2) 自动维护错题本
     wrongbook = (await db.execute(
@@ -598,7 +607,7 @@ async def preview_answer(db, actor, article_id, question_id, answers):
             LearningWrongBook.user_id == user_id,
             LearningWrongBook.question_id == question_id,
             LearningWrongBook.article_version == article.active_version,
-        )
+        ).with_for_update()
     )).scalar_one_or_none()
 
     if not is_correct:
