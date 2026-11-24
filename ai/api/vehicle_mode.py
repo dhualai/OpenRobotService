@@ -238,6 +238,27 @@ def _company_model_dirs(kb_root: Optional[Path] = None) -> List[str]:
     return dirs
 
 
+def normalize_model_dirs(dirs: List[str], kb_root: Optional[Path] = None) -> List[str]:
+    """老会话兼容：把平铺时代的裸目录名（XQE）补成 vehicle_models/XQE。
+
+    1160 起车型目录收到 company/vehicle_models/ 下，而升级前注册的会话
+    metadata 里存的还是裸目录名；不补前缀，检索过滤值就对不上 sub_domain，
+    命中恒为 0。只对**确实存在于 vehicle_models/ 下**的裸名补前缀——
+    product_catalog 这类本来就在 company 直属的平铺目录不动。
+    """
+    company = (kb_root or _default_kb_root()) / "company"
+    out: List[str] = []
+    for d in dirs or []:
+        name = str(d or "").strip()
+        if not name:
+            continue
+        if "/" not in name and (company / "vehicle_models" / name).is_dir():
+            name = f"vehicle_models/{name}"
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def resolve_model_dirs(model: str, kb_root: Optional[Path] = None) -> Dict[str, object]:
     """车型 → 知识目录解析（ORS-1082 模糊匹配）。
 

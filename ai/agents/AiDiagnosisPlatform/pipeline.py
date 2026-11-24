@@ -3702,6 +3702,11 @@ class AiDiagnosisPlatform:
         # 平铺目录）；老会话没有这个键 → 回退单值（旧口径），升级前后老
         # session 行为不变。
         dirs = [str(d).strip() for d in (vm.get("model_dirs") or []) if str(d).strip()]
+        # 1160 布局迁移兼容：升级前注册的会话存的是裸目录名（XQE），这里补成
+        # vehicle_models/XQE 再进过滤，否则 sub_domain 对不上、命中恒 0。
+        if dirs:
+            from ai.api.vehicle_mode import normalize_model_dirs
+            dirs = normalize_model_dirs(dirs) or dirs
         if not dirs:
             dirs = [model_to_subpath(model)]
         _filt = qmodels.Filter(must=[qmodels.FieldCondition(

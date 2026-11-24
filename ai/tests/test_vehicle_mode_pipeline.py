@@ -159,7 +159,7 @@ async def test_domains_vehicle_filtered_company():
     assert qfilter is not None
     cond = qfilter.must[0]
     assert cond.key == "sub_domain"
-    assert list(cond.match.any) == ["XQE"]
+    assert list(cond.match.any) == ["vehicle_models/XQE"]
     # 平台操作手册域（ORS-1082）：车型会话问「USP 操作手册」时手册必须能捞到
     assert domains[1][0] == "team" and domains[1][1] == 6
     team_any = list(domains[1][2].must[0].match.any)
@@ -191,7 +191,7 @@ async def test_domains_vehicle_model_case_normalized():
     p = AiDiagnosisPlatform()
     p._memory_manager = MagicMockMem(_memory({"model": "xqe", "domain": "company"}))
     domains, _ = await p._vehicle_mode_domains("s-vm")
-    assert list(domains[0][2].must[0].match.any) == ["XQE"]
+    assert list(domains[0][2].must[0].match.any) == ["vehicle_models/XQE"]
 
 
 async def test_domains_multi_dirs_from_fuzzy_match():
@@ -200,7 +200,7 @@ async def test_domains_multi_dirs_from_fuzzy_match():
     p._memory_manager = MagicMockMem(
         _memory(dict(_VM, model="XQE122", model_dirs=["XQE"], model_files={})))
     domains, files = await p._vehicle_mode_domains("s-vm")
-    assert list(domains[0][2].must[0].match.any) == ["XQE"]
+    assert list(domains[0][2].must[0].match.any) == ["vehicle_models/XQE"]
     assert files is None
 
 
@@ -309,8 +309,11 @@ async def test_three_way_default_domains_unchanged():
     capture = []
     p = _platform_with_retriever(capture)
     await p._three_way_retrieve("测试查询")
-    assert [(d, f) for _, d, f in capture] == [
-        ("team", None), ("company", None), ("industry", None)]
+    pairs = [(d, f) for _, d, f in capture]
+    assert [d for d, _ in pairs] == ["team", "company", "industry"]
+    # team / industry 不过滤；company 默认排除车型专有内容（1159 检索隔离）
+    assert pairs[0][1] is None and pairs[2][1] is None
+    assert pairs[1][1] is not None and pairs[1][1].must_not
 
 
 async def test_three_way_custom_domains():
