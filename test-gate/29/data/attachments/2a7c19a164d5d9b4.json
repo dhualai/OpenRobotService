@@ -1,0 +1,13 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/call/my-tasks/",
+  "reason": "OK",
+  "headers": {
+    "content-length": "26",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": 2,
+    "title": "My task"
+  }
+}
