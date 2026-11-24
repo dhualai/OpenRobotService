@@ -88,3 +88,25 @@ Mock API 是一个大桶，装了 162 条用例：既有主流程（提单→派
 - [ ] 明细用例失败时门禁仍可「通过」，但明细表标红。
 - [ ] 任一套件产物缺失或全跳过时仍判「未验收」。
 - [ ] 报告首页只出现总体验收结论和四条流程。
+
+## 7. 待 #499 合入后（已定，未执行）
+
+知识库、学习答题、高价值问题这三条流程，目前在 `test` 上只有「观察项」证据（后台规则），
+没有 P1 步骤断言。合入后按下面的顺序提升：
+
+1. 把三条规则用例加进 `automation/ci/flow-tests.txt`：
+
+   ```
+   automation/tests/test_service_account_rules.py::test_service_account_business_rules[service-knowledge-finance]
+   automation/tests/test_service_account_rules.py::test_service_account_business_rules[service-learning]
+   automation/tests/test_service_account_rules.py::test_service_account_business_rules[service-challenge]
+   ```
+
+2. `scenarios` job 从观察项改为阻塞（去掉 `continue-on-error`），三条规则进入必跑范围。
+
+3. 观察 2–3 次真实运行确认稳定后再改阻塞。本地连续 3 次均通过，每次约 10 秒；
+   本地稳定性不等于 CI 稳定（CI 走 MySQL 与种子数据）。
+
+4. 报告首页每条流程增加「覆盖级别」列：**P1 断言 / 观察项 / 未验证**，
+   让读者一眼看出这条流程验到什么程度。
+
