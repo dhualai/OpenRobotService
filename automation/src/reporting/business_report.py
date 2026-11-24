@@ -530,7 +530,9 @@ def load_learner_course(root, *, environment=''):
     }
 
 
-def render_business_scenarios(results, *, service_account_ui=None, learner_course=None):
+def render_business_scenarios(results, *, service_account_ui=None, learner_course=None, scenario_notes=None):
+    if not isinstance(scenario_notes, dict):
+        scenario_notes = {}
     cases = collections.defaultdict(list)
     for result in results:
         scenario_id = result_labels(result).get(SCENARIO_LABEL)
@@ -609,6 +611,13 @@ def render_business_scenarios(results, *, service_account_ui=None, learner_cours
             parts.append(f'<p class="meta">{_linked_text(learner["provenance"], learner["run_url"])}</p>')
             if learner['readback_link']:
                 parts.append(f'<p class="meta">{learner["readback_link"]}</p>')
+        notes = scenario_notes.get(scenario_id)
+        if isinstance(notes, list):
+            for note in notes:
+                if isinstance(note, dict) and isinstance(note.get('text'), str) and note['text'].strip():
+                    reference = _linked_text('查看依据', note.get('url', ''))
+                    link = f' {reference}' if reference.startswith('<a ') else ''
+                    parts.append(f'<p class="meta">{esc(note["text"])}{link}</p>')
         observation_heading = '实际结果'
         if history:
             observation_heading = '测试站实际' if history['fresh'] else '历史实际'
@@ -768,7 +777,10 @@ def main(argv=None):
     )
     learner_root = args.service_account_learner_results or args.service_account_ui_results
     learner_course = load_learner_course(learner_root, environment=args.service_account_ui_environment) if learner_root else None
-    p.append(render_business_scenarios(results, service_account_ui=ui_run, learner_course=learner_course))
+    p.append(render_business_scenarios(
+        results, service_account_ui=ui_run, learner_course=learner_course,
+        scenario_notes=context.get('scenario_notes'),
+    ))
 
     p.append('<div class="toc" style="background:#eef6ff;border-color:#c9defa">'
              '<b>怎么看到「步骤、入参、出参、断言」</b>：'

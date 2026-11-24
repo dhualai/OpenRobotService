@@ -569,8 +569,10 @@ jobs:
       - name: Publish report to gh-pages
         # 推到 gh-pages/test-gate 子目录，keep_files 保留 deploy-split 的根目录报告，
         # 两者互不覆盖。GitHub Pages 启用前该步骤只写分支、不产生可访问 URL。
+        # 只在 test 分支发布：手动在功能分支触发本工作流时只产出 Artifacts，
+        # 不覆盖团队正在看的 gh-pages/test-gate 报告。
         id: publish-pages
-        if: ${{ always() && steps.allure-html.outcome == 'success' }}
+        if: ${{ always() && github.ref == 'refs/heads/test' && steps.allure-html.outcome == 'success' }}
         continue-on-error: true
         uses: peaceiris/actions-gh-pages@v3
         with:

@@ -162,7 +162,16 @@ def test_learner_course_evidence_shows_progress_without_passing_release_gate(tmp
         json.dumps(evidence), encoding="utf-8",
     )
     context = tmp_path / "context.json"
-    context.write_text(json.dumps({"run": {"commit": "a" * 40}}), encoding="utf-8")
+    context.write_text(json.dumps({
+        "run": {"commit": "a" * 40},
+        "scenario_notes": {
+            "service-learning": [{
+                "text": "源码核对 <普通学员>",
+                "url": "https://github.com/dhualai/OpenRobotService/blob/revision/learning.py#L42",
+            }],
+            "service-ticket-lifecycle": [{"text": "部署提交待核对", "url": "javascript:alert(1)"}],
+        },
+    }), encoding="utf-8")
     report = tmp_path / "business.html"
     business_report.main([
         "--results", str(tmp_path), "--expect-gate", "--context", str(context),
@@ -173,6 +182,9 @@ def test_learner_course_evidence_shows_progress_without_passing_release_gate(tmp
     html = report.read_text(encoding="utf-8")
     card = _scenario_html(html, "service-learning")
     assert "测试 &lt;课程&gt; v1" in card
+    assert "源码核对 &lt;普通学员&gt;" in card and "learning.py#L42" in card
+    assert "部署提交待核对" not in card
+    assert "javascript:alert(1)" not in html
     assert "测试脚本 bbbbbbbb" in card and "/actions/runs/123" in card
     if course_outcome == "blocked":
         assert "提交答案受阻（HTTP 403）" in card
