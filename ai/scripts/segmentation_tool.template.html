@@ -173,7 +173,10 @@
 const DATA = __DATA__;
 const MODE = DATA.mode || "label";
 const RK = MODE === "bounds" ? "readB" : "read";  // 切题轮/标注轮的已读标记分开，互不清空
-const LS_KEY = "seg_review_v1";
+// 1106：键名带数据指纹（生成时注入）——切分一变键就变，旧草稿自动失效。
+// 原先固定 seg_review_v1，本地存过边界的会话会无条件覆盖服务端新切分
+// （store.bounds 优先级高于 DATA），重切后页面仍显示旧分段，用户实锤。
+const LS_KEY = "__LS_KEY__";
 // L2 标签（与 docs/直答率统计口径.md 对齐）：
 // 分子=直答正确；分母=+未直答；未覆盖/无法判定单列不摊入；
 // 直接提单=非直答测量对象，分子分母均剔除（用户明确目的来提单）
@@ -304,11 +307,17 @@ function renderList() {
     const read = store[RK][String(c.conversation_id)];
     const nt = boundsOf(c).size;
     const nl = MODE === "bounds" ? 0 : Object.keys(labelsOf(c)).length;
-    d.innerHTML = `<div>${fmtT(c.created_at)} ${c.tester ? "测" : "真"}
+    // 1106：主显示「最后对话时间」而非创建时间——老会话续聊后仍要处理，
+    // 只显示创建时间会让人以为在翻 8/9 月的历史（用户实锤吴佳秀 cid 1417：
+    // 建于 09-28、最后 10-30）。创建日期另起一行标注。
+    const lastAt = c.rounds.length ? c.rounds[c.rounds.length - 1].at : c.created_at;
+    const born = lastAt.slice(0, 10) !== (c.created_at || "").slice(0, 10);
+    d.innerHTML = `<div>${fmtT(lastAt)} ${c.tester ? "测" : "真"}
       ${c.name ? `<span class="who">${c.name}</span>` : ""}
       <span class="ntop">${nt}话题${nl ? ` 标${nl}` : ""}</span></div>
       <div class="t">${(c.rounds.find(r => r.q) || c.rounds[0]).q.slice(0, 26) || "…"}</div>
-      <div>${read ? '<span class="done">✓ 已审</span>' : ""} ${c.tasks.length}单</div>`;
+      <div>${read ? '<span class="done">✓ 已审</span>' : ""} ${c.tasks.length}单`
+      + (born ? ` · 建于 ${fmtT(c.created_at)}` : "") + `</div>`;
     d.onclick = () => { saveCur(); openConv(c); };
     list.appendChild(d);
   });
@@ -658,10 +667,14 @@ document.body.classList.add(MODE);
 document.title = MODE === "bounds" ? "人工切题 · 只定边界" : "话题标注 · 打标签";
 document.getElementById("h-mode").textContent =
   MODE === "bounds" ? "切题轮 · 只定边界" : "标注轮 · 打标签";
+const _banner = document.getElementById("mode-banner");
+_banner.style.display = "block";
 if (MODE === "bounds") {
-  const b = document.getElementById("mode-banner");
-  b.style.display = "block";
-  b.textContent = "这一轮只定话题边界、不打标签；过完点右下「保存并下一个」，全部过完点右上「保存到工作台」（自动按你的边界重算 L1），再回工作台跑第 4 步。";
+  _banner.textContent = "这一轮只定话题边界、不打标签；过完点右下「保存并下一个」，全部过完点右上「保存到工作台」（自动按你的边界重算 L1），再回工作台跑第 4 步。";
+} else {
+  // 1106：标注轮也支持调边界——同一套分段控件，此前无提示用户不知道，
+  // 结果切题/标注各过一遍。改过边界的段 AI 预标会隐藏（按段首锚定），需自己选。
+  _banner.textContent = "打标签为主。发现分段不对也能直接调：拖橙色分隔线换位置、点「+ 在此分段」加断点、「×」删除。改过边界的段 AI 预标会隐藏，需要你自己选标签。";
 }
 buildHelp();
 
