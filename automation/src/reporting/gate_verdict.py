@@ -36,9 +36,12 @@ class RequiredSuite:
     allure_artifact: str
 
 
+# 三层口径（automation/docs/task-test-gate-three-tier.md）：
+#   P0/P1 主流程与步骤断言 -> 必跑，决定放行
+#   P2 明细用例            -> 照常收集产物，只进报告，不参与判定
 REQUIRED_SUITES = (
     RequiredSuite("quality-infra", "框架与基础设施", "quality-gate", "allure-results-quality"),
-    RequiredSuite("quality-api", "Mock API", "quality-gate", "allure-results-quality"),
+    RequiredSuite("quality-api", "主流程接口", "quality-gate", "allure-results-quality"),
     RequiredSuite("real", "真实后端 Smoke", "real-smoke", "allure-results-real-smoke"),
     RequiredSuite("contract", "OpenAPI 契约", "real-smoke", "allure-results-real-smoke"),
 )

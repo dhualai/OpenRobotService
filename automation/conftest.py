@@ -1,8 +1,10 @@
 """OpenRobot pytest entry hooks.
 
-Two responsibilities live here:
+Three responsibilities live here:
 1. Record a runtime trace for every pytest session.
 2. Optionally generate and open the Allure report after a local run.
+3. Mark the main-flow subset (``automation/ci/flow-tests.txt``) with ``-m flow``
+   so the Test Gate can block on main flows and keep the rest advisory.
 """
 
 import os
@@ -197,3 +199,39 @@ def run_context(request):
 def trace_store(request):
     """Return the current trace store, if tracing is enabled."""
     return getattr(request.config, "_openrobot_trace_store", None)
+
+
+_FLOW_LIST = Path(__file__).with_name("ci") / "flow-tests.txt"
+
+
+def _flow_node_ids() -> set[str]:
+    """Read the curated main-flow list, normalised to pytest's rootdir-relative ids."""
+    if not _FLOW_LIST.is_file():
+        return set()
+    ids = set()
+    for raw in _FLOW_LIST.read_text(encoding="utf-8").splitlines():
+        node = raw.strip()
+        if node:
+            ids.add(node[len("automation/"):] if node.startswith("automation/") else node)
+    return ids
+
+
+def _normalise_node_id(nodeid: str) -> str:
+    return nodeid[len("automation/"):] if nodeid.startswith("automation/") else nodeid
+
+
+def pytest_collection_modifyitems(config, items):
+    """Tag main-flow cases with ``flow``; never fail a partial run."""
+    flow_ids = _flow_node_ids()
+    if not flow_ids:
+        return
+    marked = 0
+    for item in items:
+        if _normalise_node_id(item.nodeid) in flow_ids:
+            item.add_marker(pytest.mark.flow)
+            marked += 1
+    selected_by_mark = (config.getoption("-m") or "").strip() == "flow"
+    if selected_by_mark and not marked:
+        raise pytest.UsageError(
+            f"-m flow selected no cases; check {_FLOW_LIST} against the current node ids"
+        )
