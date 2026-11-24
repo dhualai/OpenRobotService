@@ -72,15 +72,28 @@ class UiPageActions:
             timeout=30_000
         )
 
-    def ensure_ticket_draft_modal(self) -> None:
+    def ensure_ticket_draft_modal(self, *, project_name: str | None = None) -> None:
         modal = self.page.get_by_test_id("chat-ticket-draft-modal")
+        spinner = self.page.locator(".chat-send-btn__spinner:visible")
+        expect(spinner).to_be_hidden(timeout=60_000)
         try:
             modal.wait_for(state="visible", timeout=5_000)
             return
         except PlaywrightTimeoutError:
             pass
-        self.page.get_by_test_id("chat-transfer-ticket").click(force=True)
-        expect(modal).to_be_visible(timeout=30_000)
+        transfer = self.page.get_by_test_id("chat-transfer-ticket")
+        transfer.click()
+        if project_name:
+            choice = self.page.locator("button.chat-proj-choices__btn:enabled").filter(
+                has=self.page.get_by_text(project_name, exact=True),
+            ).last
+            expect(modal.or_(choice).first).to_be_visible(timeout=35_000)
+            if not modal.is_visible() and choice.is_visible():
+                choice.click()
+                expect(spinner).to_be_hidden(timeout=60_000)
+                if not modal.is_visible():
+                    transfer.click()
+        expect(modal).to_be_visible(timeout=35_000)
 
     def confirm_ticket(self, expected_title: str) -> int:
         expect(self.page.get_by_test_id("chat-ticket-title")).to_have_value(
