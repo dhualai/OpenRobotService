@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import allure
@@ -201,6 +202,32 @@ def test_learner_course_evidence_shows_progress_without_passing_release_gate(tmp
     assert "Test Gate 判定：未验收" in html
     assert "synthetic-test-secret" not in html
     assert business_report.load_learner_course(tmp_path, environment="different-test") is None
+
+
+def test_verified_learner_evidence_retains_own_deployment_and_progress(tmp_path):
+    environment = "service-account-test"
+    source = Path(__file__).resolve().parents[3] / "references/acceptance-evidence/learner-course-run.json"
+    evidence = json.loads(source.read_text(encoding="utf-8"))
+    evidence["course"]["course_id"] = "course"
+    (tmp_path / business_report.LEARNER_RUN_FILE).write_text(json.dumps(evidence), encoding="utf-8")
+    (tmp_path / business_report.LEARNER_READBACK_FILE).write_text(json.dumps({
+        "course_id": "course", "article_version": 1,
+        "course_progress": {"answered_count": 0, "total_count": 2, "detail_answered": 0},
+        "run": {"run_id": "45328595079", "environment": environment,
+                "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/45328595079"},
+    }), encoding="utf-8")
+    report = tmp_path / "business.html"
+    business_report.main([
+        "--results", str(tmp_path), "--expect-gate", "--out", str(report),
+        "--service-account-learner-results", str(tmp_path), "--service-account-ui-environment", environment,
+    ])
+    html = report.read_text(encoding="utf-8")
+    card = _scenario_html(html, "service-learning")
+    assert "部署提交 59645a9f 已核对" in card and "/actions/runs/45359876326" in card
+    assert "测试站独立实跑 · 学员提交 2/2 题，评分反馈核对 2/2 题" in card
+    assert "实际答对 0 题" in card and "重新打开后的页面显示 2/2 题" in card
+    assert "45328595079" not in card and "站点版本归属待核对" not in card
+    assert "Test Gate 判定：未验收" in html
 
 
 def test_service_account_rule_artifact_shows_only_outcomes_and_keeps_source(tmp_path):

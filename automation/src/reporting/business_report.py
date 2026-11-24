@@ -483,12 +483,18 @@ def load_learner_course(root, *, environment=''):
         rf'https://[\w.-]+/[\w.-]+/[\w.-]+/actions/runs/{run_id}', run_url,
     ):
         run_url = ''
+    deployment = run.get('deployment_commit')
+    verified_deployment = (
+        isinstance(deployment, str) and bool(re.fullmatch(r'[a-fA-F0-9]{40}', deployment))
+        and run.get('application_trees_match') is True and run.get('deployment_drift') is False
+        and run_url == f'https://github.com/dhualai/OpenRobotService/actions/runs/{run_id}'
+    )
     progress = f'课程列表回查 {persisted}/{total} 题，显示已完成。' if list_progress else ''
     readback = read_object(root / LEARNER_READBACK_FILE)
     check, check_run = readback.get('course_progress'), readback.get('run')
     readback_link = ''
     if (
-        total and isinstance(check, dict) and isinstance(check_run, dict)
+        not verified_deployment and total and isinstance(check, dict) and isinstance(check_run, dict)
         and check_run.get('environment') == environment and check_run.get('run_id') != run_id
         and course.get('course_id') and readback.get('course_id') == course['course_id']
         and readback.get('article_version') == course['course_version'] and check.get('total_count') == total
@@ -505,14 +511,20 @@ def load_learner_course(root, *, environment=''):
     submit_text = f'提交成功 {submitted}/{total} 题' if total else '未取得课程详情'
     if rejected:
         submit_text += f'，提交接口返回 HTTP {http_status}'
+    deployment_note = f'部署提交 {deployment[:8]} 已核对' if verified_deployment else '站点版本归属待核对'
     reason = '学员实跑的站点版本归属待核对'
+    if verified_deployment:
+        reason = '普通学员链路已通过，后台完整页面流程待验证' if (
+            outcome is True and submitted == scored == detail_answered == total
+            and http_status == 200 and course.get('outcome') == 'passed'
+        ) else '普通学员页面证据待补全'
     if outcome is False:
         reason = '重新打开课程后，答题进度显示不一致'
     if total and submitted < total:
         reason = f'提交答案受阻（HTTP {http_status}）' if rejected else '答题提交未完成，评分与进度保存未验证'
     return {
         'provenance': f'测试站学员实跑 · {course["course_title"][:150]} v{course["course_version"]}'
-                      f' · 测试脚本 {revision[:8]} · 运行 {run_id} · 站点版本归属待核对',
+                      f' · 测试脚本 {revision[:8]} · 运行 {run_id} · {deployment_note}',
         'run_url': run_url,
         'readback_link': readback_link,
         'summary': f'学员提交 {submitted}/{total} 题，评分反馈核对 {scored}/{total} 题' if total else '学员侧实跑未完成',
@@ -598,7 +610,7 @@ def render_business_scenarios(results, *, service_account_ui=None, learner_cours
             f'<strong>{esc(scenario.flow_title or scenario.title)}</strong>'
             f'<span class="business-status {colour}">{verdict}</span>'
             f'<span class="business-snapshot">触发 · {esc(scenario.trigger)}'
-            f'<br>本次验证 · {esc(checked)}'
+            f'<br>{"测试站独立实跑" if learner else "本次验证"} · {esc(checked)}'
             f'{f"<br>卡点 · {esc(reason)}" if reason else ""}</span>'
             '</summary><div class="business-body">'
         )

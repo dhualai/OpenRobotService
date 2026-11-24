@@ -623,6 +623,8 @@ jobs:
           fi
           if [ -f automation/output/ui-learner-evidence/learner-course-run.json ]; then
             ui_args+=(--service-account-learner-results automation/output/ui-learner-evidence)
+          else
+            ui_args+=(--service-account-learner-results automation/references/acceptance-evidence)
           fi
           python3 automation/src/reporting/business_report.py \
             --results automation/output/allure-results \

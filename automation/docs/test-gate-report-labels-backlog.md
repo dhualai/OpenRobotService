@@ -58,6 +58,8 @@
 - 测试站的提单人和处理人账号已通过 GitHub Secrets 直连验证。测试脚本提交 `6da9acb2` 的 17 步全部通过，关闭后重新打开仍显示已关闭；业务 HTML 已关联运行和各步骤证据。部署记录显示 `382dc17b`，实跑站点提供该提交没有的学员接口，故报告记录 17/17 步通过，并把发布验收标为「部分验证 · 测试站部署提交待核对」。 [UI 实跑与脱敏产物](https://github.com/dhualai/OpenRobotService/actions/runs/45325145597)
 - 对照部署产物与测试站公开首页。GitHub 记录 `382dc17b` 的构建包入口为 `index-CdQqwvVs.js`，此次核对时测试站入口为 `index-Df9zwI-B.js`，且测试站提供该构建包缺少的学员接口。测试站当前完整提交号未取得，17 步作为独立实跑证据展示，版本验收仍待确认部署归属。 [测试站的 CI 部署记录](https://github.com/dhualai/OpenRobotService/actions/runs/45118616285)
 - 学员端从已启用文章的当前版本读取已审核、已启用的题目。用之前确认的课程「按钮路径交互优化：转工单入口的反馈闭环」v1 实跑。两题可读，第一次提交返回 HTTP 403，评分反馈和进度保存被阻塞。用同一测试账号只读回查，课程列表与重新打开的答题页均显示 0/2。业务报告展示卡点、两个运行来源，以及已观察到的进度。 [学员实跑](https://github.com/dhualai/OpenRobotService/actions/runs/45327716228) · [只读进度回查](https://github.com/dhualai/OpenRobotService/actions/runs/45328595079)
+- #505 部署 `59645a9f` 后，普通学员用同一门课 v1 复跑。两题均返回 HTTP 200，判分和页面反馈一致，课程列表与重开后均为 2/2。本次提交的两个答案均被判错。Test Gate 默认读取该次脱敏历史证据，手动运行时可指定新证据。正式门禁继续使用当次必跑套件。 [部署记录](https://github.com/dhualai/OpenRobotService/actions/runs/45356781699) · [学员复跑](https://github.com/dhualai/OpenRobotService/actions/runs/45359876326)
+- 归档奖励的跨角色页面实跑仍待验证，报告继续展示已执行的后台规则验证，以及页面提交、审核与回查三方奖励的缺口。
 - 初版报告、页面框架和后台规则回归 81 条通过，两份工作流的 Shell 语法校验通过。直连修复的本地针对性回归 48 条通过，真实页面结果来自上述 UI 运行。已用 Chromium 核对最终 HTML 中的 17 步、关闭状态、运行链接和部署待核对提示。
 
 ### 首页验收结论与关键流程
