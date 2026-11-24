@@ -1,0 +1,11 @@
+{
+  "method": "PATCH",
+  "url": "http://localhost:8400/api/tasks/5/status",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "status": "resolved",
+    "resolution_summary": "真实后端业务场景自动化验证完成"
+  }
+}

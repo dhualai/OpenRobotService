@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "title": "Error E1001",
+    "description": "Robot fault"
+  }
+}

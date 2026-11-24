@@ -1,0 +1,2 @@
+written: /tmp/pytest-of-runner/pytest-0/test_business_report_redacts_l0/business-report.html (7446 bytes)
+modules=1 scenes=1 failed=0

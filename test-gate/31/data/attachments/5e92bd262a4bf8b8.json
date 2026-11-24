@@ -1,0 +1,7 @@
+{
+  "method": "DELETE",
+  "url": "http://mock.local/api/call/conversations/99999",
+  "headers": {
+    "Authorization": "***"
+  }
+}
