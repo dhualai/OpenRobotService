@@ -129,9 +129,9 @@ def test_main_skips_when_env_not_in_scope(monkeypatch, capsys):
 
 def test_pick_layout():
     notes = [("新增功能", ["x"])]
-    assert notify.pick_layout(True, "test", notes) == "standard"      # test 不换版面
+    assert notify.pick_layout(True, "test", notes) == "release"       # test 成功 + 有说明
     assert notify.pick_layout(True, "prod", notes) == "release"       # 生产成功 + 有说明
-    assert notify.pick_layout(True, "prod", []) == "standard"         # 生产成功但无说明
+    assert notify.pick_layout(True, "prod", []) == "standard"         # 成功但无说明
     assert notify.pick_layout(False, "prod", []) == "failure-prod"    # 生产失败
     assert notify.pick_layout(False, "test", []) == "standard"
 
@@ -158,12 +158,13 @@ def test_collect_failure_layout(monkeypatch):
     assert any("自动回滚" in a for a in c["alerts"])
 
 
-def test_collect_test_layout_unchanged(monkeypatch, tmp_path):
+def test_collect_test_release_layout(monkeypatch, tmp_path):
     _base_env(monkeypatch)
     monkeypatch.setenv("ENV_NAME", "test")
     monkeypatch.setenv("RELEASE_NOTES_FILE", _write_notes(tmp_path))
     c = notify.collect()
-    assert c["layout"] == "standard"                     # test 保持原版面
+    assert c["layout"] == "release"                      # test 也用新版更新日志版面
+    assert c["env_label"] == "测试"
 
 
 # ---------- 门禁非阻塞后的如实标注 ----------
@@ -293,6 +294,41 @@ def test_render_release_layout():
                           "摇人页承接车体扫码：出厂码弹车辆确认并切换车型引导流"]),
             ("体验优化", ["部署通知改自绘图片卡片，发布说明一图览、字号更大"]),
             ("BUG 修复", ["修复未关注用户首次扫码链路断裂（扫码事件前缀剥离）"]),
+        ],
+    })
+    assert png[:4] == b"\x89PNG" and len(png) <= 2 * 1024 * 1024
+
+
+def test_release_item_parts_supports_new_and_legacy_entries():
+    assert notify_image._release_item_parts(
+        "【优化】达成一致后可重新协商｜验证：系统任务 → 工单详情"
+    ) == ("【优化】达成一致后可重新协商", "系统任务 → 工单详情")
+    assert notify_image._release_item_parts("历史条目") == ("历史条目", "")
+
+
+def test_render_release_by_menu_with_verification():
+    png = _render("release", {
+        "env_name": "prod",
+        "env_label": "生产",
+        "release_date": "2026-11-23",
+        "release_notes": [
+            ("我要摇人", ["【修复】修复首页轮播展示异常｜验证：我要摇人 → 顶部轮播条"]),
+            ("系统任务", ["【优化】达成一致后可重新协商时间｜验证：系统任务 → 工单详情 → 阶段性处理"]),
+            ("后台管理", ["【功能】二维码支持自定义卡片｜验证：后台管理 → 其他 → 二维码管理"]),
+        ],
+    })
+    assert png[:4] == b"\x89PNG" and len(png) <= 2 * 1024 * 1024
+
+
+def test_render_test_release_keeps_gate_alerts():
+    png = _render("release", {
+        "env_name": "test",
+        "env_label": "测试",
+        "release_date": "2026-11-23",
+        "gate_failed": ["pytest"],
+        "alerts": ["pytest 有失败用例（非阻塞放行）"],
+        "release_notes": [
+            ("后台管理", ["【功能】二维码支持自定义卡片｜验证：后台管理 → 其他 → 二维码管理"]),
         ],
     })
     assert png[:4] == b"\x89PNG" and len(png) <= 2 * 1024 * 1024

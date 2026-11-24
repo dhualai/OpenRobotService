@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_db as get_db
 from app.core.auth_routes import get_current_active_user_from_token
-from app.core.user_identity import user_matches, is_admin_user, actor_username
+from app.core.user_identity import user_matches, actor_username
 from app.core.ticket_roles import get_ticket_roles
+from app.modules.admin.api.auth import has_permission_code
 from app.models.task import OperationType, TaskStatus, Task, ArchiveReport
 from app.models.identity import UserDB
 from app.modules.tasks.services.archive_report_service import ArchiveReportService
@@ -32,6 +33,9 @@ from app.modules.tasks.api.ws import ws_broadcast_task_updated
 from app.modules.tasks.api.task import _add_system_comment
 from app.modules.tasks.services.ticket_service import TicketService
 from app.services.notification_outbox_service import NotificationOutboxService
+
+# 归档/知识沉淀模块权限编码
+PERM_ARCHIVE_WRITE = "backend:archive-report:write"
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +106,11 @@ async def archive_start(
     if not task:
         raise HTTPException(status_code=404, detail="工单未找到")
 
-    # 2) 权限：isAssignee 或 admin 或 has backend:tasks:operate
+    # 2) 权限：isAssignee 或 有 operate 权限或 archive-report:write
     roles = await get_ticket_roles(db, task, current_user)
     operator_id, username, token = await _operator_info(current_user)
 
-    if not (roles.is_assignee or roles.is_admin or roles.can_operate):
+    if not (roles.is_assignee or roles.can_operate or has_permission_code(current_user, PERM_ARCHIVE_WRITE)):
         raise HTTPException(status_code=403, detail="无权限开始知识沉淀")
 
     try:
@@ -200,14 +204,14 @@ async def save_draft(
     if not report:
         raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
 
-    # 权限：created_by 或 admin 或 can_operate
+    # 权限：created_by 或 有 operate 权限
     result = await db.execute(select(Task).where(Task.id == report.task_id))
     task = result.scalar_one_or_none()
     roles = await get_ticket_roles(db, task, current_user) if task else None
 
     can_edit = (
         user_matches(current_user, report.created_by)
-        or (roles and (roles.is_admin or roles.can_operate))
+        or (roles and roles.can_operate)
     )
     if not can_edit:
         raise HTTPException(status_code=403, detail="无权限编辑该知识沉淀报告")
@@ -253,8 +257,8 @@ async def submit_report(
     if not report:
         raise HTTPException(status_code=404, detail="知识沉淀报告未找到")
 
-    # 权限：created_by 或 admin
-    if not (user_matches(current_user, report.created_by) or is_admin_user(current_user)):
+    # 权限：created_by 或有 archive-report:write 权限
+    if not (user_matches(current_user, report.created_by) or has_permission_code(current_user, PERM_ARCHIVE_WRITE)):
         raise HTTPException(status_code=403, detail="无权限提交该知识沉淀报告")
 
     # 业务调用：系统派审选审核人，只写 archive_reports.reviewer

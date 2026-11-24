@@ -339,9 +339,31 @@ async def get_user_field_options(
         db.close()
 
 
-# ===== 公司/部门提交与审核 =====
+# ===== 公司/部门/项目提交与审核 =====
 
-ADMIN_ASSIGNEE_ID = "admin"  # 审核工单指派给管理员
+# 审核工单默认处理人：拥有此权限的第一个用户（替代旧的 ADMIN_ASSIGNEE_ID="admin" 硬编码）
+APPROVAL_MANAGER_PERMISSION = "backend:options:approve"
+
+
+def ensure_approval_permission() -> None:
+    """确保审核工单处理人权限已注册（幂等）。"""
+    from app.services.identity_service import IdentityService
+    IdentityService.add_permission(
+        permission_id="perm_backend_options_approve",
+        code=APPROVAL_MANAGER_PERMISSION,
+        name="审核工单默认处理人",
+        resource_type="backend",
+        action="operate",
+        description="公司/部门/项目等主数据录入审核工单的默认指派权限，拥有此权限的第一个活跃用户将被指派为处理人",
+    )
+
+
+def _resolve_approval_assignee() -> str:
+    """返回审核工单应指派给谁（user_id），查不到则返回空串让派单 Worker 兜底。"""
+    ensure_approval_permission()
+    from app.services.permission_service import permission_service
+    uid = permission_service.get_first_user_by_permission(APPROVAL_MANAGER_PERMISSION)
+    return uid or ""
 
 
 # ===== 部门职责画像（AI 派单 R2 部门分类用）=====
@@ -464,7 +486,7 @@ async def submit_new_company(
         description=f"用户 {user_name} 申请新增公司「{name}」，请审核。",
         ticket_type=TaskType.OTHER,
         priority=TaskPriority.LOW,
-        assigned_to=ADMIN_ASSIGNEE_ID,
+        assigned_to=_resolve_approval_assignee(),
         metadata_info={
             "approval_type": "new_company",
             "target_table": "companies",
@@ -549,7 +571,7 @@ async def submit_new_department(
         description=f"用户 {user_name} 申请新增部门「{name}」（所属公司：{company_name}），请审核。",
         ticket_type=TaskType.OTHER,
         priority=TaskPriority.LOW,
-        assigned_to=ADMIN_ASSIGNEE_ID,
+        assigned_to=_resolve_approval_assignee(),
         metadata_info={
             "approval_type": "new_department",
             "target_table": "departments",
@@ -655,7 +677,7 @@ async def submit_new_project(
             description=ticket_desc,
             ticket_type=TaskType.OTHER,
             priority=TaskPriority.LOW,
-            assigned_to=ADMIN_ASSIGNEE_ID,
+            assigned_to=_resolve_approval_assignee(),
             metadata_info={
                 "approval_type": "new_project",
                 "target_table": "project",
@@ -747,11 +769,13 @@ async def approve_option(
             obj = sync_db.query(Project).filter(Project.id == target_id).first()
         if not obj:
             raise HTTPException(status_code=404, detail="记录不存在")
-        if obj.status == 'approved':
-            raise HTTPException(status_code=400, detail="该记录已审核通过")
 
-        # 管理员可调整名称
-        if new_name and new_name != obj.name:
+        # 幂等：实体已被其他请求置为 approved（并发/重试/工单被 reopen 后的二次点击），
+        # 跳过名称/代码调整（已终态不应再改名），继续走兜底关工单 + 返回，避免前端报 400
+        already_approved = obj.status == 'approved'
+
+        # 管理员可调整名称（仅实体尚未终态时允许）
+        if not already_approved and new_name and new_name != obj.name:
             if target_type == 'company':
                 existing = sync_db.query(Company).filter(Company.name == new_name).first()
             elif target_type == 'department':
@@ -765,20 +789,38 @@ async def approve_option(
                 raise HTTPException(status_code=400, detail=f"名称「{new_name}」已存在")
             obj.name = new_name
 
-        # 项目额外支持调整 code
-        if target_type == 'project' and new_code and new_code != obj.code:
+        # 项目额外支持调整 code（同样仅在实体未终态时允许）
+        if not already_approved and target_type == 'project' and new_code and new_code != obj.code:
             existing = sync_db.query(Project).filter(Project.code == new_code).first()
             if existing:
                 raise HTTPException(status_code=400, detail=f"项目代码「{new_code}」已存在")
             obj.code = new_code
 
-        obj.status = 'approved'
-        obj.approved_by = current_user.get('username', '')
-        if target_type == 'project':
-            obj.approved_at = time.time()
+        # 仅在首次审核时写入状态/审核人/审核时间；幂等重试保留原始审计字段
+        if not already_approved:
+            obj.status = 'approved'
+            obj.approved_by = current_user.get('username', '')
+            if target_type == 'project':
+                obj.approved_at = time.time()
+            else:
+                obj.approved_at = datetime.now()
+            sync_db.commit()
         else:
-            obj.approved_at = datetime.now()
-        sync_db.commit()
+            # 实体已是 approved，本次可能仍需要一次 commit（若上面名称/code 被跳过则为空事务，无副作用）
+            sync_db.commit()
+
+        # ── 实体审核通过后，自动关闭对应审核工单（兜底：防止前端两步请求时序不一致导致工单残留） ──
+        approval_type_map = {'company': 'new_company', 'department': 'new_department', 'project': 'new_project'}
+        approval_type = approval_type_map.get(target_type, '')
+        if approval_type:
+            sync_db.execute(text("""
+                UPDATE tasks
+                SET status = 'closed', closed_at = NOW()
+                WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.target_id')) = :target_id
+                  AND JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.approval_type')) = :approval_type
+                  AND status NOT IN ('closed', 'archived', 'archiving', 'canceled', 'cancelled')
+            """), {'target_id': target_id, 'approval_type': approval_type})
+            sync_db.commit()
 
         resp = {"status": "approved", "id": target_id, "name": obj.name}
         if target_type == 'project':
@@ -816,17 +858,35 @@ async def reject_option(
             obj = sync_db.query(Project).filter(Project.id == target_id).first()
         if not obj:
             raise HTTPException(status_code=404, detail="记录不存在")
-        if obj.status == 'rejected':
-            raise HTTPException(status_code=400, detail="该记录已被驳回")
 
-        obj.status = 'rejected'
-        obj.approved_by = current_user.get('username', '')
-        if target_type == 'project':
-            obj.approved_at = time.time()
+        # 幂等：实体已被其他请求置为 rejected（并发/重试/工单被 reopen 后的二次点击），
+        # 跳过审计字段写入（保留原始驳回人/驳回时间/驳回原因），继续走兜底关工单 + 返回
+        already_rejected = obj.status == 'rejected'
+
+        if not already_rejected:
+            obj.status = 'rejected'
+            obj.approved_by = current_user.get('username', '')
+            if target_type == 'project':
+                obj.approved_at = time.time()
+            else:
+                obj.approved_at = datetime.now()
+            obj.reject_reason = reason or None
+            sync_db.commit()
         else:
-            obj.approved_at = datetime.now()
-        obj.reject_reason = reason or None
-        sync_db.commit()
+            sync_db.commit()
+
+        # ── 实体驳回后，自动关闭对应审核工单（兜底：防止前端两步请求时序不一致导致工单残留） ──
+        approval_type_map = {'company': 'new_company', 'department': 'new_department', 'project': 'new_project'}
+        approval_type = approval_type_map.get(target_type, '')
+        if approval_type:
+            sync_db.execute(text("""
+                UPDATE tasks
+                SET status = 'closed', closed_at = NOW()
+                WHERE JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.target_id')) = :target_id
+                  AND JSON_UNQUOTE(JSON_EXTRACT(metadata_info, '$.approval_type')) = :approval_type
+                  AND status NOT IN ('closed', 'archived', 'archiving', 'canceled', 'cancelled')
+            """), {'target_id': target_id, 'approval_type': approval_type})
+            sync_db.commit()
 
         return {"status": "rejected", "id": target_id, "name": obj.name, "reason": reason}
     except HTTPException:
@@ -1401,6 +1461,46 @@ async def batch_assign_project_roles(
             for uid in affected_user_ids:
                 project_service.bump_export_version_for_user(uid)
             logger.info(f"[batch_assign] ✅ 全部成功: project_id={project_id!r} 新增 {assigned_count} 个角色，已 bump 版本")
+
+            # ── 可选：发送"账号授权通过提醒"微信模板消息（模板 12）
+            # 由前端 TaskDetailPage 审核通过时触发（send_notify=true）
+            # ProjectPeople 手动分配不传或传 false → 不发，避免干扰
+            if role_data.send_notify:
+                try:
+                    from app.utils.notification_utils import NotificationUtils
+                    from app.core.database import db_manager as _dbm
+
+                    project_display = (
+                        role_data.notify_project_name
+                        or role_data.notify_project_code
+                        or project_id
+                        or "项目"
+                    )
+                    logger.info(f"[batch_assign] 📨 send_notify=true → 准备推送授权提醒，project={project_display}")
+
+                    notified = []
+                    for item in role_data.organization_ids:
+                        user_name = item.get("user_name", "").strip()
+                        if not user_name:
+                            continue
+                        u = _dbm.get_user(user_name)
+                        if not u:
+                            logger.warning(f"[batch_assign] send_notify 跳过: 用户 {user_name} 不存在")
+                            continue
+                        open_id = u.get("id", "").strip()
+                        if not open_id:
+                            logger.warning(f"[batch_assign] send_notify 跳过: 用户 {user_name}({u.get('name')}) 无 openid")
+                            continue
+                        success, _ = NotificationUtils.send_project_join_approved_notification(
+                            open_id, project_display, ticket_id=role_data.notify_ticket_id
+                        )
+                        if success:
+                            notified.append(user_name)
+
+                    if notified:
+                        logger.info(f"[batch_assign] 📨 授权提醒推送汇总: 成功 {len(notified)} 人 {notified}")
+                except Exception as notify_setup_err:
+                    logger.warning(f"[batch_assign] send_notify 初始化失败（不阻塞主流程）: {notify_setup_err}")
         else:
             logger.info(f"[batch_assign] 完成但无新增: project_id={project_id!r} (可能全部已存在)")
 

@@ -29,6 +29,20 @@ PERM_KNOWLEDGE_CONTRIBUTION = "frontend:admin:knowledge:show"
 # 其他角色要在权限管理里显式勾选——该码由 announcement.ensure_announcement_permission
 # 在 permissions 的注册块里写入，不会在接口函数体内写（见该函数 docstring）。
 PERM_ANNOUNCEMENT = "frontend:admin:announcement:manage"
+PERM_LEARNING = "frontend:admin:learning:manage"
+
+# 智库（doc-service，挂在 /t/app/kb/ 下的独立服务）写权限。
+# 该服务账号统一走摇人吧登录态，由它服务端调 /api/auth/me 拿 permissions 后映射角色：
+#   有本码 → engineer（可编辑）；admin 账号直通；其他已登录用户 → guest（只读）。
+# 由 kb_portal_permissions.ensure_kb_portal_permission 在 permissions 的注册块写入，
+# 不在接口函数体内写（见该函数 docstring）。默认不派发给任何全局角色，需在权限管理显式勾选。
+PERM_KB_WRITE = "frontend:kb:write"
+
+# 智库管理员权限：映射为智库 role=admin（可编辑任意需求、管理用户与授权）。
+# 智库规则是「非 admin 只能编辑自己创建的需求」，所以只有写权限码的超管仍然改不了
+# 别人创建的需求——需要本码把超管正确映射过去。默认派生给全局角色「超级管理员」，
+# 也可在权限管理里单独勾给其他角色。
+PERM_KB_ADMIN = "frontend:kb:admin"
 
 # 「拥有哪个全局角色 → 额外获得哪些权限码」。开发者 / 超级管理员可编辑详情模板；
 # 一键导入全部项目、公告管理只开给超级管理员（admin 账号照旧直通）。
@@ -38,6 +52,8 @@ _GLOBAL_ROLE_DERIVED_PERMISSIONS: Dict[str, tuple] = {
         PERM_PROJECT_INFO_TEMPLATE,
         PERM_PROJECT_LEDGER_IMPORT,
         PERM_ANNOUNCEMENT,
+        PERM_LEARNING,
+        PERM_KB_ADMIN,
     ),
 }
 _user_roles_cache: Dict[str, Dict[str, Any]] = {}
@@ -412,6 +428,82 @@ class PermissionService:
             return result
         finally:
             db.close()
+
+    @staticmethod
+    def get_first_user_by_permission(permission_code: str) -> Optional[str]:
+        """查找拥有指定权限编码的第一个活跃用户的 user_id。
+
+        匹配路径（按优先级）：
+        1. permissions.code 精确匹配 → role_permissions → user_project_roles → users
+        2. 权限编码通配符匹配（backend:* 匹配 backend:tasks:operate 等）—— 复用 auth._match_permission 逻辑
+        3. 持有 admin 角色（role name='超级管理员'/'管理员' 或 role_id 含 admin）的用户兜底命中所有编码
+
+        多用户时按 username 字典序取第一个（稳定）。查不到返回 None。
+        """
+        db = PermissionService._get_db()
+        try:
+            from sqlalchemy import or_
+
+            # 1. 精确匹配权限编码 + 通配符匹配
+            all_perms = db.query(Permission).filter(Permission.enabled == "true").all()
+            matched_perm_ids = []
+            for p in all_perms:
+                if _code_matches_perm(permission_code, p.code):
+                    matched_perm_ids.append(p.id)
+
+            # 2. 找到关联的角色 id
+            matched_role_ids = set()
+            if matched_perm_ids:
+                role_perms = db.query(role_permissions).filter(
+                    role_permissions.c.permission_id.in_(matched_perm_ids)
+                ).all()
+                for rp in role_perms:
+                    matched_role_ids.add(rp.role_id)
+
+            # 3. 兜底：admin 角色（通过角色名匹配，与 get_user_with_roles 里的全局角色派生口径对齐）
+            admin_role_names = {"超级管理员", "管理员", "admin"}
+            admin_roles = db.query(Role).filter(
+                or_(Role.name.in_(admin_role_names), Role.id.in_(admin_role_names))
+            ).all()
+            for ar in admin_roles:
+                matched_role_ids.add(ar.id)
+
+            if not matched_role_ids:
+                return None
+
+            # 4. 找到拥有这些角色的活跃用户
+            rows = db.query(UserDB).join(
+                user_project_roles,
+                user_project_roles.c.user_id == UserDB.id
+            ).filter(
+                user_project_roles.c.role_id.in_(matched_role_ids),
+                UserDB.status == "active",
+            ).order_by(UserDB.username.asc()).distinct().all()
+
+            if not rows:
+                return None
+            return rows[0].id
+        finally:
+            db.close()
+
+
+def _code_matches_perm(required: str, perm_code: str) -> bool:
+    """检查权限编码是否匹配（精确 + 通配符）。
+
+    与 auth._match_permission 逻辑对齐：
+    - 分段 ':' 拆分，支持 '*' 通配整段
+    - backend:* 可匹配 backend:tasks:operate
+    """
+    if required == perm_code:
+        return True
+    req_parts = required.split(":")
+    perm_parts = perm_code.split(":")
+    if len(req_parts) != len(perm_parts):
+        return False
+    for rp, pp in zip(req_parts, perm_parts):
+        if rp != "*" and pp != "*" and rp != pp:
+            return False
+    return True
 
 
 permission_service = PermissionService()

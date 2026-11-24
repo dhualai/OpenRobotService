@@ -4,15 +4,17 @@ import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import { Loading, Navbar } from 'tdesign-mobile-react';
 import {
   MacUsers, MacTags, MacKeyRound, MacUserCog, MacShuffle, MacScrollText, MacClipboardList,
-  MacTable2, MacWallet, MacFileText, MacCalendarDays,
+  MacTable2, MacWallet, MacFileText, MacCalendarDays, MacBuilding2,
 } from '@/shared/components/macaronIcons';
 import { useAuthStore } from '@/stores/auth';
 import { PERM_DISPATCH_DEV } from '@/shared/constants/dispatchDev';
+import { KB_PORTAL_URL } from '@/shared/constants/kbPortal';
 import { PERM_TASK_POLICY } from '@/pages/admin/TaskPolicyPage';
 import { PERM_WECOM_SHEETS } from '@/api/wecomSheets';
 import { PERM_WXPAY_ADMIN } from '@/api/wxpay';
 import { PERM_ANNOUNCEMENT } from '@/api/announcement';
 import { PERM_WORK_CALENDAR } from '@/api/workCalendar';
+import { PERM_LEARNING } from '@/api/learning';
 
 const AdminUserStatistics = lazy(() => import('./AdminUserStatistics'));
 
@@ -22,13 +24,18 @@ interface Entry {
   desc: string;
   icon: ReactNode;
   tone: string;
+  /** 外部独立应用地址：走新标签页打开，不走前端路由 */
+  external?: string;
 }
 
 interface EntryGroup {
   id: string;
   label: string;
+  desc?: string;
   icon: ReactNode;
   tone: string;
+  /** 一级菜单本身就是外部独立应用时，点击直接新标签页打开（不进二级列表） */
+  external?: string;
   entries: Entry[];
 }
 
@@ -63,6 +70,7 @@ const entryGroups: EntryGroup[] = [
     icon: <MacTable2 />,
     tone: 'blue-3',
     entries: [
+      { path: '/admin/question-generation', label: '题目生成', desc: 'AI提炼知识点、生成题目与日常题库维护', icon: <MacFileText />, tone: 'blue-2' },
       { path: '/admin/qrcode-manage', label: '二维码管理', desc: '带参数二维码批量创建、发布、状态流转', icon: <MacScrollText />, tone: 'blue-3' },
       { path: '/admin/wecom-sheets', label: '企微表格', desc: '企微智能表格接入、测试连接、定时同步', icon: <MacTable2 />, tone: 'blue-2' },
       { path: '/admin/work-calendar', label: '工作日历', desc: '公司工作时间、法定节假日与调休（工单提醒按此推送）', icon: <MacCalendarDays />, tone: 'blue-3' },
@@ -81,6 +89,26 @@ const entryGroups: EntryGroup[] = [
       { path: '/admin/dispatch-dev', label: '开发者模式', desc: '派单调试、界面图鉴、可达环境、长期记忆', icon: <MacClipboardList />, tone: 'blue-4' },
     ],
   },
+  {
+    // 智库（doc-service）：独立微服务，与摇人吧同源挂在 <base>/kb/ 下。
+    // 作为「其他」下的一级菜单，点击直接新标签页打开，不再进二级列表。
+    id: 'topology',
+    label: '功能拓扑',
+    desc: '功能拓扑图与模块文档',
+    icon: <MacBuilding2 />,
+    tone: 'blue-4',
+    external: KB_PORTAL_URL,
+    entries: [
+      {
+        path: '/admin/entries/topology',
+        label: '功能拓扑',
+        desc: '功能拓扑图与模块文档（智库独立服务，与摇人吧同源）',
+        icon: <MacBuilding2 />,
+        tone: 'blue-4',
+        external: KB_PORTAL_URL,
+      },
+    ],
+  },
 ];
 
 export default function AdminEntries() {
@@ -92,6 +120,7 @@ export default function AdminEntries() {
   const canShowWxpayRewards = useAuthStore((state) => state.hasPermission(PERM_WXPAY_ADMIN));
   const canShowAnnouncement = useAuthStore((state) => state.hasPermission(PERM_ANNOUNCEMENT));
   const canShowWorkCalendar = useAuthStore((state) => state.hasPermission(PERM_WORK_CALENDAR));
+  const canManageLearning = useAuthStore((state) => state.hasPermission(PERM_LEARNING));
   const canManageChallenges = useAuthStore((state) => state.canManageKnowledgeChallenges);
   const visibleGroups = entryGroups.map((group) => ({
     ...group,
@@ -102,9 +131,10 @@ export default function AdminEntries() {
       (entry.path !== '/admin/wxpay-rewards' || canShowWxpayRewards) &&
       (entry.path !== '/admin/knowledge/challenges?view=manage' || canManageChallenges) &&
       (entry.path !== '/admin/work-calendar' || canShowWorkCalendar) &&
+      (entry.path !== '/admin/question-generation' || canManageLearning) &&
       (entry.path !== '/admin/announcements' || canShowAnnouncement),
     ),
-  })).filter((group) => group.entries.length > 0);
+  })).filter((group) => group.entries.length > 0 || group.external);
   const selectedGroup = visibleGroups.find((group) => group.id === category);
 
   if (category && !selectedGroup) return <Navigate to="/admin/entries" replace />;
@@ -112,9 +142,10 @@ export default function AdminEntries() {
   const visibleEntries: Entry[] = selectedGroup?.entries ?? visibleGroups.map((group) => ({
     path: `/admin/entries/${group.id}`,
     label: group.label,
-    desc: group.entries.map((entry) => entry.label).join(' · '),
+    desc: group.desc ?? group.entries.map((entry) => entry.label).join(' · '),
     icon: group.icon,
     tone: group.tone,
+    external: group.external,
   }));
 
   return (
@@ -132,7 +163,11 @@ export default function AdminEntries() {
             type="button"
             className="admin-entries-card"
             data-tone={entry.tone}
-            onClick={() => navigate(entry.path)}
+            onClick={() => {
+              // 外部独立应用（如智库）：新标签页打开，不进前端路由
+              if (entry.external) { window.open(entry.external, '_blank', 'noopener,noreferrer'); return; }
+              navigate(entry.path);
+            }}
           >
             <span className="admin-entries-card__icon">{entry.icon}</span>
             <span className="admin-entries-card__body">

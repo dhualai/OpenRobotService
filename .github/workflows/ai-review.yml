@@ -1,0 +1,205 @@
+name: AI Review
+
+# AI Review（ORS-1149）执行端：由 AI Review Request（pull_request 触发的
+# 轻量请求器）通过 workflow_run 在【主仓上下文】跟随运行。
+#
+# 为什么拆成两个 workflow：GitHub 自 2026-12 起分批封锁公共仓库的
+# pull_request_target（brownout 已于 11-09/11-16 预演），workflow_run 模式
+# 是 fork 安全的标准替代——本 workflow 的 secrets/token 与 PR 来源无关，
+# fork PR 与同仓 PR 一并覆盖。
+#
+# 安全红线（与 Request 器配合后成立）：
+#   - PR 代码零检出、零执行：diff 一律走 API 内存处理；base-rules/ 与
+#     pr-code/（base 分支检出，仅作脚本回退源）都不含 PR 代码；
+#   - 检视脚本与规则从 base 检出，PR 无法篡改检视规则或执行体；
+#   - LLM 密钥只走 secrets，日志不回显；deep_review 失败也发「未完成」报告；
+#   - 全流程不阻塞合并与部署（本 workflow 不是任何 required check）。
+
+on:
+  workflow_run:
+    workflows: ["AI Review Request"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 要检视的 PR 编号（仅当本文件在默认分支后可用）
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  ai-review:
+    name: AI Review
+    # dispatch = 手动点名深度检视；workflow_run = 请求器成功完成后跟随
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    # 防抖按 PR 维度：请求器 artifact 里才含 PR 号，此处以请求 run 维度分组，
+    # 连续 push 的防抖由请求器的 cancel-in-progress 兜底（被取消不会成功）
+    concurrency:
+      group: ai-review-run-${{ github.event.workflow_run.id || github.run_id }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+      AI_REVIEW_BASE_URL: ${{ secrets.AI_REVIEW_BASE_URL }}
+      AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL }}
+      # 推理模型建议配 low：压 reasoning token 消耗，避免 content 被 max_tokens 截空
+      AI_REVIEW_REASONING_EFFORT: ${{ vars.AI_REVIEW_REASONING_EFFORT }}
+      AI_REVIEW_FALLBACK_API_KEY: ${{ secrets.AI_REVIEW_FALLBACK_API_KEY }}
+      AI_REVIEW_FALLBACK_BASE_URL: ${{ secrets.AI_REVIEW_FALLBACK_BASE_URL }}
+      AI_REVIEW_FALLBACK_MODEL: ${{ vars.AI_REVIEW_FALLBACK_MODEL }}
+    steps:
+      # 解析请求：dispatch 合成深度检视请求；workflow_run 下载请求器 artifact
+      - name: Resolve request
+        id: req
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          if [ -n "${{ inputs.pr_number }}" ]; then
+            echo "pr=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+            echo "action=labeled" >> "$GITHUB_OUTPUT"   # dispatch = 深度检视
+            echo "base_ref=test" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          name=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts | map(select(.name | startswith("ai-review-request-")))[0].name')
+          if [ -z "$name" ]; then
+            echo "::warning::请求器未产出 artifact（可能被防抖取消），跳过"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh run download "$RUN_ID" -R "$REPO" -n "$name" -D reqart
+          echo "pr=$(jq -r .pr_number reqart/request.json)" >> "$GITHUB_OUTPUT"
+          echo "action=$(jq -r .action reqart/request.json)" >> "$GITHUB_OUTPUT"
+          echo "base_ref=$(jq -r .base_ref reqart/request.json)" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(jq -r .head_sha reqart/request.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Skip check
+        if: steps.req.outputs.skip == 'true'
+        run: echo "跳过（防抖取消的请求）" && exit 0
+
+      # base.sha 统一走 API（事件上下文不再可用）
+      - name: Resolve PR base sha
+        id: base
+        run: |
+          echo "sha=$(gh api "repos/$REPO/pulls/$PR" --jq '.base.sha')" >> "$GITHUB_OUTPUT"
+
+      # 双 checkout：base-rules/ = base 快照（规则+知识库+执行脚本，PR 不可篡改）；
+      # pr-code/ = base 分支检出（仅作 bootstrap 回退脚本源，不含 PR 代码）
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base-rules
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/${{ steps.req.outputs.base_ref }}
+          path: pr-code
+
+      # 脚本目录解析：持有 secrets 的执行脚本一律 base-rules 优先；
+      # base 尚无脚本时（bootstrap 窗口）回退 pr-code 并显式告警
+      - name: Resolve exec scripts dir
+        id: edir
+        run: |
+          if [ -f base-rules/.github/ai-review/scripts/deep_review.py ]; then
+            echo "dir=base-rules" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=pr-code" >> "$GITHUB_OUTPUT"
+            echo "::warning::base 分支尚无 ai-review 脚本，回退使用 base 分支版本（bootstrap 窗口）"
+          fi
+
+      # ---------------- 规则快筛（opened/synchronize/reopened） ----------------
+      - name: Run quick screen
+        id: screen
+        if: steps.req.outputs.action != 'labeled'
+        # exit 10 = 命中高危；0 = 未命中或纯文档跳过；其他 = 出错（仍不阻塞）
+        run: |
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/quick_screen.py \
+            --out-json quick.json --out-md quick.md || code=$?
+          echo "exit_code=${code:-0}" >> "$GITHUB_OUTPUT"
+
+      - name: Post blocker comment (quick)
+        if: >-
+          steps.req.outputs.action != 'labeled' &&
+          steps.screen.outputs.exit_code == '10'
+        continue-on-error: true
+        run: |
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
+            --marker "ors-ai-review:quick" --file quick.md
+
+      - name: Notify wecom (quick blocker only)
+        if: >-
+          steps.req.outputs.action != 'labeled' &&
+          steps.screen.outputs.exit_code == '10'
+        continue-on-error: true
+        env:
+          NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
+          PR_TITLE: ${{ github.event.workflow_run.display_title }}
+        run: |
+          PR="${{ steps.req.outputs.pr }}"
+          {
+            echo "**AI 规则快筛发现高危项**"
+            echo "PR #${PR}《${PR_TITLE}》命中确定性高危规则："
+            python3 - <<'PY'
+          import json
+          data = json.load(open("quick.json", encoding="utf-8"))
+          for it in (data.get("blockers") or [])[:4]:
+              print(f"▪ [规则] {it['path']} {it['label']}")
+          n = len(data.get("blockers") or [])
+          if n > 4:
+              print(f"▪ …共 {n} 项")
+          PY
+            echo "详情：https://github.com/${REPO}/pull/${PR}"
+          } > wecom.md
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
+
+      # ---------------- 深度检视（labeled / dispatch） ----------------
+      - name: Run deep review
+        id: review
+        if: steps.req.outputs.action == 'labeled'
+        env:
+          PR_NUMBER: ${{ steps.req.outputs.pr }}
+          HEAD_SHA: ${{ steps.req.outputs.head_sha }}
+        # exit 2 = LLM 双通道失败（report.md 仍会生成「未完成」报告）；0 = 正常
+        run: |
+          code=0
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/deep_review.py \
+            --rules-root base-rules/docs/ai-review \
+            --out report.md --out-inline inline.json \
+            --out-wecom wecom.md || code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Post report comment
+        if: steps.req.outputs.action == 'labeled'
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ steps.req.outputs.pr }}
+        run: |
+          python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
+            --marker "ors-ai-review:report" --file report.md \
+            --inline inline.json
+
+      - name: Notify wecom (deep blocker only)
+        if: >-
+          steps.req.outputs.action == 'labeled' &&
+          hashFiles('wecom.md') != ''
+        continue-on-error: true
+        env:
+          NOTIFY_WEBHOOKS: ${{ secrets.NOTIFY_WEBHOOKS }}
+        run: python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/notify_wecom.py --file wecom.md
+
+      # 深度检视跑完自动摘标签，方便下次再次触发
+      - name: Remove trigger label
+        if: steps.req.outputs.action == 'labeled'
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ steps.req.outputs.pr }}
+        run: gh api -X DELETE "repos/$REPO/issues/$PR_NUMBER/labels/ai-review"

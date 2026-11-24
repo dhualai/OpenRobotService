@@ -131,12 +131,12 @@ async def get_edit_permission(
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ) -> Dict[str, Any]:
     """前端据此渲染每个功能的可编辑状态：is_privileged 免审批，user_id 用于匹配负责人。"""
-    perms = current_user.get("permissions") or []
+    from app.modules.admin.api.auth import has_permission_code
     return {
         "user_id": str(current_user.get("id") or current_user.get("user_id") or ""),
         "username": current_user.get("username") or "",
         "name": current_user.get("name") or current_user.get("username") or "",
-        "is_admin": "admin" in perms,
+        "is_admin": has_permission_code(current_user, module_tree_edit_service.SPECIAL_PERM),
         "is_privileged": module_tree_edit_service.is_admin_or_special(current_user),
         "special_perm": module_tree_edit_service.SPECIAL_PERM,
     }

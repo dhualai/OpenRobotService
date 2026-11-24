@@ -84,6 +84,8 @@ def _to_dict(q: WechatQrcode) -> dict:
         "customer_name": q.customer_name,
         "vehicle_model": q.vehicle_model,
         "redirect_url": q.redirect_url,
+        "card_title": q.card_title,
+        "card_description": q.card_description,
         "created_by": q.created_by,
         "published_by": q.published_by,
         "deprecated_by": q.deprecated_by,
@@ -317,6 +319,8 @@ async def create_qrcode(
     description: Optional[str] = Body(None, embed=True),
     qrcode_type: str = Body(QrcodeType.PERMANENT, embed=True),
     redirect_url: Optional[str] = Body(None, embed=True),
+    card_title: Optional[str] = Body(None, embed=True, description="扫码卡片标题（留空走原有分支）"),
+    card_description: Optional[str] = Body(None, embed=True, description="扫码卡片描述（留空走原有分支）"),
     current_user=require_permission("frontend:admin:other:show"),
 ):
     db: Session = db_manager.get_db()
@@ -326,6 +330,8 @@ async def create_qrcode(
             description=description,
             type=qrcode_type,
             redirect_url=redirect_url,
+            card_title=(card_title or "").strip() or None,
+            card_description=(card_description or "").strip() or None,
             created_by=current_user.get("username") if isinstance(current_user, dict) else str(current_user),
         )
         db.add(q)
@@ -344,6 +350,8 @@ async def batch_create_qrcodes(
     name_prefix: str = Body("", embed=True),
     qrcode_type: str = Body(QrcodeType.PERMANENT, embed=True),
     redirect_url: Optional[str] = Body(None, embed=True, description="扫码跳转 URL；留空由扫码链路默认跳录入信息页"),
+    card_title: Optional[str] = Body(None, embed=True, description="扫码卡片标题（留空走原有分支；同一批次所有码共用）"),
+    card_description: Optional[str] = Body(None, embed=True, description="扫码卡片描述（留空走原有分支；同一批次所有码共用）"),
     current_user=require_permission("frontend:admin:other:show"),
 ):
     db: Session = db_manager.get_db()
@@ -355,6 +363,8 @@ async def batch_create_qrcodes(
     # 回跳只保留 pathname（见前端 buildStateFromPath），带 ?scene= 的地址会丢掉行上下文、
     # 落到空白录入页——带 id 的 path 才是 OAuth 安全的那一个。
     redirect_url = (redirect_url or "").strip() or None
+    card_title = (card_title or "").strip() or None
+    card_description = (card_description or "").strip() or None
 
     results = {"batch_id": batch_id, "created": []}
 
@@ -364,6 +374,8 @@ async def batch_create_qrcodes(
                 name=f"{name_prefix.rstrip('-').rstrip()}-{i + 1}" if name_prefix.strip() else "",
                 type=qrcode_type,
                 redirect_url=redirect_url,
+                card_title=card_title,
+                card_description=card_description,
                 batch_id=batch_id,
                 created_by=created_by,
             )
@@ -487,6 +499,8 @@ async def update_qrcode(
     name: Optional[str] = Body(None, embed=True),
     description: Optional[str] = Body(None, embed=True),
     redirect_url: Optional[str] = Body(None, embed=True),
+    card_title: Optional[str] = Body(None, embed=True),
+    card_description: Optional[str] = Body(None, embed=True),
     current_user=require_permission("frontend:admin:other:show"),
 ):
     db: Session = db_manager.get_db()
@@ -500,7 +514,11 @@ async def update_qrcode(
         if description is not None:
             q.description = description
         if redirect_url is not None:
-            q.redirect_url = redirect_url
+            q.redirect_url = (redirect_url or "").strip() or None
+        if card_title is not None:
+            q.card_title = (card_title or "").strip() or None
+        if card_description is not None:
+            q.card_description = (card_description or "").strip() or None
 
         db.commit()
         db.refresh(q)

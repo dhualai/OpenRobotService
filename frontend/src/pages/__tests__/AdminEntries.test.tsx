@@ -34,6 +34,8 @@ import { PERM_TASK_POLICY } from '@/pages/admin/TaskPolicyPage';
 import { PERM_WECOM_SHEETS } from '@/api/wecomSheets';
 import { PERM_WXPAY_ADMIN } from '@/api/wxpay';
 import { PERM_ANNOUNCEMENT } from '@/api/announcement';
+import { PERM_LEARNING } from '@/api/learning';
+import { KB_PORTAL_URL } from '@/shared/constants/kbPortal';
 import { useAuthStore } from '@/stores/auth';
 
 function LocationProbe() {
@@ -88,7 +90,8 @@ describe('AdminEntries', () => {
       expect(screen.getByRole('button', { name: new RegExp(`^${label}`) })).toBeInTheDocument();
     });
     const cards = screen.getAllByRole('button').filter((button) => button.classList.contains('admin-entries-card'));
-    expect(cards).toHaveLength(4);
+    // 五个一级菜单：原有四个 + 智库（功能拓扑）
+    expect(cards).toHaveLength(5);
     expect(screen.queryByRole('button', { name: /^用户管理/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^开发者模式/ })).not.toBeInTheDocument();
     expect(screen.queryByText('用户统计')).not.toBeInTheDocument();
@@ -96,10 +99,20 @@ describe('AdminEntries', () => {
     expect(fetchBatchUserInfo).not.toHaveBeenCalled();
   });
 
+  it('功能拓扑作为一级菜单，点击新标签页打开智库（不进前端路由）', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    renderView('/admin/entries');
+    const card = screen.getByRole('button', { name: /^功能拓扑/ });
+    expect(card).toBeInTheDocument();
+    await act(async () => { fireEvent.click(card); });
+    expect(openSpy).toHaveBeenCalledWith(KB_PORTAL_URL, '_blank', 'noopener,noreferrer');
+    openSpy.mockRestore();
+  });
+
   it.each([
     ['用户与权限', 'users', ['用户管理', '角色管理', '权限管理', '分配角色', '设置用户']],
     ['工单与派单', 'dispatch', ['责任模块树', '责任双树', '工单关联规则']],
-    ['运营与数据', 'operations', ['二维码管理', '企微表格', '工作日历', '公告管理', '奖励管理']],
+    ['运营与数据', 'operations', ['题目生成', '二维码管理', '企微表格', '工作日历', '公告管理', '奖励管理']],
     ['系统工具', 'system', ['操作记录', '开发者模式']],
   ])('opens the %s category with only its related tools', async (label, category, entries) => {
     renderView();
@@ -125,6 +138,7 @@ describe('AdminEntries', () => {
     ['dispatch', '责任双树', '/admin/dual-tree'],
     ['dispatch', '工单关联规则', '/admin/task-policy'],
     ['operations', '二维码管理', '/admin/qrcode-manage'],
+    ['operations', '题目生成', '/admin/question-generation'],
     ['operations', '企微表格', '/admin/wecom-sheets'],
     ['operations', '工作日历', '/admin/work-calendar'],
     ['operations', '公告管理', '/admin/announcements'],
@@ -143,6 +157,7 @@ describe('AdminEntries', () => {
     ['operations', '企微表格', PERM_WECOM_SHEETS],
     ['operations', '奖励管理', PERM_WXPAY_ADMIN],
     ['operations', '公告管理', PERM_ANNOUNCEMENT],
+    ['operations', '题目生成', PERM_LEARNING],
   ])('preserves permission filtering and updates for %s / %s', (category, label, permission) => {
     useAuthStore.setState({ permissions: ['frontend:admin:roles:show'] });
     renderView(`/admin/entries/${category}`);
@@ -198,7 +213,8 @@ describe('AdminEntries', () => {
     const cards = screen
       .getAllByRole('button')
       .filter((b) => b.classList.contains('admin-entries-card'));
-    expect(cards).toHaveLength(4);
+    // 五个一级菜单：原有四个 + 智库（功能拓扑）
+    expect(cards).toHaveLength(5);
     cards.forEach((card) => {
       expect(card.querySelector('svg')).not.toBeNull();
     });

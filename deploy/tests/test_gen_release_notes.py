@@ -97,33 +97,86 @@ def test_dedupes_same_number_and_title(tmp_path):
     assert len(got) == 1
 
 
+def test_load_prs_preserves_context_and_module_hints(tmp_path):
+    pr = _pr(1, "feat: 工单协商", 1)
+    pr["body"] = "工单详情增加重新协商按钮"
+    pr["files"] = ["frontend/src/pages/tasks/TaskDetailPage.tsx"]
+    got = grn.load_prs(_write_prs(tmp_path, [pr]), now=NOW)
+    assert got[0]["body"] == "工单详情增加重新协商按钮"
+    assert got[0]["module_hints"] == ["系统任务"]
+
+
+def test_enrich_pr_files_uses_safe_argv_and_refreshes_hints(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return grn.subprocess.CompletedProcess(cmd, 0, stdout=(
+            '{"body":"工单详情新增按钮","url":"https://example/pr/123",'
+            '"files":["frontend/src/pages/tasks/TaskDetailPage.tsx"]}'))
+
+    monkeypatch.setattr(grn.subprocess, "run", fake_run)
+    prs = [{"number": 123, "files": [], "module_hints": []}]
+    assert grn.enrich_pr_files(prs) == 1
+    assert prs[0]["module_hints"] == ["系统任务"]
+    cmd, kwargs = calls[0]
+    assert cmd[:3] == ["gh", "pr", "view"] and "123" in cmd
+    assert kwargs["check"] is False and kwargs["timeout"] == grn.PR_API_TIMEOUT
+    assert "shell" not in kwargs
+
+
 # ---------- LLM 输出解析 ----------
 
-def test_parse_llm_json_plain_and_fenced():
-    plain = '{"新增功能": ["甲", "乙"], "体验优化": [], "BUG 修复": ["丙"]}'
-    assert grn.parse_llm_json(plain) == {"新增功能": ["甲", "乙"], "BUG 修复": ["丙"]}
+def _entry(module="系统任务", change_type="新增功能", text="新增甲",
+           verification="系统任务 → 工单详情"):
+    return {"module": module, "type": change_type,
+            "text": text, "verification": verification}
 
+
+def _payload(items):
+    return json.dumps({"items": items}, ensure_ascii=False)
+
+
+def test_parse_llm_json_plain_and_fenced():
+    items = [_entry(), _entry(module="后台管理", change_type="BUG 修复",
+                              text="修复丙", verification="后台管理 → 数据导入")]
+    expected = {
+        "系统任务": ["【功能】新增甲｜验证：系统任务 → 工单详情"],
+        "后台管理": ["【修复】修复丙｜验证：后台管理 → 数据导入"],
+    }
+    plain = _payload(items)
+    assert grn.parse_llm_json(plain) == expected
     fenced = "好的，结果如下：\n```json\n" + plain + "\n```\n以上。"
-    assert grn.parse_llm_json(fenced) == {"新增功能": ["甲", "乙"], "BUG 修复": ["丙"]}
+    assert grn.parse_llm_json(fenced) == expected
 
 
 def test_parse_llm_json_rejects_unknown_groups_and_bad_shapes():
-    assert grn.parse_llm_json('{"重构": ["不该出现"]}') == {}
-    assert grn.parse_llm_json('{"新增功能": {"a": 1}}') == {}
+    assert grn.parse_llm_json('{"新增功能": ["旧三分类不再接受"]}') == {}
+    assert grn.parse_llm_json(_payload([_entry(module="虚构菜单")])) == {}
+    assert grn.parse_llm_json(_payload([_entry(change_type="重构")])) == {}
+    assert grn.parse_llm_json(_payload([_entry(verification="")])) == {}
     assert grn.parse_llm_json("完全不是 JSON") == {}
     assert grn.parse_llm_json("") == {}
     assert grn.parse_llm_json(None) == {}
 
 
-def test_parse_llm_json_cleans_items_and_caps_groups():
-    raw = ('{"新增功能": ["- 1. 含 `代码` 与 *星号* 的条目", "含 `代码` 与 *星号* 的条目", '
-           + ", ".join(f'"第{i}条"' for i in range(10)) + "]}"
-           )
-    groups = grn.parse_llm_json(raw)
-    items = groups["新增功能"]
-    assert len(items) == grn.MAX_ITEMS_PER_GROUP          # 每组封顶
-    assert items[0] == "含 代码 与 星号 的条目"            # 去掉列表符号与 Markdown 控制符
-    assert len(set(items)) == len(items)                  # 去重
+def test_parse_llm_json_cleans_dedupes_and_caps_total():
+    items = [_entry(text="- 1. 含 `代码` 的条目", verification="系统任务 → 工单详情")]
+    items.append(_entry(text="含 代码 的条目", verification="系统任务 → 工单详情"))
+    items.extend(_entry(module=grn.RELEASE_MODULES[i % 4], text=f"第{i}条")
+                 for i in range(20))
+    groups = grn.parse_llm_json(_payload(items))
+    flattened = [item for values in groups.values() for item in values]
+    assert len(flattened) == grn.MAX_TOTAL_ITEMS
+    assert len(set(flattened)) == len(flattened)
+    assert groups["系统任务"][0] == "【功能】含 代码 的条目｜验证：系统任务 → 工单详情"
+
+
+def test_parse_llm_json_caps_each_module():
+    groups = grn.parse_llm_json(_payload([_entry(text=f"第{i}条") for i in range(20)]))
+    assert len(groups["系统任务"]) == grn.MAX_ITEMS_PER_GROUP
 
 
 def test_clean_item_truncates_and_flattens():
@@ -135,22 +188,22 @@ def test_clean_item_truncates_and_flattens():
 # ---------- 渲染与 notify 解析兼容 ----------
 
 def test_render_markdown_is_parseable_by_notify(tmp_path):
-    groups = {"新增功能": ["新增甲"], "体验优化": ["优化乙"], "BUG 修复": ["修复丙"]}
+    groups = {
+        "系统任务": ["【功能】新增甲｜验证：系统任务 → 工单详情"],
+        "后台管理": ["【修复】修复丙｜验证：后台管理 → 数据导入"],
+    }
     md = grn.render_markdown(groups)
     p = tmp_path / "RELEASE_NOTES.md"
     p.write_text(md, encoding="utf-8")
-    assert notify.parse_release_notes(str(p)) == [
-        ("新增功能", ["新增甲"]),
-        ("体验优化", ["优化乙"]),
-        ("BUG 修复", ["修复丙"]),
-    ]
+    assert notify.parse_release_notes(str(p)) == list(groups.items())
 
 
 def test_render_markdown_skips_empty_groups(tmp_path):
-    md = grn.render_markdown({"BUG 修复": ["只修了一个问题"]})
+    groups = {"后台管理": ["【修复】修复丙｜验证：后台管理 → 数据导入"]}
+    md = grn.render_markdown(groups)
     p = tmp_path / "RELEASE_NOTES.md"
     p.write_text(md, encoding="utf-8")
-    assert notify.parse_release_notes(str(p)) == [("BUG 修复", ["只修了一个问题"])]
+    assert notify.parse_release_notes(str(p)) == list(groups.items())
 
 
 # ---------- 退出码与写盘 ----------
@@ -191,13 +244,19 @@ def test_main_returns_2_when_llm_output_unusable(tmp_path, monkeypatch):
 
 def test_main_writes_file_on_success(tmp_path, monkeypatch):
     monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
-    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: (
-        '{"新增功能": ["新增甲"], "BUG 修复": ["修复丙"]}'))
+    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: _payload([
+        _entry(),
+        _entry(module="后台管理", change_type="BUG 修复",
+               text="修复丙", verification="后台管理 → 数据导入"),
+    ]))
     out = tmp_path / "out.md"
     prs = _write_prs(tmp_path, [_pr(1, "feat: 甲", 1), _pr(2, "fix: 丙", 2)])
     assert grn.main(["--prs", prs, "--out", str(out)]) == 0
     groups = notify.parse_release_notes(str(out))
-    assert groups == [("新增功能", ["新增甲"]), ("BUG 修复", ["修复丙"])]
+    assert groups == [
+        ("系统任务", ["【功能】新增甲｜验证：系统任务 → 工单详情"]),
+        ("后台管理", ["【修复】修复丙｜验证：后台管理 → 数据导入"]),
+    ]
     assert "自动生成" in out.read_text(encoding="utf-8")
 
 
@@ -319,20 +378,24 @@ def test_call_llm_returns_content_on_success(monkeypatch):
         '{"新增功能": ["甲"]}'
 
 
-def test_prompt_caps_items_per_group():
-    """输出条数要贴着通知图的容量，别让 LLM 产出必然被截断的内容。"""
-    prompt = grn.build_prompt([{"number": 1, "title": "feat: x"}])
-    assert f"每组最多 {grn.MAX_ITEMS_PER_GROUP} 条" in prompt
+def test_prompt_includes_context_and_capacity_limits():
+    """提示词必须携带归属证据，并明确全篇与单模块容量。"""
+    prompt = grn.build_prompt([{
+        "number": 1, "title": "feat: x", "body": "工单详情新增按钮",
+        "files": ["frontend/src/pages/tasks/TaskDetailPage.tsx"],
+        "module_hints": ["系统任务"],
+    }])
+    assert f"全篇最多 {grn.MAX_TOTAL_ITEMS} 条" in prompt
+    assert f"每模块最多 {grn.MAX_ITEMS_PER_GROUP} 条" in prompt
+    assert "工单详情新增按钮" in prompt
+    assert "frontend/src/pages/tasks/TaskDetailPage.tsx" in prompt
+    assert "verification 必填" in prompt
 
 
 # ---------- 视觉边界哨兵 ----------
 
 def test_worst_case_notes_still_render_as_image():
-    """每组上限 × 每条字数上限的最坏组合仍须落在 notify_image 的 2MB / 高度限制内。
-
-    上限一旦放宽（比如条目数回到 6、字数回到 60），实测渲染会到 2.7MB，
-    触发 NotifyImageError 降级成模板卡片——这条用例就是那个边界的哨兵。
-    """
+    """12 条长描述 + 长验证入口 + 4 个模块仍须落在图片 2MB / 高度限制内。"""
     pytest = __import__("pytest")
     pytest.importorskip("PIL")
     import notify_image
@@ -340,8 +403,11 @@ def test_worst_case_notes_still_render_as_image():
     item = ("这是一个非常长的功能描述文字用来测试最坏情况下的换行与图片体积，"
             "再补一些字凑满四十个字符上限") * 2
     item = item[:grn.MAX_ITEM_CHARS - 1]
-    groups = {name: [item + str(i) for i in range(grn.MAX_ITEMS_PER_GROUP)]
-              for name in grn.RELEASE_GROUPS}
+    verification = "后台管理 → 更多功能 → 数据资源 → 数据导入 → 二维码导入 → 扫描二维码"
+    per_group = grn.MAX_TOTAL_ITEMS // len(grn.RELEASE_MODULES)
+    groups = {name: [f"【功能】{item}{i}{grn.VERIFY_SEPARATOR}{verification}"
+                     for i in range(per_group)]
+              for name in grn.RELEASE_MODULES}
     ctx = {
         "ok": True, "title": "部署成功", "env_name": "prod", "env_label": "生产",
         "components": "all", "git_ref": "dev", "sha": "abcdef12",
@@ -417,7 +483,7 @@ def test_main_passes_since_to_window(tmp_path, monkeypatch):
 
     def fake(prompt, **kwargs):
         captured["prompt"] = prompt
-        return '{"新增功能": ["只有新功能"]}'
+        return _payload([_entry(text="只有新功能")])
 
     monkeypatch.setattr(grn, "call_llm", fake)
     prs = _write_prs(tmp_path, [
@@ -435,7 +501,7 @@ def test_main_passes_since_to_window(tmp_path, monkeypatch):
 def test_main_falls_back_to_days_when_since_invalid(tmp_path, monkeypatch, capsys):
     """--since 传了垃圾值不能把发行说明搞没，退回 7 天并留一行日志。"""
     monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
-    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: '{"新增功能": ["x"]}')
+    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: _payload([_entry(text="x")]))
     prs = _write_prs(tmp_path, [_pr(1, "feat: 一周内", 5)])
     out = tmp_path / "out.md"
     assert grn.main(["--prs", prs, "--out", str(out), "--since", "昨天"]) == 0
@@ -466,7 +532,7 @@ def test_main_passes_until_to_window(tmp_path, monkeypatch, capsys):
 
     def fake(prompt, **kwargs):
         captured["prompt"] = prompt
-        return '{"新增功能": ["已上线"]}'
+        return _payload([_entry(text="已上线")])
 
     monkeypatch.setattr(grn, "call_llm", fake)
     prs = _write_prs(tmp_path, [
@@ -486,7 +552,7 @@ def test_main_passes_until_to_window(tmp_path, monkeypatch, capsys):
 def test_main_warns_when_window_is_empty(tmp_path, monkeypatch, capsys):
     """dev 自上次发布后没新合并时窗口为空，要明说，别让人以为脚本坏了。"""
     monkeypatch.setenv("RELEASE_LLM_API_KEY", "k")
-    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: '{"新增功能": ["x"]}')
+    monkeypatch.setattr(grn, "call_llm", lambda *a, **kw: _payload([_entry(text="x")]))
     prs = _write_prs(tmp_path, [_pr(1, "feat: 旧功能", 30)])
     out = tmp_path / "out.md"
     since = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")

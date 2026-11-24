@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
-from app.core.user_identity import is_admin_user
 from app.modules.admin.api.auth import has_permission_code
 from app.modules.admin.services import knowledge_service as service
 from app.modules.admin.services import knowledge_settlement as settlement
@@ -15,7 +14,7 @@ router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 
 def can_manage(actor):
-    return is_admin_user(actor) or has_permission_code(actor, "backend:knowledge_incentive:manage")
+    return has_permission_code(actor, "backend:knowledge_incentive:manage")
 
 
 async def manager(actor=Depends(get_current_active_user_from_token)):
