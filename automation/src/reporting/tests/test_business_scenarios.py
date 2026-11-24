@@ -171,6 +171,12 @@ def test_business_overview_lists_service_account_flows_and_preserves_source_grou
     )
     positions = [overview.index(f"<strong>{title}</strong>") for title in titles]
     assert positions == sorted(positions)
+    assert '<span class="module-name">我要摇人</span>' in _scenario_html(
+        html, "service-ticket-lifecycle",
+    )
+    assert '<span class="module-name">知识库</span>' in _scenario_html(
+        html, "service-knowledge-finance",
+    )
     assert 'id="scenario-service-learning-progress"' not in html
     for scenario_id in ("incident-create", "work-order-pause", "admin-permissions"):
         assert f'id="scenario-{scenario_id}"' not in html

@@ -104,7 +104,7 @@ def checked_step(role: str, action: str, expected: str, actual: str) -> Business
 
 SERVICE_ACCOUNT_SCENARIOS = {
     "service-ticket-lifecycle": BusinessScenario(
-        "服务号工单", "提单人报障，处理人解决，提单人验收关闭", SOURCE_LABELS["service-account-ui"],
+        "我要摇人", "提单人报障，处理人解决，提单人验收关闭", SOURCE_LABELS["service-account-ui"],
         {
             f"S{number:02}": checked_step(*step)
             for number, step in enumerate((
@@ -130,7 +130,7 @@ SERVICE_ACCOUNT_SCENARIOS = {
         flow_title="提单 → 派单 → 处理 → 关闭",
     ),
     "service-knowledge-finance": BusinessScenario(
-        "服务号知识", "工单知识归档、发布与奖励审核", SOURCE_LABELS["service-account-rules"],
+        "知识库", "工单知识归档、发布与奖励审核", SOURCE_LABELS["service-account-rules"],
         {
             "content": checked_step("内容审核人", "批准归档内容", "知识继续等待发布，三类奖励待财务审核", "知识未发布，三类奖励均已进入待审核"),
             "approve": checked_step("财务审核人", "批准整组奖励并重复提交", "发布知识，奖励可申领，重复批准不重复发放", "知识已发布，三类奖励可申领，重复提交无新增"),
