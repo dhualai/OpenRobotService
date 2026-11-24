@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://localhost:8400/api/tasks/4/respond",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "curr_step_id": 1
+  }
+}
