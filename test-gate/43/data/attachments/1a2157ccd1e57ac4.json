@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/call/messages/99999",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "content": "x"
+  }
+}

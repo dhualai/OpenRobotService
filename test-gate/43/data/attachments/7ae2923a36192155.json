@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://localhost:8400/api/tasks/6/comments",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "content": "业务场景自动化：评论验证",
+    "is_public": true
+  }
+}

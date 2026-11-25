@@ -1,0 +1,10 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/tasks/1",
+  "headers": {
+    "Authorization": "***"
+  },
+  "params": {
+    "load_comments": "true"
+  }
+}

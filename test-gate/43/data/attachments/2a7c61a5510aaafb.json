@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "http://localhost:8400/api/tasks/2/steps",
+  "headers": {
+    "Authorization": "***"
+  }
+}
