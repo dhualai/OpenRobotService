@@ -1,0 +1,28 @@
+{
+  "status_code": 200,
+  "url": "http://localhost:8400/api/tasks/6/comments/read",
+  "reason": "OK",
+  "headers": {
+    "date": "Wed, 25 Nov 2026 01:21:19 GMT",
+    "server": "uvicorn",
+    "content-length": "190",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": {
+    "ok": true,
+    "comment_ids": [
+      21
+    ],
+    "last_read_comment_id": 21,
+    "records": [
+      {
+        "comment_id": 21,
+        "username": "plain_user",
+        "name": "普通用户",
+        "avatar_resource_id": null,
+        "read_at": "2026-11-25T01:21:20"
+      }
+    ]
+  }
+}

@@ -1,0 +1,1 @@
+{"scenario": "admin-permissions", "step": "access", "http_status": 403, "value": null}

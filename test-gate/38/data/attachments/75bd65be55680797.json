@@ -1,0 +1,11 @@
+{
+  "method": "PATCH",
+  "url": "http://localhost:8400/api/tasks/4/status",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "status": "unsolvable_requested",
+    "unsolvable_reason": "自动化验证：现场处理失败，无法解决"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/admin/projects/risks",
+  "reason": "OK",
+  "headers": {
+    "content-length": "49",
+    "content-type": "application/json"
+  },
+  "body": {
+    "risk_code": "R2",
+    "name": "Risk A",
+    "level": "high"
+  }
+}
