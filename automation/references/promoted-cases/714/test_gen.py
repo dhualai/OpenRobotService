@@ -280,18 +280,19 @@ class TestTicket714:
     @pytest.mark.api
     async def test_tc011(self, client, auth, cleanup):
         """全链路：创建人工回归与小流量观察协同工单并回查确认"""
-        await _api(client, "post", "/api/tasks/",
-                   step="Step 1: 创建人工回归+小流量观察协同工单",
-                   headers=auth,
-                   expected_status=200,
-                   expected_fields={"title": "服务号发版人工回归与小流量观察协同"},
-                   json={"title": "服务号发版人工回归与小流量观察协同", "description": "自动化回归未覆盖场景由人工回归补充，发版后小流量观察，明确责任人与观察窗口", "ticket_type": "feature", "priority": "P1", "project_id": "Leo_test"},
-                   )
-        await _api(client, "get", "/api/tasks/1",
+        created = await _api(client, "post", "/api/tasks/",
+                            step="Step 1: 创建人工回归+小流量观察协同工单",
+                            headers=auth,
+                            expected_status=200,
+                            expected_fields={"title": "服务号发版人工回归与小流量观察协同"},
+                            json={"title": "服务号发版人工回归与小流量观察协同", "description": "自动化回归未覆盖场景由人工回归补充，发版后小流量观察，明确责任人与观察窗口", "ticket_type": "feature", "priority": "P1", "project_id": "Leo_test"},
+                            )
+        task_id = created.json()["id"]
+        await _api(client, "get", f"/api/tasks/{task_id}",
                    step="Step 2: 回查该协同工单详情",
                    headers=auth,
                    expected_status=200,
-                   expected_fields={"id": 1},
+                   expected_fields={"id": task_id},
                    )
 
     @allure.story("人工回归与小流量观察协同")
@@ -311,18 +312,19 @@ class TestTicket714:
     @pytest.mark.api
     async def test_tc013(self, client, auth, cleanup):
         """全链路：提交平台侧评估需求工单并回查评估状态"""
-        await _api(client, "post", "/api/tasks/",
-                   step="Step 1: 提交平台侧评估需求工单",
-                   headers=auth,
-                   expected_status=200,
-                   expected_fields={"title": "服务号自动化回归测试机制-平台侧评估接入"},
-                   json={"title": "服务号自动化回归测试机制-平台侧评估接入", "description": "覆盖常用基本功能，发版自动触发回归；需平台侧评估可行性、实现方式、排期与投入产出", "ticket_type": "feature", "priority": "P0", "project_id": "Leo_test"},
-                   )
-        await _api(client, "get", "/api/tasks/1",
+        created = await _api(client, "post", "/api/tasks/",
+                            step="Step 1: 提交平台侧评估需求工单",
+                            headers=auth,
+                            expected_status=200,
+                            expected_fields={"title": "服务号自动化回归测试机制-平台侧评估接入"},
+                            json={"title": "服务号自动化回归测试机制-平台侧评估接入", "description": "覆盖常用基本功能，发版自动触发回归；需平台侧评估可行性、实现方式、排期与投入产出", "ticket_type": "feature", "priority": "P0", "project_id": "Leo_test"},
+                            )
+        task_id = created.json()["id"]
+        await _api(client, "get", f"/api/tasks/{task_id}",
                    step="Step 2: 回查工单确认已进入平台侧待评估",
                    headers=auth,
                    expected_status=200,
-                   expected_fields={"id": 1},
+                   expected_fields={"id": task_id},
                    )
 
     @allure.story("平台侧评估与接入")
