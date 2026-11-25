@@ -632,7 +632,7 @@ const MessageBubble = memo(function MessageBubble({
                 const tail = splitAt >= 0 ? msg.content.slice(splitAt + 2) : '';
                 return (
                   <>
-                    <MarkdownRenderer content={head} compact={compact} />
+                    <MarkdownRenderer content={head} compact={compact} streaming={msg.streaming} />
                     <div className="chat-proj-choices">
                       {msg.project_choices.map((c) => (
                         <button
@@ -647,7 +647,7 @@ const MessageBubble = memo(function MessageBubble({
                         </button>
                       ))}
                     </div>
-                    {tail && <MarkdownRenderer content={tail} compact={compact} />}
+                    {tail && <MarkdownRenderer content={tail} compact={compact} streaming={msg.streaming} />}
                   </>
                 );
               })()
@@ -668,7 +668,7 @@ const MessageBubble = memo(function MessageBubble({
                     {msg.vehicleOpening ? (
                       <div className="chat-veh-q">{msg.content}</div>
                     ) : (
-                      <MarkdownRenderer content={msg.content} compact={compact} />
+                      <MarkdownRenderer content={msg.content} compact={compact} streaming={msg.streaming} />
                     )}
                     <div className={`chat-veh-choices${msg.vehicleGuide ? ' chat-veh-choices--intro' : ''}`}>
                       {shown.map((c) => (
