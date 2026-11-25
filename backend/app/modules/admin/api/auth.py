@@ -84,24 +84,23 @@ def _match_permission(perm_pattern: str, required_perm: str) -> bool:
 
 
 def has_permission_code(current_user: Dict[str, Any], required_permission: str) -> bool:
-    """检查用户是否拥有指定权限码（含 admin 直通、角色继承、通配符匹配）。
+    """检查用户是否拥有指定权限码（通配符匹配 + 角色继承）。
 
+    admin 不再作为特殊角色直通，所有权限必须通过 role_permissions 表显式绑定。
     与 require_permission 的鉴权逻辑一致，但返回布尔值而非抛出异常，
     适用于同一端点内对部分操作做条件鉴权的场景（如仅当修改他人时才要求权限）。
     """
     if 'permissions' in current_user and isinstance(current_user['permissions'], (list, set)):
-        if "admin" in current_user['permissions']:
-            return True
         for perm in current_user['permissions']:
             if _match_permission(perm, required_permission):
                 return True
 
     if 'roles' in current_user and isinstance(current_user['roles'], dict):
-        if "admin" in current_user['roles']:
-            return True
         for role_permissions in current_user['roles'].values():
-            if isinstance(role_permissions, (list, set)) and "admin" in role_permissions:
-                return True
+            if isinstance(role_permissions, (list, set)):
+                for rp in role_permissions:
+                    if _match_permission(rp, required_permission):
+                        return True
 
     return False
 

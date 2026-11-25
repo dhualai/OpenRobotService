@@ -14,16 +14,9 @@
 name: db-tests
 
 on:
+  # push 触发已移除（2026-11-19）：DB 用例已并入 test-gate.yml 的 db-integration job，
+  # 原配置会让同一批 -m db 用例在 push test 时跑两遍。保留手动触发供单独排查 DB 问题。
   workflow_dispatch:
-  push:
-    branches: [test]
-    paths:
-      - "automation/tests/**"
-      - "automation/src/clients/**"
-      - "automation/config/**"
-      - "backend/app/models/**"
-      - "backend/app/core/**"
-      - ".github/workflows/db-tests.yml"
 
 concurrency:
   group: db-tests-${{ github.ref }}

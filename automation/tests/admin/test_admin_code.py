@@ -8,6 +8,8 @@ import pytest
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
 from automation.src.config.credentials import role_credentials
+from automation.src.reporting.api_step import api_step
+from automation.src.reporting.business_scenarios import SCENARIO_LABEL
 
 
 async def _auth_for_role(client, role: str) -> dict:
@@ -18,15 +20,10 @@ async def _auth_for_role(client, role: str) -> dict:
 
 async def _api(client, method: str, path: str, step: str = '', headers=None,
                expected_status: int | None = None, expected_fields: dict | None = None, **kwargs):
-    """Send a request wrapped in an Allure step block; assertions run inside the step."""
-    with allure.step(step or f'{method.upper()} {path}'):
-        r = await client.request(method, path, headers=headers, **kwargs)
-        if expected_status is not None:
-            assert_status_code(r, expected_status)
-        if expected_fields:
-            assert_dict_contains_subset(r.json(), expected_fields)
-        flush_assert_attachment()
-        return r
+    """委托统一上报：自动附加入参、出参、断言。"""
+    return await api_step(client, method, path, step=step, headers=headers,
+                          expected_status=expected_status,
+                          expected_fields=expected_fields, **kwargs)
 
 
 @allure.feature('后台管理')
@@ -225,12 +222,14 @@ class TestUsers:
 
     @allure.story('用户')
     @allure.title('权限：非 admin 访问 403')
+    @allure.label(SCENARIO_LABEL, "admin-permissions")
     @pytest.mark.api
     async def test_users_forbidden(self, mock_api_client, mock_auth_header):
         """权限：非 admin 访问 403"""
         headers = await _auth_for_role(mock_api_client, 'engineer')
         await _api(mock_api_client, 'get', '/api/admin/users', headers=headers,
-                   expected_status=403)
+                   step='打开后台用户列表', expected_status=403,
+                   business_evidence=('admin-permissions', 'access'))
 
     @allure.story('用户')
     @allure.title('权限：无 token 访问 401')

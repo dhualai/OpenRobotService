@@ -69,8 +69,8 @@ push 到 test
   ├─ ui-smoke.yml  —— 环境最重（Playwright 浏览器 + npm ci + dev server），
   │                    失败隔离价值高，继续按前端路径触发
   ├─ ui-regression.yml —— 手动，SSH 隧道连真实环境
-  ├─ ai-eval.yml —— 定时/手动评估
-  └─ deploy / rollback —— 运维
+  ├─ ai-eval.yml —— **已归档**（从未运行，依赖缺失；见 workflows-archive/README）
+  └─ deploy / rollback —— **已归档**（旧入口，能力并入 deploy-split）
 ```
 
 > **折中决策（2026-11-16 用户确认）**：db-tests 并入主线（独立 job，保留非阻塞），
@@ -81,7 +81,7 @@ push 到 test
 - `deploy-split`：部署（含自己的门禁，作为部署前二次确认）
 - `deploy` / `rollback`：运维
 - `ui-regression`：重场景（SSH 隧道）
-- `ai-eval`：定时评估
+- `ai-eval`：**已归档**（2026-11-19），AI 评估能力保留在 `automation/tests/ai/` 可本地运行
 
 ---
 
@@ -90,14 +90,14 @@ push 到 test
 | 流水线 | 处置 | 动作 | 风险 |
 |---|---|---|---|
 | `ci-guard` | **保留** | 合并进主线的 structure-guard job，或保留独立（它只盯 workflow 文件变更，触发成本低） | 低 |
-| `db-tests` | **并入主线** | 把 `db-integration` job 逻辑复制进主线（含 mysql service + create_all + `continue-on-error`）；原文件先保留但去掉 push 触发，避免双跑 | 中（DB service 配置） |
+| `db-tests` | **已去 push 触发**（2026-11-19） | push 段已删除，仅保留 `workflow_dispatch`；DB 用例由主线的 `db-integration` job 承担，消除 push test 双跑 | 低 |
 | `ui-smoke` | **保留独立（不并入）** | 继续按 frontend/ui 路径触发；环境最重（浏览器+npm ci+dev server 3-5min），失败隔离价值高；主线全绿判定不含它 | 低 |
 | `deploy-split` | **改为手动专属** | 去掉 push 验证分支触发（本就不针对 test），专心做部署 | 低 |
 | `ui-regression` | **保留手动** | 停更问题单独修；不进主线（SSH 隧道太重） | 低 |
-| `ai-eval` | **保留+修分支** | 把 push 分支从 hxg/develop 改 test，或纯定时 | 低 |
-| `deploy` | **冻结→归档** | 与 deploy-split 重复，确认无引用后删除 | 中（需确认无外部调用） |
-| `rollback` | **保留但归属 deploy-split** | deploy-split 已有 rollback job，独立版可归档 | 中 |
-| main `test` / `ai-test` | **归档** | 连败 6×、非 test 分支，无维护价值；先 disable workflow 文件保留 30 天 | 低 |
+| `ai-eval` | **已归档**（2026-11-19） | 三重失效且从未运行：push 目标 `hxg/develop`、`vars.AI_EVAL_ENABLED` 未配置、`secrets.DEEPSEEK_API_KEY` 不存在。已移至 `.github/workflows-archive/`，详见该目录 README | 低 |
+| `deploy` | **已归档**（2026-11-19） | 旧部署入口，从未运行；能力被 deploy-split 的 `action=deploy` 覆盖。已移至 `.github/workflows-archive/` | 低 |
+| `rollback` | **已归档**（2026-11-19） | 旧回滚入口，从未运行；deploy-split 内置 rollback job。已移至 `.github/workflows-archive/` | 低 |
+| main `test` / `ai-test` | **不维护** | 用户 2026-11-19 明确「main 分支不用」——main 的 Deploy 失败与这两条流水线均不纳入跟进，保持现状不动 | 低 |
 
 ---
 
@@ -111,17 +111,28 @@ push 到 test
 5. **结构级校验**：逐 job 检查每个 step 有且仅有 uses 或 run（防 PR #454 事故重演）。
 6. push test 验证：确认主线全绿；ui-smoke 仍独立触发正常。
 
-### 第二批：关停重复触发
-1. `db-tests.yml` 去掉 push 触发（保留 workflow_dispatch 供单独排查）——主线已覆盖。
+### 第二批：关停重复触发 —— ✅ 已完成（2026-11-19）
+1. `db-tests.yml` **已去掉 push 触发**，仅保留 `workflow_dispatch`——主线 `db-integration` 已覆盖，消除双跑。
 2. `ui-smoke.yml` **保持 push 触发不变**——它是独立快速反馈，不进主线。
 3. `ci-guard.yml` 保留（防 workflow 写错，成本极低）。
-4. `ai-eval.yml` 修 push 分支为 test。
+4. `ai-eval.yml` **已归档**（2026-11-19，移至 `.github/workflows-archive/`）——原"修 push 分支为 test"的做法作废，因为该流水线依赖的变量与 secret 均不存在，改分支也无意义。
 5. 观察一周：确认主线 + ui-smoke 覆盖全部原能力。
 
 ### 第三批：归档僵尸
-1. main 的 `test.yml` / `ai-test.yml`：先 `workflow_dispatch` 之外全部去掉，30 天后删文件。
-2. `deploy.yml` / `rollback.yml`：确认无外部调用后归档（deploy-split 已含）。
+1. main 的 `test.yml` / `ai-test.yml`：**用户 2026-11-19 决定 main 分支不维护**，不改动、不跟进其失败。
+2. `deploy.yml` / `rollback.yml`：**已归档**（2026-11-19，移至 `.github/workflows-archive/`）——二者从未运行，能力被 deploy-split 的 `action=deploy|rollback` 覆盖。**注意 `deploy/` 脚本目录未动，deploy-split 仍依赖它。**
 3. 更新 `docs/README.md` 与领导版报告的流水线清单。
+
+### 收敛结果（2026-11-19）
+
+| 阶段 | 活跃 workflow 数 |
+|---|---|
+| 原始 | 8 |
+| 第一批（+test-gate） | 9 |
+| 第二/三批（归档 ai-eval / deploy / rollback，db-tests 去 push） | **6** |
+
+保留 6 条：`test-gate`（主线）、`ci-guard`、`db-tests`（手动）、`ui-smoke`、`ui-regression`（手动）、`deploy-split`（手动）。
+**push test 的实际触发从 5 条降到 3 条**（test-gate + ci-guard[仅 workflow 变更] + ui-smoke[仅前端路径]）。
 
 ---
 
@@ -144,7 +155,7 @@ push 到 test
 
 - ✅ 收敛后：push test → `test-gate.yml` 一条主线跑完全部自动化测试（API/DB/场景/UI 冒烟）。
 - ✅ 部署、回滚、UI 重回归、AI 评估均为手动/定时，不随 push 触发——符合"自动化 ≠ 部署"的边界。
-- ⚠️ 例外保留：`ci-guard` 仅改 workflow 时触发（自我保护，成本极低）；`ai-eval` 定时周五（持续质量趋势）。若用户希望绝对只有一条，可进一步合并这两个。
+- ⚠️ 例外保留：`ci-guard` 仅改 workflow 时触发（自我保护，成本极低）；`ai-eval` 已归档（依赖未配置且从未运行），不再定时。若用户希望绝对只有一条，可进一步合并这两个。
 
 ---
 
@@ -153,9 +164,9 @@ push 到 test
 | 事项 | 状态 | 决策 |
 |---|---|---|
 | 1. 主线只测不部署 | ✅ 已确认 | push test 只跑测试，部署仍手动 dispatch |
-| 2. db-tests / ui-smoke 处置 | ✅ 已确认 | **db 并入主线**（独立 job，非阻塞）；**ui-smoke 保留独立**（环境重、失败隔离） |
+| 2. db-tests / ui-smoke 处置 | ✅ 已执行（2026-11-19） | **db 并入主线**（独立 job，非阻塞）+ **db-tests 已去 push 触发**；**ui-smoke 保留独立**（环境重、失败隔离） |
 | 3. 僵尸流水线（main test/ai-test） | ⏳ 未确认 | 方案建议先冻结 30 天再删；实施第三批前确认 |
-| 4. ai-eval 定时评估 | ⏳ 未确认 | 方案建议保留（AI 质量趋势）；实施第二批前确认 |
+| 4. ai-eval 处置 | ✅ 已定（2026-11-19） | 用户选"方案 2：归档"——已移至 `.github/workflows-archive/`，不再纳入 CI |
 
 > 用户 20:25 "按你的来" = 采纳折中方案（含前两项确认 + 后两项按方案建议执行）。
 > 本方案已进入可实施状态；第三批涉及删除的动作执行前再与用户确认一次。

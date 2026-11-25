@@ -38,10 +38,7 @@ import { PERM_LEARNING } from '@/api/learning';
 import { POLL_INTERVAL_MS } from '@/config/poll';
 import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
-
-interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
-
-type MoreEntryIconKind = 'projects' | 'data' | 'reports' | 'other';
+import { MORE_FUNCTION_ENTRIES, type MoreEntryIconKind } from './moreEntries';
 
 /** 更多功能入口图标：与 macaron admin 页的 lucide 图标同款线条 */
 function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
@@ -97,13 +94,6 @@ function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
     </svg>
   );
 }
-
-const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
-  { path: '/admin/project-manage', label: '项目管理', kind: 'projects', tone: 'blue-1' },
-  { path: '/admin/data-resource', label: '数据资源', kind: 'data', tone: 'blue-2', group: 'data-resource' },
-  { path: '/admin/daily-summary', label: '日报周报', kind: 'reports', tone: 'blue-3' },
-  { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
-];
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -386,7 +376,17 @@ export default function Dashboard() {
           {MORE_FUNCTION_ENTRIES
             .filter((e) => e.path !== '/admin/entries' || canAccessAdminEntries)
             .map((e) => (
-            <div key={e.path} className="dashboard-more-card" data-tone={e.tone} onClick={() => e.group === 'data-resource' ? setDataResourceSheetVisible(true) : navigate(e.path)}>
+            <div
+              key={e.path}
+              className="dashboard-more-card"
+              data-tone={e.tone}
+              onClick={() => {
+                if (e.group === 'data-resource') { setDataResourceSheetVisible(true); return; }
+                // 智库等独立应用：同源子路径，新标签页打开（不走前端路由）
+                if (e.external) { window.open(e.external, '_blank', 'noopener,noreferrer'); return; }
+                navigate(e.path);
+              }}
+            >
               <span className="dashboard-more-card__icon"><MoreEntryIcon kind={e.kind} /></span>
               <span className="dashboard-more-card__label">{e.label}</span>
             </div>
@@ -412,6 +412,14 @@ export default function Dashboard() {
             >
               <span style={{ fontSize: 18 }}>📥</span>
               <span style={{ fontSize: 15 }}>数据导入</span>
+            </div>
+            {/* 知识库浏览（ORS-716）：服务器 kb 目录的目录树 + md 预览 */}
+            <div
+              onClick={() => { setDataResourceSheetVisible(false); navigate('/admin/kb'); }}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 8px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+            >
+              <span style={{ fontSize: 18 }}>📚</span>
+              <span style={{ fontSize: 15 }}>知识库</span>
             </div>
             <div
               onClick={() => setDataResourceSheetVisible(false)}

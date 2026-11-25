@@ -6,6 +6,7 @@ import { Navbar, Loading, Toast, Popup, DateTimePicker } from 'tdesign-mobile-re
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { isPC } from '@/shared/utils/device';
+import { formatBackendTime } from '@/shared/utils/time';
 
 interface EfficiencySummary {
   total_tasks: number | null;
@@ -141,8 +142,11 @@ export default function TransportEfficiency() {
         <div style={{ background: '#fff', borderRadius: 8, padding: '10px 16px', marginBottom: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
           <InfoRow label="项目名称" value={projectName || '-'} />
           <InfoRow label="指标标签" value="搬运效率" />
-          <InfoRow label="数据采集时间" value={collectionTime || '-'} />
+          <InfoRow label="数据采集时间" value={formatBackendTime(collectionTime) || '-'} />
           <InfoRow label="数据时间范围" value={`${date} 00:00:00 ~ ${date} 23:59:59`} />
+          <div style={{ fontSize: 11, color: '#aaa', paddingTop: 6, borderTop: '1px dashed #eee', marginTop: 4 }}>
+            数据按北京时间（UTC+8）统计
+          </div>
         </div>
 
         {isPC() ? (

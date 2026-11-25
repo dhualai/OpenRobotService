@@ -7,6 +7,7 @@ backend 零改动是本设计的前提——测试同时验证 SQL 条件写回�
 """
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -125,6 +126,8 @@ async def test_generate_happy_path_writes_and_emits(patch_db, monkeypatch):
                 yield c
     monkeypatch.setattr("ai.core.solution_distiller._get_distill_llm",
                         async_stub(LLM()))
+    # 评论图片引用单独走一条 SQL，本用例只验事件序列与条件写回，替掉避免 FakeDB 串行
+    monkeypatch.setattr(solution_sink, "load_comment_image_refs", lambda tid: [])
 
     q: asyncio.Queue = asyncio.Queue()
     await archive_flow.generate_stream_task(1, q, "tester")
@@ -310,3 +313,67 @@ def async_stub(value):
         async def f(*a, **kw):
             return value
     return f
+
+
+# ---------------- 归档沉淀卡落 kb（ORS-1160）----------------
+
+def _sink_row(**kw):
+    row = {
+        "id": 707, "title": "流程编排下发任务报任务状态不一致",
+        "description": "任务管理下发正常，流程编排下发报状态不一致。",
+        "assigned_to": "oD5oY3dpnlcz0RxuUAcr94niKaO0",
+        "project_name": "某项目", "task_type": "problem",
+        "metadata_info": json.dumps({"fault_code": "任务状态不一致", "robot_type": "XCD06"}),
+        "report_content": "## 问题及背景\n\n正文一\n\n## 办法及原因\n\n正文二",
+        "report_reviewer": "user_admin", "report_version": 2,
+        "report_reviewed_at": None,
+    }
+    row.update(kw)
+    return row
+
+
+def test_sink_md_filename_matches_point_id(tmp_path, monkeypatch):
+    """文件名与老流程同一约定：工单{id}_{point_id 前 12 位}.md。"""
+    monkeypatch.setattr(archive_flow, "resolve_user_name", lambda raw: "")
+    path = archive_flow.write_archive_sink_md(_sink_row(), out_dir=tmp_path)
+    pid = archive_flow._sink_point_id(707)
+    assert Path(path).name == f"工单707_{pid[:12]}.md"
+    assert Path(path).parent == tmp_path
+
+
+def test_sink_md_resolves_names_and_type(tmp_path, monkeypatch):
+    """解决人显示姓名、类型显示中文，不把 openid / 枚举值写进档案。"""
+    names = {"oD5oY3dpnlcz0RxuUAcr94niKaO0": "王卓", "user_admin": "管理员"}
+    monkeypatch.setattr(archive_flow, "resolve_user_name", lambda raw: names.get(raw, ""))
+    text = Path(archive_flow.write_archive_sink_md(_sink_row(), out_dir=tmp_path)).read_text(encoding="utf-8")
+    assert "解决人: 王卓" in text
+    assert "审核人: 管理员" in text
+    assert "类型: 问题" in text
+    assert "oD5oY3dpnlcz" not in text and "problem" not in text
+
+
+def test_sink_md_hides_raw_openid_when_unresolved(tmp_path, monkeypatch):
+    """查不到人时，openid 不往档案里写，回退成 -。"""
+    monkeypatch.setattr(archive_flow, "resolve_user_name", lambda raw: "")
+    text = Path(archive_flow.write_archive_sink_md(_sink_row(), out_dir=tmp_path)).read_text(encoding="utf-8")
+    assert "解决人: -" in text
+    assert "oD5oY3dpnlcz" not in text
+
+
+def test_sink_md_idempotent_and_edge_cases(tmp_path, monkeypatch):
+    """同一单重复落盘覆盖同一文件；空标题不出现「工单 #1：工单 #1」。"""
+    monkeypatch.setattr(archive_flow, "resolve_user_name", lambda raw: "")
+    a = archive_flow.write_archive_sink_md(_sink_row(), out_dir=tmp_path)
+    b = archive_flow.write_archive_sink_md(_sink_row(), out_dir=tmp_path)
+    assert a == b and len(list(tmp_path.glob("*.md"))) == 1
+
+    p = Path(archive_flow.write_archive_sink_md(_sink_row(id=9001, title=""), out_dir=tmp_path))
+    assert p.read_text(encoding="utf-8").startswith("# 工单 #9001\n")
+
+
+def test_sink_md_empty_report_still_written_but_not_by_worker(tmp_path, monkeypatch):
+    """空报告不会进 worker（process_archived_ticket 判 empty），
+    但 write_archive_sink_md 本身不做事前判断——由调用方保证。"""
+    monkeypatch.setattr(archive_flow, "resolve_user_name", lambda raw: "")
+    p = archive_flow.write_archive_sink_md(_sink_row(report_content=""), out_dir=tmp_path)
+    assert Path(p).exists()

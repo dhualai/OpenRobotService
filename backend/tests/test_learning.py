@@ -10,13 +10,13 @@ from alembic.operations import Operations
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, text
 
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
 from app.models.base import Base
 from app.models.identity import Permission
-from app.models.learning import LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration
+from app.models.learning import LearningAnswer, LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration, LearningQuestion
 from app.models.task import TaskStatus, TaskType
 from app.modules.admin.api.learning import (
     ConfirmArticle, CreateArticle, Generate, QuestionAction, SaveArticle, SaveQuestion, router,
@@ -24,6 +24,8 @@ from app.modules.admin.api.learning import (
 from app.modules.admin.api.auth import get_current_active_user_from_token as admin_actor
 from app.modules.admin.services import learning_service as service
 from app.modules.admin.services.learning_content import ArticleContent, QuestionContent, redact
+from app.modules.tasks.api.learning import router as learner_router
+from app.modules.tasks.services import learning_learner_service as learner_service
 from app.services.permission_service import PERM_LEARNING
 from backend.tests.test_knowledge import actor, db, seed
 
@@ -34,7 +36,10 @@ def administrator():
 
 @pytest.fixture
 def learning_db(db):
-    for name in ("learning_articles", "learning_article_versions", "learning_questions", "learning_generations", "learning_audits"):
+    for name in (
+        "learning_articles", "learning_article_versions", "learning_questions", "learning_generations", "learning_audits",
+        "learning_answers", "learning_wrongbook",
+    ):
         Base.metadata.tables[name].create(db.session.get_bind(), checkfirst=True)
     return db
 
@@ -68,6 +73,106 @@ async def generated_question(db, monkeypatch, article):
     monkeypatch.setattr(service, "get_llm_client", lambda: client)
     await service.generate(db, administrator(), article["id"], Generate(request_id="question-request-1", revision=article["revision"], kind="questions"))
     return (await service.detail(db, administrator(), article["id"]))["questions"][0]
+
+
+async def published_question(db, monkeypatch):
+    article = await confirmed_article(db)
+    item = await generated_question(db, monkeypatch, article)
+    for action in ("submit", "approve", "enable"):
+        item = await service.question_action(db, administrator(), item["id"], QuestionAction(
+            revision=item["revision"], action=action, verified=True,
+        ))
+    return article["id"], item["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_answers", [False, True])
+async def test_learner_submits_and_reopens_only_own_latest_progress(learning_db, monkeypatch, legacy_answers):
+    if legacy_answers:
+        learning_db.session.execute(text(
+            "CREATE UNIQUE INDEX uq_learning_answer_once "
+            "ON learning_answers (user_id, question_id, article_version)"
+        ))
+    article_id, question_id = await published_question(learning_db, monkeypatch)
+    learner = actor("alice")
+    app = FastAPI()
+    app.include_router(learner_router, prefix="/tasks")
+    app.dependency_overrides[get_current_active_user_from_token] = lambda: learner
+    app.dependency_overrides[get_async_db] = lambda: learning_db
+    article_path = f"/tasks/learning/articles/{article_id}"
+
+    with TestClient(app) as client:
+        before = client.get(article_path).json()
+        assert before["answers"] == []
+        assert "correct_answer" not in before["questions"][0]
+        invalid = client.post(f"{article_path}/answer", json={"question_id": question_id, "answers": ["Z"]})
+        assert invalid.status_code == 422
+        assert client.get(article_path).json()["answers"] == []
+        for option, correct in (("B", False), ("A", True)):
+            result = client.post(f"{article_path}/answer", json={"question_id": question_id, "answers": [option]})
+            assert result.status_code == 200, result.text
+            assert result.json()["is_correct"] is correct
+            assert result.json()["correct_answer"] == ["A"]
+        reopened = client.get(article_path).json()
+        assert reopened["questions"][0]["has_answer"] is True
+        [answer] = reopened["answers"]
+        assert (answer["question_id"], answer["answers"], answer["is_correct"]) == (question_id, ["A"], True)
+        [course] = client.get("/tasks/learning/articles").json()["items"]
+        assert (course["total_count"], course["answered_count"], course["correct_count"], course["completed"]) == (1, 1, 1, True)
+        progress = client.get("/tasks/learning/progress").json()
+        assert progress == {"total_articles": 1, "completed_articles": 1, "total_questions": 1,
+                            "answered_questions": 1, "correct_questions": 1}
+        [mistake] = client.get("/tasks/learning/wrongbook").json()["items"]
+        assert (mistake["question_id"], mistake["status"], mistake["wrong_count"]) == (question_id, "mastered", 1)
+
+        app.dependency_overrides[get_current_active_user_from_token] = lambda: actor("bob")
+        assert client.get(article_path).json()["answers"] == []
+        assert client.get("/tasks/learning/progress").json()["answered_questions"] == 0
+
+    with pytest.raises(HTTPException) as rejected:
+        await service.preview_answer(learning_db, learner, article_id, question_id, ["A"])
+    assert rejected.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_learner_progress_ignores_disabled_questions_with_saved_answers(learning_db, monkeypatch):
+    article_id, question_id = await published_question(learning_db, monkeypatch)
+    learner = actor("alice")
+    await learner_service.submit_answer(learning_db, learner, article_id, question_id, ["A"])
+    learning_db.session.get(LearningQuestion, question_id).enabled = False
+    learning_db.session.commit()
+
+    details = await learner_service.get_article(learning_db, learner, article_id)
+    assert details["questions"] == details["answers"] == []
+    [course] = (await learner_service.list_articles(learning_db, learner))["items"]
+    assert (course["total_count"], course["answered_count"], course["correct_count"], course["completed"]) == (0, 0, 0, False)
+    assert (await learner_service.get_progress(learning_db, learner))["answered_questions"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unavailable", ["article", "unconfirmed", "unapproved", "question", "stale", "other_article"])
+async def test_learner_cannot_submit_unavailable_questions(learning_db, monkeypatch, unavailable):
+    article_id, question_id = await published_question(learning_db, monkeypatch)
+    article = learning_db.session.get(LearningArticle, article_id)
+    item = learning_db.session.get(LearningQuestion, question_id)
+    if unavailable == "article":
+        article.enabled = False
+    elif unavailable == "unconfirmed":
+        article.active_version = 0
+    elif unavailable == "unapproved":
+        item.review_status = "pending"
+    elif unavailable == "question":
+        item.enabled = False
+    elif unavailable == "stale":
+        item.article_version = 0
+    else:
+        item.article_id = (await confirmed_article(learning_db))["id"]
+    learning_db.session.commit()
+
+    with pytest.raises(HTTPException) as rejected:
+        await learner_service.submit_answer(learning_db, actor("alice"), article_id, question_id, ["A"])
+    assert rejected.value.status_code == 404
+    assert learning_db.session.scalar(select(LearningAnswer)) is None
 
 
 @pytest.mark.asyncio

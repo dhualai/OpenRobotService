@@ -18,6 +18,7 @@
 """
 import argparse
 import glob
+import hashlib
 import io
 import json
 import os
@@ -158,7 +159,7 @@ def main():
         return False
 
     out = []
-    n_man = n_llm_multi = n_noise = n_done = 0
+    n_man = n_llm_multi = n_noise = n_done = n_tester = n_cut = 0
     for c in convs:
         rounds = c["rounds"]
         # 切题轮：单回合无切分余地，跳过；标注轮保留——单问单答也要打标签，
@@ -175,6 +176,20 @@ def main():
         if not any(k["q"] for k in cls) and not (c.get("tasks") or []):
             n_noise += 1
             continue
+        # 1106 切题轮补筛选（标注轮早就有、切题轮漏了，用户实锤"怎么还有 8 月的"）：
+        # ① 测试会话是元筛选层，不是真实咨询，不给它定边界（954 里 449 个）
+        # ② 已切过边界且切完后没有新回合的，不再列出（263 个），否则每期都要
+        #    重翻历史；有新回合的必须保留——续聊追加段要在工具里可见可保存，
+        #    否则保存时会被洗掉（0920 实锤）。无 frozen_len 的老记录保守保留。
+        if args.bounds_only:
+            if c.get("is_tester"):
+                n_tester += 1
+                continue
+            _fz = man_frozen.get(cid)
+            if cid in man_bounds and _fz is not None \
+                    and len(rounds) <= int(_fz):
+                n_cut += 1
+                continue
         # 标注轮：无待标注段的会话不进列表（已全部判定，07/08 月老会话的来源）；
         # tester 会话同漏斗口径排除（元筛选层，7/8 月测试流量的大头）
         if not args.bounds_only and (c.get("is_tester") or not _has_pending_seg(cid, rounds, cls)):
@@ -229,7 +244,10 @@ def main():
             "rounds": rj,
             "pre": pre.get(cid) or {},
         })
-    out.sort(key=lambda x: x["created_at"])
+    # 1106：按最后一条对话时间倒序——按创建时间排会让 8/9 月创建但仍在续聊的
+    # 会话排在最前面，看着像在翻历史；实际要处理的是最近有动静的那些。
+    out.sort(key=lambda x: (x["rounds"][-1]["at"] if x["rounds"] else x["created_at"]),
+             reverse=True)
 
     tpl = open(TPL, encoding="utf-8").read()
     # </ 转义：JSON 内嵌 <script> 时，内容里出现 </script> 会提前截断脚本（JS 字符串里 \/ 合法）
@@ -237,14 +255,29 @@ def main():
                           "mode": "bounds" if args.bounds_only else "label"},
                          ensure_ascii=False).replace("</", "<\\/")
     html = tpl.replace("__DATA__", payload)
+    # 1106：本地草稿键带切分指纹——数据一变键就变，旧草稿自动失效。此前键固定
+    # 为 seg_review_v1，store.bounds 优先级高于 DATA，重切后页面仍显示旧分段
+    # （用户实锤：续聊会话重切后仍是一个话题）。指纹取每个会话的轮数与段归属。
+    _fp_src = ";".join(
+        "%s:%s" % (c["conversation_id"],
+                   ",".join(str(r.get("t")) for r in c["rounds"]))
+        for c in out)
+    # v2：1106 数据变更后本地草稿仍然盖着服务端切分（用户实锤整页无分段），
+    # 键里加版本位方便一次作废；以后再有类似情况改这里即可。
+    html = html.replace("__LS_KEY__", "seg_review_%s_%s_v2" % (
+        "b" if args.bounds_only else "l",
+        hashlib.md5(_fp_src.encode("utf-8")).hexdigest()[:10]))
     # 切题版（--bounds-only）写独立文件：与标注版互不覆写（0920 实锤：l3 后
     # 重跑 tool0 会把标注版工具冲回切分页）。title 按模式区分——两版同模板
     # 同 title 时浏览器标签页无法分辨开的是哪版（0929 向导错开旧标注页实锤）。
     is_bounds = args.bounds_only
+    # 1106：标题带生成时间——重跑后浏览器标签页能一眼看出开的是新是旧
+    # （切分数据更新后用户仍看到旧分段，无法判断是缓存还是开错文件）
     html = html.replace(
         "<title>话题切分审核</title>",
-        "<title>话题切分审核（切题版·蓝）</title>" if is_bounds
-        else "<title>话题切分审核（标注版·绿）</title>")
+        "<title>话题切分审核（%s · 生成于 %s）</title>" % (
+            "切题版·蓝" if is_bounds else "标注版·绿",
+            datetime.now().strftime("%m-%d %H:%M")))
     path = os.path.join(OUT, "segmentation_tool_bounds.html" if is_bounds
                         else "segmentation_tool.html")
     with open(path, "w", encoding="utf-8") as fh:
@@ -252,6 +285,8 @@ def main():
     print(f"生成 {path}")
     print(f"会话 {len(out)} 个（≥2 回合），回合 {sum(len(c['rounds']) for c in out)}"
           + (f"，滤掉纯寒暄（无咨询无工单）{n_noise} 个" if n_noise else "")
+          + (f"，滤掉测试会话 {n_tester} 个" if n_tester else "")
+          + (f"，滤掉已切且无续聊 {n_cut} 个" if n_cut else "")
           + (f"，滤掉已全部判定的 {n_done} 个（标注轮只列有待标注段的会话）" if n_done else ""))
     if man_bounds:
         print(f"人工边界嵌入 {n_man} 个已切会话（初始切分=人工边界），LLM 切出多话题的 {n_llm_multi} 个")

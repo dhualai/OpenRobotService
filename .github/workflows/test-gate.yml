@@ -18,6 +18,15 @@ on:
       - "ai/**"
       - ".github/workflows/test-gate.yml"
   workflow_dispatch:
+    inputs:
+      ui_evidence_run_id:
+        description: "同一提交的 UI Regression 运行编号，用于关联页面证据"
+        type: string
+        required: false
+      learner_evidence_run_id:
+        description: "学员答题实跑的 UI Regression 运行编号"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -116,13 +125,24 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           AUTOMATION_ENV: local
         run: |
-          pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/ai_metrics/tests/ automation/src/runtime/tests/ automation/src/client/tests/ automation/src/contract/tests/ automation/src/remote/tests/ automation/src/ticket_pipeline/tests/ automation/src/reporting/tests/ automation/ci_ai_gen/tests/ automation/mcp_server/tests/ automation/tests/infrastructure/ automation/src/mocks/tests/ -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-infra.xml
+          pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/ai_metrics/tests/ automation/src/runtime/tests/ automation/src/client/tests/ automation/src/contract/tests/ automation/src/remote/tests/ automation/src/ticket_pipeline/tests/ automation/src/reporting/tests/ automation/ci_ai_gen/tests/ automation/mcp_server/tests/ automation/tests/infrastructure/ automation/src/mocks/tests/ -q --alluredir=automation/output/allure-results/quality-infra --junitxml=automation/output/junit-quality-infra.xml
 
-      - name: Run API mock tests
+      # 三层口径见 automation/docs/task-test-gate-three-tier.md：
+      # 主流程（-m flow）阻塞门禁；其余接口用例只进报告技术明细，不阻塞。
+      - name: Run main-flow API tests
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest automation/tests/ -m api -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-quality-api.xml
+          pytest automation/tests/ -m flow -q --alluredir=automation/output/allure-results/quality-api --junitxml=automation/output/junit-quality-api.xml
+
+      - name: Run remaining API tests (advisory)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        continue-on-error: true
+        run: |
+          pytest automation/tests/ -m "api and not flow" -q \
+            --alluredir=automation/output/allure-results/quality-detail \
+            --junitxml=automation/output/junit-quality-detail.xml
 
       - name: Upload Allure results
         if: always()
@@ -130,6 +150,23 @@ jobs:
         with:
           name: allure-results-quality
           path: automation/output/allure-results
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Prepare required quality JUnit evidence
+        if: always()
+        run: |
+          python3 -m automation.src.reporting.gate_junit \
+            --input-dir automation/output --output-dir automation/output/safe-junit quality-infra quality-api
+
+      - name: Upload required quality JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-junit-quality
+          path: |
+            automation/output/safe-junit/junit-quality-infra.xml
+            automation/output/safe-junit/junit-quality-api.xml
           if-no-files-found: warn
           retention-days: 7
 
@@ -266,7 +303,7 @@ jobs:
           REAL_ADMIN_USERNAME: admin
           REAL_ADMIN_PASSWORD: ${{ secrets.REAL_ADMIN_PASSWORD || vars.REAL_ADMIN_PASSWORD || 'usp2026@EP' }}
         run: |
-          pytest automation/tests/real -m smoke -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-real.xml
+          pytest automation/tests/real -m smoke -q --alluredir=automation/output/allure-results/real --junitxml=automation/output/junit-real.xml
 
       - name: Run OpenAPI contract smoke
         env:
@@ -278,7 +315,7 @@ jobs:
           CONTRACT_INCLUDE_PATH_REGEX: ^/api/health$
           CONTRACT_MAX_EXAMPLES: "5"
         run: |
-          pytest automation/tests/contract -m contract -q --alluredir=automation/output/allure-results --junitxml=automation/output/junit-contract.xml
+          pytest automation/tests/contract -m contract -q --alluredir=automation/output/allure-results/contract --junitxml=automation/output/junit-contract.xml
 
       - name: Upload Allure results
         if: always()
@@ -286,6 +323,23 @@ jobs:
         with:
           name: allure-results-real-smoke
           path: automation/output/allure-results
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Prepare required real backend JUnit evidence
+        if: always()
+        run: |
+          python3 -m automation.src.reporting.gate_junit \
+            --input-dir automation/output --output-dir automation/output/safe-junit real contract
+
+      - name: Upload required real backend JUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-junit-real
+          path: |
+            automation/output/safe-junit/junit-real.xml
+            automation/output/safe-junit/junit-contract.xml
           if-no-files-found: warn
           retention-days: 7
 
@@ -384,14 +438,42 @@ jobs:
         run: |
           pytest automation/tests/real/test_ticket_scenarios.py -q --alluredir=automation/output/allure-results-scenarios --junitxml=automation/output/junit-scenarios.xml
 
-      - name: Upload scenario test results
+      - name: Run service account business rules
+        if: ${{ !cancelled() }}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest automation/tests/test_service_account_rules.py -q --allure-no-capture \
+            --alluredir=automation/output/allure-results-service-account-rules
+
+      - name: Upload service account business rules
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-service-account-rules
+          path: automation/output/allure-results-service-account-rules
+          if-no-files-found: warn
+
+      - name: Upload scenario Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-scenarios
+          path: automation/output/allure-results-scenarios
+          if-no-files-found: warn
+
+      - name: Prepare scenario JUnit evidence
+        if: always()
+        run: |
+          python3 -m automation.src.reporting.gate_junit \
+            --input-dir automation/output --output-dir automation/output/safe-junit scenarios
+
+      - name: Upload scenario JUnit results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scenario-test-results
-          path: |
-            automation/output/allure-results-scenarios
-            automation/output/junit-scenarios.xml
+          path: automation/output/safe-junit/junit-scenarios.xml
 
   # ---------------- 6. Allure 汇总 ----------------
   allure-report:
@@ -400,19 +482,220 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      # 发布到 gh-pages 分支需要写权限
+      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - name: Download Allure artifacts by job
+        uses: actions/download-artifact@v4
+        if: always()
+        continue-on-error: true
         with:
           pattern: allure-results-*
+          merge-multiple: false
+          path: automation/output/allure-artifacts
+
+      - name: Download required JUnit artifacts
+        uses: actions/download-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          pattern: gate-junit-*
           merge-multiple: true
-          path: automation/output/allure-results
+          path: automation/output/gate-junit
+
+      - name: Download approved UI run evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.ui_evidence_run_id != '' }}
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: service-account-ui-evidence
+          path: automation/output/ui-business-evidence
+          run-id: ${{ inputs.ui_evidence_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download learner UI run evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.learner_evidence_run_id != '' }}
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: service-account-ui-evidence
+          path: automation/output/ui-learner-evidence
+          run-id: ${{ inputs.learner_evidence_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Evaluate required suites
+        id: gate-verdict
+        if: always()
+        continue-on-error: true
+        env:
+          QUALITY_JOB_RESULT: ${{ needs.quality-gate.result }}
+          REAL_JOB_RESULT: ${{ needs.real-smoke.result }}
+        run: |
+          python3 automation/src/reporting/gate_verdict.py \
+            --junit-dir automation/output/gate-junit \
+            --allure-artifacts-dir automation/output/allure-artifacts \
+            --quality-job "$QUALITY_JOB_RESULT" \
+            --real-job "$REAL_JOB_RESULT" \
+            --report-context automation/output/test-gate-report.json
+
+      - name: Prepare Allure files for reports
+        id: prepare-reports
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from automation.src.reporting.gate_verdict import merge_allure_artifacts
+
+          merge_allure_artifacts(
+              Path("automation/output/allure-artifacts"), Path("automation/output/allure-results")
+          )
+          PY
+
+      - name: Generate Allure HTML report
+        id: allure-html
+        if: always()
+        continue-on-error: true
+        uses: simple-elf/allure-report-action@v1.15
+        with:
+          allure_results: automation/output/allure-results
+          allure_history: allure-history
+          keep_reports: 20
+
+      - name: Upload Allure HTML report
+        id: allure-upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report-html
+          path: allure-history
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish report to gh-pages
+        # 推到 gh-pages/test-gate 子目录，keep_files 保留 deploy-split 的根目录报告，
+        # 两者互不覆盖。GitHub Pages 启用前该步骤只写分支、不产生可访问 URL。
+        # 只在 test 分支发布：手动在功能分支触发本工作流时只产出 Artifacts，
+        # 不覆盖团队正在看的 gh-pages/test-gate 报告。
+        id: publish-pages
+        if: ${{ always() && github.ref == 'refs/heads/test' && steps.allure-html.outcome == 'success' }}
+        continue-on-error: true
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: allure-history
+          destination_dir: test-gate
+          keep_files: true
+
+      - name: Case-level summary from Allure results
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 -m automation.src.reporting.standalone_report \
+            --results automation/output/allure-results --summary | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build standalone HTML report
+        id: standalone-html
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 -m automation.src.reporting.standalone_report \
+            --results automation/output/allure-results \
+            --context automation/output/test-gate-report.json --expect-gate \
+            --out automation/output/test-report.html
+
+      - name: Upload standalone HTML report
+        id: standalone-upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-standalone
+          path: automation/output/test-report.html
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Build business report
+        # 面向非技术读者的四层报告：模块 → 功能 → 场景 → 步骤（含入参/出参/断言）。
+        # 脚本位于 automation/src/reporting/business_report.py，仅依赖标准库。
+        id: business-html
+        if: always()
+        continue-on-error: true
+        run: |
+          ui_args=(--service-account-ui-environment service-account-test)
+          if [ -f automation/output/ui-business-evidence/service-account-ui-run.json ]; then
+            ui_args+=(--service-account-ui-results automation/output/ui-business-evidence)
+          fi
+          if [ -f automation/output/ui-learner-evidence/learner-course-run.json ]; then
+            ui_args+=(--service-account-learner-results automation/output/ui-learner-evidence)
+          else
+            ui_args+=(--service-account-learner-results automation/references/acceptance-evidence)
+          fi
+          python3 automation/src/reporting/business_report.py \
+            --results automation/output/allure-results \
+            --context automation/output/test-gate-report.json --expect-gate \
+            --out automation/output/test-report-business.html "${ui_args[@]}"
+
+      - name: Upload business report
+        id: business-upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-business
+          path: automation/output/test-report-business.html
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Job summary
+        if: always()
+        continue-on-error: true
+        env:
+          REPORT_PREPARE: ${{ steps.prepare-reports.outcome }}
+          ALLURE_HTML: ${{ steps.allure-html.outcome }}
+          ALLURE_ARTIFACT: ${{ steps.allure-upload.outputs.artifact-id }}
+          STANDALONE_HTML: ${{ steps.standalone-html.outcome }}
+          STANDALONE_ARTIFACT: ${{ steps.standalone-upload.outputs.artifact-id }}
+          BUSINESS_HTML: ${{ steps.business-html.outcome }}
+          BUSINESS_ARTIFACT: ${{ steps.business-upload.outputs.artifact-id }}
+          PAGES_PUBLISH: ${{ steps.publish-pages.outcome }}
         run: |
-          echo "## Test gate results" >> $GITHUB_STEP_SUMMARY
-          echo "- quality-gate: ${{ needs.quality-gate.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- db-integration: ${{ needs.db-integration.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- real-smoke: ${{ needs.real-smoke.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- scenarios: ${{ needs.scenarios.result }}" >> $GITHUB_STEP_SUMMARY
+          artifact_status() {
+            if [ -n "$1" ]; then printf '已上传'; else printf '未上传'; fi
+          }
+          {
+            printf '\n### 测试作业\n\n| Job | 结果 |\n| --- | --- |\n'
+            printf '| quality-gate | %s |\n' '${{ needs.quality-gate.result }}'
+            printf '| real-smoke | %s |\n' '${{ needs.real-smoke.result }}'
+            printf '| db-integration（观察） | %s |\n' '${{ needs.db-integration.result }}'
+            printf '| scenarios（观察） | %s |\n' '${{ needs.scenarios.result }}'
+            printf '\n### 报告状态\n\n| 步骤 | 结果 | 下载产物 |\n| --- | --- | --- |\n'
+            printf '| 整理 Allure 文件 | %s | — |\n' "${REPORT_PREPARE:-skipped}"
+            printf '| Allure HTML | %s | %s |\n' "${ALLURE_HTML:-skipped}" "$(artifact_status "$ALLURE_ARTIFACT")"
+            printf '| 用例清单 HTML | %s | %s |\n' "${STANDALONE_HTML:-skipped}" "$(artifact_status "$STANDALONE_ARTIFACT")"
+            printf '| 业务 HTML | %s | %s |\n' "${BUSINESS_HTML:-skipped}" "$(artifact_status "$BUSINESS_ARTIFACT")"
+            printf '| Pages 发布 | %s | — |\n' "${PAGES_PUBLISH:-skipped}"
+            printf '\n已上传的报告可在本次运行的 Artifacts 下载。\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce Test Gate verdict
+        if: always()
+        env:
+          TEST_GATE_VERDICT: ${{ steps.gate-verdict.outputs.verdict }}
+          VERDICT_OUTCOME: ${{ steps.gate-verdict.outcome }}
+        run: |
+          case "$TEST_GATE_VERDICT:$VERDICT_OUTCOME" in
+            passed:success) exit 0 ;;
+            failed:failure|unverified:failure) ;;
+            *)
+              printf '\n## Test Gate 判定：未验收\n\n判定步骤未生成有效结论，请查看 Evaluate required suites 的日志。\n' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+          echo "::error::Test Gate 未通过，请查看必跑套件判定"
+          exit 1

@@ -21,7 +21,7 @@ from app.modules.tasks.api.task import (
     _similar_item_from_task,
 )
 from app.modules.tasks.models.ticket import TaskStatus
-from app.modules.tasks.services import similar_tickets
+from app.services import similar_tickets
 
 
 def _db_with(report_rows, user_rows):

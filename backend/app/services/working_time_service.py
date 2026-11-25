@@ -340,7 +340,22 @@ class WorkingTimeService:
             return planned
 
         if notify_type == NOTIFY_TYPE_OVERDUE and deadline_at:
-            planned = cls.next_working_start(user, deadline_at)
+            # 逾期提醒排程：从 now_utc 往后找下一个工作时段开始，而不是从 deadline 往后找。
+            #
+            # 修复前：planned = next_working_start(deadline_at)
+            #         → 永远是 deadline 后第一个工作日的 09:00（固定值）
+            #         → 被 max(planned, now_utc) 推到 DAG 执行时刻
+            #         → 周末执行 scheduled_at 落在非工作时间 → Worker reschedule 到周一 09:00
+            #         → 周六/周日/周一 DAG 各创一张 outbox，reschedule 后 scheduled_at 相同
+            #         → 到点 Worker 一起投 → 用户收到 3 条重复
+            #
+            # 修复后：planned = next_working_start(now_utc)
+            #         → 工作日 DAG 执行 → 下一个工作日（每天不同）
+            #         → 周末 DAG 执行 → 周一 09:00（和相邻工作日相同）
+            #         → Outbox Service 的「同 task+type+recipient+scheduled_at+pending
+            #           → duplicate」合并检查会拦住周末的重复命中
+            #         → 每天最多只排一条，Worker 重查工单显示最新逾期天数 ✅
+            planned = cls.next_working_start(user, now_utc)
         elif cls.is_working_time(user, now_utc):
             planned = now_utc
         else:
