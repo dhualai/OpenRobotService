@@ -46,7 +46,8 @@ def _head_of(md):
     import re
     return re.search(r"\*\*PR #492\*\*[^\n]*", md).group(0)
 
-def test_report_inline_paths_removed_from_summary():
+def test_report_inline_items_kept_with_pin():
+    """总结全量展示（口径统一），已钉行内的条目带 📍 标记。"""
     fp = finding_fingerprint("a.py:5", "删列")
     parsed = {
         "conclusion": "高风险",
@@ -55,7 +56,8 @@ def test_report_inline_paths_removed_from_summary():
         "warnings": [], "infos": [],
     }
     md = render_report(parsed, None, 492, "abcd1234", "m", inline_paths={fp})
-    assert "删列" not in md          # 已发行内的意见从总结剔除
+    assert "删列" in md                     # 全量展示（不剔除）
+    assert "📍 `a.py:5`" in md              # 带钉出标记
 
 
 def test_fingerprint_delta():

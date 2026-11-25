@@ -227,11 +227,12 @@ def _clip(text, limit):
 
 def render_report(parsed, quick_result, pr_number, sha, model_label,
                   inline_paths=None):
-    """文档化排版报告：标题 + 计数表格 + 红→黄→绿固定排序 + 建议默认展开。
+    """文档化排版报告：完整汇总全部意见（总结=唯一必读源）。
 
-    inline_paths：已发行内评论的意见指纹集合，从总结里剔除避免重复。
-    注：GitHub 评论过滤自定义 CSS（style/bgcolor 均被剥离），真实背景色
-    无法实现，以排版层级与分隔线保证「一份完整文档」的观感。
+    inline_paths：已发行内评论的意见指纹集合——这些条目在总结中照常
+    展示并带 📍 标记（钉至代码行），总结与行内口径永不分裂。
+    注：GitHub 评论过滤自定义 CSS，真实背景色无法实现，以排版层级
+    与分隔线保证「一份完整文档」的观感。
     """
     def _fp(it):
         """意见指纹：与 main 构造 inline_items 的口径严格一致。"""
@@ -239,9 +240,8 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
         return finding_fingerprint(loc, it.get("issue"))
 
     # 只展示「必须采纳」一档（用户定稿：黄绿不再展示）；快筛命中归入红组置顶。
-    # 表格计数与正文分组共用同一份剔除后条目（口径不分裂）。
-    blocker_items = [it for it in ((parsed or {}).get("blockers") or [])
-                     if _fp(it) not in (inline_paths or set())]
+    # 总结全量展示（含已钉行内的，带 📍 标记）——单一必读源，口径不分裂。
+    blocker_items = list((parsed or {}).get("blockers") or [])
     fps = [_fp(it) for it in blocker_items]
     lines = [
         "<!-- ors-ai-review:report -->",
@@ -265,8 +265,7 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
 
     n_quick = (len(quick_result.get("blockers") or [])
                + len(quick_result.get("warnings") or [])) if quick_result else 0
-    n_inline = len(inline_paths or set())
-    if not blocker_items and not n_quick and not n_inline:
+    if not blocker_items and not n_quick:
         lines += [
             "🟢 **未发现必须采纳的高危改动**——数据库/迁移、部署链路、密钥等"
             "确定性规则与 AI 深度检视均未命中，可放心合并。",
@@ -276,15 +275,9 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
         ]
         return "\n".join(lines)
 
-    # blocker 全部转行内时，总结必须如实反映（否则「未发现」与行内矛盾，
-    # 用户实测反馈过的口径分裂）
-    if not blocker_items and not n_quick and n_inline:
-        lines.append(f"🔴 **发现 {n_inline} 项必须采纳的问题**——"
-                     f"已逐条钉到代码行，见 Files changed 标签页对应位置。")
-        lines.append("")
-
     lines.append(f"🔴 **发现 {len(blocker_items) + n_quick} 项必须采纳的问题**"
-                 f"（AI {len(blocker_items)} 项 + 规则快筛 {n_quick} 项）")
+                 f"（AI {len(blocker_items)} 项 + 规则快筛 {n_quick} 项）"
+                 + ("　📍=已钉至代码行" if blocker_items else ""))
     lines.append("")
 
     def render_items(items):
@@ -293,7 +286,9 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
             loc = it.get("location") or it.get("path") or "未知位置"
             issue = (it.get("issue") or "").strip()
             sug = (it.get("suggestion") or "").strip()
-            out.append(f"- `{loc}`：{issue}" if issue else f"- `{loc}`")
+            pinned = _fp(it) in (inline_paths or set())
+            bullet = "📍" if pinned else "•"
+            out.append(f"- {bullet} `{loc}`：{issue}" if issue else f"- {bullet} `{loc}`")
             if sug and sug != issue:
                 out += ["    <details open><summary>💡 小D的建议</summary>",
                         "",
@@ -522,10 +517,14 @@ def main():
                     sug_full = (it.get("suggestion") or "").strip()
                     inline_items.append({
                         "path": path, "line": int(ln), "level": key,
-                        "body": ("🔴" if key == "blockers" else "🟡")
-                                + f" **AI 检视**：{issue_full}"
-                                + (f"\n\n> 🧸 小D的建议：{sug_full}"
-                                   if sug_full else ""),
+                        "body": ("<!-- ai-review-inline -->\n"
+                                 "🔴 **AI 检视**：{issue}"
+                                 "{sug}\n\n<sub>总结见对话区检视报告 · "
+                                 "{ts}</sub>").format(
+                            issue=issue_full,
+                            sug=(f"\n\n> 💡 小D的建议：{sug_full}"
+                                 if sug_full else ""),
+                            ts=now_display_str()),
                     })
     if args.out_inline:
         with open(args.out_inline, "w", encoding="utf-8") as fh:

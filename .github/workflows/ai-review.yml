@@ -197,10 +197,11 @@ jobs:
         continue-on-error: true
         env:
           PR_NUMBER: ${{ steps.tgt.outputs.pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
             --marker "ors-ai-review:report" --file report.md \
-            --inline inline.json
+            --inline inline.json --head-sha "$HEAD_SHA"
 
       - name: Notify wecom (deep blocker only)
         if: >-

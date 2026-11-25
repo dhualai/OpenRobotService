@@ -73,7 +73,7 @@ def test_render_report_full():
     assert "### 🟡" not in md and "### 🟢" not in md   # 黄绿不展示
     import re as _re
     head = _re.search(r"\*\*PR #431\*\*[^\n]*", md).group(0)
-    assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", head)  # 上海时间无 UTC 标注
+    assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", head)  # 上海时间到秒
     assert "🪵" in md                 # 文档页脚
 
 
