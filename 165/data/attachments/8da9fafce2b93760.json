@@ -1,0 +1,12 @@
+{
+  "status_code": 400,
+  "url": "http://mock.local/api/tasks/1/status",
+  "reason": "Bad Request",
+  "headers": {
+    "content-length": "89",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "Invalid transition: pending -> closed. Allowed: ['in_progress', 'cancelled']"
+  }
+}
