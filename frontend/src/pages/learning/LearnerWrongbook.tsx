@@ -14,6 +14,13 @@ const STATUS_FILTERS: { key: WrongbookStatus | ''; label: string }[] = [
 
 export default function LearnerWrongbook() {
   const navigate = useNavigate();
+  const handleBack = useCallback(() => {
+    if (window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate('/tasks/learning', { replace: true });
+    }
+  }, [navigate]);
   const [items, setItems] = useState<WrongbookItem[]>([]);
   const [summary, setSummary] = useState({ total: 0, wrong: 0, mastered: 0, skipped: 0 });
   const [status, setStatus] = useState<WrongbookStatus | ''>('');
@@ -54,7 +61,7 @@ export default function LearnerWrongbook() {
 
   return (
     <div className="learner-home">
-      <Navbar title="错题本" fixed />
+      <Navbar title="错题本" fixed leftArrow onLeftClick={handleBack} />
 
       {/* 概览卡片 */}
       <section className="learner-wrongbook-hero">
