@@ -26,6 +26,7 @@ import pytest
 from automation.config.models import ApiConfig
 from automation.src.assertions import assert_status_code
 from automation.src.clients.api_client import ApiClient
+from automation.src.reporting.business_scenarios import SCENARIO_LABEL, record_business_evidence
 
 pytestmark = [pytest.mark.api, pytest.mark.e2e]
 
@@ -113,6 +114,8 @@ async def _set_status(
     task_id: int,
     status: str,
     expected: int,
+    *,
+    business_evidence: tuple[str, str] | None = None,
     **extra,
 ):
     """状态流转。部分流转带必填理由字段：
@@ -125,6 +128,8 @@ async def _set_status(
             headers=headers,
             json={"status": status, **extra},
         )
+        if business_evidence is not None:
+            record_business_evidence(*business_evidence, response)
         assert_status_code(response, expected)
         return response
 
@@ -176,6 +181,7 @@ class TestTicketScenarioExceptionStates:
 
     @allure.story("暂停")
     @allure.title("场景③-2：处理人请求暂停 → 提单人确认 → 已暂停")
+    @allure.label(SCENARIO_LABEL, "work-order-pause")
     async def test_pause_request_then_confirm(self, client):
         """状态流转：in_progress → pending_requested → pending。"""
         u1 = await _login(client, _U1)
@@ -191,21 +197,27 @@ class TestTicketScenarioExceptionStates:
                     headers=u3,
                     json={"curr_step_id": steps[0]["id"]},
                 )
+                record_business_evidence("work-order-pause", "accept", response)
                 assert_status_code(response, 200)
                 assert response.json()["status"] == "in_progress"
 
             # 处理人请求暂停（必填 pause_reason）
-            await _set_status(
+            response = await _set_status(
                 client,
                 u3,
                 task_id,
                 "pending_requested",
                 200,
+                business_evidence=("work-order-pause", "request"),
                 pause_reason="自动化验证：等待外部资料补充",
             )
+            assert response.json()["status"] == "pending_requested"
 
             # 提单人确认暂停
-            response = await _set_status(client, u1, task_id, "pending", 200)
+            response = await _set_status(
+                client, u1, task_id, "pending", 200,
+                business_evidence=("work-order-pause", "confirm"),
+            )
             assert response.json()["status"] == "pending"
         finally:
             await _retire_ticket(client, u1, task_id)

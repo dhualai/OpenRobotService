@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from playwright.sync_api import (
+    Error as PlaywrightError,
     Locator,
     Page,
-    Response,
     TimeoutError as PlaywrightTimeoutError,
     expect,
 )
@@ -18,6 +17,11 @@ def default_end_time(days: int = 7) -> str:
     """Return the date format accepted by the stage DatePicker."""
 
     return (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+
+
+def _calendar_month_direction(target: date, visible_dates: list[str]) -> str:
+    first_shown = min(date.fromisoformat(value) for value in visible_dates)
+    return "prev" if target < first_shown else "next"
 
 
 class UiPageActions:
@@ -30,10 +34,18 @@ class UiPageActions:
 
     def login(self, username: str, password: str) -> None:
         self.page.goto(f"{self.base_url}/login?debug=true", wait_until="domcontentloaded")
+        if not self.page.url.startswith(f"{self.base_url}/"):
+            raise AssertionError("登录页跳出了已配置的测试站")
         self.page.get_by_test_id("login-username").fill(username)
-        self.page.get_by_test_id("login-password").fill(password)
+        try:
+            self.page.get_by_test_id("login-password").fill(password)
+        except PlaywrightError:
+            raise AssertionError("无法填写测试站口令输入框") from None
         self.page.get_by_test_id("login-submit").click()
-        self.page.wait_for_url(lambda url: "/login" not in url, timeout=20_000)
+        self.page.wait_for_url(
+            lambda url: url.startswith(f"{self.base_url}/") and "/login" not in url,
+            timeout=20_000,
+        )
         self._wait_for_login_success_toast()
 
     def start_new_conversation(self) -> None:
@@ -49,22 +61,39 @@ class UiPageActions:
             )
         ) as response_info:
             self.page.get_by_test_id("chat-send").first.click()
-        conversation_id = response_info.value.json().get("id")
+        response = response_info.value
+        if not response.ok:
+            raise AssertionError(f"创建会话失败: HTTP {response.status}")
+        body = response.json()
+        conversation_id = body.get("id") or (body.get("data") or {}).get("id")
         if conversation_id is not None:
             self.conversation_id = int(conversation_id)
         expect(self.page.get_by_test_id("chat-transfer-ticket")).to_be_visible(
             timeout=30_000
         )
 
-    def ensure_ticket_draft_modal(self) -> None:
+    def ensure_ticket_draft_modal(self, *, project_name: str | None = None) -> None:
         modal = self.page.get_by_test_id("chat-ticket-draft-modal")
+        spinner = self.page.locator(".chat-send-btn__spinner:visible")
+        expect(spinner).to_be_hidden(timeout=60_000)
         try:
             modal.wait_for(state="visible", timeout=5_000)
             return
         except PlaywrightTimeoutError:
             pass
-        self.page.get_by_test_id("chat-transfer-ticket").click(force=True)
-        expect(modal).to_be_visible(timeout=30_000)
+        transfer = self.page.get_by_test_id("chat-transfer-ticket")
+        transfer.click()
+        if project_name:
+            choice = self.page.locator("button.chat-proj-choices__btn:enabled").filter(
+                has=self.page.get_by_text(project_name, exact=True),
+            ).last
+            expect(modal.or_(choice).first).to_be_visible(timeout=35_000)
+            if not modal.is_visible() and choice.is_visible():
+                choice.click()
+                expect(spinner).to_be_hidden(timeout=60_000)
+                if not modal.is_visible():
+                    transfer.click()
+        expect(modal).to_be_visible(timeout=35_000)
 
     def confirm_ticket(self, expected_title: str) -> int:
         expect(self.page.get_by_test_id("chat-ticket-title")).to_have_value(
@@ -73,10 +102,15 @@ class UiPageActions:
         )
         confirm_button = self.page.get_by_test_id("chat-ticket-confirm")
         expect(confirm_button).to_be_enabled(timeout=10_000)
-        response = self._click_and_wait_for_response(
-            confirm_button,
-            "/api/ai/qa/ticket/confirm",
-        )
+        with self.page.expect_response(
+            lambda response: (
+                response.request.method == "POST"
+                and response.url.split("?", 1)[0].endswith("/api/ai/qa/ticket/confirm")
+            ),
+            timeout=45_000,
+        ) as response_info:
+            confirm_button.click()
+        response = response_info.value
         if response.status != 200:
             raise AssertionError(f"确认提单失败: HTTP {response.status}")
         data = response.json().get("data") or {}
@@ -198,15 +232,16 @@ class UiPageActions:
 
         target_date = datetime.strptime(value, "%Y-%m-%d %H:%M").date()
         date_cell = popup.locator(f'td[title="{target_date.isoformat()}"]')
-        month_button = (
-            popup.locator("button.ant-picker-header-next-btn")
-            if target_date >= datetime.now().date()
-            else popup.locator("button.ant-picker-header-prev-btn")
-        )
         for _ in range(24):
             if date_cell.count():
                 break
-            month_button.click()
+            visible_dates = popup.locator("td[title]").evaluate_all(
+                r"(cells) => cells.map(cell => cell.title).filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value))"
+            )
+            if not visible_dates:
+                raise AssertionError("日期控件未显示可选日期")
+            direction = _calendar_month_direction(target_date, visible_dates)
+            popup.locator(f"button.ant-picker-header-{direction}-btn").click()
             self.page.wait_for_timeout(300)
         if not date_cell.count():
             raise AssertionError(f"日期控件中找不到目标日期：{target_date.isoformat()}")
@@ -246,46 +281,3 @@ class UiPageActions:
                 target = marker.locator("xpath=.//button[1]")
         expect(target).to_be_visible(timeout=20_000)
         return target
-
-    def _click_and_wait_for_response(
-        self,
-        target: Locator,
-        url_fragment: str,
-        timeout_ms: int = 30_000,
-    ) -> Response:
-        request_seen = False
-        response_holder: dict[str, Response] = {}
-
-        def on_request(request) -> None:
-            nonlocal request_seen
-            if url_fragment in request.url:
-                request_seen = True
-
-        def on_response(response: Response) -> None:
-            if url_fragment in response.url:
-                response_holder["value"] = response
-
-        self.page.on("request", on_request)
-        self.page.on("response", on_response)
-        started = time.monotonic()
-        deadline = started + timeout_ms / 1000
-        retried = False
-        try:
-            target.click()
-            while time.monotonic() < deadline:
-                if "value" in response_holder:
-                    return response_holder["value"]
-                if (
-                    not request_seen
-                    and not retried
-                    and time.monotonic() - started >= 2
-                ):
-                    target.click()
-                    retried = True
-                self.page.wait_for_timeout(100)
-            raise PlaywrightTimeoutError(
-                f"点击后未收到接口响应：{url_fragment}"
-            )
-        finally:
-            self.page.remove_listener("request", on_request)
-            self.page.remove_listener("response", on_response)

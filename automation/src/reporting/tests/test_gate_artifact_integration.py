@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from automation.src.reporting import business_report, gate_junit, gate_verdict
+from automation.src.reporting import business_report, gate_junit, gate_verdict, standalone_report
 
 
 PYTEST_CASES = """
@@ -63,6 +63,17 @@ def test_gate_with_pytest_artifacts_and_observed_scenario(tmp_path, monkeypatch)
     config.write_text("[pytest]\n", encoding="utf-8")
     junit_dir = tmp_path / "gate-junit"
     allure_dir = tmp_path / "allure-artifacts"
+    context = tmp_path / "test-gate-report.json"
+    commit = "02906808e3e2783c69a027e41cbfcf2d44d6f539"
+    for key, value in {
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_REPOSITORY": "dhualai/OpenRobotService",
+        "GITHUB_SHA": commit,
+        "GITHUB_REF_NAME": "test",
+        "GITHUB_RUN_ID": "12345678",
+        "GITHUB_RUN_ATTEMPT": "2",
+    }.items():
+        monkeypatch.setenv(key, value)
 
     def run_pytest(selection, junit, allure, exit_code=0):
         raw_junit = tmp_path / "raw-junit" / junit.name
@@ -96,7 +107,7 @@ def test_gate_with_pytest_artifacts_and_observed_scenario(tmp_path, monkeypatch)
         monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(step_summary))
         result = gate_verdict.main([
             "--junit-dir", str(junit_dir), "--allure-artifacts-dir", str(allure_dir),
-            "--quality-job", quality, "--real-job", real,
+            "--quality-job", quality, "--real-job", real, "--report-context", str(context),
         ])
         assert result == (0 if expected == "passed" else 1)
         assert step_output.read_text(encoding="utf-8").strip() == f"verdict={expected}"
@@ -121,12 +132,24 @@ def test_gate_with_pytest_artifacts_and_observed_scenario(tmp_path, monkeypatch)
     case_result.write_bytes(case_saved)
 
     # The observer's case survives flattening and becomes part of both report inputs.
+    check("passed", "## Test Gate 判定：通过")
     merged = tmp_path / "allure-results"
     gate_verdict.merge_allure_artifacts(allure_dir, merged)
     assert len(list(merged.glob("*-result.json"))) == 13
-    business_html = tmp_path / "business.html"
-    business_report.main(["--results", str(merged), "--out", str(business_html)])
-    assert "Observed work order scenario" in business_html.read_text(encoding="utf-8")
+    for renderer, filename in ((business_report, "business.html"),
+                               (standalone_report, "standalone.html")):
+        output = tmp_path / filename
+        renderer.main([
+            "--results", str(merged), "--out", str(output),
+            "--context", str(context), "--expect-gate",
+        ])
+        html = output.read_text(encoding="utf-8")
+        for expected in (
+            "Test Gate 判定：通过", "结果总数 13", "通过 9", "跳过 4",
+            "Observed work order scenario", "真实工单流程（观察项）",
+            "模拟接口测试", "真实后端冒烟检查", commit, "/actions/runs/12345678", "执行尝试 2",
+        ):
+            assert expected in html
 
     run_pytest("all_skipped", contract_junit, contract_allure)
     check("unverified", "全部用例已跳过")

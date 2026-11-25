@@ -13,15 +13,19 @@ import allure
 
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
+from automation.src.reporting.business_scenarios import record_business_evidence
 
 
 async def api_step(client, method: str, path: str, step: str = "", headers=None,
                    expected_status: int | None = None, expected_fields: dict | None = None,
+                   business_evidence: tuple[str, str] | None = None,
                    **kwargs):
     """执行一次 API 调用，包在 Allure step 内并触发断言记录。"""
     label = step or f"{method.upper()} {path}"
     with allure.step(label):
         r = await client.request(method, path, headers=headers, **kwargs)
+        if business_evidence is not None:
+            record_business_evidence(*business_evidence, r)
         if expected_status is not None:
             assert_status_code(r, expected_status)
         if expected_fields:
