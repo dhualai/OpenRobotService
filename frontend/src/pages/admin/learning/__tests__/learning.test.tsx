@@ -209,6 +209,13 @@ describe('来源工单摘要与相似推荐', () => {
 describe('文章编辑与候选采用', () => {
   const editor = () => wrap(<ArticleEditor articleId="article-1" refreshKey={0} onClose={vi.fn()} onChanged={vi.fn()} onQuestionEdit={vi.fn()} onPreview={vi.fn()} />);
 
+  it('AI提炼文章按钮使用蓝底白字的主按钮并加粗文字', async () => {
+    editor();
+    const button = await screen.findByRole('button', { name: 'AI提炼文章' });
+    expect(button).toHaveClass('ant-btn-primary');
+    expect(button).toHaveStyle({ fontWeight: '700' });
+  });
+
   it('AI生成只展示候选，不自动覆盖，需手动采用', async () => {
     const job: api.Generation = { id: 'request-1', kind: 'article', state: 'succeeded', input_revision: 1, created_at: '2026-11-20T01:00:00', error: null, result: { content: { ...content, title: 'AI候选标题' } } };
     vi.mocked(api.generateLearning).mockResolvedValue(job);
