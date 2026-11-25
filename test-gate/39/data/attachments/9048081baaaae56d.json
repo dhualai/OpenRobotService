@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://localhost:8400/api/tasks/1",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "assigned_to": "user_plain_user"
+  }
+}

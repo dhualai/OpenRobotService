@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/filter",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "keyword": "error"
+  }
+}

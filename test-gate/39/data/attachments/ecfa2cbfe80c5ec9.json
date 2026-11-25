@@ -1,0 +1,41 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/admin/users/",
+  "reason": "OK",
+  "headers": {
+    "content-length": "411",
+    "content-type": "application/json"
+  },
+  "body": [
+    {
+      "id": "testadmin",
+      "username": "testadmin",
+      "name": "test admin",
+      "role": "admin"
+    },
+    {
+      "id": "engineer",
+      "username": "engineer",
+      "name": "test engineer",
+      "role": "engineer"
+    },
+    {
+      "id": "customer",
+      "username": "customer",
+      "name": "test customer",
+      "role": "customer"
+    },
+    {
+      "id": "u1_auto",
+      "username": "u1_auto",
+      "name": "自动化提单用户",
+      "role": "customer"
+    },
+    {
+      "id": "u2_auto",
+      "username": "u2_auto",
+      "name": "自动化处理人",
+      "role": "engineer"
+    }
+  ]
+}
