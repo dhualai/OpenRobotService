@@ -260,7 +260,7 @@ class SSHMySQLTicketSource:
             for row in rows
         ]
 
-    def _query(self, sql: str, params: tuple) -> list[TicketCandidate]:
+    def _fetch_rows(self, sql: str, params: tuple) -> list[dict]:
         local_port = _free_port()
         tunnel = self._start_tunnel(local_port)
         conn = None
@@ -268,8 +268,7 @@ class SSHMySQLTicketSource:
             conn = self._connect(local_port)
             with conn.cursor() as cursor:
                 cursor.execute(sql, params)
-                rows = cursor.fetchall()
-            return self._rows_to_candidates(rows)
+                return cursor.fetchall()
         finally:
             if conn is not None:
                 conn.close()
@@ -278,6 +277,13 @@ class SSHMySQLTicketSource:
                 tunnel.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 tunnel.kill()
+
+    def _query(self, sql: str, params: tuple) -> list[TicketCandidate]:
+        return self._rows_to_candidates(self._fetch_rows(sql, params))
+
+    def fetch_status_by_id(self, ticket_id: int, project_id: str) -> str | None:
+        rows = self._fetch_rows("SELECT status FROM tasks WHERE id = %s AND project_id = %s", (ticket_id, project_id))
+        return rows[0]["status"] if rows else None
 
     def fetch(self, limit: int) -> list[TicketCandidate]:
         where, params = self._scan_clause()
