@@ -45,11 +45,15 @@ on:
         default: test
         options: [test, prod]
       action:
-        description: "deploy=部署；rollback=回滚到指定备份"
+        description: "deploy=部署；rollback=回滚；acceptance=单工单验收（不部署）"
         type: choice
         required: true
         default: deploy
-        options: [deploy, rollback]
+        options: [deploy, rollback, acceptance]
+      ticket_id:
+        description: "仅 acceptance 使用，填写单个已转正工单编号（如 ORS-1053）"
+        type: string
+        required: false
       components:
         description: "部署组件"
         type: choice
@@ -91,9 +95,9 @@ permissions:
   contents: read
   actions: read
 
-# 同一环境串行执行且不自动取消，避免两次发布互相覆盖
+# 同一环境的部署串行执行，单工单验收使用独立并发组。
 concurrency:
-  group: split-deploy-${{ inputs.environment || 'test' }}
+  group: ${{ inputs.action == 'acceptance' && format('ticket-acceptance-{0}', github.run_id) || format('split-deploy-{0}', inputs.environment || 'test') }}
   cancel-in-progress: false
 
 env:
@@ -108,6 +112,7 @@ jobs:
   # ---------------- 输入校验与参数解析 ----------------
   plan:
     name: Resolve plan
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.action == 'acceptance') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # 只读仓库与 PR 列表：后者用于取「部署分支上最近一条已合并 PR」当通知主旨
@@ -696,17 +701,93 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # 生产凭据只进入独立查询作业。验收作业使用另一个 runner 和临时数据库。
+  manual-ticket-status:
+    name: Read one production ticket status
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'acceptance' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    outputs:
+      ticket_id: ${{ steps.validate.outputs.ticket_id }}
+      eligible: ${{ steps.lookup.outputs.eligible }}
+    steps:
+      - name: Validate single-ticket input
+        id: validate
+        env:
+          TARGET_ENV: ${{ inputs.environment }}
+          TARGET_REF: ${{ inputs.git_ref }}
+          TICKET_INPUT: ${{ inputs.ticket_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != 'refs/heads/test' || "$TARGET_ENV" != 'test' || -n "$TARGET_REF" ]]; then
+            echo '::error::单工单验收仅支持 test 分支和 test 环境，git_ref 请留空。'
+            exit 1
+          fi
+          if [[ ! "$TICKET_INPUT" =~ ^(ORS-)?([1-9][0-9]{0,9})$ ]]; then
+            echo '::error::请填写一个工单编号，例如 ORS-1053。'
+            exit 1
+          fi
+          echo "ticket_id=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify promoted test exists
+        id: promoted
+        env:
+          TICKET_ID: ${{ steps.validate.outputs.ticket_id }}
+        run: |
+          set -euo pipefail
+          dir="automation/references/promoted-cases/$TICKET_ID"
+          if [[ ! -f "$dir/test_gen.py" || ! -f "$dir/manifest.json" ]] ||
+            ! jq -e --arg id "$TICKET_ID" '.review_status == "approved" and (.ticket_id | tostring) == $id' "$dir/manifest.json" >/dev/null; then
+            echo "::error::ORS-$TICKET_ID 没有已转正的测试脚本。"
+            exit 1
+          fi
+          project_id=$(jq -er '.project_id | select(type == "string" and test("^[A-Za-z0-9_-]+$"))' "$dir/manifest.json")
+          echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install status lookup dependencies
+        run: pip install 'pydantic>=2.8.2' 'PyMySQL[rsa]>=1.1.1'
+      - name: Read status through the existing SSH tunnel
+        id: lookup
+        env:
+          TICKET_ID: ${{ steps.validate.outputs.ticket_id }}
+          TICKET_PROJECT_ID: ${{ steps.promoted.outputs.project_id }}
+          PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
+          PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
+          PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
+          PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
+          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
+          PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PROD_TICKET_SSH_PRIVATE_KEY" ]]; then
+            echo '::error::Production status lookup is missing its SSH key.'
+            exit 1
+          fi
+          umask 077
+          key=$(mktemp)
+          trap 'rm -f -- "$key"' EXIT
+          printf '%s\n' "$PROD_TICKET_SSH_PRIVATE_KEY" | tr -d '\r' > "$key"
+          export PROD_TICKET_SSH_KEY="$key"
+          python -m automation.src.ticket_pipeline.manual_acceptance
+
   # ---------------- 工单验收（部署范围，非阻断） ----------------
   # 原 ticket-gate.yml 合并而来：工单号改为从「上次成功部署点 → 本次部署点」
   # 的提交范围提取（Deployments API 记录滚动范围）。
   ticket-acceptance:
-    name: Ticket functional cases (deploy range)
-    needs: plan
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy' }}
+    name: ${{ inputs.action == 'acceptance' && 'Single ticket functional cases' || 'Ticket functional cases (deploy range)' }}
+    needs: [plan, manual-ticket-status]
+    if: ${{ !cancelled() && ((needs.plan.result == 'success' && needs.plan.outputs.action == 'deploy') || (needs.manual-ticket-status.result == 'success' && needs.manual-ticket-status.outputs.eligible == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # 非阻断：LLM 生成的候选用例断言不权威，失败只标注不拦部署（沿用 ticket-gate 哲学）
-    continue-on-error: true
+    continue-on-error: ${{ inputs.action != 'acceptance' }}
     permissions:
       contents: read
       deployments: read
@@ -745,8 +826,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.plan.outputs.git_ref }}
+          ref: ${{ inputs.action == 'acceptance' && github.sha || needs.plan.outputs.git_ref }}
           fetch-depth: 0
+          persist-credentials: ${{ inputs.action != 'acceptance' }}
 
       - uses: actions/setup-python@v5
         with:
@@ -766,8 +848,8 @@ jobs:
       - name: Seed automation environment
         env:
           PYTHONPATH: ${{ github.workspace }}/backend
-          SEED_BOT_PASSWORD: ${{ secrets.SEED_BOT_PASSWORD || vars.SEED_BOT_PASSWORD || 'Automation@2026' }}
-          SEED_PLAIN_PASSWORD: ${{ secrets.SEED_PLAIN_PASSWORD || vars.SEED_PLAIN_PASSWORD || 'Passw0rd!' }}
+          SEED_BOT_PASSWORD: ${{ inputs.action == 'acceptance' && 'Automation@2026' || secrets.SEED_BOT_PASSWORD || vars.SEED_BOT_PASSWORD || 'Automation@2026' }}
+          SEED_PLAIN_PASSWORD: ${{ inputs.action == 'acceptance' && 'Passw0rd!' || secrets.SEED_PLAIN_PASSWORD || vars.SEED_PLAIN_PASSWORD || 'Passw0rd!' }}
         run: |
           python backend/scripts/seed_automation_env.py
 
@@ -787,6 +869,7 @@ jobs:
           exit 1
 
       - name: Run real scenario tests（业务场景 ③④⑦，依赖 plain_user 种子）
+        if: ${{ inputs.action != 'acceptance' }}
         env:
           PYTHONPATH: ${{ github.workspace }}
           AUTOMATION_ENV: local
@@ -802,7 +885,7 @@ jobs:
           pytest automation/tests/real/test_ticket_scenarios.py -q --alluredir=automation/output/allure-results-scenarios --junitxml=automation/output/junit-scenarios.xml
 
       - name: Upload scenario test results
-        if: always()
+        if: ${{ always() && inputs.action != 'acceptance' }}
         uses: actions/upload-artifact@v4
         with:
           name: scenario-test-results
@@ -813,6 +896,7 @@ jobs:
           retention-days: 7
 
       - name: Prepare SSH key
+        if: ${{ inputs.action != 'acceptance' }}
         env:
           PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
         run: |
@@ -824,6 +908,7 @@ jobs:
           echo "PROD_TICKET_SSH_KEY=$HOME/.ssh/prod_ticket_key" >> "$GITHUB_ENV"
 
       - name: Resolve previous deployment sha
+        if: ${{ inputs.action != 'acceptance' }}
         id: prev
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -846,6 +931,7 @@ jobs:
           fi
 
       - name: Capture commit messages (deploy range)
+        if: ${{ inputs.action != 'acceptance' }}
         run: |
           set -uo pipefail
           prev="${{ steps.prev.outputs.prev_sha }}"
@@ -864,6 +950,7 @@ jobs:
           cat commit-message.txt
 
       - name: Run ticket acceptance gate
+        if: ${{ inputs.action != 'acceptance' }}
         env:
           PYTHONPATH: ${{ github.workspace }}
           AUTOMATION_ENV: local
@@ -881,6 +968,30 @@ jobs:
             --message-file commit-message.txt \
             --require-resolved \
             --no-regression
+
+      - name: Run only the selected promoted ticket tests
+        if: ${{ inputs.action == 'acceptance' }}
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          TICKET_ID: ${{ needs.manual-ticket-status.outputs.ticket_id }}
+          AUTOMATION_ENV: local
+          USE_MOCK: "0"
+          TEST_BASE_URL: http://127.0.0.1:8400
+          TEST_USERNAME: ${{ env.SEED_BOT_USERNAME }}
+          TEST_PASSWORD: Automation@2026
+        run: |
+          echo "ORS-$TICKET_ID accepted: using the CI runner's temporary MySQL and local backend."
+          pytest "automation/references/promoted-cases/$TICKET_ID/test_gen.py" \
+            --import-mode=importlib -p no:cacheprovider -q \
+            --junitxml=automation/output/junit-ticket-gate-functional.xml \
+            --alluredir=automation/output/allure-results
+          python - <<'PY'
+          from xml.etree import ElementTree
+
+          report = ElementTree.parse("automation/output/junit-ticket-gate-functional.xml")
+          if not any(case.find("skipped") is None for case in report.iter("testcase")):
+              raise SystemExit("No ticket tests executed")
+          PY
 
       - name: Upload ticket gate results
         if: always()
