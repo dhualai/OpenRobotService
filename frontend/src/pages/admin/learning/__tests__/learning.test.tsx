@@ -50,7 +50,7 @@ beforeEach(() => {
   vi.mocked(api.listLearningArticles).mockResolvedValue({ items: [summary], total: 1 });
   vi.mocked(api.listLearningQuestions).mockResolvedValue({ items: [question], total: 1 });
   vi.mocked(api.listSourceTasks).mockResolvedValue({ items: [], total: 0 });
-  vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [], matching_method: 'text' });
+  vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [], matching_method: 'vector', retrieval_status: 'ok' });
   vi.mocked(api.getLearningArticle).mockResolvedValue(detail());
 });
 
@@ -128,7 +128,7 @@ describe('题目生成管理页', () => {
 describe('来源工单摘要与相似推荐', () => {
   it('选中后展示摘要并查询相似工单，仅手动加入的推荐项进入来源', async () => {
     vi.mocked(api.listSourceTasks).mockResolvedValue({ items: [sourceTask], total: 1 });
-    vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [sourceTask, relatedTask], matching_method: 'text' });
+    vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [sourceTask, relatedTask], matching_method: 'vector', retrieval_status: 'ok' });
     const submit = vi.fn().mockResolvedValue(undefined);
     render(<SourceModal open initialTitle={content.title} onClose={vi.fn()} onSubmit={submit} />);
     const dialog = within(screen.getByRole('dialog'));
@@ -153,13 +153,13 @@ describe('来源工单摘要与相似推荐', () => {
     const stale = { ...sourceTask, id: '4', title: '旧请求推荐' };
     let resolveOld!: (result: api.SourceRecommendations) => void;
     const oldRequest = new Promise<api.SourceRecommendations>((resolve) => { resolveOld = resolve; });
-    vi.mocked(api.getSimilarSourceTasks).mockImplementation((id) => id === '2' ? oldRequest : Promise.resolve({ source: sourceTask, items: [third], matching_method: 'text' }));
+    vi.mocked(api.getSimilarSourceTasks).mockImplementation((id) => id === '2' ? oldRequest : Promise.resolve({ source: sourceTask, items: [third], matching_method: 'vector', retrieval_status: 'ok' }));
     render(<SourceModal open initialTitle={content.title} initialSources={taskSnapshots([sourceTask, relatedTask])} onClose={vi.fn()} onSubmit={vi.fn()} />);
     const dialog = within(screen.getByRole('dialog'));
     await waitFor(() => expect(api.getSimilarSourceTasks).toHaveBeenCalledWith('2'));
     fireEvent.click(dialog.getByRole('button', { name: '查找工单 1 的相似工单' }));
     expect(await dialog.findByRole('article', { name: '相似工单 3' })).toBeInTheDocument();
-    await act(async () => { resolveOld({ source: relatedTask, items: [stale], matching_method: 'text' }); });
+    await act(async () => { resolveOld({ source: relatedTask, items: [stale], matching_method: 'vector', retrieval_status: 'ok' }); });
     expect(dialog.queryByText('旧请求推荐')).not.toBeInTheDocument();
     fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 2' }));
     fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 1' }));
@@ -168,7 +168,7 @@ describe('来源工单摘要与相似推荐', () => {
   });
 
   it('推荐失败可重试，不阻止用已选来源创建草稿', async () => {
-    vi.mocked(api.getSimilarSourceTasks).mockRejectedValueOnce(new Error('推荐暂不可用')).mockResolvedValueOnce({ source: sourceTask, items: [relatedTask], matching_method: 'text' });
+    vi.mocked(api.getSimilarSourceTasks).mockRejectedValueOnce(new Error('推荐暂不可用')).mockResolvedValueOnce({ source: sourceTask, items: [relatedTask], matching_method: 'vector', retrieval_status: 'ok' });
     const submit = vi.fn().mockResolvedValue(undefined);
     render(<SourceModal open initialTitle={content.title} initialSources={taskSnapshots([sourceTask])} onClose={vi.fn()} onSubmit={submit} />);
     const dialog = within(screen.getByRole('dialog'));
@@ -182,8 +182,8 @@ describe('来源工单摘要与相似推荐', () => {
 
   it('来源达到十份时禁用推荐加入，无匹配时显示空状态', async () => {
     const tasks = Array.from({ length: 9 }, (_, index) => ({ ...sourceTask, id: String(index + 1) }));
-    vi.mocked(api.getSimilarSourceTasks).mockResolvedValueOnce({ source: tasks[8], items: [{ ...relatedTask, id: '11' }], matching_method: 'text' })
-      .mockResolvedValue({ source: tasks[7], items: [], matching_method: 'text' });
+    vi.mocked(api.getSimilarSourceTasks).mockResolvedValueOnce({ source: tasks[8], items: [{ ...relatedTask, id: '11' }], matching_method: 'vector', retrieval_status: 'ok' })
+      .mockResolvedValue({ source: tasks[7], items: [], matching_method: 'vector', retrieval_status: 'ok' });
     render(<SourceModal open initialTitle={content.title} initialSources={[...taskSnapshots(tasks), detail().sources[0]]} onClose={vi.fn()} onSubmit={vi.fn()} />);
     const dialog = within(screen.getByRole('dialog'));
     expect(await dialog.findByRole('button', { name: '加入来源工单 11' })).toBeDisabled();
@@ -192,10 +192,29 @@ describe('来源工单摘要与相似推荐', () => {
     fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 9' }));
     expect(await dialog.findByText('暂无相似的可用工单，可继续搜索或添加技术材料。')).toBeInTheDocument();
   });
+
+  it('向量服务不可用时明确提示且可重试，不伪装为没有相似工单', async () => {
+    vi.mocked(api.getSimilarSourceTasks).mockResolvedValueOnce({ source: sourceTask, items: [], matching_method: 'vector', retrieval_status: 'unavailable' })
+      .mockResolvedValueOnce({ source: sourceTask, items: [relatedTask], matching_method: 'vector', retrieval_status: 'ok' });
+    render(<SourceModal open initialTitle={content.title} initialSources={taskSnapshots([sourceTask])} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    const dialog = within(screen.getByRole('dialog'));
+    expect(await dialog.findByText('相似工单检索服务暂不可用，请重试')).toBeInTheDocument();
+    expect(dialog.queryByText('暂无相似的可用工单，可继续搜索或添加技术材料。')).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: '重试相似工单' }));
+    expect(await dialog.findByRole('article', { name: '相似工单 2' })).toBeInTheDocument();
+    expect(dialog.getByText(/使用与知识沉淀审核页相同的向量检索/)).toBeInTheDocument();
+  });
 });
 
 describe('文章编辑与候选采用', () => {
   const editor = () => wrap(<ArticleEditor articleId="article-1" refreshKey={0} onClose={vi.fn()} onChanged={vi.fn()} onQuestionEdit={vi.fn()} onPreview={vi.fn()} />);
+
+  it('AI提炼文章按钮使用蓝底白字的主按钮并加粗文字', async () => {
+    editor();
+    const button = await screen.findByRole('button', { name: 'AI提炼文章' });
+    expect(button).toHaveClass('ant-btn-primary');
+    expect(button).toHaveStyle({ fontWeight: '700' });
+  });
 
   it('AI生成只展示候选，不自动覆盖，需手动采用', async () => {
     const job: api.Generation = { id: 'request-1', kind: 'article', state: 'succeeded', input_revision: 1, created_at: '2026-11-20T01:00:00', error: null, result: { content: { ...content, title: 'AI候选标题' } } };
