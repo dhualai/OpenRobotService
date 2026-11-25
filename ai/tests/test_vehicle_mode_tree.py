@@ -62,7 +62,7 @@ _TREE_MD = """# XQE 故障分叉树
 
 @pytest.fixture
 def kb(tmp_path: Path) -> Path:
-    d = tmp_path / "company" / "XQE"
+    d = tmp_path / "company" / "vehicle_models" / "XQE"
     d.mkdir(parents=True)
     (d / "00_故障分叉树.md").write_text(_TREE_MD, encoding="utf-8")
     return tmp_path
@@ -188,7 +188,7 @@ def test_tree_direct_reply_uses_primary_subpath(tree, kb):
     """
     vm = {}
     r = tree_direct_reply("车辆停着不动（任务中断）", vm, "XQE122",
-                          kb_root=kb, subpath="XQE", rng=random.Random(1))
+                          kb_root=kb, subpath="vehicle_models/XQE", rng=random.Random(1))
     assert r is not None
     assert r["kind"] == "category"
     # 不给 subpath（按录入串找目录）→ 找不到树 → None
