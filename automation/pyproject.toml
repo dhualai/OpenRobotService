@@ -49,6 +49,7 @@ markers = [
     "flaky: Known flaky tests",
     "mock: Tests using mock services",
     "judge: Tests that invoke the LLM judge (L3, higher cost)",
+    "flow: Main-flow cases listed in automation/ci/flow-tests.txt (blocking at the Test Gate)",
 ]
 addopts = "-ra --strict-markers"
 

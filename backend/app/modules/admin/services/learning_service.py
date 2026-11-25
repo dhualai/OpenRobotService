@@ -2,14 +2,12 @@ import hashlib
 import json
 import logging
 import re
-from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from math import sqrt
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.llm_client import get_llm_client
@@ -22,12 +20,11 @@ from app.modules.admin.services.learning_content import (
     ArticleContent, article_text, parse_json, reading_article, redact, sanitize, validate_article, validate_question,
     validation_error_message,
 )
+from app.services import similar_tickets
 from app.services.permission_service import PERM_LEARNING
 
 
 SOURCE_STATES = (TaskStatus.CLOSED, TaskStatus.ARCHIVING, TaskStatus.ARCHIVED)
-SOURCE_STOP_WORDS = {"工单", "问题", "现场", "处理", "情况", "进行", "发现", "检查", "故障", "异常", "设备",
-    "机器", "器人", "无法", "出现", "需要", "相关", "正常", "以及", "核实", "实现", "功能", "the", "and", "with", "from", "that", "this"}
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +60,8 @@ async def source_task(db, actor, task_id):
     task = await db.get(Task, task_id)
     if not task or task.status not in SOURCE_STATES:
         raise HTTPException(422, "仅可选择已关闭、归档中、已归档的工单")
+    if (task.metadata_info or {}).get("approval_type") not in (None, ""):
+        raise HTTPException(422, "审核类工单不能作为知识点来源")
     report = (await db.execute(select(ArchiveReport).where(ArchiveReport.task_id == task_id)
         .order_by(ArchiveReport.version.desc()).limit(1))).scalar_one_or_none()
     if report and report.submit_status != "approved" and report.reviewer in await actor_identities(db, actor):
@@ -75,7 +74,8 @@ async def eligible_source_query(db, actor):
     identities = await actor_identities(db, actor)
     blocked = select(ArchiveReport.task_id).where(ArchiveReport.submit_status != "approved",
         ArchiveReport.reviewer.in_(identities))
-    return select(Task).where(Task.status.in_(SOURCE_STATES), Task.id.not_in(blocked))
+    return select(Task).where(Task.status.in_(SOURCE_STATES),
+        func.coalesce(Task.metadata_info["approval_type"].as_string(), "") == "", Task.id.not_in(blocked))
 
 
 async def source_previews(db, tasks):
@@ -88,18 +88,6 @@ async def source_previews(db, tasks):
         previews.append({"id": str(task.id), "title": redact(task.title, terms), "status": task.status.value,
             "summary": summary[:240] + ("…" if len(summary) > 240 else "")})
     return previews
-
-
-def source_features(preview):
-    features = Counter()
-    for text, weight in ((preview["title"], 3), (preview["summary"], 1)):
-        cleaned = re.sub(r"\[[^\]]*\]", " ", text).casefold()
-        for word in re.findall(r"[a-z][a-z0-9_-]+|[\u4e00-\u9fff]{2,}", cleaned):
-            tokens = [word] if word.isascii() else [word[index:index + 2] for index in range(len(word) - 1)]
-            for token in tokens:
-                if token not in SOURCE_STOP_WORDS:
-                    features[token] += weight
-    return features
 
 
 async def source_listing(db, actor, keyword="", page=1):
@@ -117,30 +105,20 @@ async def source_listing(db, actor, keyword="", page=1):
 async def similar_source_tasks(db, actor, task_id, limit=10):
     task = await source_task(db, actor, task_id)
     source = (await source_previews(db, [task]))[0]
-    features = source_features(source)
-    if not features:
-        return {"source": source, "items": [], "matching_method": "text"}
-    conditions, relevance = [], []
-    for token, weight in features.most_common(24):
-        title_match = Task.title.contains(token, autoescape=True)
-        description_match = Task.description.contains(token, autoescape=True)
-        conditions.append(or_(title_match, description_match))
-        relevance.append(case((title_match, weight * 3), else_=0) + case((description_match, weight), else_=0))
-    query = (await eligible_source_query(db, actor)).where(Task.id != task_id, or_(*conditions))
-    tasks = (await db.execute(query.order_by(sum(relevance).desc(), Task.updated_at.desc(), Task.id.desc()).limit(200))).scalars().all()
-    previews = await source_previews(db, [task, *tasks])
-    source = previews[0]
-    features = source_features(source)
-    norm = sqrt(sum(weight * weight for weight in features.values()))
-    ranked = []
-    for preview in previews[1:]:
-        candidate = source_features(preview)
-        candidate_norm = sqrt(sum(weight * weight for weight in candidate.values()))
-        score = sum(weight * candidate[token] for token, weight in features.items()) / (norm * candidate_norm) if norm and candidate_norm else 0
-        if score >= 0.2:
-            ranked.append((score, preview))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return {"source": source, "items": [preview for _, preview in ranked[:limit]], "matching_method": "text"}
+    items, retrieval_status = await similar_tickets.fetch_similar_ticket_hits(task_id, 30)
+    result = {"source": source, "items": [], "matching_method": "vector", "retrieval_status": retrieval_status}
+    if retrieval_status != "ok":
+        return result
+    hits = similar_tickets.filter_similar_ticket_hits(items, task_id, similar_tickets.REVIEW_SIMILAR_MIN_SCORE)
+    if not hits:
+        return result
+    query = (await eligible_source_query(db, actor)).where(Task.id.in_([hit["task_id"] for hit in hits]))
+    tasks = (await db.execute(query)).scalars().all()
+    by_id = {task.id: task for task in tasks}
+    ordered = [by_id[hit["task_id"]] for hit in hits if hit["task_id"] in by_id][:limit]
+    previews = await source_previews(db, [task, *ordered])
+    result.update(source=previews[0], items=previews[1:])
+    return result
 
 
 async def prepare_sources(db, actor, body):
@@ -194,9 +172,15 @@ async def change_article(db, article, revision, **values):
         raise HTTPException(409, "文章已被修改，请刷新后重试；当前编辑内容尚未覆盖")
 
 
-async def current_version(db, article, version=None):
-    row = (await db.execute(select(LearningArticleVersion).where(LearningArticleVersion.article_id == article.id,
-        LearningArticleVersion.version == (version or article.active_version)))).scalar_one_or_none()
+async def current_version(db, article, version=None, *, lock=False):
+    query = select(LearningArticleVersion).where(
+        LearningArticleVersion.article_id == article.id,
+        LearningArticleVersion.version == (version or article.active_version),
+    )
+    if lock:
+        # The question lookup can establish a snapshot before the article lock was acquired.
+        query = query.with_for_update(read=True)
+    row = (await db.execute(query)).scalar_one_or_none()
     if not row:
         raise HTTPException(422, "请先确认知识点文章")
     return row
@@ -476,6 +460,22 @@ async def question_row(db, actor, question_id):
     return question
 
 
+async def lock_question_with_article(db, actor, question_id):
+    manager(actor)
+    article_id = (await db.execute(
+        select(LearningQuestion.article_id).where(LearningQuestion.id == question_id)
+    )).scalar_one_or_none()
+    if article_id is None:
+        raise HTTPException(404, "题目不存在")
+
+    # Match the lock order of publishing articles and submitting learner answers.
+    article = await article_row(db, actor, article_id)
+    question = await question_row(db, actor, question_id)
+    if question.article_id != article.id:
+        raise HTTPException(404, "题目不存在")
+    return article, question
+
+
 async def change_question(db, question, revision, **values):
     result = await db.execute(update(LearningQuestion).where(LearningQuestion.id == question.id,
         LearningQuestion.revision == revision).values(**values, revision=revision + 1, updated_at=utcnow())
@@ -485,9 +485,8 @@ async def change_question(db, question, revision, **values):
 
 
 async def save_question(db, actor, question_id, body):
-    question = await question_row(db, actor, question_id)
-    article = await article_row(db, actor, question.article_id)
-    version = await current_version(db, article)
+    article, question = await lock_question_with_article(db, actor, question_id)
+    version = await current_version(db, article, lock=True)
     terms = await known_terms(db, version.snapshot["sources"])
     payload = validate_question(sanitize(body.content.model_dump(), terms), version.snapshot["content"])
     await change_question(db, question, body.revision, payload=payload, article_version=article.active_version,
@@ -499,13 +498,12 @@ async def save_question(db, actor, question_id, body):
 
 
 async def question_action(db, actor, question_id, body):
-    question = await question_row(db, actor, question_id)
-    article = await article_row(db, actor, question.article_id)
+    article, question = await lock_question_with_article(db, actor, question_id)
     action = body.action
     if action not in ("disable", "reject"):
         if not article.enabled or question.article_version != article.active_version:
             raise HTTPException(422, "文章已停用或版本已更新，请重新核验题目")
-        version = await current_version(db, article)
+        version = await current_version(db, article, lock=True)
         validate_question(question.payload, version.snapshot["content"])
     if action == "submit":
         if question.review_status not in ("draft", "rejected"):
@@ -574,6 +572,12 @@ async def preview_answer(db, actor, article_id, question_id, answers):
     question = await question_row(db, actor, question_id)
     if question.article_id != article_id or question.article_version != article.active_version:
         raise HTTPException(422, "题目不属于当前文章版本")
+    user_id = str(actor.get("id") or actor.get("username") or "")
+    return await grade_and_record_answer(db, user_id, article, question, answers)
+
+
+async def grade_and_record_answer(db, user_id, article, question, answers, *, current_answer=None):
+    """Grade an eligible question selected by the caller and save the result."""
     options = {option["key"] for option in question.payload["options"]}
     if not answers or len(set(answers)) != len(answers) or not set(answers).issubset(options):
         raise HTTPException(422, "请选择有效且不重复的答案")
@@ -581,16 +585,19 @@ async def preview_answer(db, actor, article_id, question_id, answers):
         raise HTTPException(422, "单选和判断题只能选择一个答案")
 
     is_correct = set(answers) == set(question.payload["correct_answer"])
-    user_id = str(actor.get("id") or actor.get("username") or "")
     now = utcnow()
+    article_id, question_id = article.id, question.id
 
-    # 1) 每次答都写入新记录（允许多次，进度取最后一次）
-    db.add(LearningAnswer(
-        user_id=user_id, article_id=article_id,
-        article_version=article.active_version, question_id=question_id,
-        answers=list(answers), is_correct=is_correct,
-        created_at=now,
-    ))
+    if current_answer is None:
+        db.add(LearningAnswer(
+            user_id=user_id, article_id=article_id,
+            article_version=article.active_version, question_id=question_id,
+            answers=list(answers), is_correct=is_correct, created_at=now,
+        ))
+    else:
+        current_answer.answers = list(answers)
+        current_answer.is_correct = is_correct
+        current_answer.created_at = now
 
     # 2) 自动维护错题本
     wrongbook = (await db.execute(
@@ -598,7 +605,7 @@ async def preview_answer(db, actor, article_id, question_id, answers):
             LearningWrongBook.user_id == user_id,
             LearningWrongBook.question_id == question_id,
             LearningWrongBook.article_version == article.active_version,
-        )
+        ).with_for_update()
     )).scalar_one_or_none()
 
     if not is_correct:

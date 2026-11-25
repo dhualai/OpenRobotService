@@ -18,6 +18,7 @@
 
 - 新入口为「后台管理 → 其他 → 运营与数据 → 题目生成」，实际路由在 `frontend/src/main.tsx` 注册 `/admin/question-generation`；页面及编辑、选材、审核、开卷预览组件位于 `frontend/src/pages/admin/learning/`，请求封装位于 `frontend/src/api/learning.ts`。
 - 新增 `/api/admin/learning/*`：多来源脱敏、AI文章候选及显式采用、草稿保存、人工确认不可变版本、基于版本生成题目、题目编辑/审核/启停、列表与后台模拟答题。路由在 `backend/app/modules/admin/api/learning.py`，业务和内容校验在 `backend/app/modules/admin/services/learning_service.py`、`learning_content.py`。
+- 题目生成选材和知识沉淀审核页的相似工单推荐共用 `backend/app/services/similar_tickets.py`；共享检索与结果过滤置于中立服务层，避免后台管理与用户学习模块初始化时循环导入。
 - 独立ORM为 `backend/app/models/learning.py`，新增 `learning_articles`、`learning_article_versions`、`learning_questions`、`learning_generations`、`learning_audits` 五张表；来源和审核内容分别保存在版本JSON和审计快照中，不复用现有 `KnowledgePublication`。
 - 管理权限为 `frontend:admin:learning:manage`。迁移 `b5d9f307ca12` 接在 `a4c8e2f6b901` 后，新增表及权限；本轮只做隔离迁移测试，没有对真实环境执行。AI复用现有 `LLM_*` 配置。
 - 测试位于 `backend/tests/test_learning.py`、`frontend/src/pages/admin/learning/__tests__/learning.test.tsx`、`frontend/src/api/__tests__/learning.test.ts`，并扩展入口与真实路由回归。明确不接入系统任务、正式用户学习记录或通知分发；首版细粒度权限及批量/去重增强项见 `docs/PRODUCT/出题功能.md` 第16节。

@@ -88,6 +88,15 @@ export default function LearnerStudy() {
     }
   }, [articleId, question, selected, submitting]);
 
+  // 智能返回：优先历史栈，直接打开 URL 时 fallback 到学习中心
+  const handleBack = useCallback(() => {
+    if (window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate('/tasks/learning', { replace: true });
+    }
+  }, [navigate]);
+
   const goPrev = useCallback(() => {
     if (currentIndex > 0) setCurrentIndex((i) => i - 1);
   }, [currentIndex]);
@@ -120,7 +129,7 @@ export default function LearnerStudy() {
     <div className="learner-study">
       {/* 顶栏 */}
       <header className="learner-study__header">
-        <button className="learner-study__back" onClick={() => navigate('/tasks/learning')} aria-label="返回学习中心">
+        <button className="learner-study__back" onClick={handleBack} aria-label="返回">
           <ArrowLeft size={20} />
         </button>
         <div className="learner-study__title-area">

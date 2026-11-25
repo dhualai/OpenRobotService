@@ -30,6 +30,8 @@ import json
 import re
 import time
 
+from pathlib import Path
+
 from ai.core.logging import get_logger
 
 logger = get_logger("ARCHIVE_FLOW")
@@ -274,6 +276,115 @@ def spawn_generation(task_id: int, queue: asyncio.Queue, username: str) -> bool:
     return True
 
 
+_SINK_TYPE_CN = {
+    "bug": "缺陷", "feature": "功能", "support": "支持",
+    "question": "问题", "problem": "问题", "other": "其他",
+}
+
+# 用户显示名解析缓存：raw（username 或 openid）→ 姓名
+_USER_NAME_CACHE: dict[str, str] = {}
+
+
+def resolve_user_name(raw) -> str:
+    """把 tasks 里的 assigned_to / reviewer 换成人的姓名。
+
+    这几个字段存的是 username 或微信 openid（wechat_ + openid 前 10 位即账号），
+    直接把 openid 写进档案没人看得懂。查不到就返回空串，调用方回退。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if raw in _USER_NAME_CACHE:
+        return _USER_NAME_CACHE[raw]
+    name = ""
+    try:
+        from sqlalchemy import text
+        from ai.core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            row = db.execute(text(
+                "SELECT COALESCE(name, username) AS n FROM users "
+                "WHERE username = :v OR wechat_openid = :v "
+                "   OR username = CONCAT('wechat_', LEFT(:v, 10)) "
+                "LIMIT 1"), {"v": raw}).mappings().first()
+            name = (row["n"] or "").strip() if row else ""
+        finally:
+            db.close()
+    except Exception as e:      # 查不到人不是错误，档案照写
+        logger.warning(f"[archive] 解析用户姓名失败 {raw!r}: {e}")
+    _USER_NAME_CACHE[raw] = name
+    return name
+
+
+def _sink_point_id(task_id: int) -> str:
+    """与检索入库同一个确定性点 ID（uuid5 of task_id），文件名跟着它走。
+
+    老流程的沉淀卡文件名就是 `工单707_a1e88289-665.md`，这里保持同一约定，
+    后台浏览时新旧沉淀卡排在一起、同一单重复沉淀覆盖同一个文件。
+    """
+    import uuid
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"yaorenba:task_resolution:{task_id}"))
+
+
+def write_archive_sink_md(row: dict, out_dir=None) -> str:
+    """归档报告落一份 md 到 kb/sink_cards/，供人浏览与溯源。
+
+    只写文件，**不进检索**：检索侧由 run_archive_ingest_worker 写 Qdrant 负责，
+    kb/sink_cards 不属于任何 domain，ingest_all 扫不到（与老流程的审核留档同目录）。
+    写失败不抛异常，只记日志——它是给人看的档案，不能拖累入库主链路。
+    `out_dir` 仅供测试覆盖输出目录。
+    """
+    from ai.config import _KB_DIR
+
+    tid = row["id"]
+    pid = _sink_point_id(tid)
+    out_dir = Path(out_dir) if out_dir else (_KB_DIR / "sink_cards")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"工单{tid}_{pid[:12]}.md"
+
+    from ai.core.solution_sink import _as_meta, _fmt_reviewed_at
+    meta = _as_meta(row.get("metadata_info"))
+    fault_code = (meta.get("fault_code") or "").strip() or "-"
+    robot_type = (meta.get("robot_type") or "").strip() or "-"
+    def _who(raw) -> str:
+        """显示用的人名：查到姓名用姓名；查不到时只有像账号的才原样显示，
+        微信 openid（28 位、o 开头）这种看不懂的不往外写。"""
+        raw = (raw or "").strip()
+        if not raw:
+            return "-"
+        return resolve_user_name(raw) or (raw if len(raw) < 24 else "-")
+
+    reviewer = _who(row.get("report_reviewer"))
+    assignee = _who(row.get("assigned_to"))
+    type_raw = (row.get("task_type") or "").strip()
+    type_cn = _SINK_TYPE_CN.get(type_raw.lower(), type_raw or "-")
+    version = row.get("report_version")
+    reviewed_at = _fmt_reviewed_at(row.get("report_reviewed_at"))
+    title = (row.get("title") or "").strip()
+    report = (row.get("report_content") or "").strip()
+    desc = (row.get("description") or "").strip()
+    version_txt = f"v{version}" if version not in (None, "") else "-"
+
+    parts = [
+        f"# 工单 #{tid}" + (f"：{title}" if title else ""),
+        "",
+        "- 判定: ✅ 通过（归档审核）",
+        f"- 报告版本: {version_txt}　|　审核人: {reviewer}　|　审核时间: {reviewed_at}",
+        f"- point_id: `{pid}`",
+        f"- 类型: {type_cn}　|　解决人: {assignee}"
+        f"　|　项目: {(row.get('project_name') or '-')}"
+        f"　|　故障码: {fault_code}　|　车型: {robot_type}",
+        "",
+        "> 来源：工单归档审核通过的知识沉淀报告（处理人撰写 + 审核人审核）。",
+        "",
+        report,
+    ]
+    if desc:
+        parts += ["", "### 工单原始信息（素材来源）", "", "**问题描述**", "", desc]
+    path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+    return str(path)
+
+
 async def run_archive_ingest_worker(stop_event: asyncio.Event):
     """入库 worker：approved 归档报告 → 放行 / 补建知识卡 → 打标。
 
@@ -303,6 +414,14 @@ async def run_archive_ingest_worker(stop_event: asyncio.Event):
                     # 打标在 process_archived_ticket 里（archive_sink_status）
                     status = await solution_sink.process_archived_ticket(row, retriever)
                     logger.info(f"[archive] #{tid} v{row.get('report_version')}: {status}")
+                    # 审核通过的顺手落一份 md 到 kb/sink_cards/（给人看，不进检索）；
+                    # 写失败只记日志，不能回滚已经成功的入库
+                    if status == "indexed":
+                        try:
+                            md_path = write_archive_sink_md(row)
+                            logger.info(f"[archive] #{tid} 沉淀卡已落 kb: {md_path}")
+                        except Exception as e:
+                            logger.warning(f"[archive] #{tid} 沉淀卡落 kb 失败（不影响入库）: {e}")
                 except Exception as e:
                     logger.exception(f"[archive] #{tid} 入库失败（下轮重试）: {e}")
         except Exception:

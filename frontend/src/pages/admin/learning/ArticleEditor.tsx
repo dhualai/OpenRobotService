@@ -165,7 +165,7 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
               {data.draft && <Button disabled={disabled} onClick={() => setSourceOpen(true)}>调整来源材料</Button>}
             </> }]} />
             {data.draft ? <>
-              <div className="learning-section-heading"><h3>编辑知识点</h3><Button icon={<Sparkles size={15} />} disabled={disabled} loading={busy} onClick={() => generate('article')}>AI提炼文章</Button></div>
+              <div className="learning-section-heading"><h3>编辑知识点</h3><Button type="primary" style={{ fontWeight: 700 }} icon={<Sparkles size={15} />} disabled={disabled} loading={busy} onClick={() => generate('article')}>AI提炼文章</Button></div>
               <Form name="learning-article" form={form} layout="vertical" disabled={disabled} onValuesChange={() => setDirty(true)}>
                 <div className="learning-form-grid"><Form.Item name="title" label="文章标题" rules={[{ required: true, whitespace: true }]}><Input maxLength={255} /></Form.Item>
                   <Form.Item name="category" label="知识分类" rules={[{ required: true, whitespace: true }]}><Input maxLength={80} /></Form.Item></div>

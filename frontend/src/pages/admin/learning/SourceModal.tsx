@@ -69,8 +69,12 @@ export default function SourceModal({ open, initialTitle = '', initialSources = 
     setSimilarLoading(true);
     getSimilarSourceTasks(activeAnchor).then((result) => {
       if (!active) return;
-      setSimilarTasks(result.items);
       setKnownTasks((current) => ({ ...current, ...Object.fromEntries([result.source, ...result.items].map((task) => [task.id, task])) }));
+      if (result.retrieval_status === 'unavailable') {
+        setSimilarError('相似工单检索服务暂不可用，请重试');
+        return;
+      }
+      setSimilarTasks(result.items);
     }).catch((cause: unknown) => {
       if (active) setSimilarError(cause instanceof Error ? cause.message : '相似工单查询失败，请重试');
     }).finally(() => { if (active) setSimilarLoading(false); });
@@ -135,7 +139,7 @@ export default function SourceModal({ open, initialTitle = '', initialSources = 
       </section>}
       {activeAnchor && <section className="learning-source-section" aria-label="相似工单推荐">
         <h3>相似工单推荐</h3>
-        <p className="learning-source-hint">以工单 {activeAnchor} 为参照，按标题和简要描述的文本相关度推荐；请判断后手动加入，不代表技术结论相同。</p>
+        <p className="learning-source-hint">以工单 {activeAnchor} 为参照，使用与知识沉淀审核页相同的向量检索，推荐已审核沉淀的相似工单；请判断后手动加入，不代表技术结论相同。</p>
         {similarLoading ? <div role="status" className="learning-source-hint"><Spin size="small" /> 正在查找相似工单…</div> : similarError ?
           <Alert type="warning" showIcon message={similarError} action={<Button size="small" onClick={() => setSimilarRetry((current) => current + 1)}>重试相似工单</Button>} /> :
           recommendations.length ? recommendations.map((task) => <article className="learning-source-card" aria-label={`相似工单 ${task.id}`} key={task.id}>

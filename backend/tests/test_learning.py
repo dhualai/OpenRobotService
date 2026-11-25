@@ -10,20 +10,22 @@ from alembic.operations import Operations
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, text
 
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
 from app.models.base import Base
 from app.models.identity import Permission
-from app.models.learning import LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration
-from app.models.task import TaskStatus
+from app.models.learning import LearningAnswer, LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration, LearningQuestion
+from app.models.task import TaskStatus, TaskType
 from app.modules.admin.api.learning import (
     ConfirmArticle, CreateArticle, Generate, QuestionAction, SaveArticle, SaveQuestion, router,
 )
 from app.modules.admin.api.auth import get_current_active_user_from_token as admin_actor
 from app.modules.admin.services import learning_service as service
 from app.modules.admin.services.learning_content import ArticleContent, QuestionContent, redact
+from app.modules.tasks.api.learning import router as learner_router
+from app.modules.tasks.services import learning_learner_service as learner_service
 from app.services.permission_service import PERM_LEARNING
 from backend.tests.test_knowledge import actor, db, seed
 
@@ -34,7 +36,10 @@ def administrator():
 
 @pytest.fixture
 def learning_db(db):
-    for name in ("learning_articles", "learning_article_versions", "learning_questions", "learning_generations", "learning_audits"):
+    for name in (
+        "learning_articles", "learning_article_versions", "learning_questions", "learning_generations", "learning_audits",
+        "learning_answers", "learning_wrongbook",
+    ):
         Base.metadata.tables[name].create(db.session.get_bind(), checkfirst=True)
     return db
 
@@ -68,6 +73,106 @@ async def generated_question(db, monkeypatch, article):
     monkeypatch.setattr(service, "get_llm_client", lambda: client)
     await service.generate(db, administrator(), article["id"], Generate(request_id="question-request-1", revision=article["revision"], kind="questions"))
     return (await service.detail(db, administrator(), article["id"]))["questions"][0]
+
+
+async def published_question(db, monkeypatch):
+    article = await confirmed_article(db)
+    item = await generated_question(db, monkeypatch, article)
+    for action in ("submit", "approve", "enable"):
+        item = await service.question_action(db, administrator(), item["id"], QuestionAction(
+            revision=item["revision"], action=action, verified=True,
+        ))
+    return article["id"], item["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_answers", [False, True])
+async def test_learner_submits_and_reopens_only_own_latest_progress(learning_db, monkeypatch, legacy_answers):
+    if legacy_answers:
+        learning_db.session.execute(text(
+            "CREATE UNIQUE INDEX uq_learning_answer_once "
+            "ON learning_answers (user_id, question_id, article_version)"
+        ))
+    article_id, question_id = await published_question(learning_db, monkeypatch)
+    learner = actor("alice")
+    app = FastAPI()
+    app.include_router(learner_router, prefix="/tasks")
+    app.dependency_overrides[get_current_active_user_from_token] = lambda: learner
+    app.dependency_overrides[get_async_db] = lambda: learning_db
+    article_path = f"/tasks/learning/articles/{article_id}"
+
+    with TestClient(app) as client:
+        before = client.get(article_path).json()
+        assert before["answers"] == []
+        assert "correct_answer" not in before["questions"][0]
+        invalid = client.post(f"{article_path}/answer", json={"question_id": question_id, "answers": ["Z"]})
+        assert invalid.status_code == 422
+        assert client.get(article_path).json()["answers"] == []
+        for option, correct in (("B", False), ("A", True)):
+            result = client.post(f"{article_path}/answer", json={"question_id": question_id, "answers": [option]})
+            assert result.status_code == 200, result.text
+            assert result.json()["is_correct"] is correct
+            assert result.json()["correct_answer"] == ["A"]
+        reopened = client.get(article_path).json()
+        assert reopened["questions"][0]["has_answer"] is True
+        [answer] = reopened["answers"]
+        assert (answer["question_id"], answer["answers"], answer["is_correct"]) == (question_id, ["A"], True)
+        [course] = client.get("/tasks/learning/articles").json()["items"]
+        assert (course["total_count"], course["answered_count"], course["correct_count"], course["completed"]) == (1, 1, 1, True)
+        progress = client.get("/tasks/learning/progress").json()
+        assert progress == {"total_articles": 1, "completed_articles": 1, "total_questions": 1,
+                            "answered_questions": 1, "correct_questions": 1}
+        [mistake] = client.get("/tasks/learning/wrongbook").json()["items"]
+        assert (mistake["question_id"], mistake["status"], mistake["wrong_count"]) == (question_id, "mastered", 1)
+
+        app.dependency_overrides[get_current_active_user_from_token] = lambda: actor("bob")
+        assert client.get(article_path).json()["answers"] == []
+        assert client.get("/tasks/learning/progress").json()["answered_questions"] == 0
+
+    with pytest.raises(HTTPException) as rejected:
+        await service.preview_answer(learning_db, learner, article_id, question_id, ["A"])
+    assert rejected.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_learner_progress_ignores_disabled_questions_with_saved_answers(learning_db, monkeypatch):
+    article_id, question_id = await published_question(learning_db, monkeypatch)
+    learner = actor("alice")
+    await learner_service.submit_answer(learning_db, learner, article_id, question_id, ["A"])
+    learning_db.session.get(LearningQuestion, question_id).enabled = False
+    learning_db.session.commit()
+
+    details = await learner_service.get_article(learning_db, learner, article_id)
+    assert details["questions"] == details["answers"] == []
+    [course] = (await learner_service.list_articles(learning_db, learner))["items"]
+    assert (course["total_count"], course["answered_count"], course["correct_count"], course["completed"]) == (0, 0, 0, False)
+    assert (await learner_service.get_progress(learning_db, learner))["answered_questions"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unavailable", ["article", "unconfirmed", "unapproved", "question", "stale", "other_article"])
+async def test_learner_cannot_submit_unavailable_questions(learning_db, monkeypatch, unavailable):
+    article_id, question_id = await published_question(learning_db, monkeypatch)
+    article = learning_db.session.get(LearningArticle, article_id)
+    item = learning_db.session.get(LearningQuestion, question_id)
+    if unavailable == "article":
+        article.enabled = False
+    elif unavailable == "unconfirmed":
+        article.active_version = 0
+    elif unavailable == "unapproved":
+        item.review_status = "pending"
+    elif unavailable == "question":
+        item.enabled = False
+    elif unavailable == "stale":
+        item.article_version = 0
+    else:
+        item.article_id = (await confirmed_article(learning_db))["id"]
+    learning_db.session.commit()
+
+    with pytest.raises(HTTPException) as rejected:
+        await learner_service.submit_answer(learning_db, actor("alice"), article_id, question_id, ["A"])
+    assert rejected.value.status_code == 404
+    assert learning_db.session.scalar(select(LearningAnswer)) is None
 
 
 @pytest.mark.asyncio
@@ -112,6 +217,98 @@ async def test_rejects_unclosed_tasks_and_anonymous_review_bypass(learning_db):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [TaskStatus.CLOSED, TaskStatus.ARCHIVING, TaskStatus.ARCHIVED])
+@pytest.mark.parametrize("approval_type", ["new_company", "new_department", "new_project", "future_approval"])
+async def test_source_listing_excludes_approval_tasks(learning_db, status, approval_type):
+    task, _ = seed(learning_db, 1)
+    task.title, task.task_type, task.status = "技术审核流程故障", TaskType.OTHER, status
+    approval, _ = seed(learning_db, 2)
+    approval.title, approval.task_type, approval.status = "新项目录入审核", TaskType.OTHER, status
+    approval.metadata_info = {"approval_type": approval_type}
+    learning_db.session.commit()
+    for keyword in ("", "审核"):
+        result = await service.source_listing(learning_db, administrator(), keyword)
+        assert result["total"] == 1
+        assert [item["id"] for item in result["items"]] == ["1"]
+    for keyword in ("2", "录入审核"):
+        assert await service.source_listing(learning_db, administrator(), keyword) == {"total": 0, "items": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("metadata", [None, {}, {"approval_type": None}, {"approval_type": ""}, {"technical_review": True}])
+async def test_source_listing_keeps_non_approval_other_tasks(learning_db, metadata):
+    task, _ = seed(learning_db)
+    task.task_type, task.metadata_info = TaskType.OTHER, metadata
+    learning_db.session.commit()
+    result = await service.source_listing(learning_db, administrator())
+    assert result["total"] == 1
+    assert result["items"][0]["id"] == "1"
+    article = await service.create(learning_db, administrator(), CreateArticle(title="提炼知识", sources={"task_ids": [1]}))
+    assert article["sources"][0]["id"] == "1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["create", "save"])
+async def test_direct_source_selection_rejects_approval_tasks(learning_db, operation):
+    task, _ = seed(learning_db)
+    task.metadata_info = {"approval_type": "new_project"}
+    learning_db.session.commit()
+    article = await new_article(learning_db) if operation == "save" else None
+    with pytest.raises(HTTPException) as error:
+        if operation == "create":
+            await service.create(learning_db, administrator(), CreateArticle(title="提炼知识", sources={"task_ids": [1]}))
+        else:
+            await service.save(learning_db, administrator(), article["id"], SaveArticle(
+                revision=article["revision"], content=content(), sources={"task_ids": [1]}))
+    assert error.value.status_code == 422
+    assert "审核类工单" in error.value.detail
+    if article:
+        assert (await service.detail(learning_db, administrator(), article["id"]))["sources"] == article["sources"]
+
+
+@pytest.mark.asyncio
+async def test_similar_sources_exclude_approval_tasks_before_limiting(learning_db, monkeypatch):
+    approval_types = {2: "new_company", 3: "new_department", 4: "new_project"}
+    for task_id in range(1, 7):
+        task, _ = seed(learning_db, task_id)
+        if task_id in approval_types:
+            task.metadata_info = {"approval_type": approval_types[task_id]}
+    learning_db.session.commit()
+    fetch = AsyncMock(return_value=([{"task_id": task_id, "score": 0.9} for task_id in (2, 5, 3, 4, 6)], "ok"))
+    monkeypatch.setattr(service.similar_tickets, "fetch_similar_ticket_hits", fetch)
+    result = await service.similar_source_tasks(learning_db, administrator(), 1, limit=2)
+    assert [item["id"] for item in result["items"]] == ["5", "6"]
+
+
+@pytest.mark.asyncio
+async def test_similar_sources_reject_approval_anchor_without_retrieval(learning_db, monkeypatch):
+    task, _ = seed(learning_db)
+    task.metadata_info = {"approval_type": "new_company"}
+    learning_db.session.commit()
+    fetch = AsyncMock(return_value=([], "ok"))
+    monkeypatch.setattr(service.similar_tickets, "fetch_similar_ticket_hits", fetch)
+    with pytest.raises(HTTPException) as error:
+        await service.similar_source_tasks(learning_db, administrator(), 1)
+    assert error.value.status_code == 422
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generation_rechecks_approval_marker_on_saved_sources(learning_db, monkeypatch):
+    task, _ = seed(learning_db)
+    article = await service.create(learning_db, administrator(), CreateArticle(title="提炼知识", sources={"task_ids": [1]}))
+    task.metadata_info = {"approval_type": "new_project"}
+    learning_db.session.commit()
+    client = SimpleNamespace(complete=AsyncMock())
+    monkeypatch.setattr(service, "get_llm_client", lambda: client)
+    with pytest.raises(HTTPException) as error:
+        await service.generate(learning_db, administrator(), article["id"], Generate(
+            request_id="approval-source-check", revision=article["revision"], kind="article"))
+    assert error.value.status_code == 422
+    client.complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_source_previews_are_brief_and_redacted(learning_db):
     task, _ = seed(learning_db)
     task.title = "秘密项目充电桩故障"
@@ -130,12 +327,14 @@ async def test_source_previews_are_brief_and_redacted(learning_db):
 
 
 @pytest.mark.asyncio
-async def test_similar_sources_rank_content_and_filter_ineligible_tasks(learning_db):
-    for task_id in range(1, 8):
+async def test_similar_sources_reuse_vector_order_and_filter_ineligible_tasks(learning_db, monkeypatch):
+    for task_id in range(1, 9):
         task, report = seed(learning_db, task_id)
         task.title = "充电桩无法启动"
         task.description = "充电桩断电导致供电中断。秘密项目 secret@example.com"
-        if task_id == 3:
+        if task_id == 2:
+            task.title, task.description = "补能模块接触不良", "供电端子松动，重新连接后恢复。"
+        elif task_id == 3:
             task.title = "充电桩接触不良"
             task.description = "充电桩供电时触点接触不良"
         elif task_id == 4:
@@ -150,20 +349,33 @@ async def test_similar_sources_rank_content_and_filter_ineligible_tasks(learning
             task.title, task.description = "充电桩供电中断", "充电桩断电"
             learning_db.session.delete(report)
     learning_db.session.commit()
+    hits = [
+        {"task_id": 5, "score": 0.99}, {"task_id": 6, "score": 0.99}, {"task_id": 999, "score": 0.99},
+        {"task_id": 3, "score": 0.55, "summary": "秘密项目 secret@example.com", "reviewer": "private-reviewer"},
+        {"task_id": "2", "score": 0.94}, {"task_id": 3, "score": 0.99},
+        {"task_id": 1, "score": 0.99}, {"task_id": 8, "score": 0.54},
+    ]
+    fetch = AsyncMock(return_value=(hits, "ok"))
+    monkeypatch.setattr(service.similar_tickets, "fetch_similar_ticket_hits", fetch)
     result = await service.similar_source_tasks(learning_db, administrator(), 1)
     ids = [item["id"] for item in result["items"]]
-    assert ids[0] == "2"
-    assert set(ids) == {"2", "3", "7"}
+    assert ids == ["3", "2"]
+    fetch.assert_awaited_once_with(1, 30)
     assert result["source"]["id"] == "1"
-    assert result["matching_method"] == "text"
+    assert result["matching_method"] == "vector"
+    assert result["retrieval_status"] == "ok"
     assert all(item["summary"] for item in result["items"])
     assert "秘密项目" not in json.dumps(result, ensure_ascii=False)
     assert "secret@example.com" not in json.dumps(result, ensure_ascii=False)
-    assert len((await service.similar_source_tasks(learning_db, administrator(), 1, limit=1))["items"]) == 1
+    assert "private-reviewer" not in json.dumps(result, ensure_ascii=False)
+    assert all(set(item) == {"id", "title", "status", "summary"} for item in result["items"])
+    assert (await service.similar_source_tasks(learning_db, administrator(), 1, limit=1))["items"][0]["id"] == "3"
 
 
 @pytest.mark.asyncio
-async def test_similar_sources_enforce_anchor_access_and_handle_empty_text(learning_db):
+async def test_similar_sources_enforce_anchor_access_and_handle_empty_text(learning_db, monkeypatch):
+    fetch = AsyncMock(return_value=([], "ok"))
+    monkeypatch.setattr(service.similar_tickets, "fetch_similar_ticket_hits", fetch)
     task, report = seed(learning_db)
     with pytest.raises(HTTPException) as error:
         await service.similar_source_tasks(learning_db, actor("voter"), 1)
@@ -178,12 +390,28 @@ async def test_similar_sources_enforce_anchor_access_and_handle_empty_text(learn
     with pytest.raises(HTTPException) as error:
         await service.similar_source_tasks(learning_db, administrator(), 1)
     assert error.value.status_code == 403
+    fetch.assert_not_awaited()
     task.status, report.submit_status = TaskStatus.ARCHIVED, "approved"
     task.title, task.description = "", ""
     learning_db.session.commit()
     result = await service.similar_source_tasks(learning_db, administrator(), 1)
     assert result["items"] == []
     assert result["source"]["summary"] == ""
+    fetch.assert_awaited_once_with(1, 30)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retrieval_status", ["ok", "unavailable"])
+async def test_similar_sources_do_not_fall_back_to_text_search(learning_db, monkeypatch, retrieval_status):
+    seed(learning_db, 1)
+    seed(learning_db, 2)
+    fetch = AsyncMock(return_value=([], retrieval_status))
+    monkeypatch.setattr(service.similar_tickets, "fetch_similar_ticket_hits", fetch)
+    result = await service.similar_source_tasks(learning_db, administrator(), 1)
+    assert result["items"] == []
+    assert result["retrieval_status"] == retrieval_status
+    assert result["matching_method"] == "vector"
+    assert (await service.source_listing(learning_db, administrator()))["total"] == 2
 
 
 @pytest.mark.asyncio
@@ -457,10 +685,12 @@ def test_api_denies_unprivileged_direct_requests(learning_db):
     app.dependency_overrides.clear()
 
 
-def test_source_recommendation_http_contract_and_limits(learning_db):
+def test_source_recommendation_http_contract_and_limits(learning_db, monkeypatch):
     task_id = 9007199254740993
     seed(learning_db, task_id)
     seed(learning_db, 2)
+    fetch = AsyncMock(return_value=([{"task_id": 2, "score": 0.72}], "ok"))
+    monkeypatch.setattr(service.similar_tickets, "fetch_similar_ticket_hits", fetch)
     app = FastAPI()
     app.include_router(router, prefix="/api/admin")
     app.dependency_overrides[get_current_active_user_from_token] = administrator
@@ -474,6 +704,9 @@ def test_source_recommendation_http_contract_and_limits(learning_db):
         assert response.json()["source"]["id"] == str(task_id)
         assert response.json()["items"][0]["id"] == "2"
         assert "summary" in response.json()["items"][0]
+        assert response.json()["matching_method"] == "vector"
+        assert response.json()["retrieval_status"] == "ok"
+        fetch.assert_awaited_once_with(task_id, 30)
         assert client.get(f"/api/admin/learning/sources/{task_id}/similar?limit=11").status_code == 422
         assert client.get(f"/api/admin/learning/sources/{task_id}/similar?limit=0").status_code == 422
     app.dependency_overrides.clear()

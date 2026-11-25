@@ -16,6 +16,7 @@ import re
 import sys
 import time
 from collections import Counter, defaultdict
+from datetime import datetime
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # 不换 wrapper 对象：pytest 捕获下替换会炸
 _PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,7 +43,9 @@ TOPIC_TYPES = ["故障处置", "操作指引", "功能咨询", "状态查询", "
 
 # 长会话分窗：单次输出 max_tokens 有限，rounds 过多时 JSON 被截断、
 # 后半段落回默认值（q=true/topic=0）——切分质量崩。按窗滑判，窗口间话题续号。
-CLASSIFY_WINDOW = 40
+CLASSIFY_WINDOW = 20
+# 相邻两轮隔这么久一律切新话题（代码硬切，不依赖模型自觉；见 _force_time_breaks）
+TIME_BREAK_HOURS = 12
 
 # 切分判据模板（0929 抽出）：__CONT__/__LINES__ 运行时替换。md5 进签名——
 # 改判据 = 签名变 = 全量重切（历史会话内容不变，签名同就该复用，重切是白烧
@@ -74,11 +77,44 @@ CLASSIFY_PROMPT_TMPL = (
 )
 
 
+def _force_time_breaks(rounds, out, gap_hours=TIME_BREAK_HOURS):
+    """相邻两轮隔超过 gap_hours 一律切成新话题（在 LLM 判定之上硬切）。
+
+    1106：判据里本来就写了「时间上隔很久（隔几小时、隔天）再回来提新的事算新话题」，
+    但模型经常不执行——梅健 cid 1400 第 5-17 轮跨 17 天、含 8 个不同问题，
+    被压成一个话题；叶绍阳 86 轮压成 3 个。时间跨度是确定信号，不依赖模型自觉。
+    只切不并：LLM 自己切的边界全部保留，编号重新连续化。
+    """
+    if not out:
+        return out
+    # classify 的返回值末尾带 {"n_topics": N}，先摘掉再比对长度
+    body = out[:-1] if isinstance(out[-1], dict) and "n_topics" in out[-1] else out
+    if len(body) != len(rounds):
+        return out
+    new_topic = -1
+    last_llm = None
+    prev_t = None
+    for i, k in enumerate(body):
+        try:
+            t = datetime.fromisoformat((rounds[i].get("at") or "").split(".")[0])
+        except ValueError:
+            t = None
+        broke = (prev_t is not None and t is not None
+                 and (t - prev_t).total_seconds() > gap_hours * 3600)
+        llm_topic = k.get("topic")
+        if broke or llm_topic != last_llm:
+            new_topic += 1
+        last_llm = llm_topic
+        k["topic"] = new_topic
+        prev_t = t
+    return out
+
+
 async def classify(rounds):
     """逐回合 {q,t} + 末尾 {n_topics}。失败降级全算提问（方向：保守）。
     超过 CLASSIFY_WINDOW 条按窗滑判，窗口间话题编号续接。"""
     if len(rounds) <= CLASSIFY_WINDOW:
-        return await _classify_once(rounds, 0)
+        return _force_time_breaks(rounds, await _classify_once(rounds, 0))
     out = []
     base = 0
     for s in range(0, len(rounds), CLASSIFY_WINDOW):
@@ -86,7 +122,7 @@ async def classify(rounds):
         base += part[-1]["n_topics"]
         out.extend(part[:-1])
     out.append({"n_topics": base})
-    return out
+    return _force_time_breaks(rounds, out)
 
 
 async def _classify_once(rounds, topic_base):
@@ -185,16 +221,31 @@ async def main():
     # 签名同的历史切分才复用——换模型/改判据自动全量重切）
     import hashlib as _hl
     cur_sig = (f"{os.getenv('DAR_MODEL', 'deepseek-flash')}|"
-               f"{_hl.md5(CLASSIFY_PROMPT_TMPL.encode('utf-8')).hexdigest()[:8]}")
+               f"{_hl.md5(CLASSIFY_PROMPT_TMPL.encode('utf-8')).hexdigest()[:8]}"
+               f"|w{CLASSIFY_WINDOW}|tb{TIME_BREAK_HOURS}v2")
 
     if args.replay:
         print(f"replay：读 {cls_path}，不调 LLM")
         saved = {j["conversation_id"]: j for j in
                  (json.loads(l) for l in open(cls_path, encoding="utf-8"))}
+        n_pad = 0
         for c in convs:
             j = saved.get(c["conversation_id"], {})
-            c["_cls"] = j.get("cls") or [{"q": True, "t": False, "topic": 0}
-                                         for _ in c["rounds"]]
+            cls = list(j.get("cls") or [])
+            nr = len(c["rounds"])
+            # 1106：续聊会让 rounds 变长而存档 cls 还是旧的短版——replay 不调
+            # LLM，用末项标签补齐（不丢轮次），真正重切在非 replay 分支。
+            if len(cls) < nr:
+                pad = dict(cls[-1]) if cls else {"q": True, "t": False, "topic": 0}
+                cls += [dict(pad) for _ in range(nr - len(cls))]
+                n_pad += 1
+            elif len(cls) > nr:
+                cls = cls[:nr]
+            c["_cls"] = cls or [{"q": True, "t": False, "topic": 0}
+                                for _ in range(nr)]
+        if n_pad:
+            print(f"⚠️ {n_pad} 个会话存档切分短于实际轮数，已按末段标签补齐"
+                  f"（跑一次 l1 会正式重切）")
     else:
         # 0929 按会话增量：classified 行带 sig（模型+切分判据 md5），一致的历史
         # 会话直接复用（历史会话内容不变，重切=白烧 LLM 且切分漂移会错位人工
@@ -207,10 +258,21 @@ async def main():
                     j = json.loads(l)
                     if j.get("sig") == cur_sig:
                         saved[j["conversation_id"]] = j
-        reuse = [c for c in convs if c["conversation_id"] in saved]
-        todo_convs = [c for c in convs if c["conversation_id"] not in saved]
+        # 1106：续聊会话的轮数会变长，而 sig 只看模型+判据——只比 sig 会把 8 月
+        # 那份短切分直接套到 10/11 月追加的轮次上。cls 长度≠rounds 的后果：
+        # L1 整会话跳过不计数、切题页并成一个话题（用户实锤 CID 339）。
+        # 复用必须同时要求轮数一致，变长的会话重切。
+        def _reusable(c):
+            j = saved.get(c["conversation_id"])
+            return bool(j) and len(j.get("cls") or []) == len(c["rounds"])
+
+        reuse = [c for c in convs if _reusable(c)]
+        todo_convs = [c for c in convs if not _reusable(c)]
+        n_grow = sum(1 for c in convs
+                     if c["conversation_id"] in saved and not _reusable(c))
         print(f"会话 {len(convs)}：增量复用 {len(reuse)}（sig={cur_sig}），"
-              f"LLM 切分 {len(todo_convs)} 个")
+              f"LLM 切分 {len(todo_convs)} 个"
+              + (f"（其中 {n_grow} 个因续聊轮数变化重切）" if n_grow else ""))
         for c in reuse:
             c["_cls"] = saved[c["conversation_id"]]["cls"]
         if todo_convs:
@@ -282,6 +344,7 @@ async def main():
     stats = defaultdict(lambda: Counter())
     lab_cnt = defaultdict(Counter)
     seg_dist = Counter()
+    n_bad = 0  # 切分长度≠实际轮数的会话（被整会话跳过，见下方告警）
 
     for c in convs:
         grp = "测试组" if c["is_tester"] else "真实组"
@@ -291,6 +354,7 @@ async def main():
             continue
         stats[(grp, month)]["courtesy"] += sum(1 for k in cls if not k["q"])
         if not cls or len(cls) != len(rounds):
+            n_bad += 1
             continue
         # 段分组：相邻 topic 变化即断段（与 dar_l3/检索判定/标注工具/工作台同规则，
         # 见 _segments——原按 topic 值归组会把「0,1,0」这类回头话题并成一段，
@@ -372,6 +436,16 @@ async def main():
 
     def pct(a, b):
         return f"{a/b*100:.1f}%" if b else "—"
+
+    # 1106 守卫：切分长度与实际轮数不符的会话会被整会话跳过、不进任何统计。
+    # 成因是续聊后轮数变长而存档切分未更新（0901~1106 一直静默发生，43 个会话
+    # 从未计入周报）。复用侧现已强制校验轮数，正常不会再出现——一旦出现就是
+    # 逻辑回退，必须当场可见，不能又静默少算。
+    if n_bad:
+        print(f"\n🔴 告警：{n_bad} 个会话的切分长度与实际轮数不符，"
+              f"已从本次统计中跳过（等于没算这些会话）。\n"
+              f"    通常是切分产物过期，再跑一次 l1 会自动重切修好；"
+              f"若反复出现请检查 dar_l1 的复用逻辑。\n")
 
     print("\n" + "=" * 72)
     print("L1 直答率（1 − 转工单率，上界近似；话题段="

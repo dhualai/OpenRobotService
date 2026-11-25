@@ -5,8 +5,18 @@ import { BookOpen, RefreshCw, CheckCircle, ChevronRight, Trophy, Target, Trendin
 import { listLearnerArticles, getLearnerProgress, type LearnerArticleSummary, type LearnerProgress } from '@/api/learner';
 import './learner.css';
 
+/** 智能返回：优先历史栈，无历史则回到 tasks（上一级来源页） */
+function smartBack(navigate: ReturnType<typeof useNavigate>, fallback: string) {
+  if (window.history.length > 1) {
+    navigate(-1);
+  } else {
+    navigate(fallback, { replace: true });
+  }
+}
+
 export default function LearnerHome() {
   const navigate = useNavigate();
+  const handleBack = useCallback(() => smartBack(navigate, '/tasks'), [navigate]);
   const [articles, setArticles] = useState<LearnerArticleSummary[]>([]);
   const [progress, setProgress] = useState<LearnerProgress | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,7 +48,7 @@ export default function LearnerHome() {
 
   return (
     <div className="learner-home">
-      <Navbar title="学习中心" fixed />
+      <Navbar title="学习中心" fixed leftArrow onLeftClick={handleBack} />
 
       {/* Hero 渐变卡片 —— 借鉴 QuestionGeneration 的 hero 设计 */}
       <section className="learner-hero">

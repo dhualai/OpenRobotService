@@ -98,7 +98,7 @@ def test_incomplete_required_suite_is_unverified(
     contract_line = next(line for line in summary.splitlines() if line.startswith("| OpenAPI 契约"))
     assert "| 未验收 |" in contract_line
     assert reason in contract_line
-    assert "| Mock API | 通过 |" in summary
+    assert "| 主流程接口 | 通过 |" in summary
 
 
 @pytest.mark.parametrize("result_tag", ["failure", "error"])
@@ -114,7 +114,7 @@ def test_junit_test_failure_is_preserved(gate_artifacts, result_tag):
         junit_dir, allure_dir, {"quality-gate": "failure", "real-smoke": "success"}
     )
     assert status == FAILED
-    assert "| Mock API | 失败 | 1 | 0 | 1 | 1 条失败或错误 |" in summary
+    assert "| 主流程接口 | 失败 | 1 | 0 | 1 | 1 条失败或错误 |" in summary
 
 
 def test_known_failure_is_visible_when_other_evidence_is_missing(gate_artifacts):
@@ -132,7 +132,7 @@ def test_known_failure_is_visible_when_other_evidence_is_missing(gate_artifacts)
     )
     assert status == UNVERIFIED
     assert "未验收（同时存在已确认的测试失败）" in summary
-    assert "| Mock API | 失败 |" in summary
+    assert "| 主流程接口 | 失败 |" in summary
     assert "| OpenAPI 契约 | 未验收 |" in summary
 
 
@@ -181,6 +181,7 @@ def test_required_suite_artifacts_are_connected_to_enforced_verdict():
     download = {
         step["with"]["pattern"]: step["with"]
         for step in report["steps"] if step.get("uses", "").startswith("actions/download-artifact@")
+        and "pattern" in step["with"]
     }
     assert download["allure-results-*"]["merge-multiple"] is False
     assert download["gate-junit-*"]["merge-multiple"] is True
@@ -208,6 +209,10 @@ def test_required_suite_artifacts_are_connected_to_enforced_verdict():
     evaluate = next(step for step in report["steps"] if step.get("id") == "gate-verdict")
     assert evaluate["if"] == "always()"
     assert evaluate["continue-on-error"] is True
+    assert "--report-context automation/output/test-gate-report.json" in evaluate["run"]
+    for step_id in ("standalone-html", "business-html"):
+        renderer = next(step for step in report["steps"] if step.get("id") == step_id)
+        assert "--context automation/output/test-gate-report.json --expect-gate" in renderer["run"]
     enforce = report["steps"][-1]
     assert enforce["if"] == "always()"
     assert enforce["env"]["VERDICT_OUTCOME"] == "${{ steps.gate-verdict.outcome }}"
@@ -217,3 +222,30 @@ def test_required_suite_artifacts_are_connected_to_enforced_verdict():
         step = next(step for step in report["steps"] if step.get("id") == step_name)
         assert step["continue-on-error"] is True
     assert "exit 1" in enforce["run"]
+
+
+def test_business_report_can_load_evidence_from_a_selected_ui_run():
+    workflows = Path(__file__).resolve().parents[4] / ".github/workflows"
+    gate = yaml.safe_load((workflows / "test-gate.yml").read_text(encoding="utf-8"))
+    ui = yaml.safe_load((workflows / "ui-regression.yml").read_text(encoding="utf-8"))
+    report = gate["jobs"]["allure-report"]
+    downloads = {
+        step["with"]["run-id"]: step for step in report["steps"]
+        if step.get("with", {}).get("name") == "service-account-ui-evidence"
+    }
+    assert report["permissions"]["actions"] == "read"
+    assert set(downloads) == {"${{ inputs.ui_evidence_run_id }}", "${{ inputs.learner_evidence_run_id }}"}
+    assert all(step["continue-on-error"] for step in downloads.values())
+    assert len({step["with"]["path"] for step in downloads.values()}) == 2
+    business = next(step for step in report["steps"] if step.get("id") == "business-html")
+    assert "--service-account-ui-environment service-account-test" in business["run"]
+    assert "--service-account-learner-results automation/output/ui-learner-evidence" in business["run"]
+    ui_steps = ui["jobs"]["ui-regression"]["steps"]
+    assert any("test_service_account_ticket_lifecycle.py" in step.get("run", "") for step in ui_steps)
+    [upload] = [
+        step for step in ui_steps if step.get("with", {}).get("name") == "service-account-ui-evidence"
+    ]
+    assert "inputs.deployment_commit == github.sha" in upload["if"]
+    assert any(path.endswith("/service-account-ui-run.json") for path in upload["with"]["path"].splitlines())
+    verify = next(step for step in ui_steps if step.get("id") == "verify-deployment")
+    assert 'git diff --quiet "$UI_DEPLOYMENT_COMMIT" HEAD -- frontend backend ai deploy doc-service' in verify["run"]

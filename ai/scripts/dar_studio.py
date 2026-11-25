@@ -1785,16 +1785,37 @@ def save_manual(req: SaveManualReq):
         raise HTTPException(400, "数据缺 bounds/labels")
     p = _manual_path(req.env)
     os.makedirs(os.path.dirname(p), exist_ok=True)
+    # 1106：合并而非整包覆盖。切题页按筛选只展示部分会话（已切且无续聊的不
+    # 列出，见 build_segmentation_tool 的 bounds 过滤），页面草稿里根本没有
+    # 那些会话——整包覆盖会把它们的边界清空（页面 86 个 vs 文件 293 个）。
+    # 页面传来的视为本次编辑：非空更新、空数组删除、未出现的原样保留。
+    incoming_bounds = dict(d.get("bounds") or {})
+    incoming_labels = dict(d.get("labels") or {})
+    old = {}
+    if os.path.exists(p):
+        try:
+            old = json.load(open(p, encoding="utf-8"))
+        except Exception:
+            old = {}
+    merged_bounds = {str(k): v for k, v in (old.get("bounds") or {}).items()}
+    for cid, b in incoming_bounds.items():
+        if b:
+            merged_bounds[str(cid)] = b
+        else:
+            merged_bounds.pop(str(cid), None)
+    merged_labels = {str(k): v for k, v in (old.get("labels") or {}).items()}
+    for cid, lm in incoming_labels.items():
+        if lm:
+            merged_labels[str(cid)] = lm
+        else:
+            merged_labels.pop(str(cid), None)
+    d["bounds"] = merged_bounds
+    d["labels"] = merged_labels
     # 冻结标注时的回合总数（0920）：续聊追加主规则的锚点——rounds 超过
     # frozen_len 的部分视为标注后新增，段首展开时从冻结点切新段。
     # 服务端统一注入，标注工具零改动；读不到 split 时保留旧值（保守）。
-    old_frozen = {}
-    if os.path.exists(p):
-        try:
-            old_frozen = json.load(open(p, encoding="utf-8")).get("frozen_len") or {}
-        except Exception:
-            old_frozen = {}
-    frozen = dict(old_frozen)
+    # 只刷新本轮页面传来（用户实际处理过）的会话，合并进来的老会话保持原冻结值。
+    frozen = dict(old.get("frozen_len") or {})
     split = os.path.join(DATA_ROOT, req.env, "processed", "conversations_split.jsonl")
     if os.path.exists(split):
         n_rounds = {}
@@ -1803,8 +1824,8 @@ def save_manual(req: SaveManualReq):
                 if line.strip():
                     c = json.loads(line)
                     n_rounds[str(c["conversation_id"])] = len(c.get("rounds") or [])
-        for cid in (d.get("bounds") or {}):
-            if cid in n_rounds:
+        for cid in incoming_bounds:
+            if str(cid) in n_rounds:
                 frozen[str(cid)] = n_rounds[str(cid)]
     d["frozen_len"] = frozen
     with open(p, "w", encoding="utf-8") as fh:
