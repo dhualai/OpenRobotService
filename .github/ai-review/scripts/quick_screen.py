@@ -72,7 +72,10 @@ CONTENT_RULES = [
     (r"(?i)alter\s+table[^\n]*(?:modify|change)\s+column", "blocker", "改列风险",
      "schema 门禁不覆盖改类型/改名，需确认新旧字段兼容"),
     # 高危写法
-    (r"\bos\.system\(|subprocess\.[^\n]*shell\s*=\s*True|\beval\(|\bexec\(",
+    # eval/exec 加否定后瞻 (?<![.\w])：只抓独立函数调用（Python 内建 exec()/eval()），
+    # 排除 .exec(/.eval( 方法调用形态——PR #516 实测误报：前端 JS 正则
+    # `/re/.exec(str)` 被 \bexec\( 当成动态执行，原行仅因重新缩进进 diff 就中招。
+    (r"\bos\.system\(|subprocess\.[^\n]*shell\s*=\s*True|(?<![.\w])eval\(|(?<![.\w])exec\(",
      "warning", "命令/动态执行",
      "存在命令注入或动态执行风险（安全红线：命令注入/反序列化）"),
     (r"(?i)[fF]?[\"'][^\n]*\b(?:SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\b[^\n]*[\"']\s*(?:\.format|%|\+|f)",
