@@ -5585,6 +5585,9 @@ html, body, #root {
 @media (min-width: 1280px) { .admin-entries-stats__groups { grid-template-columns: repeat(2, 1fr); } }
 /* 跨满两列的宽图卡（如微信用户日活折线图） */
 .admin-entries-stats__chart--wide { grid-column: 1 / -1; }
+/* 日活图卡头部：标题（sub 样式与「用户增减趋势」一致）与独立筛选框纵向排布，
+   筛选框靠左，与用户统计筛选框同一水平起始线；与图表间距对齐 group-head */
+.admin-entries-stats__dau-head { margin-bottom: 10px; }
 .admin-entries-stats__sub { display: block; font-size: 12px; color: var(--mac-muted-fg); margin-bottom: 4px; }
 .admin-entries-stats__empty {
   padding: 32px 0;

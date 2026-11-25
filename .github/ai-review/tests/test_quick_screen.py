@@ -68,6 +68,26 @@ def test_shell_true_is_warning():
     assert any(it["label"] == "命令/动态执行" for it in r["warnings"])
 
 
+def test_python_exec_and_eval_still_flagged():
+    """收紧正则后，独立 exec()/eval() 调用仍须命中（不能放过真风险）。"""
+    r = screen([f("backend/app/x.py", "+exec(user_code)\n+result = eval(expr)\n")])
+    hits = [it for it in r["warnings"] if it["label"] == "命令/动态执行"]
+    assert len(hits) == 1  # 同文件同标签去重
+
+
+def test_js_regex_exec_not_flagged():
+    """JS 正则 .exec() 不是动态执行（PR #516 误报回归：前端仅重排行就中招）。"""
+    r = screen([f("frontend/src/x.ts",
+                  "+const m = /^\\/tasks\\/(\\d+)$/.exec(stripBase(url));\n")])
+    assert not any(it["label"] == "命令/动态执行" for it in r["warnings"])
+
+
+def test_method_named_exec_not_flagged():
+    """对象方法调用（obj.exec(...)）同属方法形态，不按动态执行误报。"""
+    r = screen([f("backend/app/x.py", "+runner.exec(cmd)\n")])
+    assert not any(it["label"] == "命令/动态执行" for it in r["warnings"])
+
+
 def test_deleted_lines_not_checked():
     """删除行不检查（误报抑制）。"""
     r = screen([f("backend/app/x.py", "-API_KEY = \"sk-abcdef1234567890abcdef\"\n")])

@@ -28,7 +28,7 @@
 |---|---|---|
 | `sk-…` / `AKIA…` / `password= "…"` 字面量 | 高危 | 疑似密钥硬编码 |
 | `DROP COLUMN` / `drop_column` / `ALTER … MODIFY/CHANGE COLUMN` | 高危 | **schema 门禁盲区**（见下） |
-| `os.system` / `shell=True` / `eval` / `exec` | 关注 | 命令注入/动态执行 |
+| `os.system` / `shell=True` / 独立 `eval(` / `exec(`（排除 `.eval(` / `.exec(` 方法调用） | 关注 | 命令注入/动态执行 |
 | 字符串拼接 SQL | 关注 | SQL 注入 |
 | `pickle.load` / `yaml.load(` | 关注 | 反序列化 |
 | `allow_origins=["*"]` | 关注 | CORS 全开 |
