@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/roles",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "name": "admin"
+  }
+}

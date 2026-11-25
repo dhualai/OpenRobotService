@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/admin/projects/risks",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "name": "Risk A",
+    "level": "high"
+  }
+}
