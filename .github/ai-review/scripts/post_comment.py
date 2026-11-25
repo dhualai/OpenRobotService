@@ -21,6 +21,7 @@ import sys
 from ai_review_common import gh_api
 
 EXIT_OK, EXIT_ERROR = 0, 1
+INLINE_TAG = "<!-- ai-review-inline -->"
 FP_RE = re.compile(r"ors-ai-review:fp=([0-9a-f,]*)")
 
 
@@ -81,32 +82,66 @@ def insert_delta(body, delta_line):
     return "\n".join(lines)
 
 
-def post_review_inline(repo, pr, token, inline_path):
-    """创建带行内评论的 review（出现在 Files changed 对应行）。"""
+def list_bot_inline_comments(repo, pr, token):
+    """列出现有 bot 行内评论（按 body 标记识别），返回 {(path, line): comment}。"""
+    result, page = {}, 1
+    while True:
+        status, batch = gh_api(
+            repo, f"pulls/{pr}/comments?per_page=100&page={page}", token)
+        if status != 200 or not isinstance(batch, list):
+            break
+        for c in batch:
+            if INLINE_TAG in (c.get("body") or ""):
+                result[(c.get("path"), c.get("line"))] = c
+        if len(batch) < 100:
+            break
+        page += 1
+    return result
+
+
+def sync_inline_comments(repo, pr, token, head_sha, inline_path):
+    """幂等同步行内评论到代码行（不创建 review 载体，不堆叠）：
+
+    - 新位置 → 创建；已有位置 → 就地更新 body；意见已消失的位置 → 删除。
+    - head_sha 用于创建时定位 commit（缺省时跳过创建，只做更新/清理）。
+    """
     with open(inline_path, encoding="utf-8") as fh:
         items = json.load(fh)
-    if not items:
-        print("无可定位的行内意见，跳过 review")
-        return True
-    comments = []
-    for it in items:
-        comments.append({
-            "path": it["path"],
-            "line": it["line"],
-            # side 只接受 LEFT/RIGHT：RIGHT = diff 新侧（新增行）
-            "side": "RIGHT",
-            "body": it["body"],
-        })
-    status, resp = gh_api(
-        repo, f"pulls/{pr}/reviews", token, method="POST",
-        body={"event": "COMMENT",
-              "body": "🤖 AI 检视：以下意见已钉到具体代码行（详见总结评论）",
-              "comments": comments})
-    ok = status in (200, 201)
-    n = len(resp.get("data", {}).get("comments", comments)) if isinstance(resp, dict) else "?"
-    print(f"行内 review {'创建成功' if ok else f'失败（HTTP {status}）'}，"
-          f"携带 {len(comments)} 条")
-    return ok
+
+    want = {(it["path"], int(it["line"])): it for it in items}
+    existing = list_bot_inline_comments(repo, pr, token)
+
+    created = updated = deleted = 0
+    for key, it in want.items():
+        body = f"{INLINE_TAG}\n{it['body']}"
+        if key in existing:
+            status, _ = gh_api(
+                repo, f"pulls/comments/{existing[key]['id']}", token,
+                method="PATCH", body={"body": body})
+            if status in (200, 200):
+                updated += 1
+            else:
+                print(f"行内评论更新失败（HTTP {status}）: {key}")
+        else:
+            if not head_sha:
+                print(f"无 head_sha，跳过新建行内评论: {key}")
+                continue
+            status, _ = gh_api(
+                repo, f"pulls/{pr}/comments", token, method="POST",
+                body={"commit_id": head_sha, "path": it["path"],
+                      "line": it["line"], "side": "RIGHT", "body": body})
+            if status in (200, 201):
+                created += 1
+            else:
+                print(f"行内评论创建失败（HTTP {status}）: {key}")
+
+    for key, c in existing.items():
+        if key not in want:
+            gh_api(repo, f"pulls/comments/{c['id']}", token, method="DELETE")
+            deleted += 1
+
+    print(f"行内评论同步完成：新建 {created}、更新 {updated}、清理 {deleted}")
+    return True
 
 
 def main():
@@ -115,7 +150,9 @@ def main():
                         help="评论体中的唯一标记，如 ors-ai-review:report")
     parser.add_argument("--file", required=True, help="评论 markdown 文件")
     parser.add_argument("--inline", default=None,
-                        help="行内评论数据 JSON（可选，创建 review）")
+                        help="行内评论数据 JSON（可选，幂等同步到代码行）")
+    parser.add_argument("--head-sha", default=os.environ.get("HEAD_SHA", ""),
+                        help="PR head commit sha（创建行内评论时定位 commit）")
     args = parser.parse_args()
 
     repo = os.environ.get("REPO", "")
@@ -153,7 +190,7 @@ def main():
     if ok and isinstance(resp, dict):
         print(f"  {resp.get('html_url', '')}")
     if ok and args.inline:
-        post_review_inline(repo, pr, token, args.inline)
+        sync_inline_comments(repo, pr, token, args.head_sha, args.inline)
     return EXIT_OK if ok else EXIT_ERROR
 
 
