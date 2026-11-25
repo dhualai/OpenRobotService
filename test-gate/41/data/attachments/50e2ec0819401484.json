@@ -1,0 +1,15 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/tasks/1/spec-doc",
+  "reason": "OK",
+  "headers": {
+    "content-length": "89",
+    "content-type": "application/json"
+  },
+  "body": {
+    "content": "完整问题描述",
+    "content_type": "markdown",
+    "revision": 2,
+    "source": "inline"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "status_code": 200,
+  "url": "http://mock.local/api/call/qa/ask",
+  "reason": "OK",
+  "headers": {
+    "content-length": "101",
+    "content-type": "application/json"
+  },
+  "body": {
+    "success": true,
+    "question": "help",
+    "answer": "Mock: help",
+    "conversation_id": 1,
+    "action": "GENERAL_REPLY"
+  }
+}

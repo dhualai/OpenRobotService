@@ -1,0 +1,15 @@
+{
+  "status_code": 201,
+  "url": "http://mock.local/api/admin/users",
+  "reason": "Created",
+  "headers": {
+    "content-length": "70",
+    "content-type": "application/json"
+  },
+  "body": {
+    "id": "u006",
+    "username": "newuser",
+    "name": "New User",
+    "role": "engineer"
+  }
+}
