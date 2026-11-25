@@ -85,3 +85,29 @@ def test_render_wecom_only_when_blocker():
                          431, "T")
     assert wecom and "1 项高危" in wecom and "pull/431" in wecom
     assert render_wecom({"blockers": []}, {"blockers": []}, "r", 431, "T") is None
+
+
+def test_report_no_double_count_when_all_inline():
+    """防回归：blocker 全部转行内时总结不得出现双重计数。
+
+    PR #511 的中间提交（f28）曾加「发现 N 项已钉」分支却漏了 return，
+    导致继续落到通用计数行再追加「发现 0 项」——修分裂的代码自己分裂。
+    f29 全量汇总后 blocker_items 不再剔除，该路径已不可达；此用例锁死。
+    """
+    from deep_review import render_report
+    from ai_review_common import finding_fingerprint
+    fp = finding_fingerprint("a.py:5", "x")
+    # blocker 非空（全量渲染）+ 行内指纹：只允许出现一次「发现 1 项」
+    parsed = {"conclusion": "高风险",
+              "blockers": [{"location": "a.py:5", "issue": "x",
+                            "suggestion": "y"}],
+              "warnings": [], "infos": []}
+    md = render_report(parsed, None, 511, "034be50c", "m", inline_paths={fp})
+    assert md.count("发现 1 项") == 1
+    assert "📍 `a.py:5`" in md
+    assert "发现 0 项" not in md
+    # 全空场景走绿灯，无任何「发现 N 项」计数
+    empty = {"conclusion": "低风险", "blockers": [], "warnings": [], "infos": []}
+    md2 = render_report(empty, None, 511, "abc", "m", inline_paths={fp})
+    assert "发现 0 项" not in md2
+    assert "🟢" in md2
