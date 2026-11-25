@@ -54,9 +54,9 @@ DIR_LABELS = {
     "error_codes": "错误码",
     "terminology": "术语表",
     "translation": "翻译表",
-    "troubleshooting": "故障排查",
     "overview": "模块概览",
     "ui_pages": "页面导航",
+    "release_notes": "版本升级须知",
     "diagnosis_cards": "诊断卡",
     "chat_qa": "知识补充",
     # 诊断卡分域
@@ -81,7 +81,7 @@ FILE_LABELS = {
     # 通用
     "index.md": "目录索引",
     "readme.md": "说明",
-    "_README.md": "说明",
+    "_README.md": "接入说明（占位）",
     "overview.md": "模块概览",
     # 团队知识 - 服务号
     "manual_ops.md": "服务号平台手册",
@@ -117,14 +117,8 @@ FILE_LABELS = {
     "storageplatform.md": "错误码·存储平台",
     "taskflowplatform.md": "错误码·任务流平台",
     "vehicle.md": "错误码·车辆",
-    # USP 故障排查
-    "charging_issues.md": "排查·充电",
-    "cross_module_issues.md": "排查·跨模块",
-    "map_and_localization.md": "排查·地图与定位",
-    "pick_place_and_detection.md": "排查·取放货与识别",
-    "task_and_routing.md": "排查·任务与路径",
-    "vehicle_hardware_and_params.md": "排查·车辆硬件与参数",
-    "vehicle_runtime_errors.md": "排查·车端运行错误",
+    # USP 常见问题
+    "现场典型案例复盘.md": "现场典型案例复盘",
     # 公司知识 - 车端
     "inacs_charger_spec.md": "iNACS 充电机规格",
     "cheduan_errors.md": "车端错误码",
