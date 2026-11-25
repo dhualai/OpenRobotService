@@ -404,8 +404,8 @@ export default function AdminUserStatistics() {
                   )}
                 </div>
                 <div className="admin-entries-stats__chart admin-entries-stats__chart--wide">
-                  <div className="admin-entries-stats__group-head">
-                    <span className="admin-entries-stats__group-title">微信用户日活</span>
+                  <div className="admin-entries-stats__dau-head">
+                    <span className="admin-entries-stats__sub">微信用户日活</span>
                     <div className="admin-entries-stats__filter">
                       <input
                         type="date"
