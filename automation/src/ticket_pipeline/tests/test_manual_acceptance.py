@@ -1,3 +1,4 @@
+from secrets import token_urlsafe
 from types import SimpleNamespace
 
 import pytest
@@ -45,7 +46,7 @@ def test_manual_lookup_requires_explicit_database_user(monkeypatch):
 
 
 def test_status_query_only_reads_the_bound_ticket_status(monkeypatch):
-    source = SSHMySQLTicketSource(db_password="test-only")
+    source = SSHMySQLTicketSource(db_password=token_urlsafe())
 
     def fetch(sql, params):
         assert sql == "SELECT status FROM tasks WHERE id = %s AND project_id = %s"
