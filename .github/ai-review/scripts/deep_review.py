@@ -27,8 +27,8 @@ import urllib.error
 import urllib.request
 
 from ai_review_common import (
-    fetch_pr_files, fetch_pr_meta, finding_fingerprint, guess_line_number,
-    is_lock_file, now_display_str, parse_new_side_lines,
+    fetch_pr_files, fetch_pr_meta, finding_fingerprint, gh_api,
+    guess_line_number, is_lock_file, now_display_str, parse_new_side_lines,
     split_code_and_docs, strip_patch_noise,
 )
 from quick_screen import screen
@@ -265,7 +265,8 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
 
     n_quick = (len(quick_result.get("blockers") or [])
                + len(quick_result.get("warnings") or [])) if quick_result else 0
-    if not blocker_items and not n_quick:
+    n_inline = len(inline_paths or set())
+    if not blocker_items and not n_quick and not n_inline:
         lines += [
             "🟢 **未发现必须采纳的高危改动**——数据库/迁移、部署链路、密钥等"
             "确定性规则与 AI 深度检视均未命中，可放心合并。",
@@ -274,6 +275,13 @@ def render_report(parsed, quick_result, pr_number, sha, model_label,
             "🪵 本报告不阻塞合并 · 由人工复核决定 · " + str(model_label),
         ]
         return "\n".join(lines)
+
+    # blocker 全部转行内时，总结必须如实反映（否则「未发现」与行内矛盾，
+    # 用户实测反馈过的口径分裂）
+    if not blocker_items and not n_quick and n_inline:
+        lines.append(f"🔴 **发现 {n_inline} 项必须采纳的问题**——"
+                     f"已逐条钉到代码行，见 Files changed 标签页对应位置。")
+        lines.append("")
 
     lines.append(f"🔴 **发现 {len(blocker_items) + n_quick} 项必须采纳的问题**"
                  f"（AI {len(blocker_items)} 项 + 规则快筛 {n_quick} 项）")
