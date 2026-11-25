@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://localhost:8400/api/tasks/5/complete-step",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "next_step_id": 2,
+    "curr_step_endtime": "2026-12-31T12:00:00"
+  }
+}

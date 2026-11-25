@@ -1,0 +1,4 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/auth/login"
+}

@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks/1/complete-step",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "next_step_id": 2
+  }
+}
