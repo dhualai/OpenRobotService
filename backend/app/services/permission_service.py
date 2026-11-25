@@ -38,6 +38,12 @@ PERM_LEARNING = "frontend:admin:learning:manage"
 # 不在接口函数体内写（见该函数 docstring）。默认不派发给任何全局角色，需在权限管理显式勾选。
 PERM_KB_WRITE = "frontend:kb:write"
 
+# 智库管理员权限：映射为智库 role=admin（可编辑任意需求、管理用户与授权）。
+# 智库规则是「非 admin 只能编辑自己创建的需求」，所以只有写权限码的超管仍然改不了
+# 别人创建的需求——需要本码把超管正确映射过去。默认派生给全局角色「超级管理员」，
+# 也可在权限管理里单独勾给其他角色。
+PERM_KB_ADMIN = "frontend:kb:admin"
+
 # 「拥有哪个全局角色 → 额外获得哪些权限码」。开发者 / 超级管理员可编辑详情模板；
 # 一键导入全部项目、公告管理只开给超级管理员（admin 账号照旧直通）。
 _GLOBAL_ROLE_DERIVED_PERMISSIONS: Dict[str, tuple] = {
@@ -47,6 +53,7 @@ _GLOBAL_ROLE_DERIVED_PERMISSIONS: Dict[str, tuple] = {
         PERM_PROJECT_LEDGER_IMPORT,
         PERM_ANNOUNCEMENT,
         PERM_LEARNING,
+        PERM_KB_ADMIN,
     ),
 }
 _user_roles_cache: Dict[str, Dict[str, Any]] = {}

@@ -1273,10 +1273,9 @@ export default function TaskDetailPage() {
       await adminRequest(`/users/options/${approvalTargetType(approvalInfo)}/${approvalInfo.targetId}/approve`, {
         method: 'PUT',
       });
-      await request(`/${detail!.id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'closed' }),
-      });
+      // 后端 approve_option 已幂等处理并通过兜底 SQL 自动关单，此处前端 PATCH 为 best-effort，
+      // 失败不影响结果，避免 Step 2 丢包时误弹"审核失败"
+      try { await request(`/${detail!.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'closed' }) }); } catch { /* swallow */ }
       Toast({ message: '已审核通过', theme: 'success' });
       await refreshDetail();
     } catch (err) {
@@ -1304,10 +1303,8 @@ export default function TaskDetailPage() {
         method: 'PUT',
         body: JSON.stringify(body),
       });
-      await request(`/${detail!.id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'closed' }),
-      });
+      // 同 handleApprove：后端兜底关单，前端 PATCH best-effort
+      try { await request(`/${detail!.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'closed' }) }); } catch { /* swallow */ }
       Toast({ message: '已调整并审核通过', theme: 'success' });
       setShowAdjustPopup(false);
       setAdjustName('');
@@ -1337,10 +1334,8 @@ export default function TaskDetailPage() {
         method: 'PUT',
         body: JSON.stringify({ reason: rejectReason.trim() }),
       });
-      await request(`/${detail!.id}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: 'closed' }),
-      });
+      // 同上：后端兜底关单，前端 PATCH best-effort
+      try { await request(`/${detail!.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'closed' }) }); } catch { /* swallow */ }
       Toast({ message: '已驳回', theme: 'success' });
       setShowRejectPopup(false);
       setRejectReason('');
@@ -2822,7 +2817,7 @@ export default function TaskDetailPage() {
                         : '请填写该工单的解决方式'
                   }
                   autosize={{ minRows: 4, maxRows: 8 }}
-                  maxlength={1000}
+                  maxlength={10000}
                 />
               )}
             </div>

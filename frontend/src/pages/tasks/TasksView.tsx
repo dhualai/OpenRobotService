@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { navigateInWechat, setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { setShareMeta, shareImageUrl } from '@/shared/utils/shareMeta';
 import {
@@ -883,6 +883,7 @@ function FilterMenuDropdown({
 
 export default function TasksView() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
   const adminRequest = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
@@ -1158,13 +1159,15 @@ export default function TasksView() {
   const listExtraFilters = useMemo<TicketFilterCondition[]>(() => {
     const filters: TicketFilterCondition[] = [];
     if (search) {
+      // 用户可能输入 #123 来表示工单编号，需先去掉 # 前缀再做匹配
       const keyword = search.trim();
+      const normalizedKeyword = keyword.replace(/^#/, '');
       const searchConditions: TicketFilterCondition[] = [
         { field: 'title', op: 'contains', value: keyword },
       ];
-      // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
-      if (/^\d+$/.test(keyword)) {
-        searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
+      // 纯数字关键词（含去掉 # 后的）按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
+      if (/^\d+$/.test(normalizedKeyword)) {
+        searchConditions.push({ field: 'id', op: 'eq', value: Number(normalizedKeyword) });
       }
       filters.push({ or: searchConditions });
     }
@@ -1946,6 +1949,26 @@ export default function TasksView() {
         }
       />
 
+      {/* 顶栏切换：工单任务 / 学习任务 */}
+      <div className="tasks-top-tabs" role="tablist" aria-label="系统任务切换">
+        <button
+          role="tab"
+          aria-selected={!location.pathname.startsWith('/tasks/learning')}
+          className={`tasks-top-tabs__item ${!location.pathname.startsWith('/tasks/learning') ? 'is-active' : ''}`}
+          onClick={() => navigate('/tasks')}
+        >
+          工单任务
+        </button>
+        <button
+          role="tab"
+          aria-selected={location.pathname.startsWith('/tasks/learning')}
+          className={`tasks-top-tabs__item ${location.pathname.startsWith('/tasks/learning') ? 'is-active' : ''}`}
+          onClick={() => navigate('/tasks/learning')}
+        >
+          学习任务
+        </button>
+      </div>
+
       {/* 筛选区（搜索 + 状态 tab）：固定在滚动区外，不随列表滚动上移（对齐历史工单） */}
       <div className="tasks-view__filters">
           <div className="tasks-view__search-row">
@@ -1954,7 +1977,7 @@ export default function TasksView() {
               <input
                 data-testid="tasks-search"
                 className="tasks-search"
-                placeholder="搜索工单（支持编号/标题）…"
+                placeholder="搜索工单（支持编号/标题，如 #123）…"
                 value={searchInput}
                 onChange={(e) => { setSearchInput(e.target.value); }}
               />

@@ -1,5 +1,3 @@
-import json
-
 import pytest
 from typing import Any, Dict, Optional
 
@@ -22,9 +20,8 @@ def assert_status_code(response: Any, expected: int, msg: str = "") -> None:
     except Exception:
         pass
     if actual != expected:
-        detail = msg or f"Expected status {expected}, got {actual}"
-        body = getattr(response, "text", "") or str(getattr(response, "content", b""))
-        pytest.fail(f"{detail}. Response body: {body[:500]}")
+        detail = f"Expected status {expected}, got {actual}"
+        pytest.fail(f"{msg}. {detail}" if msg else detail, pytrace=False)
 
 
 def assert_json_response(response: Any) -> Dict[str, Any]:
@@ -41,11 +38,10 @@ def assert_json_response(response: Any) -> Dict[str, Any]:
     """
     assert_status_code(response, 200)
     try:
-        data = response.json()
-        return data
-    except (ValueError, AttributeError) as e:
-        body = getattr(response, "text", "") or str(getattr(response, "content", b""))
-        pytest.fail(f"Response is not valid JSON: {e}. Body: {body[:500]}")
+        return response.json()
+    except (ValueError, AttributeError):
+        pass
+    pytest.fail("Response is not valid JSON", pytrace=False)
 
 
 def assert_error_response(response: Any, status_code: int, error_code: Optional[str] = None) -> None:
@@ -64,4 +60,4 @@ def assert_error_response(response: Any, status_code: int, error_code: Optional[
     if error_code and isinstance(data, dict):
         actual_code = data.get("error_code") or data.get("code") or ""
         if actual_code != error_code:
-            pytest.fail(f"Expected error_code={error_code}, got {actual_code}. Body: {data}")
+            pytest.fail(f"Response error code differs from expected {error_code}", pytrace=False)

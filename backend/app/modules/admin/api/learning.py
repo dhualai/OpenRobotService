@@ -23,12 +23,9 @@ class Material(BaseModel):
 class Sources(BaseModel):
     task_ids: list[int] = Field(default_factory=list, max_length=10)
     materials: list[Material] = Field(default_factory=list, max_length=10)
-    verified: bool = False
 
     @model_validator(mode="after")
     def valid_sources(self):
-        if not self.verified:
-            raise ValueError("请确认材料授权和敏感信息已核对")
         if any(task_id <= 0 for task_id in self.task_ids):
             raise ValueError("工单ID必须为正整数")
         return self
@@ -84,6 +81,12 @@ class PreviewAnswer(BaseModel):
 async def sources(keyword: str = Query("", max_length=200), page: int = Query(1, ge=1),
                   db=Depends(get_async_db), actor=Depends(get_current_active_user_from_token)):
     return await service.source_listing(db, actor, keyword, page)
+
+
+@router.get("/sources/{task_id}/similar")
+async def similar_sources(task_id: int, limit: int = Query(10, ge=1, le=10),
+                          db=Depends(get_async_db), actor=Depends(get_current_active_user_from_token)):
+    return await service.similar_source_tasks(db, actor, task_id, limit)
 
 
 @router.get("/articles")

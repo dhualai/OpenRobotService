@@ -116,6 +116,9 @@ const TicketDetailPage = lazyImport(() => import('@/pages/call/TicketDetailPage'
 const TasksView = lazyImport(() => import('@/pages/tasks/TasksView'));
 const TaskDetailPage = lazyImport(() => import('@/pages/tasks/TaskDetailPage'));
 const OperationLogsPage = lazyImport(() => import('@/pages/tasks/OperationLogsPage'));
+const LearnerHome = lazyImport(() => import('@/pages/learning/LearnerHome'));
+const LearnerStudy = lazyImport(() => import('@/pages/learning/LearnerStudy'));
+const LearnerWrongbook = lazyImport(() => import('@/pages/learning/LearnerWrongbook'));
 // 我的历史奖励（微信商家转账 · 提现入口）：直挂根路由，保留底部 Tab 可点
 const MyRewards = lazyImport(() => import('@/pages/rewards/MyRewards'));
 // 奖励管理（微信商家转账 · 管理端）：后台管理 → 其他 → 奖励管理
@@ -181,6 +184,7 @@ const UserSetup = lazyImport(() => import('@/pages/admin/UserSetup'));
 const PermissionManage = lazyImport(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazyImport(() => import('@/pages/admin/ResourceManage'));
 const FileExplorer = lazyImport(() => import('@/pages/admin/FileExplorer'));
+const KnowledgeBase = lazyImport(() => import('@/pages/admin/KnowledgeBase'));
 const DailyReportManage = lazyImport(() => import('@/pages/admin/DailyReportManage'));
 const DailySummaryAgent = lazyImport(() => import('@/pages/admin/DailySummaryAgent'));
 const WechatManage = lazyImport(() => import('@/pages/admin/WechatManage'));
@@ -213,6 +217,10 @@ const router = createBrowserRouter([
           { path: 'call/history', element: <HistoryTicketsPage /> },
           { path: 'call/ticket/:id', element: <TicketDetailPage /> },
           { path: 'tasks', element: <TasksView /> },
+          // 学习中心（做题人端）—— 放 tasks/:id 之前避免被 :id 贪婪匹配
+          { path: 'tasks/learning', element: <LearnerHome /> },
+          { path: 'tasks/learning/wrongbook', element: <LearnerWrongbook /> },
+          { path: 'tasks/learning/:articleId', element: <LearnerStudy /> },
           { path: 'tasks/:id', element: <TaskDetailPage /> },
           { path: 'tasks/:id/operations', element: <OperationLogsPage /> },
           // 我的历史奖励（微信商家转账 · 立即提现）
@@ -295,6 +303,7 @@ const router = createBrowserRouter([
                   { path: 'permissions', element: <PermissionManage /> },
                   { path: 'resources', element: <ResourceManage /> },
                   { path: 'file-explorer', element: <FileExplorer /> },
+                  { path: 'kb', element: <KnowledgeBase /> },
                   { path: 'wechat', element: <WechatManage /> },
                   { path: 'profile', element: <UserProfile /> },
                   // 奖励管理：转账测试 + 转账单/奖励记录运维（与「其他」入口页同一个 AdminLayout 壳）

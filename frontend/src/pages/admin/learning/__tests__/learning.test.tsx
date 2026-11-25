@@ -8,10 +8,11 @@ import ArticleEditor from '../ArticleEditor';
 import LearningPreviewModal from '../LearningPreview';
 import QuestionList from '../QuestionList';
 import QuestionEditor from '../QuestionEditor';
+import SourceModal from '../SourceModal';
 
 vi.mock('@/api/learning', async (original) => ({
   ...await original<typeof import('@/api/learning')>(),
-  listLearningArticles: vi.fn(), listLearningQuestions: vi.fn(), listSourceTasks: vi.fn(),
+  listLearningArticles: vi.fn(), listLearningQuestions: vi.fn(), listSourceTasks: vi.fn(), getSimilarSourceTasks: vi.fn(),
   getLearningArticle: vi.fn(), createLearningArticle: vi.fn(), saveLearningArticle: vi.fn(),
   generateLearning: vi.fn(), getLearningGeneration: vi.fn(), adoptLearningArticle: vi.fn(),
   confirmLearningArticle: vi.fn(), getLearningPreview: vi.fn(), answerLearningPreview: vi.fn(),
@@ -34,6 +35,9 @@ const detail = (overrides: Partial<api.ArticleDetail> = {}): api.ArticleDetail =
   active_version: 0, enabled: false, revision: 1, created_at: '2026-11-20T01:00:00', versions: [], questions: [], generations: [], audits: [], ...overrides,
 });
 const summary: api.ArticleSummary = { id: 'article-1', title: content.title, category: content.category, has_draft: true, active_version: 0, enabled: false, question_count: 0, updated_at: '2026-11-20T01:00:00' };
+const sourceTask: api.SourceTask = { id: '1', title: '充电故障', status: 'archived', summary: '充电桩断电，检查供电后仍无法启动。' };
+const relatedTask: api.SourceTask = { id: '2', title: '充电接触不良', status: 'closed', summary: '充电触点松动，设备无法正常充电。' };
+const taskSnapshots = (tasks: api.SourceTask[]): api.SourceSnapshot[] => tasks.map((task) => ({ type: 'work_order', id: task.id, marker: `S${task.id}`, label: task.title, content: task.summary }));
 const wrap = (element: React.ReactNode) => render(<MemoryRouter>{element}</MemoryRouter>);
 const getComputedStyle = window.getComputedStyle;
 
@@ -46,6 +50,7 @@ beforeEach(() => {
   vi.mocked(api.listLearningArticles).mockResolvedValue({ items: [summary], total: 1 });
   vi.mocked(api.listLearningQuestions).mockResolvedValue({ items: [question], total: 1 });
   vi.mocked(api.listSourceTasks).mockResolvedValue({ items: [], total: 0 });
+  vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [], matching_method: 'vector', retrieval_status: 'ok' });
   vi.mocked(api.getLearningArticle).mockResolvedValue(detail());
 });
 
@@ -76,7 +81,7 @@ describe('题目生成管理页', () => {
     expect(await screen.findByRole('heading', { name: content.title })).toBeInTheDocument();
   });
 
-  it('允许仅用技术材料创建，并保留输入直到成功', async () => {
+  it('无需来源核验勾选即可仅用技术材料创建，并保留输入直到成功', async () => {
     vi.mocked(api.createLearningArticle).mockRejectedValueOnce(new Error('保存失败')).mockResolvedValueOnce(detail());
     wrap(<QuestionGeneration />);
     await screen.findByRole('heading', { name: content.title });
@@ -87,19 +92,129 @@ describe('题目生成管理页', () => {
     fireEvent.change(dialog.getByLabelText('材料名称'), { target: { value: '维护规范' } });
     fireEvent.change(dialog.getByLabelText('出处及版本'), { target: { value: '规范v1' } });
     fireEvent.change(dialog.getByLabelText('材料内容'), { target: { value: '先检查供电，再检查触点。' } });
-    fireEvent.click(dialog.getByRole('checkbox', { name: '已核对材料使用授权和敏感信息；生成结果仍须人工确认' }));
+    expect(dialog.queryByRole('checkbox')).not.toBeInTheDocument();
     fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
     expect(await screen.findByText('保存失败')).toBeInTheDocument();
     expect(dialog.getByLabelText('知识主题')).toHaveValue('供电排查');
     fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
     await waitFor(() => expect(api.createLearningArticle).toHaveBeenCalledTimes(2));
-    expect(api.createLearningArticle).toHaveBeenLastCalledWith('供电排查', { task_ids: [], materials: [{ name: '维护规范', provenance: '规范v1', text: '先检查供电，再检查触点。' }], verified: true });
+    expect(api.createLearningArticle).toHaveBeenLastCalledWith('供电排查', { task_ids: [], materials: [{ name: '维护规范', provenance: '规范v1', text: '先检查供电，再检查触点。' }] });
     expect(await screen.findByText('知识点与题目维护')).toBeInTheDocument();
+  });
+
+  it('调整来源无需核验勾选，保留已有材料并可直接保存', async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render(<SourceModal open replacing initialTitle={content.title} initialSources={detail().sources} onClose={vi.fn()} onSubmit={submit} />);
+    const dialog = within(screen.getByRole('dialog', { name: '调整知识点来源' }));
+    expect(dialog.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(dialog.getByLabelText('材料名称')).toHaveValue('维护规范');
+    fireEvent.change(dialog.getByLabelText('出处及版本'), { target: { value: '规范v2' } });
+    fireEvent.click(dialog.getByRole('button', { name: '保存来源' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(content.title, {
+      task_ids: [], materials: [{ name: '维护规范', provenance: '规范v2', text: '先检查供电，再检查触点。' }],
+    }));
+  });
+
+  it('移除来源核验后仍要求至少一份来源材料', async () => {
+    const submit = vi.fn();
+    render(<SourceModal open initialTitle={content.title} onClose={vi.fn()} onSubmit={submit} />);
+    const dialog = within(screen.getByRole('dialog', { name: '新建知识点 · 选择来源材料' }));
+    fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
+    expect(await dialog.findByText('至少选择一个工单或填写一份技术材料')).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
+  });
+});
+
+describe('来源工单摘要与相似推荐', () => {
+  it('选中后展示摘要并查询相似工单，仅手动加入的推荐项进入来源', async () => {
+    vi.mocked(api.listSourceTasks).mockResolvedValue({ items: [sourceTask], total: 1 });
+    vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [sourceTask, relatedTask], matching_method: 'vector', retrieval_status: 'ok' });
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render(<SourceModal open initialTitle={content.title} onClose={vi.fn()} onSubmit={submit} />);
+    const dialog = within(screen.getByRole('dialog'));
+    expect(api.getSimilarSourceTasks).not.toHaveBeenCalled();
+    fireEvent.mouseDown(dialog.getByRole('combobox', { name: '来源工单' }));
+    fireEvent.click(await screen.findByText('1 · 充电故障（已归档）'));
+    const selected = within(await dialog.findByRole('article', { name: '已选工单 1' }));
+    expect(selected.getByText(sourceTask.summary)).toBeInTheDocument();
+    const recommendation = within(await dialog.findByRole('article', { name: '相似工单 2' }));
+    expect(recommendation.getByText(relatedTask.summary)).toBeInTheDocument();
+    expect(dialog.queryByRole('article', { name: '相似工单 1' })).not.toBeInTheDocument();
+    expect(dialog.queryByRole('article', { name: '已选工单 2' })).not.toBeInTheDocument();
+    fireEvent.click(recommendation.getByRole('button', { name: '加入来源工单 2' }));
+    expect(await dialog.findByRole('article', { name: '已选工单 2' })).toBeInTheDocument();
+    expect(dialog.queryByRole('article', { name: '相似工单 2' })).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(content.title, { task_ids: ['1', '2'], materials: [] }));
+  });
+
+  it('切换参照工单后忽略旧请求，移除全部工单后清空推荐', async () => {
+    const third = { ...sourceTask, id: '3', title: '新的相似工单' };
+    const stale = { ...sourceTask, id: '4', title: '旧请求推荐' };
+    let resolveOld!: (result: api.SourceRecommendations) => void;
+    const oldRequest = new Promise<api.SourceRecommendations>((resolve) => { resolveOld = resolve; });
+    vi.mocked(api.getSimilarSourceTasks).mockImplementation((id) => id === '2' ? oldRequest : Promise.resolve({ source: sourceTask, items: [third], matching_method: 'vector', retrieval_status: 'ok' }));
+    render(<SourceModal open initialTitle={content.title} initialSources={taskSnapshots([sourceTask, relatedTask])} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    const dialog = within(screen.getByRole('dialog'));
+    await waitFor(() => expect(api.getSimilarSourceTasks).toHaveBeenCalledWith('2'));
+    fireEvent.click(dialog.getByRole('button', { name: '查找工单 1 的相似工单' }));
+    expect(await dialog.findByRole('article', { name: '相似工单 3' })).toBeInTheDocument();
+    await act(async () => { resolveOld({ source: relatedTask, items: [stale], matching_method: 'vector', retrieval_status: 'ok' }); });
+    expect(dialog.queryByText('旧请求推荐')).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 2' }));
+    fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 1' }));
+    await waitFor(() => expect(dialog.queryByRole('heading', { name: '相似工单推荐' })).not.toBeInTheDocument());
+    expect(dialog.queryByRole('article', { name: '相似工单 3' })).not.toBeInTheDocument();
+  });
+
+  it('推荐失败可重试，不阻止用已选来源创建草稿', async () => {
+    vi.mocked(api.getSimilarSourceTasks).mockRejectedValueOnce(new Error('推荐暂不可用')).mockResolvedValueOnce({ source: sourceTask, items: [relatedTask], matching_method: 'vector', retrieval_status: 'ok' });
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render(<SourceModal open initialTitle={content.title} initialSources={taskSnapshots([sourceTask])} onClose={vi.fn()} onSubmit={submit} />);
+    const dialog = within(screen.getByRole('dialog'));
+    expect(await dialog.findByText('推荐暂不可用')).toBeInTheDocument();
+    expect(dialog.getByText(sourceTask.summary)).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: '创建草稿并继续' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(content.title, { task_ids: ['1'], materials: [] }));
+    fireEvent.click(dialog.getByRole('button', { name: '重试相似工单' }));
+    expect(await dialog.findByRole('article', { name: '相似工单 2' })).toBeInTheDocument();
+  });
+
+  it('来源达到十份时禁用推荐加入，无匹配时显示空状态', async () => {
+    const tasks = Array.from({ length: 9 }, (_, index) => ({ ...sourceTask, id: String(index + 1) }));
+    vi.mocked(api.getSimilarSourceTasks).mockResolvedValueOnce({ source: tasks[8], items: [{ ...relatedTask, id: '11' }], matching_method: 'vector', retrieval_status: 'ok' })
+      .mockResolvedValue({ source: tasks[7], items: [], matching_method: 'vector', retrieval_status: 'ok' });
+    render(<SourceModal open initialTitle={content.title} initialSources={[...taskSnapshots(tasks), detail().sources[0]]} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    const dialog = within(screen.getByRole('dialog'));
+    expect(await dialog.findByRole('button', { name: '加入来源工单 11' })).toBeDisabled();
+    fireEvent.click(dialog.getByRole('button', { name: '移除' }));
+    expect(dialog.getByRole('button', { name: '加入来源工单 11' })).toBeEnabled();
+    fireEvent.click(dialog.getByRole('button', { name: '移除来源工单 9' }));
+    expect(await dialog.findByText('暂无相似的可用工单，可继续搜索或添加技术材料。')).toBeInTheDocument();
+  });
+
+  it('向量服务不可用时明确提示且可重试，不伪装为没有相似工单', async () => {
+    vi.mocked(api.getSimilarSourceTasks).mockResolvedValueOnce({ source: sourceTask, items: [], matching_method: 'vector', retrieval_status: 'unavailable' })
+      .mockResolvedValueOnce({ source: sourceTask, items: [relatedTask], matching_method: 'vector', retrieval_status: 'ok' });
+    render(<SourceModal open initialTitle={content.title} initialSources={taskSnapshots([sourceTask])} onClose={vi.fn()} onSubmit={vi.fn()} />);
+    const dialog = within(screen.getByRole('dialog'));
+    expect(await dialog.findByText('相似工单检索服务暂不可用，请重试')).toBeInTheDocument();
+    expect(dialog.queryByText('暂无相似的可用工单，可继续搜索或添加技术材料。')).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: '重试相似工单' }));
+    expect(await dialog.findByRole('article', { name: '相似工单 2' })).toBeInTheDocument();
+    expect(dialog.getByText(/使用与知识沉淀审核页相同的向量检索/)).toBeInTheDocument();
   });
 });
 
 describe('文章编辑与候选采用', () => {
   const editor = () => wrap(<ArticleEditor articleId="article-1" refreshKey={0} onClose={vi.fn()} onChanged={vi.fn()} onQuestionEdit={vi.fn()} onPreview={vi.fn()} />);
+
+  it('AI提炼文章按钮使用蓝底白字的主按钮并加粗文字', async () => {
+    editor();
+    const button = await screen.findByRole('button', { name: 'AI提炼文章' });
+    expect(button).toHaveClass('ant-btn-primary');
+    expect(button).toHaveStyle({ fontWeight: '700' });
+  });
 
   it('AI生成只展示候选，不自动覆盖，需手动采用', async () => {
     const job: api.Generation = { id: 'request-1', kind: 'article', state: 'succeeded', input_revision: 1, created_at: '2026-11-20T01:00:00', error: null, result: { content: { ...content, title: 'AI候选标题' } } };

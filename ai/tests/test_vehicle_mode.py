@@ -63,7 +63,7 @@ def kb_tmp(tmp_path):
     """临时 kb 目录：company/XQE/ 平铺两篇 + 一个非 md 文件（应被忽略）。
 
     1010 起车型目录平铺（无 manual 层），sub_domain 即车型串。"""
-    xqe = tmp_path / "company" / "XQE"
+    xqe = tmp_path / "company" / "vehicle_models" / "XQE"
     xqe.mkdir(parents=True)
     (xqe / "XQE下线调试与部署文档.md").write_text("# 手册A\n", encoding="utf-8")
     (xqe / "故障分叉树.md").write_text("# 手册B\n", encoding="utf-8")
@@ -111,8 +111,8 @@ def test_list_manual_docs_scans_dir(kb_tmp):
     docs = list_manual_docs("XQE", kb_root=kb_tmp, media_prefix="/api/ai/media")
     titles = [d["title"] for d in docs]
     assert titles == ["XQE下线调试与部署文档", "故障分叉树"]  # sorted 序
-    assert docs[0]["url"] == "/api/ai/media/kb/company/XQE/XQE下线调试与部署文档.md"
-    assert docs[0]["path"] == "company/XQE/XQE下线调试与部署文档.md"
+    assert docs[0]["url"] == "/api/ai/media/kb/company/vehicle_models/XQE/XQE下线调试与部署文档.md"
+    assert docs[0]["path"] == "company/vehicle_models/XQE/XQE下线调试与部署文档.md"
 
 
 def test_list_manual_docs_missing_dir_returns_empty(tmp_path):
@@ -129,8 +129,8 @@ def test_model_to_domain():
 
     # 0930 定稿：车型知识挂 company 域子目录（kb/company/{车型}/），不建独立域
     assert model_to_domain("XQE") == "company"
-    assert model_to_subpath("XQE") == "XQE"
-    assert model_to_subpath(" xqe ") == "XQE"
+    assert model_to_subpath("XQE") == "vehicle_models/XQE"
+    assert model_to_subpath(" xqe ") == "vehicle_models/XQE"
     assert model_to_subpath("") == ""
 
 
@@ -297,7 +297,7 @@ async def test_register_mode_falls_back_to_request_model(vehicle_db, kb_tmp, moc
 @pytest.fixture
 def kb_fork(tmp_path):
     """带 9 大类顶层节点的分叉树（### 子节点不算顶层）。"""
-    xqe = tmp_path / "company" / "XQE"
+    xqe = tmp_path / "company" / "vehicle_models" / "XQE"
     xqe.mkdir(parents=True)
     (xqe / "故障分叉树.md").write_text(
         "# XQE 故障分叉树\n"
@@ -399,7 +399,7 @@ def test_build_opening_collapse_arrow_data():
 def test_build_vehicle_guide_scans_model_pages(tmp_path):
     from ai.api.vehicle_mode import build_vehicle_guide
 
-    xqe = tmp_path / "company" / "XQE"
+    xqe = tmp_path / "company" / "vehicle_models" / "XQE"
     xqe.mkdir(parents=True)
     (xqe / "XQE122.md").write_text("# x", encoding="utf-8")
     (xqe / "XQE151.md").write_text("# x", encoding="utf-8")
@@ -427,7 +427,7 @@ def test_build_vehicle_guide_scans_model_pages(tmp_path):
 def kb_dirs(tmp_path):
     """生产形态的 KB 目录：车系目录 XQE（分叉树+故障码表+手册+型号页）
     + 平铺目录 product_catalog（66 款车型页平铺）。"""
-    xqe = tmp_path / "company" / "XQE"
+    xqe = tmp_path / "company" / "vehicle_models" / "XQE"
     xqe.mkdir(parents=True)
     (xqe / "00_故障分叉树.md").write_text(
         "# 树\n## 1. 车辆停着不动\n", encoding="utf-8")
@@ -448,9 +448,9 @@ def test_resolve_model_dirs_exact(kb_dirs):
 
     r = resolve_model_dirs("XQE", kb_root=kb_dirs)
     assert r["family"] == "XQE"
-    assert r["dirs"] == ["XQE"]
+    assert r["dirs"] == ["vehicle_models/XQE"]
     assert r["files"] == {}
-    assert r["primary"] == "XQE"
+    assert r["primary"] == "vehicle_models/XQE"
 
 
 def test_resolve_model_dirs_model_to_series(kb_dirs):
@@ -463,9 +463,9 @@ def test_resolve_model_dirs_model_to_series(kb_dirs):
 
     for model in ("XQE122", "xqe122-2", "XQE-151", "XQE151", "XQE 122"):
         r = resolve_model_dirs(model, kb_root=kb_dirs)
-        assert r["dirs"] == ["XQE"], model
+        assert r["dirs"] == ["vehicle_models/XQE"], model
         assert r["files"] == {}, model
-        assert r["primary"] == "XQE", model
+        assert r["primary"] == "vehicle_models/XQE", model
         assert r["family"] == "XQE", model
 
 
@@ -501,9 +501,9 @@ def test_resolve_model_dirs_unknown_falls_back(kb_dirs):
     from ai.api.vehicle_mode import resolve_model_dirs
 
     r = resolve_model_dirs("ZZZ999", kb_root=kb_dirs)
-    assert r["dirs"] == ["ZZZ999"]
+    assert r["dirs"] == ["vehicle_models/ZZZ999"]
     assert r["files"] == {}
-    assert r["primary"] == "ZZZ999"
+    assert r["primary"] == "vehicle_models/ZZZ999"
 
 
 def test_resolve_model_dirs_empty_model(kb_dirs):
@@ -530,13 +530,13 @@ def test_list_manual_docs_multi_dirs_and_whitelist(kb_dirs):
     from ai.api.vehicle_mode import list_manual_docs_multi
 
     # 车系目录：引导设施（分叉树/故障码表）不外显
-    docs = list_manual_docs_multi(["XQE"], None, kb_root=kb_dirs,
+    docs = list_manual_docs_multi(["vehicle_models/XQE"], None, kb_root=kb_dirs,
                                   exclude_guide_docs=True)
     titles = [d["title"] for d in docs]
     assert "36_异常处理标准流程SOP" in titles
     assert "00_故障分叉树" not in titles
     assert "01_故障码表" not in titles
-    assert docs[0]["url"].startswith("/api/ai/media/kb/company/XQE/")
+    assert docs[0]["url"].startswith("/api/ai/media/kb/company/vehicle_models/XQE/")
 
     # 平铺目录 + 白名单：只出本族型号页（XFL201 不得混进来）
     docs2 = list_manual_docs_multi(
@@ -567,8 +567,8 @@ async def test_register_mode_fuzzy_model_to_series(vehicle_db, kb_dirs, mock_mem
     assert resp["data"]["model"] == "XQE122"       # 展示/追溯用录入串
     assert resp["data"]["model_raw"] == "XQE122"
     assert resp["data"]["model_family"] == "XQE"
-    assert resp["data"]["model_dirs"] == ["XQE"]
-    assert resp["data"]["model_primary"] == "XQE"
+    assert resp["data"]["model_dirs"] == ["vehicle_models/XQE"]
+    assert resp["data"]["model_primary"] == "vehicle_models/XQE"
     titles = [d["title"] for d in resp["data"]["manual_docs"]]
     assert "36_异常处理标准流程SOP" in titles
     assert "00_故障分叉树" not in titles
@@ -576,8 +576,8 @@ async def test_register_mode_fuzzy_model_to_series(vehicle_db, kb_dirs, mock_mem
     mem = await mock_memory.get_memory("sess-xqe-1")
     mode = mem.metadata["vehicle_mode"]
     assert mode["model"] == "XQE122"
-    assert mode["model_dirs"] == ["XQE"]
-    assert mode["model_primary"] == "XQE"
+    assert mode["model_dirs"] == ["vehicle_models/XQE"]
+    assert mode["model_primary"] == "vehicle_models/XQE"
 
 
 async def test_register_mode_xqc_flat_catalog(vehicle_db, kb_dirs, mock_memory,
@@ -620,5 +620,5 @@ async def test_register_mode_lowercase_model_resolves(vehicle_db, kb_dirs,
     assert resp["code"] == 0
     assert resp["data"]["model"] == "XQE122-2"
     assert resp["data"]["model_family"] == "XQE"
-    assert resp["data"]["model_dirs"] == ["XQE"]
+    assert resp["data"]["model_dirs"] == ["vehicle_models/XQE"]
     assert resp["data"]["manual_docs"], "手册不能为空（旧口径这里是空）"

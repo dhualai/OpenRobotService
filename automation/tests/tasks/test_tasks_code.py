@@ -8,6 +8,8 @@ import pytest
 from automation.src.assertions import assert_dict_contains_subset, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
 from automation.src.config.credentials import role_credentials
+from automation.src.reporting.api_step import api_step
+from automation.src.reporting.business_scenarios import SCENARIO_LABEL, USP_USAGE_ISSUE
 
 async def _auth_for_role(client, role: str) -> dict:
     username, password = role_credentials(role)
@@ -15,15 +17,10 @@ async def _auth_for_role(client, role: str) -> dict:
     return {'Authorization': f"Bearer {r.json()['access_token']}"}
 
 async def _api(client, method: str, path: str, step: str='', headers=None, expected_status: int | None=None, expected_fields: dict | None=None, **kwargs):
-    """Send a request wrapped in an Allure step block; assertions run inside the step."""
-    with allure.step(step or f'{method.upper()} {path}'):
-        r = await client.request(method, path, headers=headers, **kwargs)
-        if expected_status is not None:
-            assert_status_code(r, expected_status)
-        if expected_fields:
-            assert_dict_contains_subset(r.json(), expected_fields)
-        flush_assert_attachment()
-        return r
+    """委托统一上报：自动附加入参、出参、断言。"""
+    return await api_step(client, method, path, step=step, headers=headers,
+                          expected_status=expected_status,
+                          expected_fields=expected_fields, **kwargs)
 
 @allure.feature('系统任务')
 class TestTaskCrud:
@@ -278,6 +275,37 @@ class TestTaskAi:
 @allure.feature('系统任务')
 class TestTaskFlow:
     """全链路流程"""
+
+    @allure.story('提单与接单')
+    @allure.title('提单人提交 USP 使用问题，接单人接单')
+    @allure.label(SCENARIO_LABEL, 'incident-create')
+    @pytest.mark.api
+    async def test_submit_usp_usage_issue_and_engineer_accepts(self, mock_api_client):
+        submitter, _ = role_credentials('customer')
+        submitter_headers = await _auth_for_role(mock_api_client, 'customer')
+        created = await _api(
+            mock_api_client, 'post', '/api/tasks', step='提单人提交 USP 使用问题',
+            headers=submitter_headers,
+            json={'title': USP_USAGE_ISSUE, 'description': USP_USAGE_ISSUE, 'ticket_type': 'support'},
+            expected_status=200,
+            expected_fields={
+                'title': USP_USAGE_ISSUE, 'description': USP_USAGE_ISSUE,
+                'created_by': submitter, 'status': 'pending',
+            },
+            business_evidence=('incident-create', 'create'),
+        )
+        ticket_id = created.json()['id']
+        assert isinstance(ticket_id, int) and ticket_id > 0
+
+        engineer, _ = role_credentials('engineer')
+        engineer_headers = await _auth_for_role(mock_api_client, 'engineer')
+        await _api(
+            mock_api_client, 'patch', f'/api/tasks/{ticket_id}/assign',
+            step='接单人接收同一张工单', headers=engineer_headers,
+            json={'assigned_to': engineer}, expected_status=200,
+            expected_fields={'id': ticket_id, 'assigned_to': engineer, 'status': 'in_progress'},
+            business_evidence=('incident-create', 'accept'),
+        )
 
     @allure.story('全链路')
     @allure.title('全链路：建单→处理中→已解决→已关闭')

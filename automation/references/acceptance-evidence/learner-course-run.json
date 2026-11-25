@@ -1,0 +1,26 @@
+{
+  "run": {
+    "environment": "service-account-test",
+    "commit": "5452a4b2ead71cd9648d3a98a4fef184f241cae3",
+    "commit_url": "https://github.com/dhualai/OpenRobotService/commit/5452a4b2ead71cd9648d3a98a4fef184f241cae3",
+    "run_id": "45359876326",
+    "run_url": "https://github.com/dhualai/OpenRobotService/actions/runs/45359876326",
+    "deployment_commit": "59645a9f237c7548cc908de8d86040fd16008d55",
+    "application_trees_match": true,
+    "deployment_drift": false
+  },
+  "course": {
+    "course_title": "按钮路径交互优化：转工单入口的反馈闭环",
+    "course_version": 1,
+    "total": 2,
+    "submitted": 2,
+    "scored": 2,
+    "correct": 0,
+    "persisted": 2,
+    "list_progress": "passed",
+    "detail_progress": "passed",
+    "detail_answered": 2,
+    "outcome": "passed",
+    "submit_http_status": 200
+  }
+}

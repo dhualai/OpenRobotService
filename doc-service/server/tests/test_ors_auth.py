@@ -51,8 +51,10 @@ def test_perm_matches(user_perm, required, expected):
     [
         (("admin",), "admin"),
         (("*",), "admin"),
+        (("frontend:kb:admin",), "admin"),
         (("frontend:kb:write",), "engineer"),
-        (("frontend:kb:*",), "engineer"),
+        # 通配码同时涵盖 write 与 admin，故映射为 admin（拥有全部智库权限即管理员）
+        (("frontend:kb:*",), "admin"),
         (("backend:project:all",), "guest"),
         ((), "guest"),
     ],
@@ -148,6 +150,40 @@ def test_upgrade_creates_grant_when_missing(db):
     }
     assert perms.get("usp") == "write"
     assert perms.get("ors") == "write"
+
+
+def test_engineer_upgraded_to_admin_with_kb_admin(db):
+    """超管拿到 frontend:kb:admin 后，已是 engineer 的账号也要升为 admin。
+
+    否则超管在智库仍是 engineer，改不了别人创建的需求（线上实际踩到）。
+    """
+    from app.infra.models import Grant, User
+
+    db.add(User(username="su", password_hash="", role="engineer"))
+    for product in ("usp", "ors"):
+        db.add(Grant(username="su", product=product, kind="product_all", resource_id="", perm="write"))
+    db.commit()
+
+    ors_auth.provision(db, OrsUser("su", "SU", ("frontend:kb:write", "frontend:kb:admin")))
+    db.commit()
+
+    assert db.get(User, "su").role == "admin"
+    perms = {
+        g.product: g.perm
+        for g in db.query(Grant).filter(Grant.username == "su").all()
+    }
+    assert perms == {"usp": "write", "ors": "write"}
+
+
+def test_admin_not_downgraded_without_kb_admin(db):
+    """已是 admin 的账号即使本次没有 kb:admin 码也不降级。"""
+    from app.infra.models import User
+
+    db.add(User(username="su2", password_hash="", role="admin"))
+    db.commit()
+    ors_auth.provision(db, OrsUser("su2", "SU2", ("frontend:kb:write",)))
+    db.commit()
+    assert db.get(User, "su2").role == "admin"
 
 
 # ---------- verify_ors_token：对摇人吧响应的容错 ----------

@@ -25,6 +25,14 @@ function getDefaultRange(): { begin: string; end: string } {
   return { begin: fmtDate(begin), end: fmtDate(end) };
 }
 
+/** 日活默认时间范围：最近 7 天含当天（实时埋点，当天可查，end=今天） */
+function getDauDefaultRange(): { begin: string; end: string } {
+  const now = new Date();
+  const begin = new Date(now);
+  begin.setDate(begin.getDate() - 6);
+  return { begin: fmtDate(begin), end: fmtDate(now) };
+}
+
 // macaron 蓝阶配色（与 global.css --mac-blue-1..4 对齐），柱状图/饼图共用
 const BAR_COLOR_NEW = '#3697c3';
 const BAR_COLOR_CANCEL = '#93e0ff';
@@ -67,16 +75,18 @@ export default function AdminUserStatistics() {
   const yesterdayDate = new Date();
   yesterdayDate.setDate(yesterdayDate.getDate() - 1);
   const yesterday = fmtDate(yesterdayDate);
+  const today = fmtDate(new Date());
   const [beginDate, setBeginDate] = useState(() => getDefaultRange().begin);
   const [endDate, setEndDate] = useState(() => getDefaultRange().end);
   const [list, setList] = useState<UserSummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  // 微信用户日活（wechat_user_activity 表实时埋点）：折线图随筛选框，今日 DAU 单独取
+  // 微信用户日活（wechat_user_activity 表实时埋点）：独立筛选框，end 可为今天
   const [dauList, setDauList] = useState<UserDauItem[]>([]);
   const [dauLoading, setDauLoading] = useState(true);
   const [dauError, setDauError] = useState('');
-  const [todayDau, setTodayDau] = useState<number | null>(null);
+  const [dauBeginDate, setDauBeginDate] = useState(() => getDauDefaultRange().begin);
+  const [dauEndDate, setDauEndDate] = useState(() => getDauDefaultRange().end);
   // 当前用户构成（batch-user-info）：total 显示在环形图中心，real/virtual 为两扇区
   const [userStats, setUserStats] = useState<{ total: number; real: number; virtual: number } | null>(null);
   const [userLoading, setUserLoading] = useState(true);
@@ -112,6 +122,28 @@ export default function AdminUserStatistics() {
     setEndDate(end);
   };
 
+  // 日活独立筛选：实时埋点当天可查，任一端越过今天时统一收窄到今天，另一端跟随对齐
+  const handleDauBeginChange = (v: string) => {
+    const clamped = v && v > today ? today : v;
+    setDauBeginDate(clamped);
+    if (!clamped) return;
+    if (dauEndDate && dauEndDate < clamped) setDauEndDate(clamped);
+  };
+
+  const handleDauEndChange = (v: string) => {
+    const clamped = v && v > today ? today : v;
+    setDauEndDate(clamped);
+    if (!clamped) return;
+    if (dauBeginDate && dauBeginDate > clamped) setDauBeginDate(clamped);
+  };
+
+  // 恢复日活默认时间范围（最近 7 天含当天）
+  const handleDauReset = () => {
+    const { begin, end } = getDauDefaultRange();
+    setDauBeginDate(begin);
+    setDauEndDate(end);
+  };
+
   // silent=true 为轮询刷新：不显示 loading，失败时保留旧数据避免界面闪烁
   const loadSummary = useCallback((silent: boolean) => {
     if (!silent) { setLoading(true); setError(''); }
@@ -126,11 +158,10 @@ export default function AdminUserStatistics() {
       .finally(() => { if (mountedRef.current && !silent) setLoading(false); });
   }, [beginDate, endDate]);
 
-  // 日活折线图随筛选框加载（后端接口日活实时落库，end_date 可为今天；
-  // 但筛选框受增减数据 T+1 钳制到昨天，今日 DAU 另由 loadTodayDau 单独取）
+  // 日活折线图随独立筛选框加载（后端接口日活实时落库，end_date 可为今天）
   const loadDau = useCallback((silent: boolean) => {
     if (!silent) { setDauLoading(true); setDauError(''); }
-    fetchUserDau(beginDate, endDate)
+    fetchUserDau(dauBeginDate, dauEndDate)
       .then((r) => { if (mountedRef.current) { setDauList(r.list || []); setDauError(''); } })
       .catch((e: Error) => {
         if (!mountedRef.current || silent) return;
@@ -138,15 +169,7 @@ export default function AdminUserStatistics() {
         setDauError(e?.message || '加载微信用户日活失败');
       })
       .finally(() => { if (mountedRef.current && !silent) setDauLoading(false); });
-  }, [beginDate, endDate]);
-
-  // 今日 DAU：只拉当天（埋点上线前无数据时静默显示为不展示）
-  useEffect(() => {
-    const today = fmtDate(new Date());
-    fetchUserDau(today, today)
-      .then((r) => { if (mountedRef.current) setTodayDau(r.list?.[0]?.dau ?? 0); })
-      .catch(() => { /* 今日数据拉取失败静默，不打扰主卡片 */ });
-  }, []);
+  }, [dauBeginDate, dauEndDate]);
 
   const loadUsers = useCallback((silent: boolean) => {
     if (!silent) { setUserLoading(true); setUserError(''); }
@@ -187,10 +210,20 @@ export default function AdminUserStatistics() {
       return;
     }
     loadSummary(false);
-    loadDau(false);
     // const id = window.setInterval(() => { loadSummary(true); loadUsers(true); }, POLL_INTERVAL);
     // return () => window.clearInterval(id);
-  }, [beginDate, endDate, loadSummary, loadDau, loadUsers]);
+  }, [beginDate, endDate, loadSummary]);
+
+  // 日活独立筛选变化时单独查询，不与增减数据筛选联动
+  useEffect(() => {
+    if (!dauBeginDate || !dauEndDate) return;
+    if (dauBeginDate > dauEndDate) {
+      setDauList([]);
+      setDauError('开始时间不能晚于结束时间');
+      return;
+    }
+    loadDau(false);
+  }, [dauBeginDate, dauEndDate, loadDau]);
 
   useEffect(() => { loadUsers(false); }, [loadUsers]);
 
@@ -371,9 +404,28 @@ export default function AdminUserStatistics() {
                   )}
                 </div>
                 <div className="admin-entries-stats__chart admin-entries-stats__chart--wide">
-                  <span className="admin-entries-stats__sub">
-                    微信用户日活{todayDau !== null ? `（今日 ${todayDau} 人）` : ''}
-                  </span>
+                  <div className="admin-entries-stats__group-head">
+                    <span className="admin-entries-stats__group-title">微信用户日活</span>
+                    <div className="admin-entries-stats__filter">
+                      <input
+                        type="date"
+                        className="admin-entries-stats__date"
+                        value={dauBeginDate}
+                        max={today}
+                        onChange={(e) => handleDauBeginChange(e.target.value)}
+                      />
+                      <span className="admin-entries-stats__sep">至</span>
+                      <input
+                        type="date"
+                        className="admin-entries-stats__date"
+                        value={dauEndDate}
+                        min={dauBeginDate || undefined}
+                        max={today}
+                        onChange={(e) => handleDauEndChange(e.target.value)}
+                      />
+                      <button type="button" className="admin-entries-stats__reset" onClick={handleDauReset}>重置</button>
+                    </div>
+                  </div>
                   {dauLoading ? (
                     <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
                   ) : dauError ? (
