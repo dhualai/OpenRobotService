@@ -1,0 +1,2 @@
+INFO     automation.clients.ApiClient:api_client.py:100 Connected to API: http://test.local
+INFO     automation.clients.ApiClient:api_client.py:107 API client disconnected

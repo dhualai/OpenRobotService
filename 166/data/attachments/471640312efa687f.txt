@@ -1,0 +1,2 @@
+written: /tmp/pytest-of-runner/pytest-0/test_ticket_shows_interface_ev0/business.html (17650 bytes)
+modules=3 scenes=3 failed=0
