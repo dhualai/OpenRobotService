@@ -1,0 +1,12 @@
+{
+  "status_code": 400,
+  "url": "http://mock.local/api/tasks/1/complete-step",
+  "reason": "Bad Request",
+  "headers": {
+    "content-length": "43",
+    "content-type": "application/json"
+  },
+  "body": {
+    "detail": "当前阶段尚未协商一致"
+  }
+}
