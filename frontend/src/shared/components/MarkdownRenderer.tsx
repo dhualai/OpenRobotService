@@ -670,7 +670,6 @@ function maskMediaForStreaming(text: string): string {
  *   天然不存在 XSS 注入路径，DOMPurify 反而会破坏 markdown 结构。
  */
 export default function MarkdownRenderer({ content, compact = false, streaming = false }: MarkdownRendererProps) {
-  const openClipboard = useContext(ClipboardRefContext);
   // @# 工单引用标题解析（streaming 期间不请求，定稿后才渲染标题）
   const titleById = useTicketRefTitles(streaming ? '' : content);
 
@@ -684,183 +683,198 @@ export default function MarkdownRenderer({ content, compact = false, streaming =
     return preprocessMediaUrls(preprocessClipboardRef(preprocessTicketRef(stripped)));
   }, [content, streaming]);
 
+  // ⚠️ 稳定性关键——流式带图回复「一闪一闪」的根因修复：
+  // react-markdown 每次渲染都全量重建元素树，React 按「组件函数引用」协调类型。
+  // 若 components 内联新建（六个函数每帧都是新 identity），React 判定为不同类型 →
+  // 整棵 markdown DOM（含 <img>）被卸载重挂 → 流式期间（content 每 80~90ms 更新一帧）
+  // 图片被浏览器反复重新加载/解码，页面持续闪烁。
+  // 故按 [titleById, streaming] 记忆化：titleById 为 hook state（引用稳定），
+  // streaming 单条流内不变 → 流式期间 components 身份稳定，DOM 跨帧复用不重载。
+  // openClipboard 不放进依赖：DiscussionPanel 的 Provider 传的是内联 lambda（每帧新引用），
+  // 改由 a 组件内部 useContext 直接获取。
+  const components = useMemo(() => ({
+    // ---- 图片 / 视频渲染 ----
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    img({ src, alt, ...props }: any) {
+      const altText: string = alt || '';
+      const srcUrl: string = src || '';
+
+      // 微信经典表情：静态打包资源直渲（不走 AuthImage 鉴权 fetch / 灯箱预览），
+      // 行内小图展示，尺寸/对齐由 .md-emoji 样式控制。
+      if (WECHAT_EMOJI_URL_SET.has(srcUrl)) {
+        return <img src={srcUrl} alt={altText} className="md-emoji" draggable={false} />;
+      }
+
+      if (isVideoAlt(altText)) {
+        return (
+          <span className="md-media-wrap" style={{ display: 'block', margin: '8px 0' }}>
+            <video
+              src={srcUrl}
+              controls
+              preload="metadata"
+              style={{ maxWidth: '100%', borderRadius: 8, background: '#000' }}
+            >
+              您的浏览器不支持视频播放。
+            </video>
+          </span>
+        );
+      }
+
+      // 流式期间：不渲染真实图片，用稳定的块级占位占住图片位置（不混进行内文字流），
+      // 回答定稿（streaming=false）后才渲染真实 <img>。占位块无异步副作用，
+      // 即使流式 remount 也不闪烁。
+      if (streaming) {
+        return <span className="md-media-loading">⏳ 图片加载中…</span>;
+      }
+
+      // key 按 src 稳定：流式期间整段 markdown 每帧重解析重建，若无稳定 key，
+      // 图片前内容变化（如未闭合加粗/新增段落）会导致图片节点位置/父节点变化，
+      // React 判定为新节点 → AuthImage remount → 重置 imgState 重新 fetch → 图片闪烁。
+      // 以 src 作 key 让同 URL 图片跨帧复用同实例，保留加载状态不重置。
+      return <AuthImage key={srcUrl} src={srcUrl} alt={altText} />;
+    },
+
+    // ---- 链接：外部链接新窗口打开 + 媒体链接自动渲染 ----
+    // 命名函数表达式（大写开头）：函数体内使用 useContext，需满足 rules-of-hooks 的组件命名要求
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    a: function MdLink({ href, children, ...props }: any) {
+      // 从 context 直接取（不占 MarkdownRenderer 闭包）：DiscussionPanel 的 Provider
+      // 传内联 lambda，放进 components 依赖会破坏身份稳定性（见上方说明）。
+      const openClipboard = useContext(ClipboardRefContext);
+      const url: string = href || '';
+      if (url.startsWith('clipboard:')) {
+        let filename = url.slice('clipboard:'.length);
+        try {
+          filename = decodeURIComponent(filename);
+        } catch {
+          /* 保持未解码文件名 */
+        }
+        return (
+          <a
+            {...props}
+            href="#clipboard-preview"
+            className={[props.className, 'md-clipboard-ref'].filter(Boolean).join(' ')}
+            title="查看粘贴正文"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              openClipboard?.(filename);
+            }}
+          >
+            {children}
+          </a>
+        );
+      }
+      const isExternal = /^https?:\/\//i.test(url);
+      const isMediaUrl = IMAGE_EXT_RE.test(url) || VIDEO_EXT_RE.test(url);
+
+      if (isMediaUrl) {
+        if (VIDEO_EXT_RE.test(url)) {
+          return (
+            <span className="md-media-wrap" style={{ display: 'block', margin: '8px 0' }}>
+              <video
+                src={url}
+                controls
+                preload="metadata"
+                style={{ maxWidth: '100%', borderRadius: 8, background: '#000' }}
+              >
+                您的浏览器不支持视频播放。
+              </video>
+            </span>
+          );
+        }
+        if (streaming) {
+          return <span className="md-media-loading">⏳ 图片加载中…</span>;
+        }
+        return <AuthImage key={url} src={url} alt={String(children || '')} />;
+      }
+
+      // 内部 SPA 路由链接（如 @#工单引用 → /tasks/44123）：
+      // 用 <Link> 经 basename 拼接部署前缀并走前端路由，避免裸路径被 nginx 404。
+      if (!isExternal && isSpaRoutePath(url)) {
+        // @#工单引用：命中 /tasks/{id} 时，若能查到标题则以标题作为链接文字，
+        // 让评论里显示的是「工单标题」而非「@#编号」；hover 提示保留工单号。
+        // 加 md-ticket-ref 样式类，使其呈现为可辨识的「工单引用标签」，与普通文字/链接区分。
+        const ticketMatch = /^\/tasks\/(\d+)$/.exec(stripBase(url));
+        const ticketId = ticketMatch ? Number(ticketMatch[1]) : null;
+        const refTitle = ticketId !== null ? titleById.get(ticketId) : undefined;
+        return (
+          <Link
+            to={stripBase(url)}
+            {...props}
+            className={[props.className, 'md-ticket-ref'].filter(Boolean).join(' ')}
+            title={typeof refTitle === 'string' && refTitle ? `工单 #${ticketId} · ${refTitle}` : `工单 #${ticketId}`}
+          >
+            {refTitle || children}
+          </Link>
+        );
+      }
+
+      return (
+        <a
+          href={url}
+          target={isExternal ? '_blank' : undefined}
+          rel={isExternal ? 'noopener noreferrer' : undefined}
+          {...props}
+        >
+          {children}
+        </a>
+      );
+    },
+
+    // ---- 代码块 ----
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    pre({ children, ...props }: any) {
+      return (
+        <pre className="md-code-block" {...props}>
+          {children}
+        </pre>
+      );
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    code({ className, children, ...props }: any) {
+      const isInline = !className;
+      return (
+        <code
+          className={`${className || ''}${isInline ? ' md-inline-code' : ''}`}
+          {...props}
+        >
+          {children}
+        </code>
+      );
+    },
+
+    // ---- 表格 ----
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    table({ children, ...props }: any) {
+      return (
+        <div className="md-table-wrap" style={{ overflowX: 'auto' }}>
+          <table className="md-table" {...props}>
+            {children}
+          </table>
+        </div>
+      );
+    },
+
+    // ---- 段落 ----
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    p({ children, ...props }: any) {
+      return (
+        <p className="md-paragraph" {...props}>
+          {children}
+        </p>
+      );
+    },
+  }), [titleById, streaming]);
+
   return (
     <MdErrorBoundary fallbackText={content}>
       <div className={`markdown-body${compact ? ' md-compact' : ''}`}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           urlTransform={appUrlTransform}
-          components={{
-            // ---- 图片 / 视频渲染 ----
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            img({ src, alt, ...props }: any) {
-              const altText: string = alt || '';
-              const srcUrl: string = src || '';
-
-              // 微信经典表情：静态打包资源直渲（不走 AuthImage 鉴权 fetch / 灯箱预览），
-              // 行内小图展示，尺寸/对齐由 .md-emoji 样式控制。
-              if (WECHAT_EMOJI_URL_SET.has(srcUrl)) {
-                return <img src={srcUrl} alt={altText} className="md-emoji" draggable={false} />;
-              }
-
-              if (isVideoAlt(altText)) {
-                return (
-                  <span className="md-media-wrap" style={{ display: 'block', margin: '8px 0' }}>
-                    <video
-                      src={srcUrl}
-                      controls
-                      preload="metadata"
-                      style={{ maxWidth: '100%', borderRadius: 8, background: '#000' }}
-                    >
-                      您的浏览器不支持视频播放。
-                    </video>
-                  </span>
-                );
-              }
-
-              // 流式期间：不渲染真实图片，用稳定的块级占位占住图片位置（不混进行内文字流），
-              // 回答定稿（streaming=false）后才渲染真实 <img>。占位块无异步副作用，
-              // 即使流式 remount 也不闪烁。
-              if (streaming) {
-                return <span className="md-media-loading">⏳ 图片加载中…</span>;
-              }
-
-              // key 按 src 稳定：流式期间整段 markdown 每帧重解析重建，若无稳定 key，
-              // 图片前内容变化（如未闭合加粗/新增段落）会导致图片节点位置/父节点变化，
-              // React 判定为新节点 → AuthImage remount → 重置 imgState 重新 fetch → 图片闪烁。
-              // 以 src 作 key 让同 URL 图片跨帧复用同实例，保留加载状态不重置。
-              return <AuthImage key={srcUrl} src={srcUrl} alt={altText} />;
-            },
-
-            // ---- 链接：外部链接新窗口打开 + 媒体链接自动渲染 ----
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            a({ href, children, ...props }: any) {
-              const url: string = href || '';
-              if (url.startsWith('clipboard:')) {
-                let filename = url.slice('clipboard:'.length);
-                try {
-                  filename = decodeURIComponent(filename);
-                } catch {
-                  /* 保持未解码文件名 */
-                }
-                return (
-                  <a
-                    {...props}
-                    href="#clipboard-preview"
-                    className={[props.className, 'md-clipboard-ref'].filter(Boolean).join(' ')}
-                    title="查看粘贴正文"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      openClipboard?.(filename);
-                    }}
-                  >
-                    {children}
-                  </a>
-                );
-              }
-              const isExternal = /^https?:\/\//i.test(url);
-              const isMediaUrl = IMAGE_EXT_RE.test(url) || VIDEO_EXT_RE.test(url);
-
-              if (isMediaUrl) {
-                if (VIDEO_EXT_RE.test(url)) {
-                  return (
-                    <span className="md-media-wrap" style={{ display: 'block', margin: '8px 0' }}>
-                      <video
-                        src={url}
-                        controls
-                        preload="metadata"
-                        style={{ maxWidth: '100%', borderRadius: 8, background: '#000' }}
-                      >
-                        您的浏览器不支持视频播放。
-                      </video>
-                    </span>
-                  );
-                }
-                if (streaming) {
-                  return <span className="md-media-loading">⏳ 图片加载中…</span>;
-                }
-                return <AuthImage key={url} src={url} alt={String(children || '')} />;
-              }
-
-              // 内部 SPA 路由链接（如 @#工单引用 → /tasks/44123）：
-              // 用 <Link> 经 basename 拼接部署前缀并走前端路由，避免裸路径被 nginx 404。
-              if (!isExternal && isSpaRoutePath(url)) {
-                // @#工单引用：命中 /tasks/{id} 时，若能查到标题则以标题作为链接文字，
-                // 让评论里显示的是「工单标题」而非「@#编号」；hover 提示保留工单号。
-                // 加 md-ticket-ref 样式类，使其呈现为可辨识的「工单引用标签」，与普通文字/链接区分。
-                const ticketMatch = /^\/tasks\/(\d+)$/.exec(stripBase(url));
-                const ticketId = ticketMatch ? Number(ticketMatch[1]) : null;
-                const refTitle = ticketId !== null ? titleById.get(ticketId) : undefined;
-                return (
-                  <Link
-                    to={stripBase(url)}
-                    {...props}
-                    className={[props.className, 'md-ticket-ref'].filter(Boolean).join(' ')}
-                    title={typeof refTitle === 'string' && refTitle ? `工单 #${ticketId} · ${refTitle}` : `工单 #${ticketId}`}
-                  >
-                    {refTitle || children}
-                  </Link>
-                );
-              }
-
-              return (
-                <a
-                  href={url}
-                  target={isExternal ? '_blank' : undefined}
-                  rel={isExternal ? 'noopener noreferrer' : undefined}
-                  {...props}
-                >
-                  {children}
-                </a>
-              );
-            },
-
-            // ---- 代码块 ----
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            pre({ children, ...props }: any) {
-              return (
-                <pre className="md-code-block" {...props}>
-                  {children}
-                </pre>
-              );
-            },
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            code({ className, children, ...props }: any) {
-              const isInline = !className;
-              return (
-                <code
-                  className={`${className || ''}${isInline ? ' md-inline-code' : ''}`}
-                  {...props}
-                >
-                  {children}
-                </code>
-              );
-            },
-
-            // ---- 表格 ----
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            table({ children, ...props }: any) {
-              return (
-                <div className="md-table-wrap" style={{ overflowX: 'auto' }}>
-                  <table className="md-table" {...props}>
-                    {children}
-                  </table>
-                </div>
-              );
-            },
-
-            // ---- 段落 ----
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            p({ children, ...props }: any) {
-              return (
-                <p className="md-paragraph" {...props}>
-                  {children}
-                </p>
-              );
-            },
-          }}
+          components={components}
         >
           {processedContent}
         </ReactMarkdown>
