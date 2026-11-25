@@ -12,13 +12,11 @@ import UspEnvPanel from '@/pages/admin/UspEnvPanel';
 import MemoryPanel from '@/pages/admin/MemoryPanel';
 import ArchiveReviewersPanel from '@/pages/admin/ArchiveReviewersPanel';
 import { PERM_DISPATCH_DEV } from '@/shared/constants/dispatchDev';
+import { FunnelBridge, FunnelStepRow, funnelWidthPct, pct, rateOf } from '@/shared/components/funnelBits';
+import DarFunnelPanel from './DarFunnelPanel';
 
 export { PERM_DISPATCH_DEV };
 
-function pct(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(Number(v))) return '—';
-  return `${(Number(v) * 100).toFixed(1)}%`;
-}
 
 function formatPytestTime(ts: number | string | null | undefined): string {
   if (ts == null) return '';
@@ -312,86 +310,11 @@ function formatHopTime(iso: string): string {
 }
 
 /** 层宽相对本漏斗顶层真实数量。0 仍画一条细缝，避免层块消失。 */
-function funnelWidthPct(value: number, base: number): number {
-  if (!base || base <= 0) return 100;
-  const raw = (Math.max(0, value) / base) * 100;
-  if (value <= 0) return 8;
-  return Math.min(100, raw);
-}
 
 /** 漏斗层间：只放扣除说明，不画收窄的过渡面。 */
-function FunnelBridge(props: {
-  deductLabel: string;
-  deduct: number;
-  remainLabel?: string;
-  remain: number;
-  unit?: string;
-  expose?: boolean;
-  onDeductClick?: () => void;
-  deductActive?: boolean;
-}) {
-  const unit = props.unit || '张';
-  const remainLabel = props.remainLabel || '剩余';
-  const short = props.expose
-    ? `仅曝光 ${props.deductLabel} ${props.deduct}${unit}`
-    : `−${props.deduct}${unit} ${props.deductLabel}`;
-  const full = `${props.expose ? '仅曝光' : '扣除'} ${props.deductLabel} −${props.deduct}${unit}，${remainLabel} ${props.remain}${unit}`;
-  const cls = `dispatch-dev__funnel-link${props.expose ? ' is-expose' : ''}${props.deductActive ? ' is-active' : ''}`;
-  const bridgeCls = `dispatch-dev__funnel-bridge${props.expose ? ' is-expose' : ''}`;
-  const chip = props.onDeductClick ? (
-    <button type="button" className={cls} title={full} onClick={props.onDeductClick}>{short}</button>
-  ) : (
-    <span className={cls} title={full}>{short}</span>
-  );
-  return (
-    <div className={bridgeCls}>
-      {chip}
-    </div>
-  );
-}
 
 /** 漏斗一层：名称在左，纯色条按数量居中，错派率在右。 */
-function FunnelStepRow(props: {
-  widthPct: number;
-  title: string;
-  countLabel: string;
-  rate: number | null;
-  rateHint: string;
-  tone?: 'neutral' | 'mid' | 'warn';
-  active?: boolean;
-  onClick?: () => void;
-}) {
-  const stepClass = [
-    'dispatch-dev__funnel-step',
-    props.tone === 'mid' ? 'is-mid' : '',
-    props.tone === 'warn' ? 'is-warn' : '',
-    props.active ? 'is-active' : '',
-  ].filter(Boolean).join(' ');
-  const bar = props.onClick ? (
-    <button type="button" className={stepClass} style={{ width: `${props.widthPct}%` }} onClick={props.onClick}>
-      <strong>{props.countLabel}</strong>
-    </button>
-  ) : (
-    <div className={stepClass} style={{ width: `${props.widthPct}%` }}>
-      <strong>{props.countLabel}</strong>
-    </div>
-  );
-  return (
-    <div className="dispatch-dev__funnel-row">
-      <div className="dispatch-dev__funnel-name">{props.title}</div>
-      <div className="dispatch-dev__funnel-track">{bar}</div>
-      <div className="dispatch-dev__funnel-rate" title={props.rateHint}>
-        <em>错派 {pct(props.rate)}</em>
-        <i>{props.rateHint}</i>
-      </div>
-    </div>
-  );
-}
 
-function rateOf(num: number, den: number): number | null {
-  if (!den) return null;
-  return num / den;
-}
 
 function unlabeledGroupsFromSnap(reassign: ReassignSnap | null): UnlabeledGroup[] {
   if (reassign?.unlabeled_groups?.length) return reassign.unlabeled_groups;
@@ -1009,7 +932,7 @@ export default function DispatchDev() {
   const [redispatchNormalOpen, setRedispatchNormalOpen] = useState(false);
   const [listKey, setListKey] = useState<FunnelListKey | null>(null);
   const [funnelWeek, setFunnelWeek] = useState<string>('latest');
-  const [mainTab, setMainTab] = useState<'metrics' | 'atlas' | 'test' | 'usp-envs' | 'memory' | 'archive-review'>('metrics');
+  const [mainTab, setMainTab] = useState<'metrics' | 'dar' | 'atlas' | 'test' | 'usp-envs' | 'memory' | 'archive-review'>('metrics');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1372,6 +1295,13 @@ export default function DispatchDev() {
         </button>
         <button
           type="button"
+          className={`dispatch-dev__tab${mainTab === 'dar' ? ' is-active' : ''}`}
+          onClick={() => setMainTab('dar')}
+        >
+          AI 直答率
+        </button>
+        <button
+          type="button"
           className={`dispatch-dev__tab${mainTab === 'test' ? ' is-active' : ''}`}
           onClick={() => setMainTab('test')}
         >
@@ -1406,7 +1336,9 @@ export default function DispatchDev() {
           知识沉淀审核
         </button>
       </div>
-      {mainTab === 'atlas' ? (
+      {mainTab === 'dar' ? (
+        <DarFunnelPanel />
+      ) : mainTab === 'atlas' ? (
         <UiAtlasPanel />
       ) : mainTab === 'memory' ? (
         <MemoryPanel />

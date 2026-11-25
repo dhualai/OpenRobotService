@@ -9627,6 +9627,28 @@ button.dispatch-dev__funnel-link { cursor: pointer; }
 .dispatch-dev__funnel-link.is-active {
   outline: 1px solid #227197; outline-offset: 1px;
 }
+/* ORS-716：AI 直答率漏斗在手机上一行一层（名称｜条｜率），层间桥压到最小——
+   派单漏斗沿用上面的两行布局，不动 */
+@media (max-width: 720px) {
+  /* 第三列必须定宽：auto 会跟着右侧文字（"100%" vs "占全部 81.0%"）伸缩，
+     每层轨道宽度就不一样，条看起来参差不齐 */
+  .dar-funnel .dispatch-dev__funnel-row {
+    grid-template-columns: 64px minmax(0, 1fr) 82px;
+    column-gap: 6px;
+  }
+  .dar-funnel .dispatch-dev__funnel-name {
+    grid-column: 1; text-align: left; font-size: 11px; line-height: 1.2;
+  }
+  .dar-funnel .dispatch-dev__funnel-track { grid-column: 2; }
+  .dar-funnel .dispatch-dev__funnel-rate { grid-column: 3; text-align: right; }
+  .dar-funnel .dispatch-dev__funnel-rate em { font-size: 10.5px; }
+  .dar-funnel .dispatch-dev__funnel-bridge {
+    margin: 1px 0; grid-template-columns: 1fr;
+  }
+  .dar-funnel .dispatch-dev__funnel-link { font-size: 10px; padding: 1px 6px; }
+  .dar-funnel .dispatch-dev__funnel-step { min-height: 26px; }
+}
+
 @media (max-width: 720px) {
   .dispatch-dev__funnel { padding: 12px 10px 14px; }
   .dispatch-dev__funnel-head { flex-direction: column; align-items: flex-start; }
