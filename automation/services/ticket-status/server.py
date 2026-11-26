@@ -27,7 +27,11 @@ DB_USER = os.environ.get("TICKET_DB_USER", "openrobot_ro")
 DB_PASSWORD = os.environ.get("TICKET_DB_PASSWORD", "")
 DB_HOST = os.environ.get("TICKET_DB_HOST", "127.0.0.1")
 DB_PORT = os.environ.get("TICKET_DB_PORT", "3306")
-BIND = os.environ.get("TICKET_API_BIND", "0.0.0.0")
+# 默认只监听回环地址：服务本身不带 TLS，直接绑 0.0.0.0 等于把带凭据的接口
+# 明文暴露到公网。要对外提供访问，请在前面加 HTTPS 反代，或显式设置
+# TICKET_API_ALLOW_PUBLIC=1 并自行承担网络层防护。
+BIND = os.environ.get("TICKET_API_BIND", "127.0.0.1")
+ALLOW_PUBLIC = os.environ.get("TICKET_API_ALLOW_PUBLIC", "") == "1"
 PORT = int(os.environ.get("TICKET_API_PORT", "8099"))
 
 TICKET_ID = re.compile(r"^(?:ORS-)?(\d{1,10})$", re.IGNORECASE)
@@ -111,5 +115,10 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not TOKEN or not DB_PASSWORD:
         raise SystemExit("TICKET_API_TOKEN 和 TICKET_DB_PASSWORD 必须设置")
+    if BIND in ("0.0.0.0", "::") and not ALLOW_PUBLIC:
+        raise SystemExit(
+            "拒绝启动：默认只监听 127.0.0.1。\n"
+            "要对外暴露，请先加 HTTPS 反向代理；确有需要时设置 TICKET_API_ALLOW_PUBLIC=1。"
+        )
     print(f"ticket-status listening on {BIND}:{PORT}", flush=True)
     HTTPServer((BIND, PORT), Handler).serve_forever()

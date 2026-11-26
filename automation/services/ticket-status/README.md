@@ -18,7 +18,9 @@ export TICKET_DB_USER='openrobot_ro'      # 默认值，按实际改
 python3 server.py
 ```
 
-默认监听 `0.0.0.0:8099`，可以用 `TICKET_API_BIND` / `TICKET_API_PORT` 改。
+默认只监听 `127.0.0.1:8099`——服务本身不带 TLS，绑 `0.0.0.0` 等于把带凭据的接口明文暴露到公网。
+要对外提供访问，请在前面加 HTTPS 反向代理；确有需要时才设置 `TICKET_API_ALLOW_PUBLIC=1` 并把 BIND 改成 `0.0.0.0`。
+端口可用 `TICKET_API_PORT` 改。
 
 自测：
 
