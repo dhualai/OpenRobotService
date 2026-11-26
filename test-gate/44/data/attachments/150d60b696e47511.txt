@@ -1,0 +1,2 @@
+INFO     automation.clients.RedisClient:redis_client.py:46 Connected to Redis: localhost:6379/0
+INFO     automation.clients.RedisClient:redis_client.py:56 Redis client disconnected

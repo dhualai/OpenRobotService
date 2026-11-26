@@ -1,0 +1,2 @@
+written: /tmp/pytest-of-runner/pytest-0/test_service_ticket_evidence_c0/business.html (13978 bytes)
+modules=0 scenes=0 failed=0

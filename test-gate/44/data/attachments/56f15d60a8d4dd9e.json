@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/admin/users/testadmin",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "name": "Admin Renamed"
+  }
+}
