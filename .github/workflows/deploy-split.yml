@@ -754,11 +754,11 @@ jobs:
         id: lookup
         env:
           TICKET_ID: ${{ steps.validate.outputs.ticket_id }}
-          API_URL: ${{ secrets.TICKET_STATUS_API_URL }}
-          API_TOKEN: ${{ secrets.TICKET_STATUS_API_TOKEN }}
+          TICKET_STATUS_API_URL: ${{ secrets.TICKET_STATUS_API_URL }}
+          TICKET_STATUS_API_TOKEN: ${{ secrets.TICKET_STATUS_API_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "${API_URL}" || -z "${API_TOKEN}" ]]; then
+          if [[ -z "${TICKET_STATUS_API_URL}" || -z "${TICKET_STATUS_API_TOKEN}" ]]; then
             echo '::error::缺少 TICKET_STATUS_API_URL 或 TICKET_STATUS_API_TOKEN。'
             exit 1
           fi
