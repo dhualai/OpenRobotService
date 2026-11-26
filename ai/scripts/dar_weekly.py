@@ -47,7 +47,10 @@ import sys
 from collections import Counter
 from datetime import datetime as _dt, timedelta as _td
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+if __name__ == "__main__":
+    # Windows 控制台默认 GBK，中文/箭头会崩；脚本直接运行时切 UTF-8。
+    # 只在 __main__ 里切：被 pytest 等 import 时会打断调用方的输出捕获。
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -310,25 +313,67 @@ def _last_week_window(now=None):
     return this_monday - _td(days=7), this_monday
 
 
-def _funnel_l2(env, weeks=8, now=None):
-    """直答率（工作台口径）+ 最近 N 个完整自然周的序列。
+_FUNNEL_LAYERS = ("tester", "chitchat", "suggested", "ticket", "undetermined",
+                  "answered", "unanswered", "uncovered")
 
-    **口径必须与工作台首页那张卡逐字一致**（1124 用户实锤：工作台 27.5%（205/746），
-    周报同分母口径算出的是 30.6%（243/795），两个数并排出现没法解释）：
-      分母 = 漏斗「已判定」三层 answered/unanswered/uncovered（人工优先·AI预标兜底）
-      分子 = 其中 eff == 直答正确
-    直接复用 dar_studio._seg_rows（漏斗六层的数据源），不在这里另拼一套分母。
 
-    返回 (all_block, series)；series 按时间正序，每项 {from,to,base,L2_人工}。
+def _funnel_block(rows) -> dict:
+    """六层漏斗计数（口径与直答率一致，开发者模式每周漏斗用）。
+
+    全部段 −(测试/闲聊/推荐池混合)= 真实咨询 −(直接转工单)= 进入问答
+    −(未判定)= 已判定 → 直答正确 / 未直答 / 未覆盖。
+    已判定三层就是直答率的分母（与 dar_studio.metrics 的 rt['L2_人工'] 同源）。
+    """
+    cnt: dict = {}
+    for r in rows:
+        k = r.get("layer") or ""
+        cnt[k] = cnt.get(k, 0) + 1
+    judged = [r for r in rows
+              if r.get("layer") in ("answered", "unanswered", "uncovered")]
+    correct = sum(1 for r in judged if r.get("eff") == "直答正确")
+    total = len(rows)
+    real = total - cnt.get("tester", 0) - cnt.get("chitchat", 0) - cnt.get("suggested", 0)
+    return {
+        "total": total,
+        "tester": cnt.get("tester", 0),
+        "chitchat": cnt.get("chitchat", 0),
+        "suggested": cnt.get("suggested", 0),
+        "real": real,
+        "ticket": cnt.get("ticket", 0),
+        "undetermined": cnt.get("undetermined", 0),
+        "judged": len(judged),
+        "correct": correct,
+        "wrong": cnt.get("unanswered", 0),
+        "uncovered": cnt.get("uncovered", 0),
+        "layers": {k: cnt.get(k, 0) for k in _FUNNEL_LAYERS},
+    }
+
+
+def _week_meta(dt):
+    """(week_key, label, week_start)：周一为一周起点，与派单模块同格式。"""
+    monday = dt.date() - _td(days=dt.weekday())
+    sunday = monday + _td(days=6)
+    iso = monday.isocalendar()
+    return (f"{iso[0]}-W{iso[1]:02d}",
+            f"{monday.month}/{monday.day}–{sunday.month}/{sunday.day}",
+            monday.isoformat())
+
+
+def _answer_metrics(env, l2_weeks=8, funnel_weeks=8, now=None):
+    """直答率 + 六层漏斗（全部 / 按周）。
+
+    口径必须与工作台首页那张卡逐字一致（1124 用户实锤：工作台 27.5%（205/746），
+    周报同分母口径算出 30.6%（243/795）——差在 52 个推荐池混合段没剔除）。
+    这里直接复用 dar_studio._seg_rows（漏斗六层的数据源）一次算齐，不另拼分母。
     """
     try:
         import dar_studio
         rows, _meta = dar_studio._seg_rows(env)
     except Exception as e:
         print(f"（工作台口径直答率算不出来，跳过：{e}）")
-        return None, []
+        return None
     if not rows:
-        return None, []
+        return None
 
     def pts(x):
         try:
@@ -336,22 +381,20 @@ def _funnel_l2(env, weeks=8, now=None):
         except ValueError:
             return None
 
-    qa = []
-    for r in rows:
-        if r.get("layer") in ("answered", "unanswered", "uncovered"):
-            qa.append((pts(r.get("at")), r.get("eff")))
+    qa = [(pts(r.get("at")), r.get("eff")) for r in rows
+          if r.get("layer") in ("answered", "unanswered", "uncovered")]
     if not qa:
-        return None, []
+        return None
 
     def block(items):
         n = len(items)
         ok = sum(1 for _t, e in items if e == "直答正确")
         return {"base": f"{n} 段", "L2_人工": f"{ok / n * 100:.1f}%（{ok}/{n}）"}
 
-    all_block = block(qa)
-    _lw_from, this_monday = _last_week_window(now)
+    l2_all = block(qa)
+    _, this_monday = _last_week_window(now)
     series = []
-    for i in range(weeks):
+    for i in range(l2_weeks):
         until = this_monday - _td(days=7 * i)
         since = until - _td(days=7)
         seg = [(t, e) for t, e in qa if t and since <= t < until]
@@ -360,7 +403,118 @@ def _funnel_l2(env, weeks=8, now=None):
         series.append({"from": since.strftime("%m-%d"),
                        "to": (until - _td(days=1)).strftime("%m-%d"),
                        **block(seg)})
-    return all_block, list(reversed(series))
+    series.reverse()
+
+    # 漏斗按周：只取**完整**自然周（本周没过完，不进面板），最近 funnel_weeks 周
+    buckets: dict = {}
+    for r in rows:
+        t = pts(r.get("at"))
+        if not t or t >= this_monday:
+            continue
+        key, label, start = _week_meta(t)
+        b = buckets.setdefault(key, {"week": key, "label": label,
+                                     "week_start": start, "rows": []})
+        b["rows"].append(r)
+    funnel_weekly = [
+        {"week": b["week"], "label": b["label"], "week_start": b["week_start"],
+         "partial": False, "funnel": _funnel_block(b["rows"])}
+        for _k, b in sorted(buckets.items())
+    ][-funnel_weeks:]
+
+    # 未直答 Top 品类：与漏斗同口径（已判定三层里的 未直答/未覆盖），按 type 聚类。
+    # 早先这里取的是 _fail_items 的清单，那是 AI 预标段口径（562 段），
+    # 和漏斗的 541 对不上——同一页面两个数没法解释，统一到漏斗口径。
+    #
+    # 样例要防打脸：检索重放命中的段说明「资料其实有」，标成未覆盖是标注/回答的问题，
+    # 不该作为「知识缺口」摆到领导面前（1125 用户实锤：申请 USP 账号这种都能被列出来）
+    covered = set()
+    try:
+        rc = sorted(glob.glob(os.path.join(OUT, "retrieval_check_*.jsonl")))
+        if rc:
+            with open(rc[-1], encoding="utf-8") as fh:
+                for line in fh:
+                    j = json.loads(line)
+                    if (j.get("retrieval") or "").strip():
+                        covered.add((str(j.get("cid")), str(j.get("astart"))))
+    except Exception as e:
+        print(f"（检索命中集读取失败，样例不做覆盖过滤：{e}）")
+
+    # 摆设类问题：账号/密码/登录这类手册里明写的，或太短没信息量的，
+    # 一律不进样例——领导看到「申请 USP 账号」被标未覆盖只会觉得我们没干活。
+    TRIVIAL_KEYS = ("账号", "密码", "登录", "注册")
+
+    def _pick(items, layer, n):
+        """某一层取 n 条可用样例。
+
+        先挑「检索没命中」的真缺口，不够再拿检索命中的补位——检索命中只说明
+        KB 返回了内容，不代表答得对，全按「已覆盖」剔掉会让未覆盖一条都不剩
+        （1125 实测：最近两周的未覆盖段 100% 检索命中）。
+        长短/摆设类过滤一直生效。
+        """
+        def ok(r):
+            q = (r.get("question") or "").replace(chr(10), " ").strip()
+            if r.get("layer") != layer or len(q) < 12:
+                return None
+            if any(k in q for k in TRIVIAL_KEYS):
+                return None
+            return q
+
+        out, seen = [], set()
+        pool = [r for r in items if ok(r)]
+        # 第一轮：真缺口（未命中检索）
+        for r in pool:
+            if layer == "uncovered" and (str(r.get("cid")), str(r.get("astart"))) in covered:
+                continue
+            q = ok(r)
+            if q in seen:
+                continue
+            seen.add(q)
+            out.append(q[:60])
+            if len(out) >= n:
+                return out
+        # 第二轮：检索命中的补位
+        for r in pool:
+            if (str(r.get("cid")), str(r.get("astart"))) not in covered:
+                continue
+            q = ok(r)
+            if q in seen:
+                continue
+            seen.add(q)
+            out.append(q[:60])
+            if len(out) >= n:
+                return out
+        return out
+
+    def _fail_top(items, top_n=5, per=2):
+        """未直答/未覆盖按 type 聚类；两类样例各留 per 条，不会被一类挤掉另一类。"""
+        grp: dict = {}
+        for r in items:
+            if r.get("layer") in ("unanswered", "uncovered"):
+                t = (r.get("type") or "未分类").strip() or "未分类"
+                grp.setdefault(t, []).append(r)
+        rows_out = []
+        for t, v in sorted(grp.items(), key=lambda kv: -len(kv[1]))[:top_n]:
+            w = _pick(v, "unanswered", per)
+            u = _pick(v, "uncovered", per)
+            rows_out.append({
+                "type": t, "n": len(v),
+                "wrong": sum(1 for r in v if r.get("layer") == "unanswered"),
+                "uncovered": sum(1 for r in v if r.get("layer") == "uncovered"),
+                "samples": ([{"k": "未直答", "q": q} for q in w]
+                            + [{"k": "未覆盖", "q": q} for q in u]),
+            })
+        return rows_out
+
+    fail_top = _fail_top(rows, top_n=5, per=2)
+    # 每周各算一份（样例少一点，控制 payload 体积）；切周时这卡跟着变
+    for w in funnel_weekly:
+        wk = buckets.get(w["week"])
+        if wk:
+            w["fail_top"] = _fail_top(wk["rows"], top_n=4, per=1)
+
+    return {"l2": l2_all, "weekly": series,
+            "funnel": _funnel_block(rows), "funnel_weekly": funnel_weekly,
+            "fail_top": fail_top}
 
 
 def _load_csv_rows():
@@ -887,19 +1041,33 @@ def step_report():
         print(f"  L2_人工              ：{same['L2_人工']}")
         print(f"  L3_AI同段            ：{same['L3_AI同段']}")
 
-    # 直答率（工作台口径）+ 近 8 个完整自然周：后台区块的「全部」与周选择/趋势图。
-    # 口径必须与工作台首页那张卡一致（见 _funnel_l2 注释），否则两个界面数字打架。
-    all_l2, series = _funnel_l2(ENV, weeks=8)
-    if all_l2:
-        rep["l2_funnel"] = all_l2
-        print(f"\n直答率（工作台口径）：{all_l2['L2_人工']}")
-    if series:
-        rep["weekly_series"] = series
-        rep["last_week"] = {"from": series[-1]["from"], "to": series[-1]["to"],
-                            **series[-1]}
-        print(f"\n== 近 {len(series)} 周（工作台口径）==")
-        for w in series:
-            print(f"  {w['from']}~{w['to']}：{w['L2_人工']}")
+    # 口径必须与工作台首页那张卡一致（见 _answer_metrics 注释），否则界面数字打架。
+    # 一次 _seg_rows 算齐：直答率（全部 + 近 8 周）+ 六层漏斗（全部 + 近 16 周）。
+    am = _answer_metrics(ENV)
+    if am:
+        rep["l2_funnel"] = am["l2"]
+        print()
+        print(f"直答率（工作台口径）：{am['l2']['L2_人工']}")
+        if am["weekly"]:
+            rep["weekly_series"] = am["weekly"]
+            lw = am["weekly"][-1]
+            rep["last_week"] = {"from": lw["from"], "to": lw["to"], **lw}
+            print(f"== 近 {len(am['weekly'])} 周（工作台口径）==")
+            for w in am["weekly"]:
+                print(f"  {w['from']}~{w['to']}：{w['L2_人工']}")
+        rep["funnel"] = am["funnel"]
+        rep["funnel_weekly"] = am["funnel_weekly"]
+        if am["fail_top"]:
+            rep["fail_top"] = am["fail_top"]
+        f = am["funnel"]
+        print()
+        print("== 六层漏斗（累计）==")
+        print(f"  全部 {f['total']} → 扣测试/闲聊/推荐池 "
+              f"{f['tester']}/{f['chitchat']}/{f['suggested']} → 真实咨询 {f['real']}"
+              f" → 扣转工单 {f['ticket']} → 进入问答 {f['real'] - f['ticket']}"
+              f" → 扣未判定 {f['undetermined']} → 已判定 {f['judged']}"
+              f"（直答正确 {f['correct']}）")
+        print(f"  近 {len(am['funnel_weekly'])} 周漏斗已生成")
 
     # ---- 六项指标增强：KB 缺口 / 下钻矩阵 / 解决轮次 / 转单质量 / 预标 precision / 失败清单 ----
     kb = (rep.get("retrieval_no_rate") or {}).get("真实组")
@@ -1083,7 +1251,7 @@ def _push_report(rep: dict):
         # 1124：直答率区块新增 l2_funnel / last_week / weekly_series 三个字段。
         slim = {k: rep.get(k) for k in (
             "date", "dar_rates", "dar_rates_same_base", "l2_funnel",
-            "last_week", "weekly_series",
+            "last_week", "weekly_series", "funnel", "funnel_weekly", "fail_top",
             "kb_gap", "wow", "this_week", "manual_progress", "workbench")
             if rep.get(k) is not None}
         body = json.dumps({

@@ -45,6 +45,10 @@ def _summary(row: DarWeeklyReport) -> Dict[str, Any]:
         "last_week": p.get("last_week"),
         # 最近 8 个完整自然周的同分母直答率（时间正序），周选择 + 趋势图
         "weekly_series": p.get("weekly_series") or [],
+        # 开发者模式「AI 直答率」页签：六层漏斗（累计 + 近 16 周）+ 未直答 Top 品类
+        "funnel": p.get("funnel"),
+        "funnel_weekly": p.get("funnel_weekly") or [],
+        "fail_top": p.get("fail_top") or [],
         "this_week": p.get("this_week") or {},
         "manual_progress": p.get("manual_progress"),
         # 工作台展示值快照（推送时由 dar_studio.metrics 原样取）——前端区块按这份渲染，
