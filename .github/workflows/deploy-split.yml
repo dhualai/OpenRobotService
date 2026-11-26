@@ -705,7 +705,10 @@ jobs:
   manual-ticket-status:
     name: Read one production ticket status
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'acceptance' }}
-    runs-on: ubuntu-latest
+    # 生产凭据只允许在自托管 runner 上使用：托管 runner 会把生产 SSH 私钥解密到
+    # 第三方 VM，并从动态公网 IP 连入生产，留下无法区分来源的异地登录记录。
+    # 自托管 runner 私钥不出内网，生产侧可对固定出口 IP 做白名单。与 deploy/rollback 同模式。
+    runs-on: [self-hosted, ors-verify]
     timeout-minutes: 8
     permissions:
       contents: read
