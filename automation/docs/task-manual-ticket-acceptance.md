@@ -4,7 +4,7 @@
 
 生产凭据只允许在自托管 runner（`self-hosted, ors-verify`）上使用，托管 runner 不持有生产 SSH 私钥。
 
-1. 验证工单编号和转正脚本。生产状态作业复用现有 SSH 通道，只查询该编号的状态。生产凭据仅用于该作业。
+1. 验证工单编号和转正脚本。生产状态通过云服务器上的只读 API 查询（HTTPS + token，见 `automation/services/ticket-status/`），CI 不再持有 SSH 私钥或数据库口令。
 2. 生产状态为 `resolved` 或 `closed` 时，定向作业启用 CI 临时 MySQL 与本地后端并执行该工单的测试脚本。其他已查到的状态跳过定向作业。查库失败、记录缺失和测试失败都使运行失败。
 3. 查库日志记录编号、状态和是否符合条件。定向作业日志与 `ticket-gate-results` 提供 pytest 和 JUnit 证据。该模式跳过部署计划和依赖该计划的构建、部署、回滚及报告发布。
 
