@@ -94,7 +94,7 @@ async def client():
         async with httpx.AsyncClient(base_url="http://mock.local", transport=create_mock_transport()) as c:
             yield c
     else:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as c:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30, follow_redirects=True) as c:
             yield c
 
 
@@ -145,7 +145,7 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc001(self, client, auth, cleanup):
         """正常流程：创建工单后调用删除接口应删除成功并返回2xx"""
-        created = await _api(client, "post", "/api/tasks",
+        created = await _api(client, "post", "/api/tasks/",
                              step="Step 1: 创建一张工单",
                              headers=auth,
                              expected_status=200,
@@ -175,7 +175,7 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc003(self, client, auth, cleanup):
         """正常流程：含操作日志的工单删除时日志写入task_id不为空"""
-        created = await _api(client, "post", "/api/tasks",
+        created = await _api(client, "post", "/api/tasks/",
                              step="Step 1: 创建一张工单",
                              headers=auth,
                              expected_status=200,
@@ -199,7 +199,7 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc004(self, client, auth, cleanup):
         """边界条件：无操作日志的工单删除不应因日志关联失败报错"""
-        created = await _api(client, "post", "/api/tasks",
+        created = await _api(client, "post", "/api/tasks/",
                              step="Step 1: 创建新工单",
                              headers=auth,
                              expected_status=200,
@@ -218,7 +218,7 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc005(self, client, auth, cleanup):
         """异常流程：删除接口不应以未处理500暴露数据库完整性错误"""
-        created = await _api(client, "post", "/api/tasks",
+        created = await _api(client, "post", "/api/tasks/",
                              step="Step 1: 创建一张工单",
                              headers=auth,
                              expected_status=200,
@@ -237,7 +237,7 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc006(self, client, auth, cleanup):
         """异常流程：重复删除同一工单第二次应返回404而非500"""
-        created = await _api(client, "post", "/api/tasks",
+        created = await _api(client, "post", "/api/tasks/",
                              step="Step 1: 创建一张工单",
                              headers=auth,
                              expected_status=200,
@@ -261,7 +261,7 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc007(self, client, auth, cleanup):
         """全链路：直接调用删除接口与页面入口删除结果一致"""
-        created = await _api(client, "post", "/api/tasks",
+        created = await _api(client, "post", "/api/tasks/",
                              step="Step 1: 创建一张工单",
                              headers=auth,
                              expected_status=200,
@@ -291,7 +291,7 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc008(self, client, auth, cleanup):
         """权限：未携带凭据直接调用删除接口应被拒绝"""
-        created = await _api(client, "post", "/api/tasks",
+        created = await _api(client, "post", "/api/tasks/",
                              step="Step 1: 授权账号创建一张工单",
                              headers=auth,
                              expected_status=200,
@@ -309,7 +309,7 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc009(self, client, auth, cleanup):
         """正常流程：删除成功后返回明确结果且详情查询为404"""
-        created = await _api(client, "post", "/api/tasks",
+        created = await _api(client, "post", "/api/tasks/",
                              step="Step 1: 创建一张工单",
                              headers=auth,
                              expected_status=200,
