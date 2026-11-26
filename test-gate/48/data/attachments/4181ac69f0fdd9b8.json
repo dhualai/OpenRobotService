@@ -1,0 +1,13 @@
+{
+  "method": "POST",
+  "url": "http://localhost:8400/api/tasks/6/comments/read",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "comment_ids": [
+      21
+    ],
+    "last_read_comment_id": 21
+  }
+}

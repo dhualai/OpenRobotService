@@ -1,0 +1,11 @@
+{
+  "method": "POST",
+  "url": "http://localhost:8400/api/tasks/",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "title": "real-smoke-task",
+    "description": "real backend smoke"
+  }
+}

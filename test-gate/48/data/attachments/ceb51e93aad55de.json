@@ -1,0 +1,10 @@
+{
+  "method": "PATCH",
+  "url": "http://localhost:8400/api/tasks/2/status",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "status": "canceled"
+  }
+}

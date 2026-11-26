@@ -1,0 +1,2 @@
+INFO     automation.clients.MySQLClient:mysql_client.py:43 Connected to MySQL: test-db:3306/testdb
+INFO     automation.clients.MySQLClient:mysql_client.py:59 MySQL client disconnected

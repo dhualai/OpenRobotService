@@ -1,0 +1,2 @@
+written: /tmp/pytest-of-runner/pytest-0/test_http_failure_artifacts_do0/failure-business.html (16552 bytes)
+modules=1 scenes=4 failed=4
