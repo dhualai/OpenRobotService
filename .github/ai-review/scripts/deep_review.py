@@ -534,8 +534,10 @@ def main():
     report = render_report(parsed, quick_result, pr or "本地回放", args.sha,
                            model_label or "LLM 不可用", inline_paths)
     if progress.enabled:
-        import deep_review as _self
-        llm_sec = int(_self._LLM_SECONDS)
+        # 脚本以 python3 deep_review.py 运行时模块名是 __main__，本文件的
+        # LLM 净耗时累加发生在 __main__ 命名空间；import deep_review 会加载
+        # 一份全新副本、其 _LLM_SECONDS 恒为 0，必须读当前模块本体的值。
+        llm_sec = int(_LLM_SECONDS)
         other_sec = max(int(t_llm_done - t0) - llm_sec, 0)
         total = int(time.time() - t0)
         report = report.replace(
