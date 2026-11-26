@@ -754,6 +754,7 @@ jobs:
         id: lookup
         env:
           TICKET_ID: ${{ steps.validate.outputs.ticket_id }}
+          TICKET_PROJECT_ID: ${{ steps.promoted.outputs.project_id }}
           TICKET_STATUS_API_URL: ${{ secrets.TICKET_STATUS_API_URL }}
           TICKET_STATUS_API_TOKEN: ${{ secrets.TICKET_STATUS_API_TOKEN }}
         run: |
@@ -769,6 +770,12 @@ jobs:
           echo "响应：${body}"
           eligible=$(printf '%s' "${body}" | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("eligible") else "false")')
           status=$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+          project=$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("project_id",""))')
+          # 工单必须属于本次验收的项目，否则一张别的项目的已关闭工单也能让验收通过。
+          if [[ -n "${TICKET_PROJECT_ID}" && "${project}" != "${TICKET_PROJECT_ID}" ]]; then
+            echo "::error::工单 ORS-${TICKET_ID} 属于项目 '${project}'，与本次验收项目 '${TICKET_PROJECT_ID}' 不一致。"
+            exit 1
+          fi
           echo "eligible=${eligible}" >> "$GITHUB_OUTPUT"
           echo "工单 ORS-${TICKET_ID} 状态：${status}，eligible=${eligible}" >> "$GITHUB_STEP_SUMMARY"
 

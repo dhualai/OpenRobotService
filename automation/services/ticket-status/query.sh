@@ -10,6 +10,16 @@ set -euo pipefail
 : "${TICKET_STATUS_API_TOKEN:?需要 TICKET_STATUS_API_TOKEN}"
 id="${1:?用法: query.sh <工单号，如 1053 或 ORS-1053>}"
 
+# 凭据必须走 TLS：http:// 会把 token 明文发出去。本地调试允许回环地址。
+case "${TICKET_STATUS_API_URL}" in
+  https://*) ;;
+  http://127.0.0.1*|http://localhost*) ;;
+  *)
+    echo "错误：TICKET_STATUS_API_URL 必须以 https:// 开头（本地调试可用 http://127.0.0.1）" >&2
+    exit 1
+    ;;
+esac
+
 curl -fsS --max-time 20 \
   -H "Authorization: Bearer ${TICKET_STATUS_API_TOKEN}" \
   "${TICKET_STATUS_API_URL%/}/tickets/${id}"
