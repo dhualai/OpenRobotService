@@ -1,0 +1,18 @@
+{
+  "status_code": 200,
+  "url": "http://localhost:8400/api/auth/login",
+  "reason": "OK",
+  "headers": {
+    "date": "Thu, 26 Nov 2026 02:46:19 GMT",
+    "server": "uvicorn",
+    "content-length": "369",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": {
+    "token_type": "bearer",
+    "access_token": "***",
+    "expires_in": 1800,
+    "refresh_token": "***"
+  }
+}

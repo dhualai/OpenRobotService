@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "url": "http://mock.local/api/admin/roles/999",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "name": "x"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "status_code": 400,
+  "url": "http://localhost:8400/api/tasks/3/status",
+  "reason": "Bad Request",
+  "headers": {
+    "date": "Thu, 26 Nov 2026 02:46:39 GMT",
+    "server": "uvicorn",
+    "content-length": "55",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": {
+    "detail": "仅处理中的工单可发起暂停请求"
+  }
+}
