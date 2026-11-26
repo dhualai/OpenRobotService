@@ -1,0 +1,20 @@
+{
+  "status_code": 200,
+  "url": "http://localhost:8400/api/tasks/6/comments/21/read",
+  "reason": "OK",
+  "headers": {
+    "date": "Thu, 26 Nov 2026 01:32:35 GMT",
+    "server": "uvicorn",
+    "content-length": "107",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": [
+    {
+      "username": "plain_user",
+      "name": "普通用户",
+      "avatar_resource_id": null,
+      "read_at": "2026-11-26T01:32:35"
+    }
+  ]
+}

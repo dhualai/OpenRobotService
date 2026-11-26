@@ -1,0 +1,15 @@
+{
+  "status_code": 400,
+  "url": "http://localhost:8400/api/tasks/5/reopen-step",
+  "reason": "Bad Request",
+  "headers": {
+    "date": "Thu, 26 Nov 2026 01:32:35 GMT",
+    "server": "uvicorn",
+    "content-length": "43",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": {
+    "detail": "仅已解决的工单可打回"
+  }
+}

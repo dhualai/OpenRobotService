@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/tasks",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "title": "需求任务",
+    "description": "需求描述",
+    "ticket_type": "requirement"
+  }
+}

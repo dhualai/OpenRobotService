@@ -1,0 +1,1 @@
+[{"values":["test"],"name":"Git.Branch"},{"values":["24a511fc1848f58592aecc408f07421800a6c991"],"name":"Git.Commit"},{"values":["45736167776"],"name":"Actions.Run"},{"values":["1"],"name":"Actions.Attempt"},{"values":["接口契约检查, 服务号后台规则检查（观察项）, 框架与基础设施, 模拟接口测试, 真实后端冒烟检查, 真实工单流程（观察项）, 知识库数据库检查（观察项）"],"name":"Report.Sources"}]
