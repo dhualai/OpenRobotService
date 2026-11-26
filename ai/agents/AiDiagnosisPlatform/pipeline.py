@@ -4561,12 +4561,11 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}{_att_block}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 排查假设只能浓缩对话里 AI 真实说过的话——对话中 AI 没给过任何假设或结论时，描述只写用户报告的事实，禁止自行推测原因或编造排查建议；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「可补充：…」（如「可补充：故障发生时间」——中性提示该信息缺失、后续可向用户补充，禁止写成「用户未提供」这种暗示用户被问过未答的措辞），只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 排查假设只能浓缩对话里 AI 真实说过的话——对话中 AI 没给过任何假设或结论时，描述只写用户报告的事实，禁止自行推测原因或编造排查建议；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 描述末尾可以用一句「可补充：…」提示本单真正缺的信息——补什么由你按这单的问题类型自己判断，跟本单无关的信息不要提，只列对话里确实没拿到、补上对处理有帮助的那几项；没有值得补的就不写这句。措辞中性，禁止出现「用户未提供」这类暗示用户被问过未答的说法；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
             f'"priority":"紧急|高|中|低","contact":"用户方（报障侧）的联系人，不是指派的处理人；从对话提取，没有则为空（系统会自动兜底为用户注册姓名，不要编造）",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
             f'"fault_code":"仅type=problem时填，故障码","special_notes":"所有类型可用，特殊说明（用户指名处理人、额外备注等）",'
-            f'"occurrence_time":"仅type=problem时填，故障发生时间","frequency":"仅type=problem时填，出现频率（每次/偶尔/首次）",'
             f'"steps_to_reproduce":"仅type=bug时填","expected_result":"仅type=bug时填",'
             f'"actual_result":"仅type=bug时填","severity":"仅type=bug时填:阻塞/主要/次要/轻微",'
             f'"version":"仅type=bug时填","scenario":"仅type=feature时填，需求场景",'
@@ -4703,8 +4702,6 @@ class AiDiagnosisPlatform:
             # 保底必填字段优先取 collected_info（对话中用户实际提供、已过服务端校验）
             result["robot_type"] = agent_state.collected_info.get("robot_type", "") or analysis.get("robot_type", "")
             result["fault_code"] = analysis.get("fault_code", "")
-            result["occurrence_time"] = agent_state.collected_info.get("occurrence_time", "") or analysis.get("occurrence_time", "")
-            result["frequency"] = agent_state.collected_info.get("frequency", "") or analysis.get("frequency", "")
         elif ticket_type == "bug":
             result["steps_to_reproduce"] = agent_state.collected_info.get("steps_to_reproduce", "") or analysis.get("steps_to_reproduce", "")
             result["expected_result"] = analysis.get("expected_result", "")
