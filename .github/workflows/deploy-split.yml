@@ -762,9 +762,7 @@ jobs:
             echo '::error::缺少 TICKET_STATUS_API_URL 或 TICKET_STATUS_API_TOKEN。'
             exit 1
           fi
-          body=$(curl -fsS --max-time 20 \
-            -H "Authorization: Bearer ${API_TOKEN}" \
-            "${API_URL%/}/tickets/ORS-${TICKET_ID}") || {
+          body=$(bash automation/services/ticket-status/query.sh "${TICKET_ID}") || {
             echo '::error::工单状态查询失败（网络或服务不可用）。'
             exit 1
           }
