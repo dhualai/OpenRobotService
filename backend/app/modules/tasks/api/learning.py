@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
 from app.modules.tasks.services import learning_learner_service as service
+from app.services import learning_reviews as reviews
 
 router = APIRouter(prefix="/learning", tags=["tasks-learning"])
 
@@ -17,6 +18,30 @@ router = APIRouter(prefix="/learning", tags=["tasks-learning"])
 class SubmitAnswerBody(BaseModel):
     question_id: str = Field(min_length=1, max_length=32)
     answers: list[str] = Field(min_length=1, max_length=6)
+
+
+class ReviewDecision(BaseModel):
+    revision: int = Field(ge=1)
+    action: Literal["approve", "reject"]
+    verified: bool = False
+    reason: str = Field(default="", max_length=2000)
+
+
+@router.get("/reviews")
+async def review_list(page: int = Query(1, ge=1), db=Depends(get_async_db),
+                      actor=Depends(get_current_active_user_from_token)):
+    return await reviews.listing(db, actor, page)
+
+
+@router.get("/reviews/{task_id}")
+async def review_detail(task_id: int, db=Depends(get_async_db), actor=Depends(get_current_active_user_from_token)):
+    return await reviews.detail(db, actor, task_id)
+
+
+@router.post("/reviews/{task_id}/decision")
+async def review_decision(task_id: int, body: ReviewDecision, db=Depends(get_async_db),
+                          actor=Depends(get_current_active_user_from_token)):
+    return await reviews.decide(db, actor, task_id, body)
 
 
 @router.get("/articles")

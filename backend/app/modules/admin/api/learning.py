@@ -70,6 +70,14 @@ class QuestionAction(Revision):
     action: Literal["submit", "approve", "reject", "enable", "disable"]
     verified: bool = False
     reason: str = Field(default="", max_length=2000)
+    reviewer_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+@router.get("/reviewers")
+async def reviewers(db=Depends(get_async_db)):
+    from app.services import learning_reviews
+
+    return await learning_reviews.reviewers(db)
 
 
 class PreviewAnswer(BaseModel):

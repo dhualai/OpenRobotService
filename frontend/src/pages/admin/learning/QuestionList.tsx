@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Checkbox, Empty, Input, Modal, Space, Tag } from 'antd';
 import { actLearningQuestion, DIFFICULTIES, QUESTION_TYPES, REVIEW_STATES, type LearningQuestion } from '@/api/learning';
+import ReviewAssignment from './ReviewAssignment';
 
 type Action = Parameters<typeof actLearningQuestion>[2];
 const ACTION_LABELS: Record<Action, string> = { submit: '提交审核', approve: '审核通过', reject: '驳回', enable: '启用', disable: '停用' };
@@ -14,14 +15,19 @@ export default function QuestionList({ questions, onEdit, onChanged, onArticle }
   const [verified, setVerified] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [reviewerId, setReviewerId] = useState<string>();
   const choose = (question: LearningQuestion, action: Action) => {
-    setSelection({ question, action }); setReason(''); setVerified(false); setError('');
+    setSelection({ question, action }); setReason(''); setVerified(false); setError(''); setReviewerId(undefined);
   };
   const submit = async () => {
     if (!selection) return;
     setSaving(true); setError('');
     try {
-      await actLearningQuestion(selection.question.id, selection.question.revision, selection.action, reason);
+      if (selection.action === 'submit') {
+        await actLearningQuestion(selection.question.id, selection.question.revision, selection.action, reason, reviewerId);
+      } else {
+        await actLearningQuestion(selection.question.id, selection.question.revision, selection.action, reason);
+      }
       setSelection(null); onChanged();
     } catch (cause) { setError(cause instanceof Error ? cause.message : '操作失败，请刷新后重试'); }
     finally { setSaving(false); }
@@ -60,6 +66,7 @@ export default function QuestionList({ questions, onEdit, onChanged, onArticle }
       onOk={submit} confirmLoading={saving} okText="确认" cancelText="取消"
       okButtonProps={{ disabled: selection?.action === 'approve' ? !verified : selection?.action === 'reject' ? !reason.trim() : false }}>
       <p>{selection?.question.payload.stem}</p>
+      {selection?.action === 'submit' && <ReviewAssignment key={selection.question.id} value={reviewerId} onChange={setReviewerId} disabled={saving} />}
       {selection?.action === 'approve' && <Checkbox checked={verified} onChange={(event) => setVerified(event.target.checked)}>已核对题干、选项、答案、解析和文章依据，且没有敏感信息</Checkbox>}
       {selection?.action === 'reject' && <Input.TextArea aria-label="驳回原因" rows={3} maxLength={2000} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="请说明需要修改的问题" />}
       {selection?.action === 'enable' && <Alert type="info" message="启用后纳入可用题目；文章停用或版本更新后将不再可用。" />}
