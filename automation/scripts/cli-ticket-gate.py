@@ -57,13 +57,9 @@ def _load_statuses(ticket_ids):
     """
     if not ticket_ids:
         return {}, None
-    if os.getenv("TICKET_STATUS_LOOKUP_DISABLED", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    ):
-        return None, "ticket status lookup disabled (missing production credentials)"
 
+    # 只读 API 是 CI 的唯一数据源，必须在任何提前返回之前判断，
+    # 否则「禁用标记」一开就会绕过 API，门禁看起来在跑、其实什么都没查。
     api_url = os.getenv("TICKET_STATUS_API_URL", "").strip()
     api_token = os.getenv("TICKET_STATUS_API_TOKEN", "").strip()
     if api_url and api_token:
@@ -75,13 +71,21 @@ def _load_statuses(ticket_ids):
         except Exception as exc:  # noqa: BLE001 - the gate decides how to handle it
             return None, f"ticket status API failed: {exc}"
 
+    # 以下只影响本地 CLI 的 SSH 回退路径；CI 没有配置 API 时应明确失败。
+    if os.getenv("TICKET_STATUS_LOOKUP_DISABLED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return None, "ticket status lookup disabled (TICKET_STATUS_LOOKUP_DISABLED=1)"
+
     try:
         from automation.src.ticket_pipeline.scanner import SSHMySQLTicketSource
 
         source = SSHMySQLTicketSource.from_env()
         return {ticket.id: ticket.status for ticket in source.fetch_by_ids(ticket_ids)}, None
     except Exception as exc:  # noqa: BLE001 - the gate decides how to handle it
-        return None, str(exc)
+        return None, f"no ticket status source available: {exc}"
 
 
 def build_parser():
