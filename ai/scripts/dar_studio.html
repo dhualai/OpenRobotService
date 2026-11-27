@@ -770,23 +770,34 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
       <div class="kbtree" id="kbtree" style="display:none"><div class="empty">加载中…</div></div>
     </section>
 
-    <!-- ══ 页签5 知识补充 ══ -->
+    <!-- ══ 页签5 知识补充（ORS-1159：知识点候选审核台 → 推送服务号） ══ -->
     <section class="view" id="view-sup">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-        <h2 class="pg" style="margin:0">知识补充</h2>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <h2 class="pg" style="margin:0">知识补充 · 候选审核</h2>
         <span class="badge dim" id="supstat">加载中…</span>
         <span style="flex:1"></span>
-        <button class="btn" id="supingest" onclick="supIngest()" title="把已保存答案入库（ingest_all --domain team，增量只嵌新卡）">⬆ 一键入库（本地知识库）</button>
-        <button class="btn sm" onclick="loadSupList()">刷新</button>
+        <button class="btn sm" onclick="candRefresh()">刷新</button>
+        <button class="btn" id="candpush" onclick="candPush()" title="把勾选（或全部未推送）的知识点推到服务号「知识库 → 待补充」">📤 推送服务号</button>
       </div>
-      <p class="sub" style="margin-bottom:12px">
-        从漏斗「未直答·库未覆盖」层把问题送进补充队列 → AI 整理（问题重写·探针验覆盖·类型归类）→
-        在这里人工补答案（支持图文、Ctrl+V 贴图）→ 保存 → 一键入库本地知识库。
-        <b style="color:var(--warn)">入库只进本地/测试知识库，生产同步走既有入库流程。</b>
+      <p class="sub" style="margin-bottom:10px">
+        周流程「吸收 → 周报」跑完，AI 把漏斗「未覆盖 + 未直答」段的用户提问归纳成<b>通用知识点</b>（去车型/项目上下文；未直答=资料有但不完善，同样要补）。
+        这里审核：改标题（未来检索入口）、改描述、剔除噪声 → 推送服务号。
+        服务号侧由部门多人补答案 + AI 汇总 + 审核后入库。
       </p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <input type="text" id="candq" placeholder="筛选标题/描述…" style="flex:1;min-width:180px;padding:6px 10px;border:1px solid var(--line);border-radius:8px" oninput="candRender()">
+        <select id="candtype" onchange="candRender()" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px">
+          <option value="">全部类型</option><option>故障处置</option><option>操作指引</option><option>功能咨询</option><option>状态查询</option><option>资料查询</option><option>其他</option>
+        </select>
+        <select id="candst" onchange="candRender()" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px">
+          <option value="">全部状态</option><option value="pending">待审核</option><option value="excluded">已剔除</option><option value="pushed">已推送</option>
+        </select>
+        <label style="font-size:12.5px;display:flex;gap:4px;align-items:center"><input type="checkbox" id="candall" onchange="candSelectAll(this.checked)">全选</label>
+        <button class="btn sm" onclick="candBatchExclude()">批量剔除</button>
+      </div>
       <div class="sup-wrap">
-        <div class="sup-list" id="suplist"></div>
-        <div class="sup-edit" id="supedit"></div>
+        <div class="sup-list" id="candlist"></div>
+        <div class="sup-edit" id="candedit"></div>
       </div>
     </section>
   </main>
@@ -862,6 +873,7 @@ async function sse(url, body, onEvent, onDone){
 }
 
 /* ── 导航 ── */
+var CAND_ENV = "prod";  // 提前声明：nav() 启动即执行时 candRefresh 会用到
 function nav(v){
   ["week","test","sink","kb","sup"].forEach(k=>{
     $("#nav-"+k).classList.toggle("on", v===k);
@@ -869,8 +881,8 @@ function nav(v){
   });
   // 知识库页签懒加载：首次切入才请求统计（parser 全量 parse 约几秒）
   if(v==="kb" && !window._kbLoaded){ window._kbLoaded = true; loadKB(); }
-  // 知识补充页签懒加载：首次切入才拉队列清单
-  if(v==="sup" && !window._supLoaded){ window._supLoaded = true; loadSupList(); }
+  // 知识补充页签懒加载：首次切入才拉候选知识点清单（ORS-1159）
+  if(v==="sup" && !window._supLoaded){ window._supLoaded = true; candRefresh(); }
   try { localStorage.setItem("dar_studio_tab", v); } catch (e) {}
 }
 $("#nav-week").onclick = ()=>nav("week");
@@ -2416,6 +2428,174 @@ loadFunnel();
 
 /* ══ 页签5 知识补充：漏斗未覆盖 → AI 整理 → 人工补答案 → 一键入库 ══ */
 let supItems = [], supCurId = null, supTimer = null;
+
+/* ══ 页签5 知识补充 · 知识点候选审核（ORS-1159） ══
+   数据：dar_weekly supplement 步骤产出 processed/supplement_candidates_*.json
+   （AI 把未覆盖提问归纳成通用知识点）。
+   动作：改标题/描述/类型 → 剔除噪声 → 推送服务号「知识库 → 待补充」，
+   由部门多人补答案 + AI 汇总 + 审核后入库。本地不再写答案。 */
+let _candData = null, _candSel = null;
+const _candChecked = new Set();
+
+async function candRefresh(){
+  $("#supstat").textContent = "加载中…";
+  try {
+    const r = await fetch(`/api/supplement/candidates?env=${CAND_ENV}`);
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || r.status);
+    _candData = j;
+    const sm = j.summary || {};
+    $("#supstat").textContent = j.missing
+      ? "还没有候选（先跑周流程「吸收 → 周报」）"
+      : `${j.generated_at || ""} · 共 ${sm.total || 0} 条（待审 ${sm.pending || 0} / 剔除 ${sm.excluded || 0} / 已推 ${sm.pushed || 0}）`;
+    candRender();
+  } catch(e) {
+    $("#supstat").textContent = "加载失败: " + e.message;
+  }
+}
+
+function candFiltered(){
+  const q = ($("#candq").value || "").trim().toLowerCase();
+  const ty = $("#candtype").value, st = $("#candst").value;
+  return (_candData && _candData.items || []).filter(it => {
+    const s = it.status || "pending";
+    if(ty && it.qtype !== ty) return false;
+    if(st && s !== st) return false;
+    if(q && !((it.title || "") + " " + (it.description || "")).toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function candRender(){
+  const el = $("#candlist");
+  if(!_candData || _candData.missing){
+    el.innerHTML = `<div class="empty" style="padding:20px 10px">还没有候选知识点。<br>跑周流程「吸收 → 周报」后自动生成。</div>`;
+    $("#candedit").innerHTML = "";
+    return;
+  }
+  const items = candFiltered();
+  if(!items.length){ el.innerHTML = `<div class="empty" style="padding:20px 10px">没有符合筛选条件的知识点</div>`; return; }
+  el.innerHTML = items.map(it => {
+    const st = it.status || "pending";
+    const stCls = st === "pushed" ? "okc" : st === "excluded" ? "dimc" : "ty";
+    const stTxt = st === "pushed" ? "已推送" : st === "excluded" ? "已剔除" : "待审核";
+    return `<div class="sup-it ${_candSel === it.id ? "on" : ""}" data-id="${it.id}" onclick="candSelect('${it.id}')">
+      <div class="t"><input type="checkbox" ${_candChecked.has(it.id) ? "checked" : ""} onclick="event.stopPropagation();candCheck('${it.id}',this.checked)" style="margin-right:6px;vertical-align:-1px">${esc(it.title)}</div>
+      <div class="m"><span class="chip ty">${esc(it.qtype)}</span>
+        <span class="chip">${it.count} 次</span>
+        ${it.uncovered ? `<span class="chip dimc">未覆盖 ${it.uncovered}</span>` : ""}
+        ${it.unanswered ? `<span class="chip dimc">未直答 ${it.unanswered}</span>` : ""}
+        <span class="chip ${stCls}">${stTxt}</span>
+        ${it.edited ? '<span class="chip dimc">已改</span>' : ""}</div>
+    </div>`;
+  }).join("");
+}
+
+function candCheck(id, on){ on ? _candChecked.add(id) : _candChecked.delete(id); }
+
+function candSelectAll(on){
+  candFiltered().forEach(it => on ? _candChecked.add(it.id) : _candChecked.delete(it.id));
+  candRender();
+}
+
+function candSelect(id){
+  _candSel = id;
+  const it = (_candData && _candData.items || []).find(x => x.id === id);
+  if(!it) return;
+  candRender();
+  const st = it.status || "pending";
+  const locked = st === "pushed";
+  $("#candedit").innerHTML = `
+    <div class="sup-sec"><b>知识点标题（未来检索入口，写成用户会问的通用问题）</b>
+      <div class="sup-qrow"><input type="text" id="cedit-title" value="${esc(it.title)}" ${locked ? "disabled" : ""}
+        style="flex:1;padding:8px 10px;border:1px solid var(--line);border-radius:8px"></div></div>
+    <div class="sup-sec" style="margin-top:12px"><b>类型</b>
+      <select id="cedit-type" ${locked ? "disabled" : ""} style="padding:6px 10px;border:1px solid var(--line);border-radius:8px">
+        ${["故障处置", "操作指引", "功能咨询", "状态查询", "资料查询", "其他"]
+          .map(t => `<option ${t === it.qtype ? "selected" : ""}>${t}</option>`).join("")}
+      </select>
+      <span class="chip" style="margin-left:8px">出现 ${it.count} 次</span></div>
+    <div class="sup-sec" style="margin-top:12px"><b>描述（这个知识点要回答什么，不写答案）</b>
+      <textarea id="cedit-desc" ${locked ? "disabled" : ""}
+        style="width:100%;min-height:140px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:13px;line-height:1.7">${esc(it.description || "")}</textarea></div>
+    ${(() => {
+      const srcs = it.sources || [];
+      if(!srcs.length) return "";
+      return `<div class="sup-sec" style="margin-top:12px"><b>来源提问（${srcs.length} 条 · 核对归纳是否合理）</b>
+        <div class="sup-dialog">${srcs.map(x => `<div class="fq"><b>${x.layer === "unanswered" ? "未直答" : x.layer === "uncovered" ? "未覆盖" : "#" + esc(x.cid || "")}</b>${esc(x.q || ("段 " + (x.astart ?? "")))}</div>`).join("")}</div>
+      </div>`;
+    })()}
+    <div class="sup-bar">
+      ${locked ? '<span class="hint">已推送服务号，不能在此修改</span>'
+        : `<button class="btn" onclick="candSave()">保存修改</button>
+           ${st === "excluded" ? '<button class="btn sm" onclick="candSetStatus(\'pending\')">恢复待审</button>'
+                               : '<button class="btn sm" onclick="candSetStatus(\'excluded\')">剔除</button>'}`}
+      <span class="hint">${esc(_candData.file || "")}</span>
+    </div>`;
+}
+
+async function candPost(url, body){
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch(e) {}
+  if(!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+  return j;
+}
+
+async function candSave(){
+  const it = (_candData.items || []).find(x => x.id === _candSel);
+  if(!it) return;
+  try {
+    await candPost("/api/supplement/candidates/save", {env: CAND_ENV, items: [{
+      id: it.id, title: $("#cedit-title").value,
+      description: $("#cedit-desc").value, qtype: $("#cedit-type").value,
+    }]});
+    toast("已保存", "ok");
+    await candRefresh();
+    candSelect(it.id);
+  } catch(e) { toast("保存失败: " + e.message, "error"); }
+}
+
+async function candSetStatus(st){
+  const it = (_candData.items || []).find(x => x.id === _candSel);
+  if(!it) return;
+  try {
+    await candPost("/api/supplement/candidates/save", {env: CAND_ENV, items: [{id: it.id, status: st}]});
+    toast(st === "excluded" ? "已剔除" : "已恢复待审", "ok");
+    await candRefresh();
+    candSelect(it.id);
+  } catch(e) { toast("操作失败: " + e.message, "error"); }
+}
+
+async function candBatchExclude(){
+  const ids = [..._candChecked];
+  if(!ids.length){ toast("先勾选要剔除的知识点", "warn"); return; }
+  if(!confirm(`确认剔除 ${ids.length} 条知识点？`)) return;
+  try {
+    const j = await candPost("/api/supplement/candidates/save",
+      {env: CAND_ENV, items: ids.map(id => ({id, status: "excluded"}))});
+    toast(`已剔除 ${j.updated || 0} 条`, "ok");
+    _candChecked.clear();
+    await candRefresh();
+  } catch(e) { toast("剔除失败: " + e.message, "error"); }
+}
+
+async function candPush(){
+  const ids = _candChecked.size
+    ? [..._candChecked]
+    : candFiltered().filter(x => (x.status || "pending") === "pending").map(x => x.id);
+  if(!ids.length){ toast("没有可推送的知识点（勾选，或确保有「待审核」的）", "warn"); return; }
+  if(!confirm(`推送 ${ids.length} 条知识点到服务号「知识库 → 待补充」？`)) return;
+  $("#candpush").disabled = true;
+  try {
+    const j = await candPost("/api/supplement/candidates/push", {env: CAND_ENV, ids});
+    toast(`已推送 ${j.pushed} 条`, "ok");
+    _candChecked.clear();
+    await candRefresh();
+  } catch(e) {
+    toast("推送失败: " + e.message, "error");
+  } finally { $("#candpush").disabled = false; }
+}
 
 function supStatusBadge(it){
   if(it.status === "ingested") return `<span class="chip okc">已入库 ✓</span>`;

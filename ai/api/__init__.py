@@ -12,12 +12,12 @@ Router：
 
 from ai.api.router import (
     qa_router, chat_router, memory_router,
-    task_agent_router, wecom_router, archive_router,
+    task_agent_router, wecom_router, archive_router, kb_router,
 )
 from ai.api.assigner import assigner_router
 
 __all__ = [
     "qa_router", "chat_router", "memory_router",
     "task_agent_router", "wecom_router", "assigner_router",
-    "archive_router",
+    "archive_router", "kb_router",
 ]
