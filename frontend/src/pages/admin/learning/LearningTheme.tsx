@@ -8,7 +8,6 @@ const learningTheme: ThemeConfig = {
     colorInfo: '#3697c3', colorInfoBg: '#dff8ff', colorInfoBorder: '#93e0ff',
     colorSuccess: '#3697c3', colorSuccessBg: '#dff8ff', colorSuccessBorder: '#93e0ff',
     colorWarning: '#56b1da', colorWarningBg: '#dff8ff', colorWarningBorder: '#93e0ff',
-    colorError: '#227197', colorErrorBg: '#dff8ff', colorErrorBorder: '#93e0ff',
     colorLink: '#3697c3', colorLinkHover: '#56b1da', colorLinkActive: '#227197',
     controlItemBgActive: '#dff8ff', controlItemBgActiveHover: '#c1f4ff',
   },

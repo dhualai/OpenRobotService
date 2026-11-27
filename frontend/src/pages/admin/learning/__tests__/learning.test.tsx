@@ -11,6 +11,8 @@ import QuestionList from '../QuestionList';
 import QuestionEditor from '../QuestionEditor';
 import SourceModal from '../SourceModal';
 import LearningTheme from '../LearningTheme';
+import globalStyles from '@/shared/styles/global.css?raw';
+import learningStyles from '../learning.css?raw';
 
 vi.mock('@/api/learning', async (original) => ({
   ...await original<typeof import('@/api/learning')>(),
@@ -64,8 +66,15 @@ beforeEach(() => {
 describe('题目生成管理页', () => {
   it('仅在题目生成范围内使用马卡龙蓝主题，不改变外部页面', () => {
     wrap(<><LearningTheme><ThemeColors label="题目生成主题" /></LearningTheme><ThemeColors label="默认主题" /></>);
-    expect(screen.getByLabelText('题目生成主题')).toHaveTextContent('#3697c3,#3697c3,#56b1da,#227197');
+    expect(screen.getByLabelText('题目生成主题')).toHaveTextContent('#3697c3,#3697c3,#56b1da,#ff4d4f');
     expect(screen.getByLabelText('默认主题')).toHaveTextContent('#1677ff,#52c41a,#faad14,#ff4d4f');
+  });
+
+  it('页面引用的马卡龙变量均已在全局根节点定义', () => {
+    const rootDeclarations = Array.from(globalStyles.matchAll(/:root\s*\{([^}]+)\}/g), (match) => match[1]).join('\n');
+    const tokens = new Set(Array.from(learningStyles.matchAll(/var\((--mac-[\w-]+)/g), (match) => match[1]));
+    expect(tokens.size).toBeGreaterThan(0);
+    tokens.forEach((token) => expect(rootDeclarations).toMatch(new RegExp(`${token}\\s*:\\s*[^;]+;`)));
   });
 
   it('页面关键按钮使用马卡龙蓝底白字', async () => {
@@ -265,6 +274,18 @@ describe('文章编辑与候选采用', () => {
     ] }));
     editor();
     expect(await screen.findByRole('button', { name: '查看候选内容' })).toBeDisabled();
+  });
+
+  it('生成失败及题目校验错误保留醒目的红色错误样式', async () => {
+    vi.mocked(api.getLearningArticle).mockResolvedValue(detail({ generations: [
+      { id: 'failed', kind: 'article', state: 'failed', input_revision: 1, created_at: '2026-11-27T01:00:00', error: '模拟AI调用失败', result: null },
+      { id: 'partial', kind: 'questions', state: 'succeeded', input_revision: 1, created_at: '2026-11-27T00:00:00', error: null, result: { saved_count: 1, errors: ['模拟题目字段不合法'] } },
+    ] }));
+    editor();
+    const error = await screen.findByText('模拟AI调用失败');
+    expect(error).toHaveStyle({ color: 'var(--danger)' });
+    expect(screen.getByText('模拟题目字段不合法')).toHaveStyle({ color: 'var(--danger)' });
+    expect(screen.getByText('失败')).toHaveStyle({ color: '#ff4d4f', backgroundColor: '#fff2f0' });
   });
 
   it('移至顶部的候选入口不绕过修订号校验', async () => {
