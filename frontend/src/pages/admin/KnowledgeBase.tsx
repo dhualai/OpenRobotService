@@ -2,6 +2,7 @@
 // 手机端为主：目录逐层进入、点文件全屏预览、图片自适应宽度。
 
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -12,11 +13,13 @@ import {
   type KbDoc,
   type KbTree,
 } from '@/api/kb';
+import { fetchSupplementList } from '@/api/kbSupplement';
 
 const KB_CSS = `
 .kb-page { padding: 16px 14px 40px; }
 .kb-crumb { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 13px; color: #6b7280; margin-bottom: 12px; }
 .kb-crumb button { background: none; border: none; padding: 2px 4px; font-size: 13px; color: #2563eb; cursor: pointer; }
+.kb-crumb .kb-sup-btn { margin-left: auto; order: 99; background: #2563eb; color: #fff; border-radius: 999px; padding: 5px 12px; font-size: 13px; flex: 0 0 auto; }
 .kb-crumb span.sep { color: #cbd5e1; }
 .kb-item { display: flex; align-items: center; gap: 10px; padding: 14px 14px; background: #fff; border-radius: 12px; margin-bottom: 8px; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 .kb-item:active { background: #f8fafc; }
@@ -44,6 +47,8 @@ const KB_CSS = `
 `;
 
 export default function KnowledgeBase() {
+  const nav = useNavigate();
+  const [openCount, setOpenCount] = useState(0);
   const [path, setPath] = useState('');
   const [tree, setTree] = useState<KbTree | null>(null);
   const [doc, setDoc] = useState<KbDoc | null>(null);
@@ -56,6 +61,11 @@ export default function KnowledgeBase() {
   }, []);
 
   useEffect(() => { void loadTree(path); }, [path, loadTree]);
+
+  // 待补充知识点入口（ORS-1159）：只取「待补充」状态数量
+  useEffect(() => {
+    void fetchSupplementList({ status: 'open' }).then((r) => setOpenCount(r?.data.length || 0));
+  }, []);
 
   const openFile = async (p: string) => {
     setLoading(true);
@@ -114,6 +124,11 @@ export default function KnowledgeBase() {
             {i < arr.length - 1 && <span className="sep"> / </span>}
           </span>
         ))}
+        {!path && (
+          <button className="kb-sup-btn" onClick={() => nav('/admin/kb/supplement')}>
+            📝 待补充 {openCount}
+          </button>
+        )}
       </div>
 
       {loading && <div className="kb-empty">加载中…</div>}

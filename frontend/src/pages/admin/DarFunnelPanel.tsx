@@ -5,6 +5,7 @@
 //   fail_top                —— 未直答/未覆盖 Top 品类（类型/条数/样例，与漏斗同口径）
 // 统计口径与工作台首页那张卡同源，不在前端重算。
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Loading } from 'tdesign-mobile-react';
 
 import { fetchDarLatest, type DarFunnelBlock, type DarReportSummary } from '@/api/dashboard';
@@ -107,6 +108,7 @@ function RateTrend({ weeks, activeWeek }: { weeks: WeekBucket[]; activeWeek?: st
 
 export default function DarFunnelPanel() {
   const [dar, setDar] = useState<DarReportSummary | null>(null);
+  const nav = useNavigate();
   const [loading, setLoading] = useState(true);
   // '' = 默认最近一周；'all' = 全部合计（所有历史数据）
   const [sel, setSel] = useState<string>('');
@@ -169,6 +171,14 @@ export default function DarFunnelPanel() {
           <span style={{ fontSize: 12, color: 'var(--muted-foreground, #98a2b3)' }}>
             {dar.week_date.slice(0, 4)}-{dar.week_date.slice(4, 6)}-{dar.week_date.slice(6, 8)} 周报
           </span>
+          <button
+            type="button"
+            onClick={() => nav('/admin/kb/supplement')}
+            style={{ marginLeft: 'auto', fontSize: 12.5, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}
+            title="未覆盖问题 → 待补充知识点（部门补答案 → 审核 → 入库）"
+          >
+            去补知识 →
+          </button>
         </div>
 
         <div className="dispatch-dev__week-pills">
