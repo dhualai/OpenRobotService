@@ -1,0 +1,10 @@
+{
+  "method": "GET",
+  "url": "http://mock.local/api/ai/qa/ticket/steps",
+  "headers": {
+    "Authorization": "***"
+  },
+  "params": {
+    "type": "problem"
+  }
+}

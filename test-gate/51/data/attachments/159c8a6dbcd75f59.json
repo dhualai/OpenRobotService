@@ -1,0 +1,6 @@
+{
+  "status_code": 401,
+  "url": "%3CMagicMock%20name='mock.request().url'%20id='136235272326416'%3E",
+  "reason": "<MagicMock name='mock.request().reason_phrase' id='136235272336848'>",
+  "body": "[unstructured response body omitted]"
+}
