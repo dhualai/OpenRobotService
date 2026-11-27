@@ -835,9 +835,13 @@ jobs:
         run: |
           set -euo pipefail
           dir="automation/references/promoted-cases/${TICKET_ID}"
+          # 转正用例是逐单生成的，大多数工单没有。缺用例 = 本次不验证这张单，
+          # 属于「跳过」而不是失败，否则每次提到工单号的合并都会把门禁弄红。
           if [[ ! -f "${dir}/test_gen.py" || ! -f "${dir}/manifest.json" ]]; then
-            echo "::error::ORS-${TICKET_ID} 没有转正用例，无法定向验证。"
-            exit 1
+            echo "::notice::ORS-${TICKET_ID} 没有转正用例，跳过定向验证。"
+            echo "ORS-${TICKET_ID}: 无转正用例，跳过" >> "$GITHUB_STEP_SUMMARY"
+            echo 'skip=1' >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           project=$(python3 - "${dir}/manifest.json" "${TICKET_ID}" <<'PY'
           import json, sys
@@ -855,6 +859,7 @@ jobs:
 
       - name: Look up production status
         id: status
+        if: ${{ steps.promoted.outputs.skip != '1' }}
         env:
           TICKET_ID: ${{ matrix.ticket }}
           TICKET_PROJECT_ID: ${{ steps.promoted.outputs.project_id }}
@@ -907,7 +912,7 @@ jobs:
           fi
 
       - name: Run the ticket's promoted cases
-        if: ${{ steps.status.outputs.skip != '1' }}
+        if: ${{ steps.promoted.outputs.skip != '1' && steps.status.outputs.skip != '1' }}
         env:
           PYTHONPATH: ${{ github.workspace }}
           TICKET_ID: ${{ matrix.ticket }}
