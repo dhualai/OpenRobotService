@@ -1,0 +1,12 @@
+2026-11-27 06:24:50 | [32mINFO | automation.clients.ApiClient | Connected to API: http://localhost:8400
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: POST http://localhost:8400/api/auth/login "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: POST http://localhost:8400/api/auth/login "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: GET http://localhost:8400/api/auth/me "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: POST http://localhost:8400/api/tasks/ "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: PUT http://localhost:8400/api/tasks/6 "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: POST http://localhost:8400/api/tasks/6/comments "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: GET http://localhost:8400/api/tasks/6/comments "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: POST http://localhost:8400/api/tasks/6/comments/read "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: GET http://localhost:8400/api/tasks/6/comments/21/read "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | httpx | HTTP Request: PATCH http://localhost:8400/api/tasks/6/status "HTTP/1.1 200 OK"
+2026-11-27 06:24:51 | [32mINFO | automation.clients.ApiClient | API client disconnected
