@@ -811,19 +811,24 @@ export default function TaskDetailPage() {
     }
   };
 
-  /** ORS-1214：解决方式弹窗插图上传——与报告插图同通道（评论附件接口），上传后经 ref 插到光标位置 */
-  const handleResolutionImageUpload = async (files: File[]) => {
+  /** ORS-1214：解决方式弹窗粘贴/拖拽文件上传——图片插图片节点，文档插 Markdown 链接（评论附件接口同通道） */
+  const handleResolutionFileUpload = async (files: File[]) => {
     if (!files.length) return;
     try {
-      const inserts: { path: string; name: string }[] = [];
+      const images: { path: string; name: string }[] = [];
+      const docs: { path: string; name: string }[] = [];
       for (const f of files) {
         const objectPath = await uploadCommentAttachment(f, `resolution-${Date.now()}`);
-        inserts.push({ path: objectPath, name: f.name });
+        (f.type.startsWith('image/') ? images : docs).push({ path: objectPath, name: f.name });
       }
-      resolutionEditorRef.current?.insertImages(inserts);
-      Toast({ message: `已插入 ${inserts.length} 张图片`, theme: 'success' });
+      if (images.length) resolutionEditorRef.current?.insertImages(images);
+      if (docs.length) resolutionEditorRef.current?.insertFileLinks(docs);
+      const parts: string[] = [];
+      if (images.length) parts.push(`${images.length} 张图片`);
+      if (docs.length) parts.push(`${docs.length} 个文件`);
+      Toast({ message: `已插入 ${parts.join('、')}`, theme: 'success' });
     } catch (err) {
-      Toast({ message: `图片上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      Toast({ message: `文件上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
   };
 
@@ -2835,7 +2840,7 @@ export default function TaskDetailPage() {
                     variant="simple"
                     value={resolve.resolutionText}
                     onChange={resolve.setResolutionText}
-                    onUploadImages={handleResolutionImageUpload}
+                    onUploadImages={handleResolutionFileUpload}
                   />
                 </div>
               )}
