@@ -148,6 +148,7 @@ from app.models.knowledge_challenge import (
 
 # 直答率周报（ORS-#981：AI 直答率上服务号后台）
 from app.models.dar_report import DarWeeklyReport
+from app.models.kb_supplement import KbSupplementQuestion, KbSupplementDraft
 
 # 微信支付（奖励记录 + 转账单 + 回调流水）
 from app.models.wxpay import (
@@ -221,6 +222,8 @@ __all__ = [
     # wecom sheet source / mirror
     "WecomSheetSource", "ExternalRecord",
     "DarWeeklyReport",
+    # kb supplement (ORS-1159)
+    "KbSupplementQuestion", "KbSupplementDraft",
     # wxpay
     "RewardRecord", "RewardStatus", "TransferBill", "TransferBillState",
     "WxpayNotifyLog", "derive_reward_status",

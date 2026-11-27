@@ -1287,6 +1287,8 @@ STEPS = {
     "l3": lambda: (step("l3 预标", "dar_l3.py", ("--all",)),
                    step("tool", "build_segmentation_tool.py")),
     "tool": lambda: step("tool", "build_segmentation_tool.py"),
+    # 知识补充候选（ORS-1159）：未覆盖段 → LLM 归纳通用知识点，工作台审核后推服务号
+    "supplement": lambda: step("supplement 知识点聚类", "dar_supplement.py"),
     "report": lambda: step_report(),
 }
 
