@@ -358,6 +358,9 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
     callbacks.current = { onChange, onUploadImages };
     const lastMd = useRef(value);
     const [preview, setPreview] = useState<{ src: string; alt: string }>();
+    // ORS-1214：全屏编辑模式（仅 simple 弹窗场景）——图片过大时给足编辑画布
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    const showFullscreenBtn = variant === 'simple' && !readOnly;
 
     const editor = useEditor({
       extensions: [
@@ -424,6 +427,16 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
       editor.setEditable(!readOnly, false);
       editor.view.dom.setAttribute('aria-disabled', String(readOnly));
     }, [editor, readOnly]);
+
+    // 全屏模式下 Esc 退出
+    useEffect(() => {
+      if (!isFullscreen) return;
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') setIsFullscreen(false);
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, [isFullscreen]);
 
     // 外部 value 变更（如 AI 生成完写回）→ 同步到编辑器
     useEffect(() => {
@@ -533,7 +546,7 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
     };
 
     return (
-      <div className="archive-report-document">
+      <div className={`archive-report-document${isFullscreen ? ' is-fullscreen' : ''}`}>
         {/* simple（工单解决方式弹窗）：无工具栏，仅保留粘贴/拖拽插入 */}
         {!readOnly && variant !== 'simple' && (
           <div role="toolbar" aria-label="报告格式" className="archive-report-format">
@@ -547,7 +560,20 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
             <button type="button" disabled={!editor?.can().redo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().redo().run()}>重做</button>
           </div>
         )}
-        <EditorContent editor={editor} onDoubleClick={openImageLightbox} />
+        {showFullscreenBtn && (
+          <button
+            type="button"
+            className="archive-report-fullscreen-btn"
+            aria-pressed={isFullscreen}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setIsFullscreen((v) => !v)}
+          >
+            {isFullscreen ? '退出全屏' : '全屏'}
+          </button>
+        )}
+        <div className="archive-report-editor-shell">
+          <EditorContent editor={editor} onDoubleClick={openImageLightbox} />
+        </div>
         <ImageLightbox src={preview?.src} alt={preview?.alt} open={!!preview} onClose={() => setPreview(undefined)} />
       </div>
     );
