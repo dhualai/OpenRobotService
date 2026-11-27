@@ -640,7 +640,17 @@ jobs:
           python3 automation/src/reporting/business_report.py \
             --results automation/output/allure-results \
             --context automation/output/test-gate-report.json --expect-gate \
-            --out automation/output/test-report-business.html "${ui_args[@]}"
+            --out automation/output/test-report-business.html \
+            --summary-out automation/output/business-summary.md "${ui_args[@]}"
+
+      - name: Append business summary to the run page
+        if: always()
+        run: |
+          if [ -f automation/output/business-summary.md ]; then
+            cat automation/output/business-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'business summary not generated' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload business report
         id: business-upload

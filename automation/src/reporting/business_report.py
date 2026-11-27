@@ -12,6 +12,7 @@ import argparse
 import pathlib
 import collections
 import datetime
+import html
 import json
 import re
 
@@ -685,10 +686,53 @@ def render_att(att):
     return ''.join(parts)
 
 
+
+
+_SCENARIO_CARD = re.compile(r'<details class="business-scenario"[\s\S]*?</summary>', re.I)
+
+
+def business_summary_markdown(html_text: str) -> str:
+    """Summarise the four business cards as markdown for the Actions run summary.
+
+    Parses the rendered cards instead of recomputing verdicts, so the summary can
+    never disagree with the HTML report.
+    """
+    rows = []
+    for block in _SCENARIO_CARD.findall(html_text):
+        module = re.search(r'<span class="module-name">([\s\S]*?)</span>', block)
+        flow = re.search(r'<strong>([\s\S]*?)</strong>', block)
+        status = re.search(r'class="business-status [a-z]+">([\s\S]*?)</span>', block)
+        coverage = re.search(r'class="coverage">([\s\S]*?)</span>', block)
+        reason = re.search(r'卡点 · ([\s\S]*?)</span>', block)
+        if not (module and flow and status):
+            continue
+        rows.append((
+            html.unescape(module.group(1)).strip(),
+            html.unescape(flow.group(1)).strip(),
+            html.unescape(status.group(1)).strip(),
+            html.unescape(coverage.group(1)).strip() if coverage else '',
+            html.unescape(reason.group(1)).strip() if reason else '',
+        ))
+    if not rows:
+        return '### 业务验收摘要\n\n未生成业务场景卡片。\n'
+    lines = [
+        '### 业务验收摘要',
+        '',
+        '| 业务模块 | 主流程 | 结论 | 覆盖级别 | 卡点 |',
+        '| --- | --- | --- | --- | --- |',
+    ]
+    for module, flow, status, coverage, reason in rows:
+        lines.append(f'| {module} | {flow} | {status} | {coverage or "—"} | {reason or "—"} |')
+    lines += ['', '完整报告：本次运行的 Artifacts → `test-report-business`。']
+    return '\n'.join(lines) + '\n'
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='生成业务视角测试结论报告')
     parser.add_argument('--results', default=str(DEFAULT_RESULTS),
                         help='Allure 结果目录（默认 output/allure-results）')
+    parser.add_argument('--summary-out', type=pathlib.Path, default=None,
+                        help='输出 markdown 摘要（供 GITHUB_STEP_SUMMARY 使用）')
     parser.add_argument('--out', default=str(DEFAULT_OUT),
                         help='输出 HTML 路径（默认 output/test-report-business.html）')
     parser.add_argument('--context', type=pathlib.Path, help='Test Gate 判定与运行信息 JSON')
@@ -894,6 +938,13 @@ def main(argv=None):
     out_path.write_text('\n'.join(p), encoding='utf-8')
     print(f'written: {out_path} ({out_path.stat().st_size} bytes)')
     print(f'modules={len(feats)} scenes={grand} failed={len(bad)}')
+
+    if args.summary_out:
+        args.summary_out.parent.mkdir(parents=True, exist_ok=True)
+        args.summary_out.write_text(
+            business_summary_markdown('\n'.join(p)), encoding='utf-8',
+        )
+        print(f'summary: {args.summary_out}')
 
 
 if __name__ == '__main__':
