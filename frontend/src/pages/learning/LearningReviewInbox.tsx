@@ -31,12 +31,12 @@ export default function LearningReviewInbox() {
   }, [page, refreshKey]);
   return <LearningTheme><section className="learner-review-inbox" aria-label="题目审核工单">
     <div className="learner-section-header"><h2>题目审核工单</h2><Button onClick={() => setRefreshKey((current) => current + 1)}>刷新审核工单</Button></div>
-    <p>我提交的审核工单和指派给我的审核任务。</p>
+    <p>当前指派给我的题目审核工单。</p>
     {error ? <Alert type="error" showIcon message={error} /> : loading ? <Spin aria-label="加载审核工单" /> : <>
       {!tasks.length && <Empty description="暂无相关题目审核工单" />}
       <Space direction="vertical" style={{ width: '100%' }}>{tasks.map((task) => <article key={task.id} className="learner-review-card">
         <Space wrap><Tag>{reviewStatus(task)}</Tag><span>#{task.id}</span></Space><h3>{task.title}</h3>
-        <Button type="primary" onClick={() => navigate(`/tasks/learning/reviews/${task.id}`)}>{task.can_review ? '去审核' : '查看审核工单'}</Button>
+        <Button type="primary" onClick={() => navigate(`/tasks/reviews/${task.id}`)}>{task.can_review ? '去审核' : '查看审核工单'}</Button>
       </article>)}</Space>
       {total > 20 && <Pagination current={page} total={total} pageSize={20} showSizeChanger={false} onChange={setPage} />}
     </>}

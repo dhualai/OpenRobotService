@@ -18,8 +18,9 @@
 
 - 后台「题库维护 → 提交审核」增加可选审核人弹窗，`GET /api/admin/learning/reviewers` 返回全量在职用户的轻量信息及部门，不依赖用户管理权限。`QuestionAction.reviewer_id` 为空表示自动派单。
 - 共享逻辑位于 `backend/app/services/learning_reviews.py`：复用 `tasks`、`task_operation_logs` 和现有 Assigner Worker 发布入口，不新增表或迁移；题目状态和审核工单原子创建，派单/通知在提交之后执行。保持共享服务在中立层，避免后台管理和任务模块循环导入。
-- 新增 `/api/tasks/learning/reviews`、`/{task_id}`、`/{task_id}/decision`，登录后按提交人/当前审核人范围授权。学习中心增加审核工单列表，详情路由为 `/tasks/learning/reviews/:taskId`；普通工单/通知详情入口自动转入学习审核页。
-- 审核通过/驳回同步关闭工单，题目编辑/文章发版取消过期审核；历史内容取自 `LearningAudit` 的提交快照。通用工单接口不能改审核关联元数据或直接完成审核。回归覆盖前后端选择审核人、自动派单、访问控制、版本失效及失败重试。
+- 新增 `/api/tasks/learning/reviews`、`/{task_id}`、`/{task_id}/decision`、`/{task_id}/content`；列表仅当前审核人可见，详情按提交人/当前审核人授权。审核工单归工单任务，详情路由为 `/tasks/reviews/:taskId`，兼容历史 `/tasks/learning/reviews/:taskId`；普通工单/通知详情自动转入专用审核页。学习任务不再嵌入审核列表。
+- 审核人可直接通过或编辑题目和脱敏文章，双修订号防覆盖。文章编辑创建新版本并使其他题目及审核失效，当前工单保留并重新绑定新快照；审核结果关闭工单，通过不自动启用题目。历史/编辑快照取自受限 `LearningAudit`，通用工单接口不能改审核关联元数据或直接完成审核。
+- `/api/tasks/learning/question-count` 仅统计启用文章当前版本的已审核且启用题目。`MainLayout` 统一轮询工单与题目计数，通过 `TaskCountsContext` 向两个分类入口共享，`TaskCategoryTabs` 显示各自角标；底部系统任务角标为两类总和，学习审核单只在工单侧计一次。
 
 ### 2026-11-20 增量：后台题目生成与知识点维护
 

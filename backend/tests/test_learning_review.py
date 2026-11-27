@@ -8,13 +8,14 @@ from sqlalchemy import func, select
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
 from app.models.identity import UserDB
-from app.models.learning import LearningAudit, LearningQuestion
+from app.models.learning import LearningArticle, LearningArticleVersion, LearningAudit, LearningQuestion
 from app.models.organization import Department
 from app.models.task import Task, TaskStatus
 from app.modules.admin.api.learning import ConfirmArticle, QuestionAction, SaveArticle, SaveQuestion, router as admin_router
 from app.modules.admin.api.auth import get_current_active_user_from_token as admin_actor
 from app.modules.admin.services import learning_service as service
-from app.modules.tasks.api.learning import ReviewDecision, router
+from app.modules.tasks.api.learning import ReviewDecision, ReviewEdit, router
+from app.modules.tasks.services import learning_learner_service as learner_service
 from app.services import learning_reviews as reviews
 from app.modules.tasks.services.ticket_service import TicketService
 from backend.tests.test_knowledge import actor, db
@@ -86,7 +87,7 @@ async def test_invalid_reviewer_does_not_change_question_or_create_task(learning
 async def test_assigned_non_admin_can_review_only_own_task_and_close_it(learning_db, monkeypatch):
     article, pending, task = await submit(learning_db, monkeypatch)
     assert (await reviews.listing(learning_db, actor("alice")))["total"] == 1
-    assert (await reviews.listing(learning_db, administrator()))["total"] == 1
+    assert (await reviews.listing(learning_db, administrator()))["total"] == 0
     assert (await reviews.listing(learning_db, actor("bob")))["total"] == 0
     with pytest.raises(HTTPException) as hidden:
         await reviews.detail(learning_db, actor("bob"), task.id)
@@ -251,7 +252,165 @@ async def test_post_commit_notification_reuses_existing_dispatch_or_direct_notif
     if assigned:
         notify.assert_awaited_once()
         assert notify.await_args.kwargs["user_names"] == ["alice"]
+        assert notify.await_args.kwargs["project_name"] == "工单任务"
         publish.assert_not_awaited()
     else:
         publish.assert_awaited_once_with(123)
         notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_assigned_reviewer_can_edit_question_and_approve_same_task(learning_db, monkeypatch):
+    article, pending, task = await submit(learning_db, monkeypatch)
+    saved = await reviews.edit(learning_db, actor("alice"), task.id, ReviewEdit(
+        revision=pending["revision"], article_revision=article["revision"],
+        question={**question(), "stem": "首先应检查哪个部位？", "explanation": "先检查供电。提单甲 13812345678"}))
+    assert saved["id"] == str(task.id) and saved["can_review"]
+    assert saved["revision"] == pending["revision"] + 1
+    assert saved["question"]["stem"] == "首先应检查哪个部位？"
+    assert "提单甲" not in str(saved) and "13812345678" not in str(saved)
+    assert task.metadata_info["question_revision"] == saved["revision"]
+    assert "correct_answer" not in str(task.metadata_info)
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert learning_db.session.scalar(select(func.count()).select_from(Task)) == 1
+    with pytest.raises(HTTPException) as stale:
+        await reviews.decide(learning_db, actor("alice"), task.id,
+            ReviewDecision(revision=pending["revision"], action="approve", verified=True))
+    assert stale.value.status_code == 409
+    result = await reviews.decide(learning_db, actor("alice"), task.id,
+        ReviewDecision(revision=saved["revision"], action="approve", verified=True))
+    assert result["outcome"] == "approved" and result["question"] == saved["question"]
+    assert not (await learning_db.get(LearningQuestion, pending["id"])).enabled
+
+
+@pytest.mark.asyncio
+async def test_article_review_edit_keeps_current_task_and_invalidates_other_questions(learning_db, monkeypatch):
+    article, pending, task = await submit(learning_db, monkeypatch)
+    sibling = LearningQuestion(article_id=article["id"], article_version=1, payload=question(),
+        review_status="draft", enabled=False, revision=1, created_at=reviews.utcnow(), updated_at=reviews.utcnow())
+    learning_db.add(sibling)
+    await learning_db.commit()
+    other = await service.question_action(learning_db, administrator(), sibling.id,
+        QuestionAction(revision=1, action="submit", reviewer_id="bob"))
+    before = await reviews.detail(learning_db, actor("alice"), task.id)
+    saved = await reviews.edit(learning_db, actor("alice"), task.id, ReviewEdit(
+        revision=pending["revision"], article_revision=before["article_revision"],
+        article={**before["article"], "title": "审核修订后的充电检查规范", "method": "断电后逐项检查。"}))
+    assert saved["article"]["title"] == "审核修订后的充电检查规范"
+    assert saved["can_review"] and saved["article_revision"] == before["article_revision"] + 1
+    assert task.metadata_info["article_version"] == 2 and task.status == TaskStatus.IN_PROGRESS
+    await learning_db.refresh(sibling)
+    assert sibling.review_status == "draft" and not sibling.enabled
+    assert (await learning_db.get(Task, int(other["review_task_id"]))).status == TaskStatus.CANCELED
+    version = learning_db.session.scalar(select(LearningArticleVersion).where(
+        LearningArticleVersion.article_id == article["id"], LearningArticleVersion.version == 1))
+    assert version.snapshot["content"]["title"] == content().title
+    assert "source_markers" not in str(saved["article"]) and "sources" not in saved["article"]
+    result = await reviews.decide(learning_db, actor("alice"), task.id,
+        ReviewDecision(revision=saved["revision"], action="approve", verified=True))
+    assert result["outcome"] == "approved"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change,expected", [("creator", 403), ("other", 404), ("revision", 409),
+    ("article_revision", 409), ("closed", 409), ("reassigned", 404), ("disabled", 409)])
+async def test_review_edit_enforces_assignee_state_and_revisions(learning_db, monkeypatch, change, expected):
+    article, pending, task = await submit(learning_db, monkeypatch)
+    editor = administrator() if change == "creator" else actor("bob") if change == "other" else actor("alice")
+    if change == "closed":
+        task.status = TaskStatus.CLOSED
+    elif change == "reassigned":
+        task.assigned_to = "bob"
+    elif change == "disabled":
+        (await learning_db.get(LearningArticle, article["id"])).enabled = False
+    await learning_db.commit()
+    with pytest.raises(HTTPException) as rejected:
+        await reviews.edit(learning_db, editor, task.id, ReviewEdit(
+            revision=pending["revision"] - int(change == "revision"),
+            article_revision=article["revision"] - int(change == "article_revision"),
+            question={**question(), "stem": "不得越权覆盖此题"}))
+    assert rejected.value.status_code == expected
+    assert (await learning_db.get(LearningQuestion, pending["id"])).payload == question()
+
+
+@pytest.mark.asyncio
+async def test_learning_question_badge_counts_only_current_approved_enabled_questions(learning_db, monkeypatch):
+    article, pending, task = await submit(learning_db, monkeypatch)
+    assert await learner_service.question_count(learning_db) == {"count": 0}
+    result = await reviews.decide(learning_db, actor("alice"), task.id,
+        ReviewDecision(revision=pending["revision"], action="approve", verified=True))
+    assert await learner_service.question_count(learning_db) == {"count": 0}
+    item = await service.question_action(learning_db, administrator(), pending["id"],
+        QuestionAction(revision=result["revision"] + 1, action="enable"))
+    assert await learner_service.question_count(learning_db) == {"count": 1}
+    row = await learning_db.get(LearningQuestion, item["id"])
+    row.article_version = 999
+    await learning_db.commit()
+    assert await learner_service.question_count(learning_db) == {"count": 0}
+    row.article_version = 1
+    (await learning_db.get(LearningArticle, article["id"])).enabled = False
+    await learning_db.commit()
+    assert await learner_service.question_count(learning_db) == {"count": 0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["excerpt", "point", "draft"])
+async def test_review_article_edits_reject_invalid_evidence_points_and_existing_drafts(learning_db, monkeypatch, invalid):
+    article, pending, task = await submit(learning_db, monkeypatch)
+    before = await reviews.detail(learning_db, actor("alice"), task.id)
+    proposed = {**before["article"], "title": "新的知识点标题"}
+    if invalid == "point":
+        proposed["key_points"] = [{"id": "KP2", "text": "无法替换来源"}]
+    elif invalid == "draft":
+        before_article = await learning_db.get(LearningArticle, article["id"])
+        before_article.draft = content().model_dump()
+        await learning_db.commit()
+    with pytest.raises(HTTPException) as rejected:
+        await reviews.edit(learning_db, actor("alice"), task.id, ReviewEdit(
+            revision=pending["revision"], article_revision=before["article_revision"], article=proposed,
+            question={**question(), "source_excerpt": "不存在的文章依据"} if invalid == "excerpt" else None))
+    assert rejected.value.status_code == (409 if invalid == "draft" else 422)
+    assert (await learning_db.get(LearningArticle, article["id"])).active_version == 1
+    assert (await learning_db.get(LearningQuestion, pending["id"])).revision == pending["revision"]
+    assert task.status == TaskStatus.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_review_edit_failure_rolls_back_article_question_and_task(learning_db, monkeypatch):
+    article, pending, task = await submit(learning_db, monkeypatch)
+    task_id = task.id
+    before = await reviews.detail(learning_db, actor("alice"), task_id)
+    def fail_log(*args):
+        raise RuntimeError("日志写入失败")
+
+    monkeypatch.setattr(reviews, "log_operation", fail_log)
+    with pytest.raises(RuntimeError):
+        await reviews.edit(learning_db, actor("alice"), task_id, ReviewEdit(
+            revision=pending["revision"], article_revision=before["article_revision"],
+            article={**before["article"], "title": "不应该保存的标题"}, question={**question(), "stem": "不应该保存的题干"}))
+    await learning_db.rollback()
+    restored = await reviews.detail(learning_db, actor("alice"), task_id)
+    assert restored["revision"] == pending["revision"] and restored["question"] == question()
+    assert restored["article"]["title"] == before["article"]["title"] and restored["can_review"]
+    assert (await learning_db.get(LearningArticle, article["id"])).active_version == 1
+
+
+def test_review_edit_and_learning_count_routes_require_login_not_admin_permission(learning_db, monkeypatch):
+    import asyncio
+
+    article, pending, task = asyncio.run(submit(learning_db, monkeypatch))
+    app = FastAPI()
+    app.include_router(router, prefix="/tasks")
+    app.dependency_overrides[get_async_db] = lambda: learning_db
+    app.dependency_overrides[get_current_active_user_from_token] = lambda: actor("alice")
+    with TestClient(app) as client:
+        assert client.get("/tasks/learning/question-count").json() == {"count": 0}
+        path = f"/tasks/learning/reviews/{task.id}/content"
+        assert client.put(path, json={"revision": pending["revision"], "article_revision": article["revision"]}).status_code == 422
+        response = client.put(path, json={"revision": pending["revision"], "article_revision": article["revision"],
+            "question": {**question(), "stem": "审核人在工单中修改题目"}})
+        assert response.status_code == 200 and response.json()["question"]["stem"] == "审核人在工单中修改题目"
+        app.dependency_overrides[get_current_active_user_from_token] = lambda: administrator()
+        assert client.get("/tasks/learning/reviews").json()["total"] == 0
+        assert client.put(path, json={"revision": response.json()["revision"], "article_revision": article["revision"],
+            "question": question()}).status_code == 403

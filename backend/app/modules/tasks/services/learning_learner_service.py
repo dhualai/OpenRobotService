@@ -212,6 +212,14 @@ async def get_progress(db, actor):
     }
 
 
+async def question_count(db):
+    query = _enabled_questions().join(LearningArticle, LearningQuestion.article_id == LearningArticle.id).where(
+        LearningArticle.enabled.is_(True), LearningArticle.active_version > 0,
+        LearningQuestion.article_version == LearningArticle.active_version,
+    )
+    return {"count": (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()}
+
+
 async def list_wrongbook(db, actor, status: str = ""):
     """获取用户错题本列表。
 

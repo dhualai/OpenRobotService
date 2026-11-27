@@ -47,6 +47,7 @@ import type { OnBehalfCandidate } from '@/api/ticket';
 import OnBehalfSelect from '@/shared/components/OnBehalfSelect';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import { toggleTaskFollow } from '@/api/taskFollow';
+import TaskCategoryTabs from '@/shared/components/TaskCategoryTabs';
 
 /** 远程方式选项：默认空（无需填），可选 ToDesk / 向日葵 / 其他 */
 const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -1949,25 +1950,7 @@ export default function TasksView() {
         }
       />
 
-      {/* 顶栏切换：工单任务 / 学习任务 */}
-      <div className="tasks-top-tabs" role="tablist" aria-label="系统任务切换">
-        <button
-          role="tab"
-          aria-selected={!location.pathname.startsWith('/tasks/learning')}
-          className={`tasks-top-tabs__item ${!location.pathname.startsWith('/tasks/learning') ? 'is-active' : ''}`}
-          onClick={() => navigate('/tasks')}
-        >
-          工单任务
-        </button>
-        <button
-          role="tab"
-          aria-selected={location.pathname.startsWith('/tasks/learning')}
-          className={`tasks-top-tabs__item ${location.pathname.startsWith('/tasks/learning') ? 'is-active' : ''}`}
-          onClick={() => navigate('/tasks/learning')}
-        >
-          学习任务
-        </button>
-      </div>
+      <TaskCategoryTabs />
 
       {/* 筛选区（搜索 + 状态 tab）：固定在滚动区外，不随列表滚动上移（对齐历史工单） */}
       <div className="tasks-view__filters">

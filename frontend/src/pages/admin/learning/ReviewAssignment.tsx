@@ -23,7 +23,7 @@ export default function ReviewAssignment({ value, onChange, disabled }: {
     { value: departmentKey(user), label: user.department || '未设置部门' }])).values()), [users]);
   const filtered = users.filter((user) => !department || departmentKey(user) === department);
   return <Space direction="vertical" style={{ width: '100%' }}>
-    <Alert type="info" showIcon message="提交后将在系统任务 → 学习任务中生成审核工单。选择审核人则直接指派；不选则走现有自动派单流程。" />
+    <Alert type="info" showIcon message="提交后将在系统任务 → 工单任务中生成审核工单。选择审核人则直接指派；不选则走现有自动派单流程。" />
     {error && <Alert type="error" role="alert" message={error} action={<Button disabled={disabled} onClick={() => setRefreshKey((current) => current + 1)}>重新加载</Button>} />}
     <label htmlFor="learning-review-department">按部门筛选</label>
     <Select id="learning-review-department" aria-label="按部门筛选审核人" showSearch allowClear optionFilterProp="label"

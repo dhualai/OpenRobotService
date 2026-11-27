@@ -423,7 +423,7 @@ export default function TaskDetailPage() {
     request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true })
       .then((t) => {
         if (t.metadata_info?.kind === 'learning_question_review') {
-          navigate(`/tasks/learning/reviews/${detailId}`, { replace: true });
+          navigate(`/tasks/reviews/${detailId}`, { replace: true });
           return;
         }
         setDetail(t);

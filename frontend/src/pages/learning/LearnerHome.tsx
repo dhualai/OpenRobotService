@@ -4,7 +4,7 @@ import { Navbar, Loading, Toast } from 'tdesign-mobile-react';
 import { BookOpen, RefreshCw, CheckCircle, ChevronRight, Trophy, Target, TrendingUp, Sparkles, BookX } from 'lucide-react';
 import { listLearnerArticles, getLearnerProgress, type LearnerArticleSummary, type LearnerProgress } from '@/api/learner';
 import './learner.css';
-import LearningReviewInbox from './LearningReviewInbox';
+import TaskCategoryTabs from '@/shared/components/TaskCategoryTabs';
 
 /** 智能返回：优先历史栈，无历史则回到 tasks（上一级来源页） */
 function smartBack(navigate: ReturnType<typeof useNavigate>, fallback: string) {
@@ -50,6 +50,7 @@ export default function LearnerHome() {
   return (
     <div className="learner-home">
       <Navbar title="学习中心" fixed leftArrow onLeftClick={handleBack} />
+      <TaskCategoryTabs />
 
       {/* Hero 渐变卡片 —— 借鉴 QuestionGeneration 的 hero 设计 */}
       <section className="learner-hero">
@@ -105,8 +106,6 @@ export default function LearnerHome() {
           <ChevronRight size={18} className="learner-wrongbook-entry__arrow" />
         </div>
       </section>
-
-      <LearningReviewInbox />
 
       {/* 标题栏 + 刷新 */}
       <div className="learner-section-header">
