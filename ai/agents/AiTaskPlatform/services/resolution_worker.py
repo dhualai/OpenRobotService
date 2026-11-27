@@ -14,6 +14,7 @@
 """
 
 import asyncio
+import re
 import time
 import logging
 from typing import Optional
@@ -89,12 +90,17 @@ async def _summarize_resolution(task_id: int, llm) -> tuple[str, bool]:
     finally:
         db.close()
 
-    # 组装历史对话行
+    # 组装历史对话行（ORS-1214：剔除图片/附件占位行与纯 Markdown 图片行，
+    # 避免占位符 [图片] 被 LLM 原样抄进总结；全是占位内容的评论直接跳过）
+    placeholder_only = re.compile(r"^\[(?:图片|文件|视频|语音|附件)\]$")
+    md_image_only = re.compile(r"^!\[[^\]]*\]\([^)]+\)\s*$")
     history_lines = []
     for c in new_comments[-20:]:
+        raw = (c.content or "").strip()
+        if not raw or placeholder_only.match(raw) or md_image_only.match(raw):
+            continue
         author = author_display_name(c.created_by)
-        content = (c.content or "")[:200]
-        history_lines.append(f"[{author}] {content}")
+        history_lines.append(f"[{author}] {raw[:200]}")
     history_text = "\n".join(history_lines) if history_lines else ""
 
     # 判断是否有可总结内容：ai_summary / 讨论评论 / diagnosis 方案 / 问题描述 任一存在即尝试总结

@@ -376,6 +376,8 @@ export default function TaskDetailPage() {
   const reportImageInputRef = useRef<HTMLInputElement | null>(null);
   // RichEditor ref：用于插入上传好的图片
   const archiveEditorRef = useRef<ArchiveReportRichEditorHandle | null>(null);
+  // ORS-1214：解决方式弹窗富文本编辑器 ref（图片上传成功后插到光标位置）
+  const resolutionEditorRef = useRef<ArchiveReportRichEditorHandle | null>(null);
   // ORS-1010：展开查看卡正文（问题/根因/解决）的条目
   const [expandedSimilar, setExpandedSimilar] = useState<Set<number>>(new Set());
   // 检索成功完成（retrieval_status=ok）：0 条也显示"未发现"提示，让功能存在感在；
@@ -802,6 +804,22 @@ export default function TaskDetailPage() {
       Toast({ message: `图片上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setUploadingReportImage(false);
+    }
+  };
+
+  /** ORS-1214：解决方式弹窗插图上传——与报告插图同通道（评论附件接口），上传后经 ref 插到光标位置 */
+  const handleResolutionImageUpload = async (files: File[]) => {
+    if (!files.length) return;
+    try {
+      const inserts: { path: string; name: string }[] = [];
+      for (const f of files) {
+        const objectPath = await uploadCommentAttachment(f, `resolution-${Date.now()}`);
+        inserts.push({ path: objectPath, name: f.name });
+      }
+      resolutionEditorRef.current?.insertImages(inserts);
+      Toast({ message: `已插入 ${inserts.length} 张图片`, theme: 'success' });
+    } catch (err) {
+      Toast({ message: `图片上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
   };
 
@@ -2401,8 +2419,9 @@ export default function TaskDetailPage() {
           return (
             <div className="detail-card">
               <h4 className="detail-card__h">解决方式</h4>
-              <div className="detail-card__body detail-card__body--pre">
-                {rs}
+              {/* ORS-1214：富文本（Markdown）渲染，图片/加粗/列表正常显示 */}
+              <div className="detail-card__body">
+                <MarkdownRenderer content={rs} />
               </div>
             </div>
           );
@@ -2800,25 +2819,21 @@ export default function TaskDetailPage() {
                   <span style={{ color: 'var(--apricot)', fontSize: '12px' }}>自动总结出错，请手动补充</span>
                 )}
               </div>
+              {/* ORS-1214：所见即所得富文本（持久化 Markdown，与 AI 生成格式一致），支持粘贴/拖拽/按钮插图 */}
               {resolve.resolutionLoading || resolve.resolutionPolling ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '20px 0', color: 'var(--muted-foreground)', fontSize: '13px', justifyContent: 'center' }}>
                   <Loading size="20px" /> 正在生成解决方式…
                 </div>
               ) : (
-                <Textarea
-                  data-testid="task-resolution-summary"
-                  value={resolve.resolutionText}
-                  onChange={(v) => resolve.setResolutionText(String(v))}
-                  placeholder={
-                    resolve.resolutionNoSolution
-                      ? '当前没有解决方案，请在此补充实际解决方式'
-                      : resolve.resolutionFailed
-                        ? 'U老师自动总结出错了，请补充解决方法'
-                        : '请填写该工单的解决方式'
-                  }
-                  autosize={{ minRows: 4, maxRows: 8 }}
-                  maxlength={10000}
-                />
+                <div data-testid="task-resolution-summary">
+                  <ArchiveReportRichEditor
+                    ref={resolutionEditorRef}
+                    variant="simple"
+                    value={resolve.resolutionText}
+                    onChange={resolve.setResolutionText}
+                    onUploadImages={handleResolutionImageUpload}
+                  />
+                </div>
               )}
             </div>
           </div>
