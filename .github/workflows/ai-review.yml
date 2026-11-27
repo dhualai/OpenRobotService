@@ -124,9 +124,17 @@ jobs:
       - name: Run quick screen
         id: screen
         if: steps.tgt.outputs.mode == 'auto' && steps.deep.outputs.run != 'true'
+        env:
+          # 脚本从环境读 REPO/PR_NUMBER/GH_TOKEN；REPO/GH_TOKEN 在 job 级 env。
+          # 此处 PR_NUMBER 曾在 #511 重构中丢失 → 快筛静默失败两天（PR #535 测试样本暴露），
+          # 失败又被 `|| code=$?` 吞成 success，勿再删本 env。
+          PR_NUMBER: ${{ steps.tgt.outputs.pr }}
         run: |
           python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/quick_screen.py \
             --out-json quick.json --out-md quick.md || code=$?
+          if [ "${code:-0}" = "1" ]; then
+            echo "::warning::快筛脚本异常退出（缺上下文或 API 失败），本轮未检视"
+          fi
           echo "exit_code=${code:-0}" >> "$GITHUB_OUTPUT"
 
       - name: Post blocker comment (quick)
@@ -136,7 +144,8 @@ jobs:
           steps.screen.outputs.exit_code == '10'
         continue-on-error: true
         env:
-          PR: ${{ steps.tgt.outputs.pr }}
+          # post_comment.py 读 PR_NUMBER（非 PR），变量名必须对齐脚本
+          PR_NUMBER: ${{ steps.tgt.outputs.pr }}
         run: |
           python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \
             --marker "ors-ai-review:quick" --file quick.md
