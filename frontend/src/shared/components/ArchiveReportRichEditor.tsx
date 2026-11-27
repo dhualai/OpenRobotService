@@ -335,6 +335,8 @@ export interface ArchiveReportRichEditorHandle {
   focus: () => void;
   /** 外部上传成功后，把图片插入当前光标位置 */
   insertImages: (items: ArchiveImageRefItem[]) => void;
+  /** 外部上传成功后，把非图片附件以 Markdown 链接插入当前光标位置 */
+  insertFileLinks: (items: ArchiveImageRefItem[]) => void;
 }
 
 interface Props {
@@ -344,9 +346,9 @@ interface Props {
   onChange?: (value: string) => void;
   /** 只读模式：审核人查看已提交报告 */
   readOnly?: boolean;
-  /** 粘贴/拖拽图片时触发，外部负责上传后调 insertImages */
+  /** 粘贴/拖拽文件（图片或文档）时触发，外部负责上传后调 insertImages / insertFileLinks */
   onUploadImages?: (files: File[]) => void;
-  /** 工具栏形态：full=报告完整工具栏（默认）；simple=弹窗精简（加粗/列表/撤销/重做/图片） */
+  /** 工具栏形态：full=报告完整工具栏（默认）；simple=无工具栏纯输入区（仅粘贴/拖拽插入，弹窗用） */
   variant?: 'full' | 'simple';
 }
 
@@ -355,7 +357,6 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
     const callbacks = useRef({ onChange, onUploadImages });
     callbacks.current = { onChange, onUploadImages };
     const lastMd = useRef(value);
-    const fileInputRef = useRef<HTMLInputElement | null>(null); // simple 模式工具栏图片选择 input
     const [preview, setPreview] = useState<{ src: string; alt: string }>();
 
     const editor = useEditor({
@@ -386,12 +387,13 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
           role: 'textbox',
           'aria-label': variant === 'simple' ? '工单解决方式' : '知识沉淀报告',
           'aria-multiline': 'true',
-          class: 'archive-report-rich-editor',
+          class: variant === 'simple' ? 'archive-report-rich-editor archive-report-rich-editor--plain' : 'archive-report-rich-editor',
         },
         handleDOMEvents: {
+          // ORS-1214：粘贴/拖拽放行所有文件——图片走 insertImages，文档走 insertFileLinks（页面侧分流）
           paste: (view, event) => {
             if (!view.editable || !callbacks.current.onUploadImages) return false;
-            const files = Array.from(event.clipboardData?.files || []).filter((f) => f.type.startsWith('image/'));
+            const files = Array.from(event.clipboardData?.files || []);
             if (!files.length) return false;
             event.preventDefault();
             callbacks.current.onUploadImages(files);
@@ -399,7 +401,7 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
           },
           drop: (view, event) => {
             if (!view.editable || !callbacks.current.onUploadImages) return false;
-            const files = Array.from(event.dataTransfer?.files || []).filter((f) => f.type.startsWith('image/'));
+            const files = Array.from(event.dataTransfer?.files || []);
             if (!files.length) return false;
             event.preventDefault();
             const pos = view.posAtCoords({ left: event.clientX, top: event.clientY });
@@ -513,6 +515,13 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
           editor.commands.insertContent(node);
         });
       },
+      insertFileLinks: (items) => {
+        if (!editor || editor.isDestroyed) return;
+        items.forEach(({ path, name }) => {
+          const text = `[${name || '附件'}](/api/tasks/attachments/download?path=${encodeURIComponent(path)})`;
+          editor.commands.insertContent(text);
+        });
+      },
     }), [editor]);
 
     const openImageLightbox = (e: React.MouseEvent) => {
@@ -523,48 +532,19 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
       }
     };
 
-    const isSimple = variant === 'simple';
-
     return (
       <div className="archive-report-document">
-        {!readOnly && (
-          <div role="toolbar" aria-label={isSimple ? '解决方式格式' : '报告格式'} className="archive-report-format">
-            {isSimple ? (
-              <>
-                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBold().run()}>加粗</button>
-                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBulletList().run()}>列表</button>
-                <button type="button" disabled={!editor?.can().undo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().undo().run()}>撤销</button>
-                <button type="button" disabled={!editor?.can().redo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().redo().run()}>重做</button>
-                {onUploadImages && (
-                  <>
-                    <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => fileInputRef.current?.click()}>📷 图片</button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      hidden
-                      onChange={(e) => {
-                        const files = Array.from(e.target.files || []);
-                        if (files.length) callbacks.current.onUploadImages?.(files);
-                        e.target.value = ''; // 允许连续选同一文件
-                      }}
-                    />
-                  </>
-                )}
-              </>
-            ) : (
-              <>
-                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>H2 二级标题</button>
-                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}>H3 三级标题</button>
-                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBold().run()}>加粗</button>
-                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleItalic().run()}>斜体</button>
-                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBulletList().run()}>列表</button>
-                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>编号</button>
-                <button type="button" disabled={!editor?.can().undo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().undo().run()}>撤销</button>
-                <button type="button" disabled={!editor?.can().redo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().redo().run()}>重做</button>
-              </>
-            )}
+        {/* simple（工单解决方式弹窗）：无工具栏，仅保留粘贴/拖拽插入 */}
+        {!readOnly && variant !== 'simple' && (
+          <div role="toolbar" aria-label="报告格式" className="archive-report-format">
+            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>H2 二级标题</button>
+            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}>H3 三级标题</button>
+            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBold().run()}>加粗</button>
+            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleItalic().run()}>斜体</button>
+            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBulletList().run()}>列表</button>
+            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>编号</button>
+            <button type="button" disabled={!editor?.can().undo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().undo().run()}>撤销</button>
+            <button type="button" disabled={!editor?.can().redo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().redo().run()}>重做</button>
           </div>
         )}
         <EditorContent editor={editor} onDoubleClick={openImageLightbox} />
