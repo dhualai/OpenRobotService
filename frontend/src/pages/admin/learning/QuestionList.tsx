@@ -33,11 +33,11 @@ export default function QuestionList({ questions, onEdit, onChanged, onArticle }
       const outdated = question.current_version !== undefined && question.article_version !== question.current_version;
       return <article key={question.id} className="learning-question-card">
         <div className="learning-card-meta"><Space wrap>
-          <Tag color="blue">{QUESTION_TYPES[question.payload.question_type]}</Tag>
+          <Tag color="processing">{QUESTION_TYPES[question.payload.question_type]}</Tag>
           <Tag>{DIFFICULTIES[question.payload.difficulty]}</Tag>
-          <Tag color={question.review_status === 'approved' ? 'green' : question.review_status === 'pending_review' ? 'gold' : 'default'}>{REVIEW_STATES[question.review_status]}</Tag>
-          <Tag color={question.enabled ? 'cyan' : 'default'}>{question.enabled ? '已启用' : '未启用'}</Tag>
-          {outdated && <Tag color="orange">需适配新版文章</Tag>}
+          <Tag color={question.review_status === 'approved' ? 'success' : question.review_status === 'pending_review' ? 'warning' : 'default'}>{REVIEW_STATES[question.review_status]}</Tag>
+          <Tag color={question.enabled ? 'processing' : 'default'}>{question.enabled ? '已启用' : '未启用'}</Tag>
+          {outdated && <Tag color="warning">需适配新版文章</Tag>}
         </Space><span>文章 v{question.article_version}</span></div>
         {question.article_title && <Button type="link" className="learning-article-link" onClick={() => onArticle?.(question.article_id)}>{question.article_title}</Button>}
         <h3>{question.payload.stem}</h3>
@@ -47,12 +47,12 @@ export default function QuestionList({ questions, onEdit, onChanged, onArticle }
           <p>关联知识点：{question.payload.point_ids.join('、')}</p></details>
         <Space wrap className="learning-card-actions">
           <Button onClick={() => onEdit(question)}>编辑题目</Button>
-          {['draft', 'rejected'].includes(question.review_status) && <Button disabled={outdated} onClick={() => choose(question, 'submit')}>提交审核</Button>}
+          {['draft', 'rejected'].includes(question.review_status) && <Button type="primary" disabled={outdated} onClick={() => choose(question, 'submit')}>提交审核</Button>}
           {question.review_status === 'pending_review' && <>
             <Button type="primary" disabled={outdated} onClick={() => choose(question, 'approve')}>审核通过</Button>
             <Button danger onClick={() => choose(question, 'reject')}>驳回</Button>
           </>}
-          {question.review_status === 'approved' && <Button disabled={!question.enabled && (outdated || question.article_enabled === false)} onClick={() => choose(question, question.enabled ? 'disable' : 'enable')}>{question.enabled ? '停用' : '启用'}</Button>}
+          {question.review_status === 'approved' && <Button type={question.enabled ? 'default' : 'primary'} disabled={!question.enabled && (outdated || question.article_enabled === false)} onClick={() => choose(question, question.enabled ? 'disable' : 'enable')}>{question.enabled ? '停用' : '启用'}</Button>}
         </Space>
       </article>;
     })}</div>

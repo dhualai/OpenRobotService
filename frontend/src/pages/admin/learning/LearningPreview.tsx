@@ -9,7 +9,7 @@ export function ArticleReading({ article }: { article: ReadingArticle }) {
     ['关键方法', article.method], ['注意事项', article.cautions], ['简短示例', article.example],
   ];
   return <section className="learning-reading" aria-label="知识点文章">
-    <Tag color="blue">{article.category}</Tag>
+    <Tag color="processing">{article.category}</Tag>
     <h2>{article.title}</h2>
     {sections.slice(0, 2).map(([label, value]) => value && <div key={label}><h3>{label}</h3><MarkdownRenderer content={value} /></div>)}
     {!!article.key_points.length && <div><h3>核心知识点</h3><ol>{article.key_points.map((point, index) => <li key={index}><MarkdownRenderer content={point.text} /></li>)}</ol></div>}
@@ -58,7 +58,7 @@ export default function LearningPreviewModal({ articleId, onClose }: { articleId
       <div className="learning-preview-heading"><span>阅读完成，试着回答</span><Tag>文章 v{data.version}</Tag></div>
       {!data.questions.length && <Empty description="当前范围还没有题目，请先生成或审核题目" />}
       {data.questions.map((question, index) => <fieldset className="learning-preview-question" key={question.id}>
-        <legend><Tag color="blue">{QUESTION_TYPES[question.question_type]}</Tag>{index + 1}. {question.stem}</legend>
+        <legend><Tag color="processing">{QUESTION_TYPES[question.question_type]}</Tag>{index + 1}. {question.stem}</legend>
         {question.options.map((option) => <label className="learning-answer-option" key={option.key}>
           <input type={question.question_type === 'multiple_choice' ? 'checkbox' : 'radio'} name={question.id}
             checked={(answers[question.id] || []).includes(option.key)} onChange={(event) => {
@@ -72,7 +72,7 @@ export default function LearningPreviewModal({ articleId, onClose }: { articleId
         </label>)}
         <Button type="primary" loading={submitting === question.id} disabled={!answers[question.id]?.length || (!!submitting && submitting !== question.id)} onClick={() => submit(question.id)}>模拟提交</Button>
         {results[question.id] && <div className="learning-answer-result" role="status">
-          <Tag color={results[question.id].is_correct ? 'green' : 'orange'}>{results[question.id].is_correct ? '回答正确' : '回答错误，可以查阅后重试'}</Tag>
+          <Tag color={results[question.id].is_correct ? 'success' : 'warning'}>{results[question.id].is_correct ? '回答正确' : '回答错误，可以查阅后重试'}</Tag>
           <p>正确答案：{results[question.id].correct_answer.join('、')}</p>
           <p>{results[question.id].explanation}</p><blockquote>{results[question.id].source_excerpt}</blockquote>
         </div>}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Checkbox, Collapse, Drawer, Empty, Form, Input, InputNumber, Modal, Select, Space, Spin, Tabs, Tag } from 'antd';
-import { Plus, Sparkles, Trash2 } from 'lucide-react';
+import { Eye, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { adoptLearningArticle, confirmLearningArticle, DIFFICULTIES, forkLearningArticle, generateLearning,
   getLearningArticle, getLearningGeneration, QUESTION_TYPES, saveLearningArticle, toggleLearningArticle,
   type ArticleContent, type ArticleDetail, type Generation, type LearningQuestion, type QuestionType, type SourceInput } from '@/api/learning';
@@ -21,6 +21,7 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
   onQuestionEdit: (question: LearningQuestion) => void; onPreview: (id: string) => void;
 }) {
   const [form] = Form.useForm<ArticleContent>();
+  const [modal, modalContext] = Modal.useModal();
   const [data, setData] = useState<ArticleDetail | null>(null);
   const [formContent, setFormContent] = useState<ArticleContent | null>(null);
   const [loading, setLoading] = useState(false);
@@ -92,7 +93,7 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
   const close = () => {
     if (busy) return;
     if (!dirty) { onClose(); return; }
-    Modal.confirm({ title: '放弃未保存的文章修改？', content: '已保存的草稿和后台生成记录会保留。', okText: '放弃修改', cancelText: '继续编辑', onOk: onClose });
+    modal.confirm({ title: '放弃未保存的文章修改？', content: '已保存的草稿和后台生成记录会保留。', okText: '放弃修改', cancelText: '继续编辑', onOk: onClose });
   };
   const mutate = async (operation: () => Promise<ArticleDetail>) => {
     setBusy(true); setError('');
@@ -141,19 +142,21 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
   const current = data?.versions.find((version) => version.version === data.active_version);
   const disabled = busy || !!pending;
   const jobs = data?.generations || [];
+  const latestArticleCandidate = jobs.find((job) => job.kind === 'article' && job.state === 'succeeded' && job.result?.content);
 
   return <>
+    {modalContext}
     <Drawer open={!!articleId} title="知识点与题目维护" width="min(100vw, 1040px)" onClose={close} destroyOnHidden
       footer={data && <div className="learning-editor-footer"><span>{dirty ? '有未保存修改' : '内容已保存'} · 修订 {data.revision}</span><Space wrap>
         <Button disabled={busy} onClick={close}>关闭</Button>
-        {data.draft && <><Button disabled={disabled} loading={busy} onClick={() => save()}>保存草稿</Button>
+        {data.draft && <><Button type="primary" disabled={disabled} loading={busy} onClick={() => save()}>保存草稿</Button>
           <Button type="primary" disabled={disabled} onClick={() => { setVerified(false); setConfirmOpen(true); }}>确认文章版本</Button></>}
       </Space></div>}>
       {error && <Alert type="error" showIcon message={error} role="alert" closable onClose={() => setError('')} />}
       {loading && <div className="learning-loading"><Spin /></div>}
       {data && <>
-        <div className="learning-editor-title"><div><Space wrap><Tag color="blue">{data.active_version ? `已确认 v${data.active_version}` : '待确认'}</Tag>
-          <Tag color={data.enabled ? 'green' : 'default'}>{data.enabled ? '文章已启用' : '文章未启用'}</Tag>{data.draft && <Tag color="gold">有编辑草稿</Tag>}</Space><h2>{data.title}</h2></div>
+        <div className="learning-editor-title"><div><Space wrap><Tag color="processing">{data.active_version ? `已确认 v${data.active_version}` : '待确认'}</Tag>
+          <Tag color={data.enabled ? 'success' : 'default'}>{data.enabled ? '文章已启用' : '文章未启用'}</Tag>{data.draft && <Tag color="warning">有编辑草稿</Tag>}</Space><h2>{data.title}</h2></div>
           <Space wrap><Button disabled={!data.active_version} onClick={() => onPreview(data.id)}>开卷预览</Button>
             {!!data.active_version && <Button disabled={disabled || dirty} onClick={() => mutate(() => toggleLearningArticle(data.id, data.revision, !data.enabled))}>{data.enabled ? '停用文章' : '启用文章'}</Button>}</Space></div>
         {pending && <Alert type="info" showIcon message="AI正在生成，结果会自动更新。关闭页面后，可重新进入这里查询记录。" />}
@@ -165,7 +168,10 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
               {data.draft && <Button disabled={disabled} onClick={() => setSourceOpen(true)}>调整来源材料</Button>}
             </> }]} />
             {data.draft ? <>
-              <div className="learning-section-heading"><h3>编辑知识点</h3><Button type="primary" style={{ fontWeight: 700 }} icon={<Sparkles size={15} />} disabled={disabled} loading={busy} onClick={() => generate('article')}>AI提炼文章</Button></div>
+              <div className="learning-section-heading"><h3>编辑知识点</h3><Space wrap className="learning-article-actions" role="group" aria-label="知识点文章操作">
+                <Button type="primary" style={{ fontWeight: 700 }} icon={<Sparkles size={15} />} disabled={disabled} loading={busy} onClick={() => generate('article')}>AI提炼文章</Button>
+                <Button type="primary" icon={<Eye size={15} />} disabled={!latestArticleCandidate} onClick={() => setCandidate(latestArticleCandidate || null)}>查看候选内容</Button>
+              </Space></div>
               <Form name="learning-article" form={form} layout="vertical" disabled={disabled} onValuesChange={() => setDirty(true)}>
                 <div className="learning-form-grid"><Form.Item name="title" label="文章标题" rules={[{ required: true, whitespace: true }]}><Input maxLength={255} /></Form.Item>
                   <Form.Item name="category" label="知识分类" rules={[{ required: true, whitespace: true }]}><Input maxLength={80} /></Form.Item></div>
@@ -191,13 +197,13 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
                 <Form.Item name="example" label="简短示例"><Input.TextArea rows={2} maxLength={4000} /></Form.Item>
                 <Form.Item name="warnings" label="待核实事项" extra="存在待核实事项时不能确认文章。请先核实并修正内容，再移除对应事项。"><Select mode="tags" placeholder="无待核实事项时留空" /></Form.Item>
               </Form>
-            </> : <><div className="learning-section-heading"><h3>当前生效文章 · v{data.active_version}</h3><Button disabled={disabled} onClick={() => mutate(() => forkLearningArticle(data.id, data.revision))}>创建修改草稿</Button></div>
+            </> : <><div className="learning-section-heading"><h3>当前生效文章 · v{data.active_version}</h3><Button type="primary" disabled={disabled} onClick={() => mutate(() => forkLearningArticle(data.id, data.revision))}>创建修改草稿</Button></div>
               {current && <ArticleReading article={current.content} />}</>}
-            {!!jobs.length && <section className="learning-generation-records"><h3>最近生成记录</h3>{jobs.map((job) => <div key={job.id} className="learning-generation-record"><div><Tag color={job.state === 'failed' ? 'red' : job.state === 'succeeded' ? 'green' : 'blue'}>{job.state === 'running' ? '生成中' : job.state === 'succeeded' ? '已完成' : '失败'}</Tag>
+            {!!jobs.length && <section className="learning-generation-records"><h3>最近生成记录</h3>{jobs.map((job) => <div key={job.id} className="learning-generation-record"><div><Tag color={job.state === 'failed' ? 'error' : job.state === 'succeeded' ? 'success' : 'processing'}>{job.state === 'running' ? '生成中' : job.state === 'succeeded' ? '已完成' : '失败'}</Tag>
               {job.kind === 'article' ? '知识点文章' : `题目生成${job.result?.saved_count !== undefined ? ` · 已保存 ${job.result.saved_count} 题` : ''}`}<small>{new Date(`${job.created_at}Z`).toLocaleString()}</small>
               {job.error && <p className="learning-error-text">{job.error}</p>}{!!job.result?.errors?.length && <p className="learning-error-text">{job.result.errors.join('；')}</p>}
               {job.result?.reason && <p className="learning-muted">生成说明：{job.result.reason}</p>}
-            </div>{job.kind === 'article' && job.result?.content && <Button size="small" onClick={() => setCandidate(job)}>查看候选内容</Button>}</div>)}</section>}
+            </div>{job.kind === 'article' && job.result?.content && <Button size="small" onClick={() => setCandidate(job)}>查看该次候选</Button>}</div>)}</section>}
           </> },
           { key: 'questions', label: `关联题目（${data.questions.length}）`, children: <>
             <Alert type="info" showIcon message="题目仅依据已确认文章生成。新题默认草稿且停用；文章确认新版本后，旧题必须适配并重新审核。" />

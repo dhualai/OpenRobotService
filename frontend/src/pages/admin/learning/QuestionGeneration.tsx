@@ -10,12 +10,13 @@ import LearningPreviewModal from './LearningPreview';
 import QuestionEditor from './QuestionEditor';
 import QuestionList from './QuestionList';
 import SourceModal from './SourceModal';
+import LearningTheme from './LearningTheme';
 import './learning.css';
 
 const ARTICLE_STATES = [{ value: '', label: '全部文章' }, { value: 'draft', label: '有编辑草稿' }, { value: 'enabled', label: '已启用' }, { value: 'disabled', label: '未启用' }];
 const QUESTION_STATES = [{ value: '', label: '全部题目' }, { value: 'draft', label: '草稿' }, { value: 'pending_review', label: '待审核' }, { value: 'approved', label: '已审核' }, { value: 'rejected', label: '已驳回' }, { value: 'enabled', label: '当前可用' }, { value: 'stale', label: '需适配新版文章' }];
 
-export default function QuestionGeneration() {
+function QuestionGenerationContent() {
   const navigate = useNavigate();
   const allowed = useAuthStore((state) => state.hasPermission(PERM_LEARNING));
   const [tab, setTab] = useState('articles');
@@ -77,9 +78,9 @@ export default function QuestionGeneration() {
       {error && <Alert type="error" role="alert" showIcon message={error} action={<Button size="small" onClick={refresh}>重试</Button>} />}
       {loading ? <div className="learning-loading" role="status" aria-label="正在加载"><Spin /></div> : !error && <>
         {tab === 'articles' ? articles.length ? <div className="learning-article-grid">{articles.map((article) => <article className="learning-article-card" key={article.id}>
-          <div className="learning-card-meta"><Tag>{article.category}</Tag><Space size={0}><Tag color={article.enabled ? 'green' : 'default'}>{article.enabled ? '已启用' : '未启用'}</Tag>{article.has_draft && <Tag color="gold">有草稿</Tag>}</Space></div>
+          <div className="learning-card-meta"><Tag>{article.category}</Tag><Space size={0}><Tag color={article.enabled ? 'success' : 'default'}>{article.enabled ? '已启用' : '未启用'}</Tag>{article.has_draft && <Tag color="warning">有草稿</Tag>}</Space></div>
           <h2>{article.title}</h2><div className="learning-article-stats"><span><FileText size={14} />{article.active_version ? `已确认 v${article.active_version}` : '等待确认文章'}</span><span><ListChecks size={14} />{article.question_count} 道关联题目</span></div>
-          <div className="learning-article-card-footer"><span>更新于 {new Date(`${article.updated_at}Z`).toLocaleDateString()}</span><Space><Button type="text" disabled={!article.active_version} onClick={() => setPreviewId(article.id)}>开卷预览</Button><Button type="link" onClick={() => setArticleId(article.id)}>维护内容<ArrowUpRight size={14} /></Button></Space></div>
+          <div className="learning-article-card-footer"><span>更新于 {new Date(`${article.updated_at}Z`).toLocaleDateString()}</span><Space><Button type="text" disabled={!article.active_version} onClick={() => setPreviewId(article.id)}>开卷预览</Button><Button type="primary" onClick={() => setArticleId(article.id)}>维护内容<ArrowUpRight size={14} /></Button></Space></div>
         </article>)}</div> : <div className="learning-empty"><Empty description={keyword || state ? '没有匹配的知识点文章，试试调整筛选条件' : '还没有知识点，从一组相似工单或技术材料开始'} />{!keyword && !state && <Button type="primary" icon={<Plus size={15} />} onClick={() => setCreating(true)}>新建知识点</Button>}</div>
           : <QuestionList questions={questions} onEdit={setQuestion} onChanged={refresh} onArticle={setArticleId} />}
         {!!total && <Pagination className="learning-pagination" current={page} total={total} pageSize={20} showSizeChanger={false} onChange={setPage} />}
@@ -94,4 +95,8 @@ export default function QuestionGeneration() {
     <QuestionEditor question={question} onClose={() => setQuestion(null)} onSaved={refresh} />
     <LearningPreviewModal articleId={previewId} onClose={() => setPreviewId(null)} />
   </main>;
+}
+
+export default function QuestionGeneration() {
+  return <LearningTheme><QuestionGenerationContent /></LearningTheme>;
 }

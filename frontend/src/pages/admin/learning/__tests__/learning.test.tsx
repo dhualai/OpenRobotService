@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { theme } from 'antd';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '@/api/learning';
 import { useAuthStore } from '@/stores/auth';
@@ -9,6 +10,7 @@ import LearningPreviewModal from '../LearningPreview';
 import QuestionList from '../QuestionList';
 import QuestionEditor from '../QuestionEditor';
 import SourceModal from '../SourceModal';
+import LearningTheme from '../LearningTheme';
 
 vi.mock('@/api/learning', async (original) => ({
   ...await original<typeof import('@/api/learning')>(),
@@ -41,6 +43,11 @@ const taskSnapshots = (tasks: api.SourceTask[]): api.SourceSnapshot[] => tasks.m
 const wrap = (element: React.ReactNode) => render(<MemoryRouter>{element}</MemoryRouter>);
 const getComputedStyle = window.getComputedStyle;
 
+function ThemeColors({ label }: { label: string }) {
+  const { token } = theme.useToken();
+  return <output aria-label={label}>{[token.colorPrimary, token.colorSuccess, token.colorWarning, token.colorError].join(',')}</output>;
+}
+
 beforeAll(() => { vi.spyOn(window, 'getComputedStyle').mockImplementation((element) => getComputedStyle(element)); });
 afterAll(() => { vi.mocked(window.getComputedStyle).mockRestore(); });
 
@@ -55,6 +62,19 @@ beforeEach(() => {
 });
 
 describe('题目生成管理页', () => {
+  it('仅在题目生成范围内使用马卡龙蓝主题，不改变外部页面', () => {
+    wrap(<><LearningTheme><ThemeColors label="题目生成主题" /></LearningTheme><ThemeColors label="默认主题" /></>);
+    expect(screen.getByLabelText('题目生成主题')).toHaveTextContent('#3697c3,#3697c3,#56b1da,#227197');
+    expect(screen.getByLabelText('默认主题')).toHaveTextContent('#1677ff,#52c41a,#faad14,#ff4d4f');
+  });
+
+  it('页面关键按钮使用马卡龙蓝底白字', async () => {
+    wrap(<QuestionGeneration />);
+    const button = await screen.findByRole('button', { name: /维护内容/ });
+    expect(button).toHaveStyle({ backgroundColor: '#3697c3', color: '#fff' });
+    expect(screen.getByRole('button', { name: '新建知识点' })).toHaveStyle({ backgroundColor: '#3697c3', color: '#fff' });
+  });
+
   it('无权限时拒绝直接访问，且不请求内容', async () => {
     useAuthStore.setState({ permissions: [] });
     wrap(<QuestionGeneration />);
@@ -207,13 +227,61 @@ describe('来源工单摘要与相似推荐', () => {
 });
 
 describe('文章编辑与候选采用', () => {
-  const editor = () => wrap(<ArticleEditor articleId="article-1" refreshKey={0} onClose={vi.fn()} onChanged={vi.fn()} onQuestionEdit={vi.fn()} onPreview={vi.fn()} />);
+  const editor = () => wrap(<LearningTheme><ArticleEditor articleId="article-1" refreshKey={0} onClose={vi.fn()} onChanged={vi.fn()} onQuestionEdit={vi.fn()} onPreview={vi.fn()} /></LearningTheme>);
 
   it('AI提炼文章按钮使用蓝底白字的主按钮并加粗文字', async () => {
     editor();
     const button = await screen.findByRole('button', { name: 'AI提炼文章' });
     expect(button).toHaveClass('ant-btn-primary');
-    expect(button).toHaveStyle({ fontWeight: '700' });
+    expect(button).toHaveStyle({ fontWeight: '700', backgroundColor: '#3697c3', color: '#fff' });
+    const actions = within(screen.getByRole('group', { name: '知识点文章操作' }));
+    expect(actions.getByRole('button', { name: 'AI提炼文章' })).toBe(button);
+    expect(actions.getByRole('button', { name: '查看候选内容' })).toBeDisabled();
+  });
+
+  it('顶部查看最新成功文章候选，历史候选仍可独立查看', async () => {
+    const latest: api.Generation = { id: 'latest', kind: 'article', state: 'succeeded', input_revision: 1, created_at: '2026-11-27T02:00:00', error: null, result: { content: { ...content, title: '最新候选文章' } } };
+    const older: api.Generation = { ...latest, id: 'older', created_at: '2026-11-26T02:00:00', result: { content: { ...content, title: '历史候选文章' } } };
+    vi.mocked(api.getLearningArticle).mockResolvedValue(detail({ generations: [
+      { ...latest, id: 'questions', kind: 'questions', result: { saved_count: 3 } },
+      { ...latest, id: 'failed', state: 'failed', result: null }, latest, older,
+    ] }));
+    editor();
+    const actions = within(await screen.findByRole('group', { name: '知识点文章操作' }));
+    fireEvent.click(actions.getByRole('button', { name: '查看候选内容' }));
+    expect(await screen.findByRole('heading', { name: '最新候选文章' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '采用到编辑草稿' })).toHaveStyle({ backgroundColor: '#3697c3', color: '#fff' });
+    expect(api.adoptLearningArticle).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '暂不采用' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '查看该次候选' })[1]);
+    expect(await screen.findByRole('heading', { name: '历史候选文章' })).toBeInTheDocument();
+    expect(api.generateLearning).not.toHaveBeenCalled();
+  });
+
+  it('只有题目生成记录或失败记录时，不启用查看文章候选', async () => {
+    vi.mocked(api.getLearningArticle).mockResolvedValue(detail({ generations: [
+      { id: 'questions', kind: 'questions', state: 'succeeded', input_revision: 1, created_at: '2026-11-27T02:00:00', error: null, result: { saved_count: 3 } },
+      { id: 'failed', kind: 'article', state: 'failed', input_revision: 1, created_at: '2026-11-27T01:00:00', error: '生成失败', result: null },
+    ] }));
+    editor();
+    expect(await screen.findByRole('button', { name: '查看候选内容' })).toBeDisabled();
+  });
+
+  it('移至顶部的候选入口不绕过修订号校验', async () => {
+    vi.mocked(api.getLearningArticle).mockResolvedValue(detail({ revision: 2, generations: [
+      { id: 'stale', kind: 'article', state: 'succeeded', input_revision: 1, created_at: '2026-11-27T01:00:00', error: null, result: { content } },
+    ] }));
+    editor();
+    fireEvent.click(await screen.findByRole('button', { name: '查看候选内容' }));
+    expect(await screen.findByText('草稿已变更，此候选不能直接覆盖。请核对后手动整合，或保存草稿后重新生成。')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '采用到编辑草稿' })).toBeDisabled();
+  });
+
+  it('未保存修改的关闭确认弹窗也继承马卡龙蓝主题', async () => {
+    editor();
+    fireEvent.change(await screen.findByLabelText('文章标题'), { target: { value: '未保存标题' } });
+    fireEvent.click(screen.getByRole('button', { name: /关\s*闭/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '放弃修改' })).toHaveStyle({ backgroundColor: '#3697c3', color: '#fff' }));
   });
 
   it('AI生成只展示候选，不自动覆盖，需手动采用', async () => {
@@ -224,7 +292,8 @@ describe('文章编辑与候选采用', () => {
     editor();
     await screen.findByLabelText('文章标题');
     fireEvent.click(screen.getByRole('button', { name: 'AI提炼文章' }));
-    fireEvent.click(await screen.findByRole('button', { name: '查看候选内容' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '查看候选内容' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '查看候选内容' }));
     expect(api.adoptLearningArticle).not.toHaveBeenCalled();
     expect(screen.getByLabelText('文章标题')).toHaveValue(content.title);
     fireEvent.click(screen.getByRole('button', { name: '采用到编辑草稿' }));
