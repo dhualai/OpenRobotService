@@ -776,6 +776,13 @@ jobs:
             echo "::error::工单 ORS-${TICKET_ID} 属于项目 '${project}'，与本次验收项目 '${TICKET_PROJECT_ID}' 不一致。"
             exit 1
           fi
+          # 验收是「人来确认这张单可以验」，工单没关闭就直接失败，
+          # 否则 run 会显示成功但其实什么都没跑。
+          if [[ "${eligible}" != "true" ]]; then
+            echo "::error::工单 ORS-${TICKET_ID} 当前状态为 '${status}'，不是 resolved/closed，验收中止。"
+            echo "工单 ORS-${TICKET_ID} 状态：${status}，不满足验收条件（需 resolved 或 closed）" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           echo "eligible=${eligible}" >> "$GITHUB_OUTPUT"
           echo "工单 ORS-${TICKET_ID} 状态：${status}，eligible=${eligible}" >> "$GITHUB_STEP_SUMMARY"
 
