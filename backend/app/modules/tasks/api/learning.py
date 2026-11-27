@@ -5,11 +5,12 @@
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
 from app.modules.tasks.services import learning_learner_service as service
+from app.modules.admin.services.learning_content import QuestionContent
 from app.services import learning_reviews as reviews
 
 router = APIRouter(prefix="/learning", tags=["tasks-learning"])
@@ -27,6 +28,36 @@ class ReviewDecision(BaseModel):
     reason: str = Field(default="", max_length=2000)
 
 
+class ReviewPoint(BaseModel):
+    id: str = Field(pattern=r"^KP[1-9][0-9]*$")
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class ReviewArticle(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    category: str = Field(min_length=1, max_length=80)
+    tags: list[str] = Field(max_length=10)
+    summary: str = Field(min_length=1, max_length=4000)
+    applicability: str = Field(min_length=1, max_length=4000)
+    key_points: list[ReviewPoint] = Field(min_length=1, max_length=5)
+    method: str = Field(max_length=6000)
+    cautions: str = Field(max_length=4000)
+    example: str = Field(max_length=4000)
+
+
+class ReviewEdit(BaseModel):
+    revision: int = Field(ge=1)
+    article_revision: int = Field(ge=1)
+    question: QuestionContent | None = None
+    article: ReviewArticle | None = None
+
+    @model_validator(mode="after")
+    def has_content(self):
+        if self.question is None and self.article is None:
+            raise ValueError("请提供需要修改的题目或文章")
+        return self
+
+
 @router.get("/reviews")
 async def review_list(page: int = Query(1, ge=1), db=Depends(get_async_db),
                       actor=Depends(get_current_active_user_from_token)):
@@ -42,6 +73,17 @@ async def review_detail(task_id: int, db=Depends(get_async_db), actor=Depends(ge
 async def review_decision(task_id: int, body: ReviewDecision, db=Depends(get_async_db),
                           actor=Depends(get_current_active_user_from_token)):
     return await reviews.decide(db, actor, task_id, body)
+
+
+@router.put("/reviews/{task_id}/content")
+async def review_edit(task_id: int, body: ReviewEdit, db=Depends(get_async_db),
+                      actor=Depends(get_current_active_user_from_token)):
+    return await reviews.edit(db, actor, task_id, body)
+
+
+@router.get("/question-count")
+async def question_count(db=Depends(get_async_db), actor=Depends(get_current_active_user_from_token)):
+    return await service.question_count(db)
 
 
 @router.get("/articles")

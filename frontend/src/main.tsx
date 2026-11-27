@@ -220,6 +220,7 @@ const router = createBrowserRouter([
           { path: 'call/history', element: <HistoryTicketsPage /> },
           { path: 'call/ticket/:id', element: <TicketDetailPage /> },
           { path: 'tasks', element: <TasksView /> },
+          { path: 'tasks/reviews/:taskId', element: <LearningReviewDetail /> },
           // 学习中心（做题人端）—— 放 tasks/:id 之前避免被 :id 贪婪匹配
           { path: 'tasks/learning', element: <LearnerHome /> },
           { path: 'tasks/learning/reviews/:taskId', element: <LearningReviewDetail /> },

@@ -7,13 +7,19 @@ export interface LearningReviewTask {
   outcome: 'approved' | 'rejected' | 'canceled' | null; reason: string; can_review: boolean;
 }
 export interface LearningReviewDetail extends LearningReviewTask {
-  revision: number; stale: boolean; question: QuestionContent | null; article: ReadingArticle | null;
+  revision: number; article_revision: number; stale: boolean; question: QuestionContent | null; article: ReviewArticle | null;
+}
+export type ReviewArticle = Omit<ReadingArticle, 'key_points'> & { key_points: { id: string; text: string }[] };
+export interface LearningReviewEdit {
+  revision: number; article_revision: number; question?: QuestionContent; article?: ReviewArticle;
 }
 const request = <Result>(path: string, options: RequestOptions = {}) =>
   createRequest(API_CONFIG.TASKS.BASE_URL, '学习审核')<Result>(`/learning/reviews${path}`, { skipCache: true, ...options });
 
 export const listLearningReviews = (page = 1) => request<PageResult<LearningReviewTask>>(`?page=${page}`);
 export const getLearningReview = (id: string) => request<LearningReviewDetail>(`/${encodeURIComponent(id)}`);
+export const editLearningReview = (id: string, body: LearningReviewEdit) =>
+  request<LearningReviewDetail>(`/${encodeURIComponent(id)}/content`, { method: 'PUT', body: JSON.stringify(body) });
 export const decideLearningReview = (id: string, body: {
   revision: number; action: 'approve' | 'reject'; verified: boolean; reason: string;
 }) => request<LearningReviewDetail>(`/${encodeURIComponent(id)}/decision`, { method: 'POST', body: JSON.stringify(body) });

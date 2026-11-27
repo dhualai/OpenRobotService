@@ -86,7 +86,7 @@ function QuestionGenerationContent() {
         {!!total && <Pagination className="learning-pagination" current={page} total={total} pageSize={20} showSizeChanger={false} onChange={setPage} />}
       </>}
     </section>
-    <p className="learning-scope-note"><ShieldCheck size={14} />提交审核后生成学习审核工单；学习和审核只展示脱敏知识点，不展示原始工单。</p>
+    <p className="learning-scope-note"><ShieldCheck size={14} />提交审核后在工单任务中生成审核工单；学习任务仅展示学习题目，学习和审核均不展示原始工单。</p>
     <SourceModal open={creating} onClose={() => setCreating(false)} onSubmit={async (title, sources) => {
       const article = await createLearningArticle(title, sources);
       setCreating(false); setArticleId(article.id); refresh();

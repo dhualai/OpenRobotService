@@ -8,6 +8,8 @@ const request = <Result>(path: string, options: RequestOptions = {}) =>
 const write = <Result>(path: string, body: unknown, method = 'POST') =>
   request<Result>(path, { method, body: JSON.stringify(body) });
 
+export const getLearningQuestionCount = () => request<{ count: number }>('/question-count');
+
 // ============ 类型定义 ============
 
 export interface LearnerArticleSummary {

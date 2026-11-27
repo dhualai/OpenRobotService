@@ -1,0 +1,21 @@
+.task-category-label {
+  position: relative;
+  display: inline-flex;
+  padding: 0 10px;
+}
+
+.task-category-badge {
+  position: absolute;
+  top: -9px;
+  left: calc(100% - 6px);
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--mac-blue-4, #589be8);
+  color: #fff;
+  font-size: 11px;
+  line-height: 19px;
+  font-weight: 700;
+  white-space: nowrap;
+}

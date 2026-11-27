@@ -1,15 +1,17 @@
 import logging
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from pydantic import ValidationError
+from sqlalchemy import func, or_, select, update
 
 from app.models.identity import UserDB
 from app.models.learning import LearningArticle, LearningArticleVersion, LearningAudit, LearningQuestion
 from app.models.organization import Department
 from app.models.task import OperationType, Task, TaskOperationLog, TaskPriority, TaskStatus, TaskType
 from app.modules.admin.services.knowledge_service import actor_id, actor_identities
-from app.modules.admin.services.learning_content import reading_article
+from app.modules.admin.services.learning_content import ArticleContent, reading_article, sanitize, validate_article, validate_question
 
 
 SOURCE = "learning_review"
@@ -49,11 +51,11 @@ async def create_review(db, actor, article, question, revision, reviewer_id):
     now = utcnow()
     task = Task(title=f"题目审核：{question.payload['stem']}"[:255],
         description=f"请核对知识点《{article.title}》的题目、选项、答案、解析与文章依据，并检查脱敏结果。\n"
-                    f"题干：{question.payload['stem']}\n请在系统任务 → 学习任务中完成审核。",
+                    f"题干：{question.payload['stem']}\n请在系统任务 → 工单任务中完成审核。",
         source=SOURCE, external_id=f"{question.id}:{revision}", task_type=TaskType.OTHER,
         status=TaskStatus.IN_PROGRESS if reviewer_id else TaskStatus.NEW, priority=TaskPriority.MEDIUM,
         created_by=await actor_id(db, actor), assigned_to=reviewer_id,
-        tags=["学习任务", "题目审核"], deadline_at=now + timedelta(days=7),
+        tags=["学习审核", "题目审核"], deadline_at=now + timedelta(days=7),
         metadata_info={"kind": "learning_question_review", "question_id": question.id,
             "article_id": article.id, "question_revision": revision, "article_version": question.article_version},
         created_at=now, updated_at=now)
@@ -73,13 +75,13 @@ async def notify_review(task):
         from app.utils.notification_utils import NotificationUtils
 
         await NotificationUtils.send_ticket_create_notification(ticket_id=task.id, title=task.title,
-            project_name="学习任务", operator=task.created_by, deadline_at=task.deadline_at,
+            project_name="工单任务", operator=task.created_by, deadline_at=task.deadline_at,
             user_names=[task.assigned_to])
     except Exception:
         logger.exception("题目审核通知发送失败 task_id=%s", task.id)
 
 
-async def finish_reviews(db, actor, *, question_id=None, article_id=None, outcome="canceled", reason=""):
+async def finish_reviews(db, actor, *, question_id=None, article_id=None, outcome="canceled", reason="", exclude_task_id=None):
     query = select(Task).where(Task.source == SOURCE, Task.status.in_(ACTIVE_STATES))
     if question_id:
         query = query.where(Task.metadata_info["question_id"].as_string() == question_id)
@@ -87,6 +89,8 @@ async def finish_reviews(db, actor, *, question_id=None, article_id=None, outcom
         query = query.where(Task.metadata_info["article_id"].as_string() == article_id)
     else:
         raise ValueError("必须指定题目或文章")
+    if exclude_task_id is not None:
+        query = query.where(Task.id != exclude_task_id)
     tasks = (await db.execute(query.with_for_update().execution_options(populate_existing=True))).scalars().all()
     for task in tasks:
         task.status = TaskStatus.CLOSED if outcome in ("approved", "rejected") else TaskStatus.CANCELED
@@ -110,8 +114,7 @@ def summary(task, identities):
 
 async def listing(db, actor, page=1):
     identities = await actor_identities(db, actor)
-    query = select(Task).where(Task.source == SOURCE,
-        or_(Task.assigned_to.in_(identities), Task.created_by.in_(identities)))
+    query = select(Task).where(Task.source == SOURCE, Task.assigned_to.in_(identities))
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
     tasks = (await db.execute(query.order_by(Task.created_at.desc(), Task.id.desc())
         .offset((page - 1) * 20).limit(20))).scalars().all()
@@ -136,20 +139,23 @@ async def detail(db, actor, task_id):
         LearningArticleVersion.version == metadata.get("article_version")))).scalar_one_or_none()
     article = await db.get(LearningArticle, metadata.get("article_id"))
     current = bool(question and article and article.enabled and
+        question.article_id == article.id and question.article_version == metadata.get("article_version") and
         question.revision == metadata.get("question_revision") and question.review_status == "pending_review" and
         question.article_version == article.active_version)
     submitted = (await db.execute(select(LearningAudit).where(LearningAudit.question_id == metadata.get("question_id"),
-        LearningAudit.action == "question.submit", LearningAudit.snapshot["review_task_id"].as_string() == str(task.id))
+        LearningAudit.action.in_(("question.submit", "question.review_edit")),
+        LearningAudit.snapshot["review_task_id"].as_string() == str(task.id))
         .order_by(LearningAudit.created_at.desc()).limit(1))).scalar_one_or_none()
     return {**summary(task, identities), "can_review": task.assigned_to in identities and
         task.status in ACTIVE_STATES and current, "stale": task.status in ACTIVE_STATES and not current,
-        "revision": metadata.get("question_revision"), "question": submitted.snapshot["payload"] if submitted else None,
-        "article": reading_article(version.snapshot["content"]) if version else None}
+        "revision": metadata.get("question_revision"), "article_revision": article.revision if article else None,
+        "question": submitted.snapshot["payload"] if submitted else None,
+        "article": {**reading_article(version.snapshot["content"]), "key_points": [
+            {"id": point["id"], "text": point["text"]} for point in version.snapshot["content"]["key_points"]
+        ]} if version else None}
 
 
-async def decide(db, actor, task_id, body):
-    from app.modules.admin.services import learning_service
-
+async def locked_review(db, actor, task_id, revision):
     task, identities = await visible_task(db, actor, task_id)
     metadata = task.metadata_info or {}
     article = (await db.execute(select(LearningArticle).where(LearningArticle.id == metadata.get("article_id"))
@@ -162,8 +168,76 @@ async def decide(db, actor, task_id, body):
         raise HTTPException(403, "只有当前工单的审核人可以审核")
     if task.status not in ACTIVE_STATES or not article or not question or not article.enabled or \
             question.article_id != article.id or question.article_version != article.active_version or \
+            question.article_version != (task.metadata_info or {}).get("article_version") or \
             question.revision != (task.metadata_info or {}).get("question_revision") or \
-            question.review_status != "pending_review" or body.revision != question.revision:
+            question.review_status != "pending_review" or revision != question.revision:
         raise HTTPException(409, "审核工单已完成或题目已变更，请刷新后重试")
+    return task, article, question
+
+
+async def decide(db, actor, task_id, body):
+    from app.modules.admin.services import learning_service
+
+    task, article, question = await locked_review(db, actor, task_id, body.revision)
     await learning_service.apply_question_action(db, actor, article, question, body, assigned_review=True)
+    return await detail(db, actor, task_id)
+
+
+async def edit(db, actor, task_id, body):
+    from app.modules.admin.services import learning_service
+
+    task, article, question = await locked_review(db, actor, task_id, body.revision)
+    if body.article_revision != article.revision:
+        raise HTTPException(409, "文章已被修改，请刷新工单后重试；当前输入尚未覆盖")
+    version = await learning_service.current_version(db, article, lock=True)
+    terms = await learning_service.known_terms(db, version.snapshot["sources"])
+    content = deepcopy(version.snapshot["content"])
+    if body.article is not None:
+        proposed = body.article.model_dump()
+        points = {point["id"]: point for point in content["key_points"]}
+        proposed_ids = [point["id"] for point in proposed["key_points"]]
+        if len(proposed_ids) != len(points) or set(proposed_ids) != set(points):
+            raise HTTPException(422, "审核中只能修改现有知识点内容，不能增删或替换知识点编号")
+        proposed["key_points"] = [{**points[point["id"]], "text": point["text"]} for point in proposed["key_points"]]
+        try:
+            content = ArticleContent.model_validate(sanitize({**content, **proposed}, terms)).model_dump()
+        except ValidationError:
+            raise HTTPException(422, "文章内容不完整，请检查标题、分类和知识点") from None
+        if not content["title"].strip() or not content["category"].strip():
+            raise HTTPException(422, "文章标题和分类不能为空")
+        validate_article(content, version.snapshot["sources"])
+    article_changed = content != version.snapshot["content"]
+    if article_changed and article.draft is not None:
+        raise HTTPException(409, "后台已有文章修改草稿，请先由维护人处理草稿后再编辑文章")
+    payload = validate_question(sanitize(body.question.model_dump() if body.question else question.payload, terms), content)
+    if not article_changed and payload == question.payload:
+        return await detail(db, actor, task_id)
+    next_version = article.active_version + int(article_changed)
+    now = utcnow()
+    if article_changed:
+        await learning_service.change_article(db, article, body.article_revision, active_version=next_version,
+            title=content["title"], category=content["category"])
+        db.add(LearningArticleVersion(article_id=article.id, version=next_version,
+            snapshot={"content": content, "sources": deepcopy(version.snapshot["sources"])},
+            confirmed_by=await actor_id(db, actor), created_at=now))
+        await db.execute(update(LearningQuestion).where(LearningQuestion.article_id == article.id,
+            LearningQuestion.id != question.id).values(review_status="draft", enabled=False,
+            revision=LearningQuestion.revision + 1, updated_at=now).execution_options(synchronize_session=False))
+        await finish_reviews(db, actor, article_id=article.id, exclude_task_id=task.id)
+        db.add(LearningAudit(article_id=article.id, operator_id=str(actor.get("id") or actor.get("username")),
+            action="article.review_edit", snapshot={"version": next_version, "review_task_id": str(task.id)}, created_at=now))
+    await learning_service.change_question(db, question, body.revision, payload=payload,
+        article_version=next_version, review_status="pending_review", enabled=False)
+    task.metadata_info = {**task.metadata_info, "question_revision": body.revision + 1, "article_version": next_version}
+    task.title = f"题目审核：{payload['stem']}"[:255]
+    task.description = f"请核对知识点《{content['title']}》及题目内容，并在工单任务中完成审核。"
+    task.updated_at = now
+    db.add(LearningAudit(article_id=article.id, question_id=question.id,
+        operator_id=str(actor.get("id") or actor.get("username")), action="question.review_edit",
+        snapshot={"payload": payload, "article_version": next_version, "review_task_id": str(task.id),
+            "revision": body.revision + 1}, created_at=now))
+    log_operation(db, task, actor, OperationType.UPDATE, "审核人编辑文章和题目" if article_changed else "审核人编辑题目")
+    await db.commit()
+    await db.refresh(article)
+    await db.refresh(question)
     return await detail(db, actor, task_id)
