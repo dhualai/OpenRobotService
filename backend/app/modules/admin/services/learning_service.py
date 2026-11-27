@@ -22,6 +22,7 @@ from app.modules.admin.services.learning_content import (
 )
 from app.services import similar_tickets
 from app.services.permission_service import PERM_LEARNING
+from app.services import learning_reviews as reviews
 
 
 SOURCE_STATES = (TaskStatus.CLOSED, TaskStatus.ARCHIVING, TaskStatus.ARCHIVED)
@@ -60,7 +61,7 @@ async def source_task(db, actor, task_id):
     task = await db.get(Task, task_id)
     if not task or task.status not in SOURCE_STATES:
         raise HTTPException(422, "仅可选择已关闭、归档中、已归档的工单")
-    if (task.metadata_info or {}).get("approval_type") not in (None, ""):
+    if task.source == reviews.SOURCE or (task.metadata_info or {}).get("approval_type") not in (None, ""):
         raise HTTPException(422, "审核类工单不能作为知识点来源")
     report = (await db.execute(select(ArchiveReport).where(ArchiveReport.task_id == task_id)
         .order_by(ArchiveReport.version.desc()).limit(1))).scalar_one_or_none()
@@ -75,6 +76,7 @@ async def eligible_source_query(db, actor):
     blocked = select(ArchiveReport.task_id).where(ArchiveReport.submit_status != "approved",
         ArchiveReport.reviewer.in_(identities))
     return select(Task).where(Task.status.in_(SOURCE_STATES),
+        Task.source != reviews.SOURCE,
         func.coalesce(Task.metadata_info["approval_type"].as_string(), "") == "", Task.id.not_in(blocked))
 
 
@@ -299,6 +301,7 @@ async def confirm(db, actor, article_id, body):
         snapshot={"content": content, "sources": deepcopy(article.sources)}, confirmed_by=manager(actor), created_at=utcnow()))
     await db.execute(update(LearningQuestion).where(LearningQuestion.article_id == article_id).values(
         review_status="draft", enabled=False, revision=LearningQuestion.revision + 1, updated_at=utcnow()))
+    await reviews.finish_reviews(db, actor, article_id=article_id)
     audit(db, actor, article_id, "article.confirm", {"version": next_version})
     await db.commit()
     await db.refresh(article)
@@ -491,6 +494,7 @@ async def save_question(db, actor, question_id, body):
     payload = validate_question(sanitize(body.content.model_dump(), terms), version.snapshot["content"])
     await change_question(db, question, body.revision, payload=payload, article_version=article.active_version,
         review_status="draft", enabled=False)
+    await reviews.finish_reviews(db, actor, question_id=question_id)
     audit(db, actor, article.id, "question.save", {"payload": payload, "article_version": article.active_version}, question_id)
     await db.commit()
     await db.refresh(question)
@@ -499,7 +503,15 @@ async def save_question(db, actor, question_id, body):
 
 async def question_action(db, actor, question_id, body):
     article, question = await lock_question_with_article(db, actor, question_id)
+    return await apply_question_action(db, actor, article, question, body)
+
+
+async def apply_question_action(db, actor, article, question, body, *, assigned_review=False):
+    question_id = question.id
     action = body.action
+    if assigned_review and action not in ("approve", "reject"):
+        raise HTTPException(422, "审核工单仅支持通过或驳回")
+    review_task = None
     if action not in ("disable", "reject"):
         if not article.enabled or question.article_version != article.active_version:
             raise HTTPException(422, "文章已停用或版本已更新，请重新核验题目")
@@ -509,6 +521,7 @@ async def question_action(db, actor, question_id, body):
         if question.review_status not in ("draft", "rejected"):
             raise HTTPException(409, "仅草稿或已驳回题目可以提交审核")
         values = {"review_status": "pending_review", "enabled": False}
+        reviewer_id = await reviews.validate_reviewer(db, body.reviewer_id)
     elif action in ("approve", "reject"):
         if question.review_status != "pending_review":
             raise HTTPException(409, "题目不在待审核状态")
@@ -524,12 +537,28 @@ async def question_action(db, actor, question_id, body):
     else:
         values = {"enabled": False}
     await change_question(db, question, body.revision, **values)
-    audit(db, actor, article.id, f"question.{action}", {"payload": question.payload,
+    clean_reason = redact(body.reason, await known_terms(db, article.sources))
+    if action == "submit":
+        review_task = await reviews.create_review(db, actor, article, question, body.revision + 1, reviewer_id)
+    elif action in ("approve", "reject"):
+        await reviews.finish_reviews(db, actor, question_id=question_id, outcome=values["review_status"], reason=clean_reason)
+    db.add(LearningAudit(article_id=article.id, question_id=question_id,
+        operator_id=str(actor.get("id") or actor.get("username")), action=f"question.{action}",
+        snapshot={"payload": question.payload,
         "article_version": question.article_version, "reviewed_revision": body.revision,
-        "reason": redact(body.reason, await known_terms(db, article.sources))}, question_id)
+        "reason": clean_reason, **({"review_task_id": str(review_task.id), "reviewer_id": reviewer_id} if review_task else {})},
+        created_at=utcnow()))
     await db.commit()
     await db.refresh(question)
-    return question_data(question)
+    result = question_data(question)
+    if review_task:
+        await db.refresh(review_task)
+        result["review_task_id"] = str(review_task.id)
+        try:
+            await reviews.notify_review(review_task)
+        except Exception:
+            logger.exception("审核工单已创建，派单或通知暂不可用 task_id=%s", review_task.id)
+    return result
 
 
 async def question_listing(db, actor, keyword="", state="", page=1):

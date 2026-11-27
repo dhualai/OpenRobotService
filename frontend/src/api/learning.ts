@@ -111,6 +111,9 @@ export interface LearningPreview {
 }
 export interface PreviewResult { is_correct: boolean; correct_answer: string[]; explanation: string; source_excerpt: string }
 export interface PageResult<Item> { items: Item[]; total: number }
+export interface LearningReviewer {
+  id: string; username: string; name: string; department_id: string | null; department: string;
+}
 
 const request = <Result>(path: string, options: RequestOptions = {}) =>
   createRequest(API_CONFIG.ADMIN.BASE_URL, '知识点与题库')<Result>(`/learning${path}`, { skipCache: true, ...options });
@@ -141,10 +144,13 @@ export const adoptLearningArticle = (id: string, requestId: string, revision: nu
   write<ArticleDetail>(`/articles/${id}/generations/${requestId}/adopt`, { revision });
 export const listLearningQuestions = (keyword = '', state = '', page = 1) =>
   request<PageResult<LearningQuestion>>(`/questions?${query(keyword, state, page)}`);
+export const listLearningReviewers = () => request<{ items: LearningReviewer[] }>('/reviewers');
 export const saveLearningQuestion = (id: string, revision: number, content: QuestionContent) =>
   write<LearningQuestion>(`/questions/${id}`, { revision, content }, 'PUT');
-export const actLearningQuestion = (id: string, revision: number, action: 'submit' | 'approve' | 'reject' | 'enable' | 'disable', reason = '') =>
-  write<LearningQuestion>(`/questions/${id}/actions`, { revision, action, reason, verified: action === 'approve' });
+export const actLearningQuestion = (id: string, revision: number, action: 'submit' | 'approve' | 'reject' | 'enable' | 'disable', reason = '', reviewerId?: string) =>
+  write<LearningQuestion & { review_task_id?: string }>(`/questions/${id}/actions`, {
+    revision, action, reason, verified: action === 'approve', ...(action === 'submit' ? { reviewer_id: reviewerId ?? null } : {}),
+  });
 export const getLearningPreview = (id: string, availableOnly = false) =>
   request<LearningPreview>(`/articles/${id}/preview?available_only=${availableOnly}`);
 export const answerLearningPreview = (id: string, questionId: string, answers: string[]) =>

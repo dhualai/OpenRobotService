@@ -133,6 +133,11 @@ const resolvesInRealRouter = (url: string) =>
   REAL_ROUTE_PATHS.some((p) => matchPath(`/${p}`, url) !== null || matchPath(`/${p}`, url.replace(/^\/admin/, '')) !== null);
 
 describe('真实路由表（src/main.tsx）', () => {
+  it('学习任务题目审核工单详情挂在真实路由', () => {
+    expect(resolvesInRealRouter('/tasks/learning/reviews/9007199254740993')).toBe(true);
+    expect(MAIN_SRC).toContain("import('@/pages/learning/LearningReviewDetail')");
+    expect(MAIN_SRC).toContain("{ path: 'tasks/learning/reviews/:taskId', element: <LearningReviewDetail /> }");
+  });
   it('题目生成页面挂在真实后台路由而非历史副本', () => {
     expect(resolvesInRealRouter('/admin/question-generation')).toBe(true);
     expect(MAIN_SRC).toContain("import('@/pages/admin/learning/QuestionGeneration')");

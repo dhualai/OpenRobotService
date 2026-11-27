@@ -1362,6 +1362,11 @@ class TicketService:
             exclude={'operation_type', 'reassign_kind', 'reassign_reason'},
         )
 
+        if ticket.source == "learning_review" and {"status", "metadata_info", "ticket_type"}.intersection(update_data):
+            from fastapi import HTTPException
+
+            raise HTTPException(422, "题目审核的状态和关联内容只能通过学习任务审核流程修改")
+
         for field, value in update_data.items():
             if field == "deadline_at":
                 value = convert_to_shanghai_time(value)
@@ -1656,6 +1661,11 @@ class TicketService:
         ticket = await TicketService.get_ticket_by_id(db, ticket_id)
         if not ticket:
             return None
+
+        if ticket.source == "learning_review":
+            from fastapi import HTTPException
+
+            raise HTTPException(422, "请在系统任务 → 学习任务中通过审核操作完成题目审核工单")
 
         if status == TicketStatus.ARCHIVED:
             from fastapi import HTTPException

@@ -51,7 +51,7 @@ async def mysql_sessions():
         )
         table_names = (
             "companies", "departments", "users", "learning_articles", "learning_article_versions",
-            "learning_questions", "learning_answers", "learning_wrongbook", "learning_audits",
+            "learning_questions", "learning_answers", "learning_wrongbook", "learning_audits", "tasks", "task_operation_logs",
         )
         async with test_engine.begin() as connection:
             await connection.execute(text("SET SESSION default_storage_engine = InnoDB"))

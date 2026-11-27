@@ -422,6 +422,10 @@ export default function TaskDetailPage() {
     setDetailLoading(true);
     request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true })
       .then((t) => {
+        if (t.metadata_info?.kind === 'learning_question_review') {
+          navigate(`/tasks/learning/reviews/${detailId}`, { replace: true });
+          return;
+        }
         setDetail(t);
         // 二次派单感知增强（M3）：未派到指定人时的完整话术
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');

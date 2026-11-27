@@ -39,6 +39,15 @@ describe('知识点与题库API协议', () => {
     expect(JSON.parse(mocks.request.mock.calls[1][1].body)).toEqual({ revision: 3, action: 'enable', reason: '', verified: false });
   });
 
+  it('提交审核携带可选审核人，不选择时明确走自动派单', async () => {
+    await learning.listLearningReviewers();
+    await learning.actLearningQuestion('question-1', 1, 'submit', '', 'alice');
+    await learning.actLearningQuestion('question-1', 1, 'submit');
+    expect(mocks.request.mock.calls[0]).toEqual(['/learning/reviewers', { skipCache: true }]);
+    expect(JSON.parse(mocks.request.mock.calls[1][1].body)).toEqual({ revision: 1, action: 'submit', reason: '', verified: false, reviewer_id: 'alice' });
+    expect(JSON.parse(mocks.request.mock.calls[2][1].body).reviewer_id).toBeNull();
+  });
+
   it('预览不提交真实学习记录，仅调用后台模拟接口', async () => {
     await learning.getLearningPreview('article-1', true);
     await learning.answerLearningPreview('article-1', 'question-1', ['A']);

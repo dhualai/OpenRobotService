@@ -19,6 +19,13 @@
   color: var(--foreground);
 }
 
+.learner-review-inbox { margin: 18px 14px; padding: 16px; border-radius: 16px; background: var(--card); border: 1px solid var(--mac-blue-4); }
+.learner-review-inbox .learner-section-header { margin: 0; padding: 0; }
+.learner-review-inbox h2 { font-size: 18px; margin: 0; }
+.learner-review-card { padding: 18px; margin: 12px 0; border: 1px solid var(--mac-blue-4); border-radius: 12px; background: var(--card); overflow-wrap: anywhere; }
+.learner-review-detail { min-height: 100vh; max-width: 960px; padding: 24px 16px; margin: auto; color: var(--foreground); }
+.learner-review-detail .ant-input { margin: 16px 0; }
+
 /* ========== Hero 渐变大卡片 ========== */
 .learner-hero {
   position: relative;

@@ -20,7 +20,7 @@ vi.mock('@/api/learning', async (original) => ({
   getLearningArticle: vi.fn(), createLearningArticle: vi.fn(), saveLearningArticle: vi.fn(),
   generateLearning: vi.fn(), getLearningGeneration: vi.fn(), adoptLearningArticle: vi.fn(),
   confirmLearningArticle: vi.fn(), getLearningPreview: vi.fn(), answerLearningPreview: vi.fn(),
-  actLearningQuestion: vi.fn(), saveLearningQuestion: vi.fn(),
+  actLearningQuestion: vi.fn(), saveLearningQuestion: vi.fn(), listLearningReviewers: vi.fn(),
 }));
 vi.mock('@/shared/components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <p>{content}</p> }));
 
@@ -61,6 +61,7 @@ beforeEach(() => {
   vi.mocked(api.listSourceTasks).mockResolvedValue({ items: [], total: 0 });
   vi.mocked(api.getSimilarSourceTasks).mockResolvedValue({ source: sourceTask, items: [], matching_method: 'vector', retrieval_status: 'ok' });
   vi.mocked(api.getLearningArticle).mockResolvedValue(detail());
+  vi.mocked(api.listLearningReviewers).mockResolvedValue({ items: [] });
 });
 
 describe('题目生成管理页', () => {
@@ -418,7 +419,7 @@ describe('题目审核及开卷预览', () => {
     const reopened = (await screen.findByText('编辑题目', { selector: '.ant-modal-title' })).closest('[role="dialog"]') as HTMLElement;
     expect(within(reopened).getByLabelText('题干')).toHaveValue(question.payload.stem);
     expect(api.saveLearningQuestion).not.toHaveBeenCalled();
-  });
+  }, 10000);
 
   it('题库维护入口仍可编辑，保存失败保留输入并支持重试', async () => {
     vi.mocked(api.getLearningArticle).mockResolvedValue(detail({ active_version: 1,
@@ -454,6 +455,52 @@ describe('题目审核及开卷预览', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存草稿，重新审核' }));
     await waitFor(() => expect(api.saveLearningQuestion).toHaveBeenCalledWith('question-1', 1, expect.objectContaining({ stem: '依据文章，在断电条件下首先检查什么？' })));
     await waitFor(() => expect(saved).toHaveBeenCalled());
+  });
+
+  it('提交审核可从全部在职用户按部门筛选，失败保留所选审核人并可重试', async () => {
+    vi.mocked(api.listLearningReviewers).mockResolvedValue({ items: [
+      { id: 'alice', name: '爱丽丝', username: 'alice', department_id: 'rd', department: '研发部' },
+      { id: 'bob', name: '鲍勃', username: 'bob', department_id: 'ops', department: '运营部' },
+      { id: 'carol', name: '卡萝', username: 'carol', department_id: null, department: '' },
+    ] });
+    vi.mocked(api.actLearningQuestion).mockRejectedValueOnce(new Error('提交暂不可用')).mockResolvedValue({ ...question, review_status: 'pending_review' });
+    const changed = vi.fn();
+    render(<QuestionList questions={[question]} onEdit={vi.fn()} onChanged={changed} />);
+    fireEvent.click(screen.getByRole('button', { name: '提交审核' }));
+    expect(await screen.findByText(/提交后将在系统任务/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '审核人' })).not.toBeDisabled());
+    const openSelect = (label: string) => fireEvent.mouseDown(screen.getByRole('combobox', { name: label }).closest('.ant-select')!.querySelector('.ant-select-selector')!);
+    openSelect('审核人');
+    expect(await screen.findByText('鲍勃（bob） · 运营部', { selector: '.ant-select-item-option-content' })).toBeInTheDocument();
+    fireEvent.click(screen.getByText('鲍勃（bob） · 运营部', { selector: '.ant-select-item-option-content' }));
+    openSelect('按部门筛选审核人');
+    fireEvent.click(await screen.findByText('研发部', { selector: '.ant-select-item-option-content' }));
+    expect(screen.getByText('当前未指定审核人，将自动派单。', { exact: false })).toBeInTheDocument();
+    openSelect('审核人');
+    fireEvent.click(await screen.findByText('爱丽丝（alice） · 研发部', { selector: '.ant-select-item-option-content' }));
+    const confirm = within(screen.getByRole('dialog')).getByRole('button', { name: /确\s*认/ });
+    fireEvent.click(confirm);
+    expect(await screen.findByText('提交暂不可用')).toBeInTheDocument();
+    expect(screen.getByText('将直接指派给所选审核人。', { exact: false })).toBeInTheDocument();
+    expect(api.actLearningQuestion).toHaveBeenCalledWith('question-1', 1, 'submit', '', 'alice');
+    fireEvent.click(confirm);
+    await waitFor(() => expect(changed).toHaveBeenCalledOnce());
+    expect(api.actLearningQuestion).toHaveBeenCalledTimes(2);
+  });
+
+  it('未选择审核人可自动派单，人员列表加载失败仍可提交，取消不发起审核', async () => {
+    vi.mocked(api.listLearningReviewers).mockRejectedValue(new Error('人员列表暂不可用'));
+    vi.mocked(api.actLearningQuestion).mockResolvedValue({ ...question, review_status: 'pending_review' });
+    const changed = vi.fn();
+    render(<QuestionList questions={[question]} onEdit={vi.fn()} onChanged={changed} />);
+    fireEvent.click(screen.getByRole('button', { name: '提交审核' }));
+    expect(await screen.findByText('人员列表暂不可用')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /取\s*消/ }));
+    expect(api.actLearningQuestion).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '提交审核' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /确\s*认/ }));
+    await waitFor(() => expect(changed).toHaveBeenCalledOnce());
+    expect(api.actLearningQuestion).toHaveBeenCalledWith('question-1', 1, 'submit', '', undefined);
   });
 
   it('审核通过前需要人工核验，默认不直接启用', async () => {

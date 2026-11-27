@@ -14,6 +14,13 @@
 
 ## 一、项目定位
 
+### 2026-11-27 增量：题目审核工单接入学习任务
+
+- 后台「题库维护 → 提交审核」增加可选审核人弹窗，`GET /api/admin/learning/reviewers` 返回全量在职用户的轻量信息及部门，不依赖用户管理权限。`QuestionAction.reviewer_id` 为空表示自动派单。
+- 共享逻辑位于 `backend/app/services/learning_reviews.py`：复用 `tasks`、`task_operation_logs` 和现有 Assigner Worker 发布入口，不新增表或迁移；题目状态和审核工单原子创建，派单/通知在提交之后执行。保持共享服务在中立层，避免后台管理和任务模块循环导入。
+- 新增 `/api/tasks/learning/reviews`、`/{task_id}`、`/{task_id}/decision`，登录后按提交人/当前审核人范围授权。学习中心增加审核工单列表，详情路由为 `/tasks/learning/reviews/:taskId`；普通工单/通知详情入口自动转入学习审核页。
+- 审核通过/驳回同步关闭工单，题目编辑/文章发版取消过期审核；历史内容取自 `LearningAudit` 的提交快照。通用工单接口不能改审核关联元数据或直接完成审核。回归覆盖前后端选择审核人、自动派单、访问控制、版本失效及失败重试。
+
 ### 2026-11-20 增量：后台题目生成与知识点维护
 
 - 新入口为「后台管理 → 其他 → 运营与数据 → 题目生成」，实际路由在 `frontend/src/main.tsx` 注册 `/admin/question-generation`；页面及编辑、选材、审核、开卷预览组件位于 `frontend/src/pages/admin/learning/`，请求封装位于 `frontend/src/api/learning.ts`。

@@ -4,6 +4,7 @@ import { Navbar, Loading, Toast } from 'tdesign-mobile-react';
 import { BookOpen, RefreshCw, CheckCircle, ChevronRight, Trophy, Target, TrendingUp, Sparkles, BookX } from 'lucide-react';
 import { listLearnerArticles, getLearnerProgress, type LearnerArticleSummary, type LearnerProgress } from '@/api/learner';
 import './learner.css';
+import LearningReviewInbox from './LearningReviewInbox';
 
 /** 智能返回：优先历史栈，无历史则回到 tasks（上一级来源页） */
 function smartBack(navigate: ReturnType<typeof useNavigate>, fallback: string) {
@@ -104,6 +105,8 @@ export default function LearnerHome() {
           <ChevronRight size={18} className="learner-wrongbook-entry__arrow" />
         </div>
       </section>
+
+      <LearningReviewInbox />
 
       {/* 标题栏 + 刷新 */}
       <div className="learner-section-header">

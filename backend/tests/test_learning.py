@@ -10,14 +10,14 @@ from alembic.operations import Operations
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import inspect, select, text
+from sqlalchemy import event, func, inspect, select, text
 
 from app.core.auth_routes import get_current_active_user_from_token
 from app.core.database import get_async_db
 from app.models.base import Base
 from app.models.identity import Permission
 from app.models.learning import LearningAnswer, LearningArticle, LearningArticleVersion, LearningAudit, LearningGeneration, LearningQuestion
-from app.models.task import TaskStatus, TaskType
+from app.models.task import Task, TaskStatus, TaskType
 from app.modules.admin.api.learning import (
     ConfirmArticle, CreateArticle, Generate, QuestionAction, SaveArticle, SaveQuestion, router,
 )
@@ -35,13 +35,25 @@ def administrator():
 
 
 @pytest.fixture
-def learning_db(db):
+def learning_db(db, monkeypatch):
+    from app.services import learning_reviews
+
+    monkeypatch.setattr(learning_reviews, "notify_review", AsyncMock())
+
+    def task_id_for_sqlite(mapper, connection, target):
+        if target.id is None:
+            target.id = (connection.execute(select(func.max(Task.id))).scalar() or 0) + 1
+
+    event.listen(Task, "before_insert", task_id_for_sqlite)
     for name in (
         "learning_articles", "learning_article_versions", "learning_questions", "learning_generations", "learning_audits",
         "learning_answers", "learning_wrongbook",
     ):
         Base.metadata.tables[name].create(db.session.get_bind(), checkfirst=True)
-    return db
+    try:
+        yield db
+    finally:
+        event.remove(Task, "before_insert", task_id_for_sqlite)
 
 
 def content():
