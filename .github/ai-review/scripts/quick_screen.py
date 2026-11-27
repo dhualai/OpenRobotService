@@ -3,7 +3,8 @@
 
 用法：
   CI：  python3 quick_screen.py            # env: REPO / PR_NUMBER / GH_TOKEN
-        命中时把评论段落写到 --out-md 指定文件，并以 exit 10 表示「命中高危」。
+        命中时把评论段落写到 --out-md 指定文件，并以 exit 码表达结果：
+        10 = 命中高危（blocker，推企微）；20 = 仅关注档（warning，只落评论）。
   库内复用：from quick_screen import screen
 
 规则与 docs/ai-review/rules.md 保持同步（本文件是执行源，文档是镜像）。
@@ -21,6 +22,7 @@ from ai_review_common import (
 
 EXIT_OK = 0
 EXIT_HIT = 10          # 命中高危（blocker）
+EXIT_WARN = 20         # 仅命中关注档（warning）——落评论但不推企微
 EXIT_ERROR = 1
 
 # 检视器自身目录（含本脚本与测试），screen() 一律跳过
@@ -235,7 +237,10 @@ def main():
         with open(args.out_json, "w", encoding="utf-8") as fh:
             json.dump(result, fh, ensure_ascii=False, indent=2)
     hit = bool(result["blockers"])
-    if hit and args.out_md:
+    has_warn = bool(result["warnings"])
+    # 规则文档口径「warning = 只落评论不吆喝」：仅有 warning 时也要落评论
+    # 文件并返回 EXIT_WARN，否则 warning 档完全沉默（PR #537/#539 实测暴露）。
+    if (hit or has_warn) and args.out_md:
         with open(args.out_md, "w", encoding="utf-8") as fh:
             fh.write(md)
 
@@ -244,7 +249,7 @@ def main():
     else:
         print(f"快筛完成：blocker={len(result['blockers'])} "
               f"warning={len(result['warnings'])}")
-    return EXIT_HIT if hit else EXIT_OK
+    return EXIT_HIT if hit else (EXIT_WARN if has_warn else EXIT_OK)
 
 
 if __name__ == "__main__":
