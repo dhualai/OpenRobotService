@@ -904,18 +904,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Prepare SSH key
-        if: ${{ inputs.action != 'acceptance' }}
-        env:
-          PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          test -n "$PROD_TICKET_SSH_PRIVATE_KEY"
-          install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$PROD_TICKET_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/prod_ticket_key"
-          chmod 600 "$HOME/.ssh/prod_ticket_key"
-          echo "PROD_TICKET_SSH_KEY=$HOME/.ssh/prod_ticket_key" >> "$GITHUB_ENV"
-
       - name: Resolve previous deployment sha
         if: ${{ inputs.action != 'acceptance' }}
         id: prev
@@ -967,11 +955,8 @@ jobs:
           TEST_BASE_URL: "http://localhost:8400"
           TEST_USERNAME: ${{ env.SEED_BOT_USERNAME }}
           TEST_PASSWORD: ${{ secrets.SEED_BOT_PASSWORD || vars.SEED_BOT_PASSWORD || 'Automation@2026' }}
-          PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
-          PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
-          PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
-          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
-          PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
+          TICKET_STATUS_API_URL: ${{ secrets.TICKET_STATUS_API_URL }}
+          TICKET_STATUS_API_TOKEN: ${{ secrets.TICKET_STATUS_API_TOKEN }}
         run: |
           python automation/scripts/cli-ticket-gate.py \
             --message-file commit-message.txt \
