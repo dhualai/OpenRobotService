@@ -1,0 +1,26 @@
+{
+  "status_code": 200,
+  "url": "http://localhost:8400/api/tasks/6/comments",
+  "reason": "OK",
+  "headers": {
+    "date": "Fri, 27 Nov 2026 02:23:51 GMT",
+    "server": "uvicorn",
+    "content-length": "290",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": {
+    "content": "业务场景自动化：评论验证",
+    "is_public": true,
+    "attachments": [],
+    "reply_to": null,
+    "id": 21,
+    "ticket_id": 6,
+    "created_by": "admin",
+    "created_by_name": "admin",
+    "created_by_avatar_resource_id": null,
+    "created_at": "2026-11-27T02:23:52",
+    "updated_at": "2026-11-27T02:23:52",
+    "quoted": null
+  }
+}

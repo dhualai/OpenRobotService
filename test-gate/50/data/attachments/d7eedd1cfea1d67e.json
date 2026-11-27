@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/my-tasks/",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "title": "My task"
+  }
+}

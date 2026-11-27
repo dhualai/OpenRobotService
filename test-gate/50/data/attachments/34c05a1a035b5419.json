@@ -1,0 +1,15 @@
+{
+  "status_code": 403,
+  "url": "http://localhost:8400/api/tasks/1/status",
+  "reason": "Forbidden",
+  "headers": {
+    "date": "Fri, 27 Nov 2026 02:23:50 GMT",
+    "server": "uvicorn",
+    "content-length": "61",
+    "content-type": "application/json",
+    "vary": "Origin"
+  },
+  "body": {
+    "detail": "仅提单人或有 operate 权限可撤回工单"
+  }
+}

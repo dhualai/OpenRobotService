@@ -1,0 +1,2 @@
+{"ticket_id": 1053, "production_status": "new", "eligible": false}
+::notice::ORS-1053 is not resolved or closed. Functional tests were skipped.
