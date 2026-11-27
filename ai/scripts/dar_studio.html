@@ -777,7 +777,12 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
         <span class="badge dim" id="supstat">加载中…</span>
         <span style="flex:1"></span>
         <button class="btn sm" onclick="candRefresh()">刷新</button>
-        <button class="btn" id="candpush" onclick="candPush()" title="把勾选（或全部未推送）的知识点推到服务号「知识库 → 待补充」">📤 推送服务号</button>
+        <select id="candtarget" title="推送目标站点（与候选数据来源无关）"
+          style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:12.5px">
+          <option value="test">推送 → 测试服务号</option>
+          <option value="prod">推送 → 生产服务号</option>
+        </select>
+        <button class="btn" id="candpush" onclick="candPush()" title="把勾选（或全部未推送）的知识点推到服务号「知识库 → 待补充」">📤 推送</button>
       </div>
       <p class="sub" style="margin-bottom:10px">
         周流程「吸收 → 周报」跑完，AI 把漏斗「未覆盖 + 未直答」段的用户提问归纳成<b>通用知识点</b>（去车型/项目上下文；未直答=资料有但不完善，同样要补）。
@@ -2585,11 +2590,15 @@ async function candPush(){
     ? [..._candChecked]
     : candFiltered().filter(x => (x.status || "pending") === "pending").map(x => x.id);
   if(!ids.length){ toast("没有可推送的知识点（勾选，或确保有「待审核」的）", "warn"); return; }
-  if(!confirm(`推送 ${ids.length} 条知识点到服务号「知识库 → 待补充」？`)) return;
+  const target = ($("#candtarget") && $("#candtarget").value) || "test";
+  const label = target === "prod" ? "【生产服务号】" : "【测试服务号】";
+  const warn = target === "prod" ? "
+⚠️ 这是生产站点，推送后会出现在线上「知识库 → 待补充」。" : "";
+  if(!confirm(`推送 ${ids.length} 条知识点到${label}？${warn}`)) return;
   $("#candpush").disabled = true;
   try {
-    const j = await candPost("/api/supplement/candidates/push", {env: CAND_ENV, ids});
-    toast(`已推送 ${j.pushed} 条`, "ok");
+    const j = await candPost("/api/supplement/candidates/push", {env: CAND_ENV, target, ids});
+    toast(`已推送 ${j.pushed} 条到${label}`, "ok");
     _candChecked.clear();
     await candRefresh();
   } catch(e) {
