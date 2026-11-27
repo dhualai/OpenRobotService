@@ -77,3 +77,20 @@ PROD_TICKET_DB_PASSWORD
 ## 为什么不直接用 FastAPI
 
 这服务只有一个接口、一天查几次。标准库的 `http.server` 够了，少一层依赖就少一处「服务器装不上包」的故障点。
+
+## 生成用例用的详情接口（可选）
+
+`GET /tickets/<id>/detail` 返回工单正文，供 ticket pipeline 生成用例用：
+
+```json
+{"ticket_id":1053,"status":"resolved","eligible":true,"project_id":"Leo_test",
+ "task_type":"bug","title":"...","description":"...","tags":["..."]}
+```
+
+**默认关闭**，因为正文可能含客户信息。显式设置 `TICKET_API_DETAILS=1` 才启用，否则返回 403。
+
+```bash
+TICKET_API_DETAILS=1 TICKET_API_TOKEN=... TICKET_DB_PASSWORD=... python3 server.py
+```
+
+失败语义与状态接口一致：数据库不可用返回 503，不会返回空正文冒充成功。

@@ -36,6 +36,37 @@ PORT = int(os.environ.get("TICKET_API_PORT", "8099"))
 
 TICKET_ID = re.compile(r"^(?:ORS-)?(\d{1,10})$", re.IGNORECASE)
 
+# 生成用例需要工单正文；正文可能含客户信息，所以默认不对外，显式开启才暴露。
+DETAILS_ENABLED = os.environ.get("TICKET_API_DETAILS", "") == "1"
+
+DETAIL_SQL = (
+    "SELECT JSON_OBJECT("
+    "'id', id, 'status', status, 'project_id', project_id, 'task_type', task_type, "
+    "'title', title, 'description', description, 'tags', tags"
+    ") FROM {db}.tasks WHERE id = {number} LIMIT 1"
+)
+
+
+def parse_detail_row(stdout: str) -> dict | None:
+    """Turn the mysql --raw JSON output into a dict (pure function, unit-tested)."""
+    payload = stdout.strip()
+    if not payload:
+        return None
+    data = json.loads(payload)
+    if not isinstance(data, dict):
+        raise ValueError("detail row is not an object")
+    status = str(data.get("status") or "").strip().lower()
+    return {
+        "ticket_id": data.get("id"),
+        "status": status,
+        "eligible": status in {"resolved", "closed"},
+        "project_id": data.get("project_id") or "",
+        "task_type": data.get("task_type") or "",
+        "title": data.get("title") or "",
+        "description": data.get("description") or "",
+        "tags": data.get("tags"),
+    }
+
 
 def query_ticket(number: int) -> dict | None:
     """只读一条工单。返回 None 表示不存在，抛异常表示查询失败。"""
@@ -65,6 +96,19 @@ def query_ticket(number: int) -> dict | None:
     }
 
 
+def query_ticket_detail(number: int) -> dict | None:
+    """同一张工单，附带生成用例需要的正文；用 JSON_OBJECT 避免手工切表符。"""
+    sql = DETAIL_SQL.format(db=DB_NAME, number=number)
+    env = dict(os.environ, MYSQL_PWD=DB_PASSWORD)
+    proc = subprocess.run(
+        ["mysql", "-N", "-B", "--raw", f"-h{DB_HOST}", f"-P{DB_PORT}", f"-u{DB_USER}", "-e", sql],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip()[:200] or "mysql failed")
+    return parse_detail_row(proc.stdout)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ticket-status/1.0"
 
@@ -81,8 +125,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"status": "ok"})
             return
 
-        match = re.fullmatch(r"/tickets/([^/]+)/?", self.path)
-        if not match:
+        # /detail 必须先于通用 /tickets/{id} 匹配，否则会被后者 404 掉。
+        detail_match = re.fullmatch(r"/tickets/([^/]+)/detail/?", self.path)
+        ticket_match = re.fullmatch(r"/tickets/([^/]+)/?", self.path)
+        if not detail_match and not ticket_match:
             self._send(404, {"detail": "not found"})
             return
 
@@ -90,13 +136,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"detail": "invalid token"})
             return
 
-        ticket = TICKET_ID.match(match.group(1))
+        ticket = TICKET_ID.match((detail_match or ticket_match).group(1))
         if not ticket:
             self._send(400, {"detail": "ticket id must look like ORS-1053"})
             return
+        number = int(ticket.group(1))
+
+        if detail_match:
+            if not DETAILS_ENABLED:
+                self._send(403, {"detail": "detail fields are disabled (set TICKET_API_DETAILS=1)"})
+                return
+            try:
+                detail = query_ticket_detail(number)
+            except Exception as exc:  # noqa: BLE001 - 失败必须 5xx，不能编数据
+                self._send(503, {"detail": f"detail lookup failed: {exc}"})
+                return
+            if detail is None:
+                self._send(404, {"detail": "ticket not found"})
+                return
+            self._send(200, detail)
+            return
 
         try:
-            row = query_ticket(int(ticket.group(1)))
+            row = query_ticket(number)
         except Exception as exc:  # noqa: BLE001 - 任何失败都必须是 503，不能编状态
             self._send(503, {"detail": f"lookup failed: {exc}"})
             return
