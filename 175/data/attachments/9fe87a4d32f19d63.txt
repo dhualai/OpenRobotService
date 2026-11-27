@@ -1,0 +1,3 @@
+written: /tmp/pytest-of-runner/pytest-0/test_empty_reports_distinguish0/report-0.html (13677 bytes)
+modules=0 scenes=0 failed=0
+standalone report: /tmp/pytest-of-runner/pytest-0/test_empty_reports_distinguish0/report-1.html (0 cases)
