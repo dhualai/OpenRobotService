@@ -705,10 +705,9 @@ jobs:
   manual-ticket-status:
     name: Read one production ticket status
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'acceptance' }}
-    # 生产凭据只允许在自托管 runner 上使用：托管 runner 会把生产 SSH 私钥解密到
-    # 第三方 VM，并从动态公网 IP 连入生产，留下无法区分来源的异地登录记录。
-    # 自托管 runner 私钥不出内网，生产侧可对固定出口 IP 做白名单。与 deploy/rollback 同模式。
-    runs-on: [self-hosted, ors-verify]
+    # 只查工单状态：走云服务器上的只读 API（HTTPS + token），
+    # CI 不再持有 SSH 私钥或数据库口令，也不需要隧道。
+    runs-on: ubuntu-latest
     timeout-minutes: 8
     permissions:
       contents: read
@@ -751,34 +750,41 @@ jobs:
           fi
           project_id=$(jq -er '.project_id | select(type == "string" and test("^[A-Za-z0-9_-]+$"))' "$dir/manifest.json")
           echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install status lookup dependencies
-        run: pip install 'pydantic>=2.8.2' 'PyMySQL[rsa]>=1.1.1'
-      - name: Read status through the existing SSH tunnel
+      - name: Read ticket status from the read-only API
         id: lookup
         env:
           TICKET_ID: ${{ steps.validate.outputs.ticket_id }}
           TICKET_PROJECT_ID: ${{ steps.promoted.outputs.project_id }}
-          PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
-          PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
-          PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
-          PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
-          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
-          PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
+          TICKET_STATUS_API_URL: ${{ secrets.TICKET_STATUS_API_URL }}
+          TICKET_STATUS_API_TOKEN: ${{ secrets.TICKET_STATUS_API_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "$PROD_TICKET_SSH_PRIVATE_KEY" ]]; then
-            echo '::error::Production status lookup is missing its SSH key.'
+          if [[ -z "${TICKET_STATUS_API_URL}" || -z "${TICKET_STATUS_API_TOKEN}" ]]; then
+            echo '::error::缺少 TICKET_STATUS_API_URL 或 TICKET_STATUS_API_TOKEN。'
             exit 1
           fi
-          umask 077
-          key=$(mktemp)
-          trap 'rm -f -- "$key"' EXIT
-          printf '%s\n' "$PROD_TICKET_SSH_PRIVATE_KEY" | tr -d '\r' > "$key"
-          export PROD_TICKET_SSH_KEY="$key"
-          python -m automation.src.ticket_pipeline.manual_acceptance
+          body=$(bash automation/services/ticket-status/query.sh "${TICKET_ID}") || {
+            echo '::error::工单状态查询失败（网络或服务不可用）。'
+            exit 1
+          }
+          echo "响应：${body}"
+          eligible=$(printf '%s' "${body}" | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("eligible") else "false")')
+          status=$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+          project=$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("project_id",""))')
+          # 工单必须属于本次验收的项目，否则一张别的项目的已关闭工单也能让验收通过。
+          if [[ -n "${TICKET_PROJECT_ID}" && "${project}" != "${TICKET_PROJECT_ID}" ]]; then
+            echo "::error::工单 ORS-${TICKET_ID} 属于项目 '${project}'，与本次验收项目 '${TICKET_PROJECT_ID}' 不一致。"
+            exit 1
+          fi
+          # 验收是「人来确认这张单可以验」，工单没关闭就直接失败，
+          # 否则 run 会显示成功但其实什么都没跑。
+          if [[ "${eligible}" != "true" ]]; then
+            echo "::error::工单 ORS-${TICKET_ID} 当前状态为 '${status}'，不是 resolved/closed，验收中止。"
+            echo "工单 ORS-${TICKET_ID} 状态：${status}，不满足验收条件（需 resolved 或 closed）" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "eligible=${eligible}" >> "$GITHUB_OUTPUT"
+          echo "工单 ORS-${TICKET_ID} 状态：${status}，eligible=${eligible}" >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------- 工单验收（部署范围，非阻断） ----------------
   # 原 ticket-gate.yml 合并而来：工单号改为从「上次成功部署点 → 本次部署点」
@@ -898,18 +904,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Prepare SSH key
-        if: ${{ inputs.action != 'acceptance' }}
-        env:
-          PROD_TICKET_SSH_PRIVATE_KEY: ${{ secrets.PROD_TICKET_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          test -n "$PROD_TICKET_SSH_PRIVATE_KEY"
-          install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$PROD_TICKET_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/prod_ticket_key"
-          chmod 600 "$HOME/.ssh/prod_ticket_key"
-          echo "PROD_TICKET_SSH_KEY=$HOME/.ssh/prod_ticket_key" >> "$GITHUB_ENV"
-
       - name: Resolve previous deployment sha
         if: ${{ inputs.action != 'acceptance' }}
         id: prev
@@ -961,11 +955,8 @@ jobs:
           TEST_BASE_URL: "http://localhost:8400"
           TEST_USERNAME: ${{ env.SEED_BOT_USERNAME }}
           TEST_PASSWORD: ${{ secrets.SEED_BOT_PASSWORD || vars.SEED_BOT_PASSWORD || 'Automation@2026' }}
-          PROD_TICKET_SSH_HOST: ${{ secrets.PROD_TICKET_SSH_HOST }}
-          PROD_TICKET_SSH_PORT: ${{ secrets.PROD_TICKET_SSH_PORT }}
-          PROD_TICKET_SSH_USER: ${{ secrets.PROD_TICKET_SSH_USER }}
-          PROD_TICKET_DB_USER: ${{ secrets.PROD_TICKET_DB_USER }}
-          PROD_TICKET_DB_PASSWORD: ${{ secrets.PROD_TICKET_DB_PASSWORD }}
+          TICKET_STATUS_API_URL: ${{ secrets.TICKET_STATUS_API_URL }}
+          TICKET_STATUS_API_TOKEN: ${{ secrets.TICKET_STATUS_API_TOKEN }}
         run: |
           python automation/scripts/cli-ticket-gate.py \
             --message-file commit-message.txt \
