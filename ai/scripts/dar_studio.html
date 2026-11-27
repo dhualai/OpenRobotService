@@ -2592,8 +2592,7 @@ async function candPush(){
   if(!ids.length){ toast("没有可推送的知识点（勾选，或确保有「待审核」的）", "warn"); return; }
   const target = ($("#candtarget") && $("#candtarget").value) || "test";
   const label = target === "prod" ? "【生产服务号】" : "【测试服务号】";
-  const warn = target === "prod" ? "
-⚠️ 这是生产站点，推送后会出现在线上「知识库 → 待补充」。" : "";
+  const warn = target === "prod" ? "\n⚠️ 这是生产站点，推送后会出现在线上「知识库 → 待补充」。" : "";
   if(!confirm(`推送 ${ids.length} 条知识点到${label}？${warn}`)) return;
   $("#candpush").disabled = true;
   try {
