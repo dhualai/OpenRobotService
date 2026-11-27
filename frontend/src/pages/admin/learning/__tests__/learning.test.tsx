@@ -236,7 +236,7 @@ describe('来源工单摘要与相似推荐', () => {
 });
 
 describe('文章编辑与候选采用', () => {
-  const editor = () => wrap(<LearningTheme><ArticleEditor articleId="article-1" refreshKey={0} onClose={vi.fn()} onChanged={vi.fn()} onQuestionEdit={vi.fn()} onPreview={vi.fn()} /></LearningTheme>);
+  const editor = () => wrap(<LearningTheme><ArticleEditor articleId="article-1" refreshKey={0} onClose={vi.fn()} onChanged={vi.fn()} onPreview={vi.fn()} /></LearningTheme>);
 
   it('AI提炼文章按钮使用蓝底白字的主按钮并加粗文字', async () => {
     editor();
@@ -356,6 +356,91 @@ describe('文章编辑与候选采用', () => {
 });
 
 describe('题目审核及开卷预览', () => {
+  it('关联题目编辑弹窗位于维护抽屉上方，保存后刷新题目且保留文章未保存修改', async () => {
+    let currentQuestion = question;
+    vi.mocked(api.getLearningArticle).mockImplementation(async () => detail({
+      active_version: 1, enabled: true, questions: [currentQuestion],
+      versions: [{ version: 1, content, created_at: '2026-11-20T01:00:00' }],
+    }));
+    vi.mocked(api.saveLearningQuestion).mockImplementation(async (_id, _revision, payload) => {
+      currentQuestion = { ...question, payload, revision: 2 };
+      return currentQuestion;
+    });
+    wrap(<QuestionGeneration />);
+    fireEvent.click(await screen.findByRole('button', { name: /维护内容/ }));
+    const drawer = await screen.findByRole('dialog');
+    fireEvent.change(await within(drawer).findByLabelText('文章标题'), { target: { value: '未保存的文章主题' } });
+    fireEvent.click(within(drawer).getByRole('tab', { name: '关联题目（1）' }));
+    fireEvent.click(within(drawer).getByRole('button', { name: '编辑题目' }));
+    const editor = (await screen.findByText('编辑题目', { selector: '.ant-modal-title' })).closest('[role="dialog"]') as HTMLElement;
+    const modalLayer = editor.closest('.ant-modal-wrap')!;
+    const drawerLayer = drawer.closest('.ant-drawer')!;
+    expect(Number(window.getComputedStyle(modalLayer).zIndex)).toBeGreaterThan(Number(window.getComputedStyle(drawerLayer).zIndex));
+    fireEvent.change(within(editor).getByLabelText('题干'), { target: { value: '依据文章，首先应检查什么？' } });
+    fireEvent.change(within(editor).getByLabelText('选项1内容'), { target: { value: '电源供电情况' } });
+    fireEvent.change(within(editor).getByLabelText('答案解析'), { target: { value: '文章说明应当先确认供电。' } });
+    await waitFor(() => expect(within(editor).getByRole('button', { name: '保存草稿，重新审核' })).toBeEnabled());
+    fireEvent.click(within(editor).getByRole('button', { name: '保存草稿，重新审核' }));
+    await waitFor(() => expect(api.saveLearningQuestion).toHaveBeenCalledWith(question.id, 1, expect.objectContaining({
+      stem: '依据文章，首先应检查什么？', options: [{ key: 'A', text: '电源供电情况' }, { key: 'B', text: '触点' }], explanation: '文章说明应当先确认供电。',
+    })));
+    expect(await within(drawer).findByRole('heading', { name: '依据文章，首先应检查什么？' })).toBeInTheDocument();
+    await waitFor(() => expect(editor).not.toBeVisible());
+    fireEvent.click(within(drawer).getByRole('tab', { name: '知识点文章' }));
+    expect(within(drawer).getByLabelText('文章标题')).toHaveValue('未保存的文章主题');
+    expect(api.saveLearningArticle).not.toHaveBeenCalled();
+  });
+
+  it('关联题目放弃修改确认位于编辑弹窗上方，关闭后可重新编辑且不关闭维护抽屉', async () => {
+    vi.mocked(api.getLearningArticle).mockResolvedValue(detail({ active_version: 1, questions: [question],
+      versions: [{ version: 1, content, created_at: '2026-11-20T01:00:00' }],
+    }));
+    wrap(<QuestionGeneration />);
+    fireEvent.click(await screen.findByRole('button', { name: /维护内容/ }));
+    const drawer = await screen.findByRole('dialog');
+    fireEvent.click(await within(drawer).findByRole('tab', { name: '关联题目（1）' }));
+    fireEvent.click(within(drawer).getByRole('button', { name: '编辑题目' }));
+    const editor = (await screen.findByText('编辑题目', { selector: '.ant-modal-title' })).closest('[role="dialog"]') as HTMLElement;
+    fireEvent.change(within(editor).getByLabelText('题干'), { target: { value: '临时修改的题干' } });
+    fireEvent.click(within(editor).getByRole('button', { name: 'Close' }));
+    const discard = await screen.findByRole('button', { name: '放弃修改' });
+    expect(Number(window.getComputedStyle(discard.closest('.ant-modal-wrap')!).zIndex))
+      .toBeGreaterThan(Number(window.getComputedStyle(editor.closest('.ant-modal-wrap')!).zIndex));
+    await waitFor(() => expect(discard).toHaveStyle({ backgroundColor: '#3697c3', color: '#fff' }));
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: '放弃修改' })).not.toBeInTheDocument());
+    expect(within(editor).getByLabelText('题干')).toHaveValue('临时修改的题干');
+    fireEvent.click(within(editor).getByRole('button', { name: 'Close' }));
+    fireEvent.click(await screen.findByRole('button', { name: '放弃修改' }));
+    await waitFor(() => expect(editor).not.toBeInTheDocument());
+    expect(drawer).toBeVisible();
+    fireEvent.click(within(drawer).getByRole('button', { name: '编辑题目' }));
+    const reopened = (await screen.findByText('编辑题目', { selector: '.ant-modal-title' })).closest('[role="dialog"]') as HTMLElement;
+    expect(within(reopened).getByLabelText('题干')).toHaveValue(question.payload.stem);
+    expect(api.saveLearningQuestion).not.toHaveBeenCalled();
+  });
+
+  it('题库维护入口仍可编辑，保存失败保留输入并支持重试', async () => {
+    vi.mocked(api.getLearningArticle).mockResolvedValue(detail({ active_version: 1,
+      versions: [{ version: 1, content, created_at: '2026-11-20T01:00:00' }],
+    }));
+    vi.mocked(api.saveLearningQuestion).mockRejectedValueOnce(new Error('保存暂不可用')).mockResolvedValue({ ...question, revision: 2 });
+    wrap(<QuestionGeneration />);
+    fireEvent.click(screen.getByRole('tab', { name: '题库维护' }));
+    fireEvent.click(await screen.findByRole('button', { name: '编辑题目' }));
+    const editor = (await screen.findByText('编辑题目', { selector: '.ant-modal-title' })).closest('[role="dialog"]') as HTMLElement;
+    fireEvent.change(within(editor).getByLabelText('题干'), { target: { value: '修改后的题库题目' } });
+    const save = within(editor).getByRole('button', { name: '保存草稿，重新审核' });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    expect(await within(editor).findByText('保存暂不可用')).toBeInTheDocument();
+    expect(within(editor).getByLabelText('题干')).toHaveValue('修改后的题库题目');
+    fireEvent.click(save);
+    await waitFor(() => expect(editor).not.toBeInTheDocument());
+    expect(api.saveLearningQuestion).toHaveBeenCalledTimes(2);
+    expect(api.saveLearningQuestion).toHaveBeenLastCalledWith(question.id, question.revision, expect.objectContaining({ stem: '修改后的题库题目' }));
+  });
+
   it('编辑被驳回题目时显示原因，并保存为待重新审核的草稿', async () => {
     vi.mocked(api.getLearningArticle).mockResolvedValue(detail({ active_version: 1, enabled: true,
       versions: [{ version: 1, content, created_at: '2026-11-20T01:00:00' }],

@@ -6,6 +6,7 @@ import { adoptLearningArticle, confirmLearningArticle, DIFFICULTIES, forkLearnin
   type ArticleContent, type ArticleDetail, type Generation, type LearningQuestion, type QuestionType, type SourceInput } from '@/api/learning';
 import { ArticleReading } from './LearningPreview';
 import QuestionList from './QuestionList';
+import QuestionEditor from './QuestionEditor';
 import SourceModal from './SourceModal';
 
 const failure = (cause: unknown) => cause instanceof Error ? cause.message : '操作失败，请稍后重试';
@@ -16,9 +17,9 @@ const AUDIT_LABELS: Record<string, string> = {
   'question.approve': '题目审核通过', 'question.reject': '题目驳回', 'question.enable': '启用题目', 'question.disable': '停用题目',
 };
 
-export default function ArticleEditor({ articleId, refreshKey, onClose, onChanged, onQuestionEdit, onPreview }: {
+export default function ArticleEditor({ articleId, refreshKey, onClose, onChanged, onPreview }: {
   articleId: string | null; refreshKey: number; onClose: () => void; onChanged: () => void;
-  onQuestionEdit: (question: LearningQuestion) => void; onPreview: (id: string) => void;
+  onPreview: (id: string) => void;
 }) {
   const [form] = Form.useForm<ArticleContent>();
   const [modal, modalContext] = Modal.useModal();
@@ -33,6 +34,7 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
   const [verified, setVerified] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [candidate, setCandidate] = useState<Generation | null>(null);
+  const [editingQuestion, setEditingQuestion] = useState<LearningQuestion | null>(null);
   const [count, setCount] = useState(5);
   const [types, setTypes] = useState<QuestionType[]>(['single_choice', 'multiple_choice', 'true_false']);
   const [difficulty, setDifficulty] = useState<keyof typeof DIFFICULTIES>('medium');
@@ -50,6 +52,7 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
   }, [formContent, form]);
 
   useEffect(() => {
+    setEditingQuestion(null);
     if (!articleId) return;
     let active = true;
     setLoading(true); setData(null); setError(''); setCandidate(null); setPending(null); setDirty(false);
@@ -215,7 +218,7 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
               {data.draft && !!data.active_version && <span className="learning-muted">依据已确认 v{data.active_version} 出题，不使用未确认草稿。</span>}
             </div>
             <QuestionList questions={data.questions.map((question) => ({ ...question, current_version: data.active_version, article_enabled: data.enabled }))}
-              onEdit={onQuestionEdit} onChanged={onChanged} />
+              onEdit={setEditingQuestion} onChanged={onChanged} />
           </> },
           { key: 'history', label: '版本与操作记录', children: <>
             {!data.versions.length && <Empty description="还没有已确认版本" />}
@@ -225,6 +228,7 @@ export default function ArticleEditor({ articleId, refreshKey, onClose, onChange
           </> },
         ]} />
       </>}
+      {editingQuestion && <QuestionEditor question={editingQuestion} onClose={() => setEditingQuestion(null)} onSaved={onChanged} />}
     </Drawer>
     <SourceModal open={sourceOpen} replacing initialTitle={data?.draft?.title || data?.title} initialSources={data?.sources} onClose={() => setSourceOpen(false)}
       onSubmit={async (title, sources) => { const next = await save(sources, title); if (next) setSourceOpen(false); else throw new Error('保存失败，请查看文章编辑区的提示'); }} />
