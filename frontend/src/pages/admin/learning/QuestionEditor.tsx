@@ -9,6 +9,7 @@ export default function QuestionEditor({ question, onClose, onSaved }: {
   question: LearningQuestion | null; onClose: () => void; onSaved: () => void;
 }) {
   const [form] = Form.useForm<QuestionContent>();
+  const [modal, modalContext] = Modal.useModal();
   const [article, setArticle] = useState<ArticleDetail | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -28,7 +29,7 @@ export default function QuestionEditor({ question, onClose, onSaved }: {
   const close = () => {
     if (saving) return;
     if (!dirty) { onClose(); return; }
-    Modal.confirm({ title: '放弃未保存的题目修改？', content: '已保存的草稿不受影响。', okText: '放弃修改', cancelText: '继续编辑', onOk: onClose });
+    modal.confirm({ title: '放弃未保存的题目修改？', content: '已保存的草稿不受影响。', okText: '放弃修改', cancelText: '继续编辑', onOk: onClose });
   };
 
   const save = async () => {
@@ -46,6 +47,7 @@ export default function QuestionEditor({ question, onClose, onSaved }: {
   const rejection = article?.audits.find((record) => record.question_id === question?.id && record.action === 'question.reject');
   return <Modal open={!!question} title="编辑题目" width={820} onCancel={close} onOk={save} okText="保存草稿，重新审核"
     confirmLoading={saving} okButtonProps={{ disabled: !article }} forceRender>
+    {modalContext}
     <Alert type="info" showIcon message="修改题目后会退回草稿并停用，必须重新审核。答案应能从关联文章中明确找到。" />
     {error && <Alert type="error" role="alert" message={error} />}
     {question?.review_status === 'rejected' && typeof rejection?.snapshot.reason === 'string' && <Alert type="warning" message={`驳回原因：${rejection.snapshot.reason}`} />}

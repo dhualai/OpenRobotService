@@ -91,8 +91,8 @@ function QuestionGenerationContent() {
       const article = await createLearningArticle(title, sources);
       setCreating(false); setArticleId(article.id); refresh();
     }} />
-    <ArticleEditor articleId={articleId} refreshKey={refreshKey} onClose={() => setArticleId(null)} onChanged={refresh} onQuestionEdit={setQuestion} onPreview={setPreviewId} />
-    <QuestionEditor question={question} onClose={() => setQuestion(null)} onSaved={refresh} />
+    <ArticleEditor articleId={articleId} refreshKey={refreshKey} onClose={() => setArticleId(null)} onChanged={refresh} onPreview={setPreviewId} />
+    {question && <QuestionEditor question={question} onClose={() => setQuestion(null)} onSaved={refresh} />}
     <LearningPreviewModal articleId={previewId} onClose={() => setPreviewId(null)} />
   </main>;
 }
