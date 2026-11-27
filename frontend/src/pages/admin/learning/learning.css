@@ -1,24 +1,23 @@
-.learning-page { min-height: 100vh; padding: 20px max(20px, calc((100vw - 1260px) / 2)) 32px; background: var(--muted); color: var(--foreground); }
+.learning-page { min-height: 100vh; padding: 20px max(20px, calc((100vw - 1260px) / 2)) 32px; background: var(--mac-secondary); color: var(--foreground); }
 .learning-page-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .learning-page-top > span { color: var(--muted-foreground); font-size: 12px; }
-.learning-hero { position: relative; display: flex; justify-content: space-between; gap: 32px; overflow: hidden; padding: 36px 40px; background: linear-gradient(115deg, var(--gray-25), var(--blue-1)); border-radius: 20px; color: var(--card); }
+.learning-hero { position: relative; display: flex; justify-content: space-between; gap: 32px; overflow: hidden; padding: 36px 40px; background: linear-gradient(115deg, var(--mac-blue-1), var(--mac-blue-2)); border-radius: 20px; color: var(--card); }
 .learning-hero-main { max-width: 690px; }
-.learning-eyebrow { display: flex; align-items: center; gap: 9px; color: var(--blue-5); font-size: 11px; letter-spacing: 1.8px; }
-.learning-eyebrow > span { width: 6px; height: 6px; background: var(--butter); border-radius: 50%; }
-.learning-eyebrow .ant-tag { margin-left: 10px; color: var(--blue-5); border: 1px solid color-mix(in oklab, var(--card) 19%, transparent); background: color-mix(in oklab, var(--card) 4%, transparent); letter-spacing: 1px; }
+.learning-eyebrow { display: flex; align-items: center; gap: 9px; color: var(--mac-blue-5); font-size: 11px; letter-spacing: 1.8px; }
+.learning-eyebrow > span { width: 6px; height: 6px; background: var(--mac-blue-4); border-radius: 50%; }
+.learning-eyebrow .ant-tag { margin-left: 10px; color: var(--mac-blue-5); border: 1px solid color-mix(in oklab, var(--mac-blue-4) 45%, transparent); background: color-mix(in oklab, var(--mac-blue-5) 8%, transparent); letter-spacing: 1px; }
 .learning-hero h1 { margin: 18px 0 8px; color: var(--card); font-size: 34px; font-weight: 650; letter-spacing: 1px; }
-.learning-hero-main > p { margin: 0 0 10px; font-size: 17px; color: var(--blue-5); }
-.learning-hero-description { display: block; max-width: 610px; line-height: 1.8; color: var(--gray-light); font-size: 13px; }
-.learning-hero-main > .ant-btn { display: flex; align-items: center; margin-top: 24px; background: var(--primary); border-color: var(--primary); color: var(--gray-25); font-weight: 600; box-shadow: none; }
-.learning-hero-main > .ant-btn:hover { background: var(--blue-4) !important; border-color: var(--blue-4) !important; color: var(--gray-25) !important; }
-.learning-hero-note { flex: 0 0 250px; align-self: center; padding: 24px; border-radius: 14px; background: color-mix(in oklab, var(--card) 3%, transparent); border: 1px solid color-mix(in oklab, var(--card) 9%, transparent); }
-.learning-hero-note > svg { display: block; color: var(--butter); margin-bottom: 14px; }
+.learning-hero-main > p { margin: 0 0 10px; font-size: 17px; color: var(--mac-blue-5); }
+.learning-hero-description { display: block; max-width: 610px; line-height: 1.8; color: var(--mac-blue-5); font-size: 13px; }
+.learning-hero-main > .ant-btn { display: flex; align-items: center; margin-top: 24px; font-weight: 600; box-shadow: none; }
+.learning-hero-note { flex: 0 0 250px; align-self: center; padding: 24px; border-radius: 14px; background: color-mix(in oklab, var(--mac-blue-5) 8%, transparent); border: 1px solid color-mix(in oklab, var(--mac-blue-4) 35%, transparent); }
+.learning-hero-note > svg { display: block; color: var(--mac-blue-4); margin-bottom: 14px; }
 .learning-hero-note strong { font-size: 17px; font-weight: 500; }
-.learning-hero-note p { font-size: 13px; line-height: 1.9; color: var(--blue-5); }
-.learning-hero-note > span { display: flex; align-items: center; gap: 6px; margin-top: 19px; font-size: 11px; color: var(--blue-4); }
+.learning-hero-note p { font-size: 13px; line-height: 1.9; color: var(--mac-blue-5); }
+.learning-hero-note > span { display: flex; align-items: center; gap: 6px; margin-top: 19px; font-size: 11px; color: var(--mac-blue-4); }
 .learning-flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin: 22px 0 26px; }
 .learning-flow > div { display: flex; align-items: center; gap: 14px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
-.learning-flow > div > svg { color: var(--sky); flex-shrink: 0; }
+.learning-flow > div > svg { color: var(--mac-blue-2); flex-shrink: 0; }
 .learning-flow strong, .learning-flow span { display: block; }
 .learning-flow strong { font-size: 13px; font-weight: 600; }
 .learning-flow span { font-size: 12px; color: var(--muted-foreground); margin-top: 4px; }
@@ -30,7 +29,7 @@
 .learning-list-total { margin-left: auto; color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
 .learning-article-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .learning-article-card { display: flex; flex-direction: column; min-width: 0; padding: 20px 20px 10px; border: 1px solid var(--border); border-radius: 12px; transition: border-color .15s, box-shadow .15s; }
-.learning-article-card:hover { border-color: var(--primary); box-shadow: 0 4px 16px color-mix(in oklab, var(--blue-1) 3%, transparent); }
+.learning-article-card:hover { border-color: var(--mac-blue-2); box-shadow: 0 4px 16px color-mix(in oklab, var(--mac-blue-1) 8%, transparent); }
 .learning-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted-foreground); }
 .learning-article-card h2 { margin: 16px 0 18px; font-size: 16px; line-height: 1.6; font-weight: 600; overflow-wrap: anywhere; }
 .learning-article-stats { display: flex; gap: 20px; color: var(--muted-foreground); font-size: 12px; margin-top: auto; }
@@ -53,13 +52,14 @@
 .learning-sources pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow-y: auto; font: inherit; font-size: 12px; padding: 12px; background: var(--muted); border-radius: 6px; }
 .learning-section-heading { display: flex; justify-content: space-between; align-items: center; margin: 24px 0 16px; gap: 10px; }
 .learning-section-heading h3 { margin: 0; }
+.learning-article-actions { justify-content: flex-end; }
 .learning-point-editor { margin: 0 0 24px; }
-.learning-point-card { padding: 18px 18px 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--background); margin-bottom: 12px; }
+.learning-point-card { padding: 18px 18px 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--mac-secondary); margin-bottom: 12px; }
 .learning-generation-records { margin-top: 28px; }
 .learning-generation-record { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--border); }
 .learning-generation-record small { display: block; color: var(--muted-foreground); margin-top: 6px; }
 .learning-error-text { color: var(--danger); font-size: 12px; }
-.learning-generation-controls { padding: 20px; border-radius: 10px; margin: 20px 0; background: var(--muted); }
+.learning-generation-controls { padding: 20px; border-radius: 10px; margin: 20px 0; background: var(--mac-blue-soft); }
 .learning-generation-controls > div { display: grid; grid-template-columns: 100px minmax(180px, 1fr) 110px; gap: 14px; margin-bottom: 16px; }
 .learning-generation-controls label { display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--gray); }
 .learning-generation-controls .ant-input-number { width: 100%; }
@@ -74,7 +74,7 @@
 .learning-question-card summary, .learning-sources summary { cursor: pointer; }
 .learning-card-actions { margin-top: 16px; }
 .learning-article-link.ant-btn { height: auto; padding: 12px 0 0; font-size: 12px; white-space: normal; text-align: left; }
-.learning-reading { margin: 24px 0; padding: 28px; background: var(--muted); border-radius: 12px; line-height: 1.9; overflow-wrap: anywhere; }
+.learning-reading { margin: 24px 0; padding: 28px; background: var(--mac-secondary); border-radius: 12px; line-height: 1.9; overflow-wrap: anywhere; }
 .learning-reading h2 { font-size: 22px; margin: 12px 0 24px; }
 .learning-reading h3 { font-size: 15px; margin: 24px 0 10px; color: var(--blue-1); }
 .learning-reading p, .learning-reading li { font-size: 14px; }
@@ -83,11 +83,11 @@
 .learning-preview-heading { display: flex; align-items: center; justify-content: space-between; font-weight: 600; margin: 28px 0 16px; }
 .learning-preview-question { min-width: 0; margin: 0 0 24px; border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
 .learning-preview-question legend { width: auto; max-width: 100%; float: none; padding: 0 8px; font-size: 14px; font-weight: 500; }
-.learning-answer-option { display: flex; align-items: baseline; gap: 10px; padding: 12px; margin-bottom: 8px; border-radius: 8px; background: var(--muted); cursor: pointer; }
-.learning-answer-option input { flex-shrink: 0; }
+.learning-answer-option { display: flex; align-items: baseline; gap: 10px; padding: 12px; margin-bottom: 8px; border-radius: 8px; background: var(--mac-blue-soft); cursor: pointer; }
+.learning-answer-option input { flex-shrink: 0; accent-color: var(--mac-blue-2); }
 .learning-preview-question > .ant-btn { margin-top: 8px; }
-.learning-answer-result { margin-top: 16px; padding: 16px; background: var(--primary-soft); border-radius: 8px; }
-.learning-answer-result blockquote, .learning-question-card blockquote { margin: 10px 0; padding-left: 12px; border-left: 3px solid var(--blue-4); color: var(--gray); }
+.learning-answer-result { margin-top: 16px; padding: 16px; background: var(--mac-blue-soft); border-radius: 8px; }
+.learning-answer-result blockquote, .learning-question-card blockquote { margin: 10px 0; padding-left: 12px; border-left: 3px solid var(--mac-blue-4); color: var(--gray); }
 .learning-audits > div { display: flex; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
 .learning-audits span { color: var(--muted-foreground); }
 .learning-options-editor { margin-bottom: 24px; }
@@ -103,7 +103,7 @@
 .learning-source-section h3 { font-size: 14px; margin: 0 0 8px; }
 .learning-source-hint { color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
 .learning-source-card { padding: 12px; margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; }
-.learning-source-card.is-anchor { border-color: var(--blue-4); background: var(--primary-soft); }
+.learning-source-card.is-anchor { border-color: var(--mac-blue-4); background: var(--mac-blue-soft); }
 .learning-source-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; font-size: 13px; }
 .learning-source-card-heading strong { overflow-wrap: anywhere; }
 .learning-source-card-heading > span { flex-shrink: 0; color: var(--muted-foreground); font-size: 12px; }
@@ -131,6 +131,8 @@
   .learning-scope-note svg { flex-shrink: 0; margin-top: 2px; }
   .learning-form-grid { grid-template-columns: 1fr; gap: 0; }
   .learning-editor-title, .learning-editor-footer { flex-wrap: wrap; }
+  .learning-section-heading { flex-wrap: wrap; align-items: flex-start; }
+  .learning-article-actions { justify-content: flex-start; }
   .learning-generation-controls { padding: 14px; }
   .learning-generation-controls > div { grid-template-columns: 1fr 1fr; }
   .learning-generation-controls label:nth-child(2) { grid-column: span 2; grid-row: 2; }
