@@ -2547,6 +2547,8 @@ def supp_candidates_save(req: SuppCandSaveReq):
     """审核编辑：改标题/描述/类型、剔除(excluded)/恢复(pending)。"""
     if req.env not in ("test", "prod"):
         raise HTTPException(400, "env 取值 test|prod")
+    if req.target not in ("test", "prod"):
+        raise HTTPException(400, "target 取值 test|prod")
     p = _cand_latest(req.env)
     if not p:
         raise HTTPException(404, "没有候选文件（先跑周流程「吸收 → 周报」生成）")
@@ -2581,7 +2583,8 @@ def supp_candidates_save(req: SuppCandSaveReq):
 
 
 class SuppCandPushReq(BaseModel):
-    env: str = "prod"
+    env: str = "prod"     # 候选数据来源环境（决定读哪份候选文件）
+    target: str = "test"  # 推送目标站点：test=测试服务号(/t)，prod=生产服务号(/p)
     ids: List[str] = []
 
 
@@ -2590,6 +2593,8 @@ async def supp_candidates_push(req: SuppCandPushReq):
     """推送选中（或全部 pending）知识点到服务号后台；成功后标记 pushed。"""
     if req.env not in ("test", "prod"):
         raise HTTPException(400, "env 取值 test|prod")
+    if req.target not in ("test", "prod"):
+        raise HTTPException(400, "target 取值 test|prod")
     p = _cand_latest(req.env)
     if not p:
         raise HTTPException(404, "没有候选文件")
@@ -2602,7 +2607,7 @@ async def supp_candidates_push(req: SuppCandPushReq):
     if not pick:
         raise HTTPException(400, "没有可推送的条目")
     import dar_weekly
-    base, user, pwd = dar_weekly._push_env(req.env)
+    base, user, pwd = dar_weekly._push_env(req.target)  # 站点由 target 决定，与数据 env 无关
     if not (base and user and pwd):
         raise HTTPException(400, "未配置 DAR_PUSH_BASE / DAR_PUSH_BASE_PROD / DAR_PUSH_USER / DAR_PUSH_PASS（ai/.env）")
     week_date = os.path.basename(p).split("_")[-1].replace(".json", "")
@@ -2631,6 +2636,7 @@ async def supp_candidates_push(req: SuppCandPushReq):
         for it in d.get("items") or []:
             if it.get("id") in ids:
                 it["status"] = "pushed"
+                it["pushed_to"] = req.target
         with open(p, "w", encoding="utf-8") as fh:
             json.dump(d, fh, ensure_ascii=False, indent=1)
     return {"ok": True, "pushed": len(pick), "remote": res}
