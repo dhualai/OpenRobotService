@@ -721,8 +721,16 @@ jobs:
           TARGET_ENV: ${{ inputs.environment }}
           TARGET_REF: ${{ inputs.git_ref }}
           TICKET_INPUT: ${{ inputs.ticket_id }}
+          API_URL: ${{ secrets.TICKET_STATUS_API_URL }}
+          API_TOKEN: ${{ secrets.TICKET_STATUS_API_TOKEN }}
         run: |
           set -euo pipefail
+          # 先用一句人话挡住：这个入口目前依赖尚未部署的服务，
+          # 否则报「缺 Secret」，会被当成配置故障去排查。
+          if [[ -z "${API_URL}" || -z "${API_TOKEN}" ]]; then
+            echo '::error::单工单验收功能尚未启用（需要先部署只读 API 服务并配置 TICKET_STATUS_API_URL / TICKET_STATUS_API_TOKEN）。需求恢复后会随工单一并启用。'
+            exit 1
+          fi
           if [[ "$GITHUB_REF" != 'refs/heads/test' || "$TARGET_ENV" != 'test' || -n "$TARGET_REF" ]]; then
             echo '::error::单工单验收仅支持 test 分支和 test 环境，git_ref 请留空。'
             exit 1
@@ -760,7 +768,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${TICKET_STATUS_API_URL}" || -z "${TICKET_STATUS_API_TOKEN}" ]]; then
-            echo '::error::缺少 TICKET_STATUS_API_URL 或 TICKET_STATUS_API_TOKEN。'
+            echo '::error::单工单验收功能尚未启用（缺少 TICKET_STATUS_API_URL / TICKET_STATUS_API_TOKEN）。'
             exit 1
           fi
           body=$(bash automation/services/ticket-status/query.sh "${TICKET_ID}") || {
