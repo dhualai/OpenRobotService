@@ -346,13 +346,16 @@ interface Props {
   readOnly?: boolean;
   /** 粘贴/拖拽图片时触发，外部负责上传后调 insertImages */
   onUploadImages?: (files: File[]) => void;
+  /** 工具栏形态：full=报告完整工具栏（默认）；simple=弹窗精简（加粗/列表/撤销/重做/图片） */
+  variant?: 'full' | 'simple';
 }
 
 const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>(
-  function ArchiveReportRichEditor({ value, onChange, readOnly = false, onUploadImages }, ref) {
+  function ArchiveReportRichEditor({ value, onChange, readOnly = false, onUploadImages, variant = 'full' }, ref) {
     const callbacks = useRef({ onChange, onUploadImages });
     callbacks.current = { onChange, onUploadImages };
     const lastMd = useRef(value);
+    const fileInputRef = useRef<HTMLInputElement | null>(null); // simple 模式工具栏图片选择 input
     const [preview, setPreview] = useState<{ src: string; alt: string }>();
 
     const editor = useEditor({
@@ -381,7 +384,7 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
       editorProps: {
         attributes: {
           role: 'textbox',
-          'aria-label': '知识沉淀报告',
+          'aria-label': variant === 'simple' ? '工单解决方式' : '知识沉淀报告',
           'aria-multiline': 'true',
           class: 'archive-report-rich-editor',
         },
@@ -520,18 +523,48 @@ const ArchiveReportRichEditor = forwardRef<ArchiveReportRichEditorHandle, Props>
       }
     };
 
+    const isSimple = variant === 'simple';
+
     return (
       <div className="archive-report-document">
         {!readOnly && (
-          <div role="toolbar" aria-label="报告格式" className="archive-report-format">
-            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>H2 二级标题</button>
-            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}>H3 三级标题</button>
-            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBold().run()}>加粗</button>
-            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleItalic().run()}>斜体</button>
-            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBulletList().run()}>列表</button>
-            <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>编号</button>
-            <button type="button" disabled={!editor?.can().undo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().undo().run()}>撤销</button>
-            <button type="button" disabled={!editor?.can().redo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().redo().run()}>重做</button>
+          <div role="toolbar" aria-label={isSimple ? '解决方式格式' : '报告格式'} className="archive-report-format">
+            {isSimple ? (
+              <>
+                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBold().run()}>加粗</button>
+                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBulletList().run()}>列表</button>
+                <button type="button" disabled={!editor?.can().undo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().undo().run()}>撤销</button>
+                <button type="button" disabled={!editor?.can().redo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().redo().run()}>重做</button>
+                {onUploadImages && (
+                  <>
+                    <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => fileInputRef.current?.click()}>📷 图片</button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      hidden
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files || []);
+                        if (files.length) callbacks.current.onUploadImages?.(files);
+                        e.target.value = ''; // 允许连续选同一文件
+                      }}
+                    />
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>H2 二级标题</button>
+                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}>H3 三级标题</button>
+                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBold().run()}>加粗</button>
+                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleItalic().run()}>斜体</button>
+                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleBulletList().run()}>列表</button>
+                <button type="button" disabled={!editor} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>编号</button>
+                <button type="button" disabled={!editor?.can().undo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().undo().run()}>撤销</button>
+                <button type="button" disabled={!editor?.can().redo()} onMouseDown={(e) => e.preventDefault()} onClick={() => editor?.chain().focus().redo().run()}>重做</button>
+              </>
+            )}
           </div>
         )}
         <EditorContent editor={editor} onDoubleClick={openImageLightbox} />

@@ -10736,6 +10736,10 @@ button.dispatch-dev__rate-row { cursor: pointer; }
   opacity: 1;
   background: var(--muted, #f6f8fa);
 }
+/* ORS-1214：解决方式确认弹窗（ticket-edit-form）内的精简编辑器——压低高度适应弹窗 */
+.ticket-edit-form .archive-report-rich-editor {
+  min-height: 96px; max-height: 240px;
+}
 .archive-report-rich-editor p { margin: 0 0 10px; }
 .archive-report-rich-editor p:last-child { margin-bottom: 0; }
 .archive-report-rich-editor h2 { font-size: 17px; font-weight: 650; margin: 16px 0 8px; }
