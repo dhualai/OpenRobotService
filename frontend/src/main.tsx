@@ -185,6 +185,8 @@ const PermissionManage = lazyImport(() => import('@/pages/admin/PermissionManage
 const ResourceManage = lazyImport(() => import('@/pages/admin/ResourceManage'));
 const FileExplorer = lazyImport(() => import('@/pages/admin/FileExplorer'));
 const KnowledgeBase = lazyImport(() => import('@/pages/admin/KnowledgeBase'));
+const KnowledgeSupplement = lazyImport(() => import('@/pages/admin/KnowledgeSupplement'));
+const KnowledgeSupplementDetail = lazyImport(() => import('@/pages/admin/KnowledgeSupplementDetail'));
 const DailyReportManage = lazyImport(() => import('@/pages/admin/DailyReportManage'));
 const DailySummaryAgent = lazyImport(() => import('@/pages/admin/DailySummaryAgent'));
 const WechatManage = lazyImport(() => import('@/pages/admin/WechatManage'));
@@ -304,6 +306,8 @@ const router = createBrowserRouter([
                   { path: 'resources', element: <ResourceManage /> },
                   { path: 'file-explorer', element: <FileExplorer /> },
                   { path: 'kb', element: <KnowledgeBase /> },
+                  { path: 'kb/supplement', element: <KnowledgeSupplement /> },
+                  { path: 'kb/supplement/:id', element: <KnowledgeSupplementDetail /> },
                   { path: 'wechat', element: <WechatManage /> },
                   { path: 'profile', element: <UserProfile /> },
                   // 奖励管理：转账测试 + 转账单/奖励记录运维（与「其他」入口页同一个 AdminLayout 壳）

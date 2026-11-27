@@ -307,13 +307,14 @@ class NotificationOutboxService:
             user_map = await TicketService._get_user_map(None)
             assigned_name = user_map.get(target_user, target_user)
 
-            # 逾期天数：统一按 UTC 比较（修正原实现用本地 naive now 与 UTC deadline 比较的偏差）
+            # 逾期天数：统一按 UTC 时差向下取整（与 DAG 的 int(overdue_hours // 24) 口径一致）
+            # 只舍弃不进位，不足 24 小时显示 0 天
             yuqi_day = ""
             deadline_utc = WorkingTimeService.to_utc(getattr(ticket, "deadline_at", None))
             if deadline_utc:
                 now_utc = WorkingTimeService.now_utc()
                 if now_utc > deadline_utc:
-                    yuqi_day = f"{(now_utc - deadline_utc).total_seconds() / 86400:.0f}"
+                    yuqi_day = str(int((now_utc - deadline_utc).total_seconds() / 86400))
 
             # 模板里的时间按接收人时区渲染（海外用户看到的才是他的本地时间）
             user_ctx = WorkingTimeService.get_user_context(target_user) or {}

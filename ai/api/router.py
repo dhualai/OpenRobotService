@@ -6,6 +6,7 @@
   /api/ai/task/*  任务 Agent
 """
 import json
+import re
 import time
 import os
 import uuid
@@ -133,6 +134,57 @@ async def get_pipeline() -> AiDiagnosisPlatform:
 
 
 archive_router = APIRouter(prefix="/api/ai/archive", tags=["archive-ai"])
+
+kb_router = APIRouter(prefix="/api/ai/kb", tags=["kb-ai"])
+
+_SUPPLEMENT_MERGE_PROMPT = """你是仓储物流机器人售后知识库的编辑。下面是同一知识点下多位工程师分别写的答案草稿，请汇总成一份标准答案。
+
+知识点：{title}
+知识点说明：{description}
+
+草稿：
+{drafts}
+
+要求：
+1. 合并所有有价值的信息；同一事实只保留一处；不同草稿说法冲突时用更保守/更具体的表述并注明适用条件，禁止臆造草稿之外的内容
+2. 结构：先用 1~2 句给出结论或判断，再给排查/操作步骤（有序列表），最后写注意事项（如有）
+3. 不要出现「有工程师认为」「根据草稿」这类元信息，直接给答案
+4. 保留草稿中的具体参数、命令、界面路径、故障码、车型等关键实体
+5. 输出 markdown 正文即可，不要一级标题（外层会自动加 H1）"""
+
+
+class SupplementMergeReq(BaseModel):
+    title: str
+    description: str = ""
+    drafts: List[dict] = []
+
+
+@kb_router.post("/supplement/merge", summary="知识补充：多份答案草稿 → AI 汇总标准答案")
+async def kb_supplement_merge(req: SupplementMergeReq):
+    """知识补充多人协作的汇总步：只做信息融合与结构化，不新增事实。"""
+    drafts = [d for d in (req.drafts or []) if (d.get("content") or "").strip()]
+    if not drafts:
+        raise HTTPException(400, "草稿为空")
+    body = "\n\n".join(
+        f"【{d.get('author') or '成员'}】\n{(d.get('content') or '').strip()[:3000]}"
+        for d in drafts)
+    from ai.core.solution_distiller import _get_distill_llm  # 知识质量用 pro（SOLUTION_DISTILL_MODEL）
+    llm = await _get_distill_llm()
+    try:
+        out = await asyncio.wait_for(
+            llm.complete(
+                prompt=_SUPPLEMENT_MERGE_PROMPT.format(
+                    title=req.title[:120], description=(req.description or "")[:500], drafts=body),
+                max_tokens=3000, temperature=0.2, thinking=False),
+            timeout=150)
+    except Exception as e:
+        raise HTTPException(502, f"汇总失败: {type(e).__name__}: {e}")
+    text = (out or "").strip()
+    # 去掉模型可能自带的一级标题（外层按知识点标题加 H1）
+    text = re.sub(r"^#\s+.+\n+", "", text, count=1)
+    if not text:
+        raise HTTPException(502, "汇总结果为空")
+    return {"content_md": text}
 
 
 class ArchiveGenerateRequest(BaseModel):

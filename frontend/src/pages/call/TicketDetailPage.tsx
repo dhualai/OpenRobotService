@@ -16,6 +16,7 @@ import PersonArrow from '@/shared/components/PersonArrow';
 import { getMyProjects, getProjectMembers, type ProjectItem, type ProjectMember } from '@/api/projects';
 import { qaGetTicket, fetchWithAuth, taskDiscussStream } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment, getProxyRelations, type ProxyRelation } from '@/api/ticket';
+import ArchiveReportRichEditor, { type ArchiveReportRichEditorHandle } from '@/shared/components/ArchiveReportRichEditor';
 import {
   isTerminalTicketStatus,
   canUrgeTicket,
@@ -364,6 +365,24 @@ export default function TicketDetailPage() {
   // 工单阶段性处理（协商节点）+ 结束工单（解决方式）：与系统任务详情页复用共享 hook
   const negotiation = useStepNegotiation(ticket?.id ?? '', ticket, refreshDetail);
   const resolve = useResolveTicket(ticket?.id ?? '', ticket, refreshDetail);
+  // ORS-1214：解决方式弹窗富文本编辑器 ref（图片上传成功后插到光标位置）
+  const resolutionEditorRef = useRef<ArchiveReportRichEditorHandle | null>(null);
+
+  /** ORS-1214：解决方式弹窗插图上传——与报告插图同通道（评论附件接口），上传后经 ref 插到光标位置 */
+  const handleResolutionImageUpload = async (files: File[]) => {
+    if (!files.length) return;
+    try {
+      const inserts: { path: string; name: string }[] = [];
+      for (const f of files) {
+        const objectPath = await uploadCommentAttachment(f, `resolution-${Date.now()}`);
+        inserts.push({ path: objectPath, name: f.name });
+      }
+      resolutionEditorRef.current?.insertImages(inserts);
+      Toast({ message: `已插入 ${inserts.length} 张图片`, theme: 'success' });
+    } catch (err) {
+      Toast({ message: `图片上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
 
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
 
@@ -1567,23 +1586,18 @@ export default function TicketDetailPage() {
                   <span style={{ color: 'var(--apricot)', fontSize: '12px' }}>自动总结出错，请手动补充</span>
                 )}
               </div>
+              {/* ORS-1214：所见即所得富文本（持久化 Markdown），支持粘贴/拖拽/按钮插图 */}
               {resolve.resolutionLoading || resolve.resolutionPolling ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '20px 0', color: 'var(--muted-foreground)', fontSize: '13px', justifyContent: 'center' }}>
                   <Loading size="20px" /> 正在生成解决方式…
                 </div>
               ) : (
-                <Textarea
+                <ArchiveReportRichEditor
+                  ref={resolutionEditorRef}
+                  variant="simple"
                   value={resolve.resolutionText}
-                  onChange={(v) => resolve.setResolutionText(String(v))}
-                  placeholder={
-                    resolve.resolutionNoSolution
-                      ? '当前没有解决方案，请在此补充实际解决方式'
-                      : resolve.resolutionFailed
-                        ? 'U老师自动总结出错了，请补充解决方法'
-                        : '请填写该工单的解决方式'
-                  }
-                  autosize={{ minRows: 4, maxRows: 8 }}
-                  maxlength={1000}
+                  onChange={resolve.setResolutionText}
+                  onUploadImages={handleResolutionImageUpload}
                 />
               )}
             </div>

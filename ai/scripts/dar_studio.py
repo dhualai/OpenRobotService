@@ -2498,6 +2498,150 @@ def supp_ingest_status():
             "logs": _sup_ing["logs"][-40:]}
 
 
+# ── 知识补充候选（ORS-1159）：dar_supplement 聚类产物 → 审核台 → 推送服务号 ──
+# 链路：dar_weekly 的 supplement 步骤把本周未覆盖段交给 LLM 归纳成通用知识点
+# （去车型/项目上下文、问法合并），落 processed/supplement_candidates_*.json →
+# 本页签人工审核（改标题/描述、剔除、勾选）→ 推送服务号「知识库 → 待补充」，
+# 由部门多人补答案 + AI 汇总 + 审核后入库。本地不再写答案（答案协作在服务号）。
+
+
+def _cand_latest(env: str) -> str:
+    proc = os.path.join(DATA_ROOT, env, "processed")
+    files = sorted(glob.glob(os.path.join(proc, "supplement_candidates_*.json")))
+    return files[-1] if files else ""
+
+
+def _cand_load(env: str) -> dict:
+    p = _cand_latest(env)
+    if not p:
+        return {"env": env, "items": [], "stats": {}, "file": "", "missing": True}
+    with open(p, encoding="utf-8") as fh:
+        d = json.load(fh)
+    d["file"] = os.path.basename(p)
+    return d
+
+
+@app.get("/api/supplement/candidates")
+def supp_candidates(env: str = "prod"):
+    """候选知识点清单（最新一版）+ 审核进度摘要。"""
+    if env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    d = _cand_load(env)
+    items = d.get("items") or []
+    d["summary"] = {
+        "total": len(items),
+        "pending": sum(1 for x in items if (x.get("status") or "pending") == "pending"),
+        "excluded": sum(1 for x in items if x.get("status") == "excluded"),
+        "pushed": sum(1 for x in items if x.get("status") == "pushed"),
+    }
+    return d
+
+
+class SuppCandSaveReq(BaseModel):
+    env: str = "prod"
+    items: List[dict] = []
+
+
+@app.post("/api/supplement/candidates/save")
+def supp_candidates_save(req: SuppCandSaveReq):
+    """审核编辑：改标题/描述/类型、剔除(excluded)/恢复(pending)。"""
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    if req.target not in ("test", "prod"):
+        raise HTTPException(400, "target 取值 test|prod")
+    p = _cand_latest(req.env)
+    if not p:
+        raise HTTPException(404, "没有候选文件（先跑周流程「吸收 → 周报」生成）")
+    with _supp_lock:
+        d = json.load(open(p, encoding="utf-8"))
+        by_id = {x.get("id"): x for x in d.get("items") or []}
+        n = 0
+        for upd in req.items:
+            it = by_id.get(upd.get("id"))
+            if not it or it.get("status") == "pushed":
+                continue  # 已推送的不再改（服务号侧已在协作）
+            changed = False
+            for k in ("title", "description"):
+                v = (upd.get(k) or "").strip()
+                if v and v != it.get(k):
+                    it[k] = v
+                    changed = True
+            if upd.get("qtype") in ("故障处置", "操作指引", "功能咨询",
+                                    "状态查询", "资料查询", "其他") and upd["qtype"] != it.get("qtype"):
+                it["qtype"] = upd["qtype"]
+                changed = True
+            st = upd.get("status")
+            if st in ("pending", "excluded") and st != it.get("status"):
+                it["status"] = st
+                changed = True
+            if changed:
+                it["edited"] = True
+                n += 1
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(d, fh, ensure_ascii=False, indent=1)
+    return {"ok": True, "updated": n}
+
+
+class SuppCandPushReq(BaseModel):
+    env: str = "prod"     # 候选数据来源环境（决定读哪份候选文件）
+    target: str = "test"  # 推送目标站点：test=测试服务号(/t)，prod=生产服务号(/p)
+    ids: List[str] = []
+
+
+@app.post("/api/supplement/candidates/push")
+async def supp_candidates_push(req: SuppCandPushReq):
+    """推送选中（或全部 pending）知识点到服务号后台；成功后标记 pushed。"""
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    if req.target not in ("test", "prod"):
+        raise HTTPException(400, "target 取值 test|prod")
+    p = _cand_latest(req.env)
+    if not p:
+        raise HTTPException(404, "没有候选文件")
+    with _supp_lock:
+        d = json.load(open(p, encoding="utf-8"))
+        items = d.get("items") or []
+        pick = [x for x in items
+                if ((x.get("id") in req.ids) if req.ids
+                    else (x.get("status") in (None, "", "pending")))]
+    if not pick:
+        raise HTTPException(400, "没有可推送的条目")
+    import dar_weekly
+    base, user, pwd = dar_weekly._push_env(req.target)  # 站点由 target 决定，与数据 env 无关
+    if not (base and user and pwd):
+        raise HTTPException(400, "未配置 DAR_PUSH_BASE / DAR_PUSH_BASE_PROD / DAR_PUSH_USER / DAR_PUSH_PASS（ai/.env）")
+    week_date = os.path.basename(p).split("_")[-1].replace(".json", "")
+    body = {
+        "week_date": week_date,
+        "env": req.env,
+        "items": [{k: x.get(k) for k in ("id", "title", "description", "qtype", "count")}
+                  for x in pick],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(f"{base}/api/auth/login",
+                             json={"username": user, "password": pwd})
+            r.raise_for_status()
+            tok = r.json()["access_token"]
+            r2 = await c.post(f"{base}/api/admin/kb/supplement-questions/push",
+                              json=body,
+                              headers={"Authorization": f"Bearer {tok}"})
+            r2.raise_for_status()
+            res = r2.json()
+    except Exception as e:
+        raise HTTPException(502, f"推送失败 {base}: {type(e).__name__}: {e}")
+    with _supp_lock:
+        d = json.load(open(p, encoding="utf-8"))
+        ids = {x["id"] for x in pick}
+        for it in d.get("items") or []:
+            if it.get("id") in ids:
+                it["status"] = "pushed"
+                it["pushed_to"] = req.target
+        with open(p, "w", encoding="utf-8") as fh:
+            json.dump(d, fh, ensure_ascii=False, indent=1)
+    return {"ok": True, "pushed": len(pick), "remote": res}
+
+
 # ── 知识库结构（页签4 知识库）────────────────────────────────
 # sub_domain → 检索标签（仅展示用；与 retrieval.py / pipeline.py 的 _sub_labels
 # 同源，那边新增子域后这里补一行即可，漏了只影响着色不影响功能）

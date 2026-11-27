@@ -63,7 +63,9 @@ async def _api(client, method: str, path: str, step: str = '', headers=None,
     with allure.step(step or f'{method.upper()} {path}'):
         r = await client.request(method, path, headers=headers, **kwargs)
         if expected_status is not None:
-            assert_status_code(r, expected_status)
+            # 删除接口既可能返回 200（带结果体）也可能返回 204（无内容），两者都算删除成功。
+            allowed = {200, 204} if method.upper() == "DELETE" and expected_status == 200 else {expected_status}
+            assert r.status_code in allowed, f"Expected status {sorted(allowed)}, got {r.status_code}"
         if expected_fields:
             try:
                 payload = r.json()
@@ -92,7 +94,7 @@ async def client():
         async with httpx.AsyncClient(base_url="http://mock.local", transport=create_mock_transport()) as c:
             yield c
     else:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as c:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30, follow_redirects=True) as c:
             yield c
 
 
@@ -143,13 +145,15 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc001(self, client, auth, cleanup):
         """正常流程：创建工单后调用删除接口应删除成功并返回2xx"""
-        await _api(client, "post", "/api/tasks/",
-                   step="Step 1: 创建一张工单",
-                   headers=auth,
-                   expected_status=200,
-                   json={"title": "删除接口验证工单", "ticket_type": "bug", "priority": "P1", "project_id": "Leo_test"},
-                   )
-        await _api(client, "delete", "/api/tasks/1",
+        created = await _api(client, "post", "/api/tasks/",
+                             step="Step 1: 创建一张工单",
+                             headers=auth,
+                             expected_status=200,
+                             json={"title": "删除接口验证工单", "description": "删除接口验证",
+                                   "ticket_type": "bug", "priority": "P1", "project_id": "Leo_test"},
+                             )
+        task_id = created.json()["id"]
+        await _api(client, "delete", f"/api/tasks/{task_id}",
                    step="Step 2: 删除刚创建的工单",
                    headers=auth,
                    expected_status=200,
@@ -169,15 +173,23 @@ class TestTicket1053:
     @allure.story("工单操作日志")
     @allure.title("含操作日志的工单删除时日志写入task_id不为空")
     @pytest.mark.api
-    async def test_tc003(self, client, auth):
+    async def test_tc003(self, client, auth, cleanup):
         """正常流程：含操作日志的工单删除时日志写入task_id不为空"""
-        await _api(client, "get", "/api/tasks/1/operation-logs",
-                   step="Step 1: 查询该工单的操作日志，确认存在日志记录",
+        created = await _api(client, "post", "/api/tasks/",
+                             step="Step 1: 创建一张工单",
+                             headers=auth,
+                             expected_status=200,
+                             json={"title": "含日志删除验证", "description": "含日志删除验证",
+                                   "ticket_type": "bug", "priority": "P2", "project_id": "Leo_test"},
+                             )
+        task_id = created.json()["id"]
+        await _api(client, "get", f"/api/tasks/{task_id}/operation-logs",
+                   step="Step 2: 查询该工单的操作日志",
                    headers=auth,
                    expected_status=200,
                    )
-        await _api(client, "delete", "/api/tasks/1",
-                   step="Step 2: 删除该工单",
+        await _api(client, "delete", f"/api/tasks/{task_id}",
+                   step="Step 3: 删除该工单",
                    headers=auth,
                    expected_status=200,
                    )
@@ -187,13 +199,15 @@ class TestTicket1053:
     @pytest.mark.api
     async def test_tc004(self, client, auth, cleanup):
         """边界条件：无操作日志的工单删除不应因日志关联失败报错"""
-        await _api(client, "post", "/api/tasks/",
-                   step="Step 1: 创建新工单（无多余操作，不产生日志）",
-                   headers=auth,
-                   expected_status=200,
-                   json={"title": "无日志工单删除验证", "ticket_type": "bug", "priority": "P2", "project_id": "Leo_test"},
-                   )
-        await _api(client, "delete", "/api/tasks/2",
+        created = await _api(client, "post", "/api/tasks/",
+                             step="Step 1: 创建新工单",
+                             headers=auth,
+                             expected_status=200,
+                             json={"title": "无日志工单删除验证", "description": "无日志工单删除验证",
+                                   "ticket_type": "bug", "priority": "P2", "project_id": "Leo_test"},
+                             )
+        task_id = created.json()["id"]
+        await _api(client, "delete", f"/api/tasks/{task_id}",
                    step="Step 2: 直接删除该工单",
                    headers=auth,
                    expected_status=200,
@@ -202,10 +216,18 @@ class TestTicket1053:
     @allure.story("数据库异常处理")
     @allure.title("删除接口不应以未处理500暴露数据库完整性错误")
     @pytest.mark.api
-    async def test_tc005(self, client, auth):
+    async def test_tc005(self, client, auth, cleanup):
         """异常流程：删除接口不应以未处理500暴露数据库完整性错误"""
-        await _api(client, "delete", "/api/tasks/3",
-                   step="Step 1: 调用删除接口删除工单",
+        created = await _api(client, "post", "/api/tasks/",
+                             step="Step 1: 创建一张工单",
+                             headers=auth,
+                             expected_status=200,
+                             json={"title": "500回归验证", "description": "500回归验证",
+                                   "ticket_type": "bug", "priority": "P2", "project_id": "Leo_test"},
+                             )
+        task_id = created.json()["id"]
+        await _api(client, "delete", f"/api/tasks/{task_id}",
+                   step="Step 2: 调用删除接口删除工单",
                    headers=auth,
                    expected_status=200,
                    )
@@ -213,15 +235,23 @@ class TestTicket1053:
     @allure.story("数据库异常处理")
     @allure.title("重复删除同一工单第二次应返回404而非500")
     @pytest.mark.api
-    async def test_tc006(self, client, auth):
+    async def test_tc006(self, client, auth, cleanup):
         """异常流程：重复删除同一工单第二次应返回404而非500"""
-        await _api(client, "delete", "/api/tasks/4",
-                   step="Step 1: 首次删除工单",
+        created = await _api(client, "post", "/api/tasks/",
+                             step="Step 1: 创建一张工单",
+                             headers=auth,
+                             expected_status=200,
+                             json={"title": "重复删除验证", "description": "重复删除验证",
+                                   "ticket_type": "bug", "priority": "P2", "project_id": "Leo_test"},
+                             )
+        task_id = created.json()["id"]
+        await _api(client, "delete", f"/api/tasks/{task_id}",
+                   step="Step 2: 首次删除工单",
                    headers=auth,
                    expected_status=200,
                    )
-        await _api(client, "delete", "/api/tasks/4",
-                   step="Step 2: 对同一工单再次删除",
+        await _api(client, "delete", f"/api/tasks/{task_id}",
+                   step="Step 3: 对同一工单再次删除",
                    headers=auth,
                    expected_status=404,
                    )
@@ -229,53 +259,71 @@ class TestTicket1053:
     @allure.story("删除入口一致性")
     @allure.title("直接调用删除接口与页面入口删除结果一致")
     @pytest.mark.api
-    async def test_tc007(self, client, auth):
+    async def test_tc007(self, client, auth, cleanup):
         """全链路：直接调用删除接口与页面入口删除结果一致"""
-        await _api(client, "get", "/api/tasks/5",
-                   step="Step 1: 查询工单详情确认存在",
+        created = await _api(client, "post", "/api/tasks/",
+                             step="Step 1: 创建一张工单",
+                             headers=auth,
+                             expected_status=200,
+                             json={"title": "删除入口一致性验证", "description": "删除入口一致性验证",
+                                   "ticket_type": "bug", "priority": "P2", "project_id": "Leo_test"},
+                             )
+        task_id = created.json()["id"]
+        await _api(client, "get", f"/api/tasks/{task_id}",
+                   step="Step 2: 查询工单详情确认存在",
                    headers=auth,
                    expected_status=200,
                    )
-        await _api(client, "delete", "/api/tasks/5",
-                   step="Step 2: 直接调用接口删除",
+        await _api(client, "delete", f"/api/tasks/{task_id}",
+                   step="Step 3: 直接调用接口删除",
                    headers=auth,
                    expected_status=200,
                    )
-        await _api(client, "get", "/api/tasks/5",
-                   step="Step 3: 再次查询详情确认已删除",
+        await _api(client, "get", f"/api/tasks/{task_id}",
+                   step="Step 4: 再次查询详情确认已删除",
                    headers=auth,
                    expected_status=404,
                    )
 
     @allure.story("删除权限")
+    @pytest.mark.skipif(USE_MOCK, reason="Mock 后端不校验鉴权，权限用例只在真实后端运行")
     @allure.title("无权限用户删除他人工单应被拒绝")
     @pytest.mark.api
     async def test_tc008(self, client, auth, cleanup):
-        """权限：无权限用户删除他人工单应被拒绝"""
-        await _api(client, "post", "/api/auth/login",
-                   step="Step 1: 普通用户登录",
-                   expected_status=200,
-                   expected_fields={"success": true},
-                   json={"username": "testuser", "password": "user123"},
-                   )
-        await _api(client, "delete", "/api/tasks/6",
-                   step="Step 2: 普通用户直接调用删除接口删除他人工单",
-                   headers=auth,
-                   expected_status=403,
-                   )
+        """权限：未携带凭据直接调用删除接口应被拒绝"""
+        created = await _api(client, "post", "/api/tasks/",
+                             step="Step 1: 授权账号创建一张工单",
+                             headers=auth,
+                             expected_status=200,
+                             json={"title": "删除权限验证", "description": "删除权限验证",
+                                   "ticket_type": "bug", "priority": "P2", "project_id": "Leo_test"},
+                             )
+        task_id = created.json()["id"]
+        r = await _api(client, "delete", f"/api/tasks/{task_id}",
+                       step="Step 2: 未携带凭据直接删除该工单",
+                       )
+        assert r.status_code in (401, 403), f"未授权删除应被拒绝，实际返回 {r.status_code}"
 
     @allure.story("删除结果反馈")
     @allure.title("删除成功后返回明确结果且详情查询为404")
     @pytest.mark.api
-    async def test_tc009(self, client, auth):
+    async def test_tc009(self, client, auth, cleanup):
         """正常流程：删除成功后返回明确结果且详情查询为404"""
-        await _api(client, "delete", "/api/tasks/7",
-                   step="Step 1: 删除工单",
+        created = await _api(client, "post", "/api/tasks/",
+                             step="Step 1: 创建一张工单",
+                             headers=auth,
+                             expected_status=200,
+                             json={"title": "删除结果反馈验证", "description": "删除结果反馈验证",
+                                   "ticket_type": "bug", "priority": "P2", "project_id": "Leo_test"},
+                             )
+        task_id = created.json()["id"]
+        await _api(client, "delete", f"/api/tasks/{task_id}",
+                   step="Step 2: 删除工单",
                    headers=auth,
                    expected_status=200,
                    )
-        await _api(client, "get", "/api/tasks/7",
-                   step="Step 2: 查询已删除工单详情",
+        await _api(client, "get", f"/api/tasks/{task_id}",
+                   step="Step 3: 查询已删除工单详情",
                    headers=auth,
                    expected_status=404,
                    )

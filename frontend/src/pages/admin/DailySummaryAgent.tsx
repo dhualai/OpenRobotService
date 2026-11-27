@@ -189,7 +189,7 @@ const ReportStreamCard = memo(function ReportStreamCard({
         /* 编辑保存后的内容：以富文本 HTML 渲染（SafeHtml 内置 DOMPurify 清洗） */
         <SafeHtml html={editedHtml} className="markdown-body md-compact" />
       ) : (
-        <MarkdownRenderer content={text} compact />
+        <MarkdownRenderer content={text} compact streaming={streaming} />
       )}
     </div>
   );

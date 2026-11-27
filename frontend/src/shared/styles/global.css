@@ -5585,6 +5585,9 @@ html, body, #root {
 @media (min-width: 1280px) { .admin-entries-stats__groups { grid-template-columns: repeat(2, 1fr); } }
 /* 跨满两列的宽图卡（如微信用户日活折线图） */
 .admin-entries-stats__chart--wide { grid-column: 1 / -1; }
+/* 日活图卡头部：标题（sub 样式与「用户增减趋势」一致）与独立筛选框纵向排布，
+   筛选框靠左，与用户统计筛选框同一水平起始线；与图表间距对齐 group-head */
+.admin-entries-stats__dau-head { margin-bottom: 10px; }
 .admin-entries-stats__sub { display: block; font-size: 12px; color: var(--mac-muted-fg); margin-bottom: 4px; }
 .admin-entries-stats__empty {
   padding: 32px 0;
@@ -9624,6 +9627,28 @@ button.dispatch-dev__funnel-link { cursor: pointer; }
 .dispatch-dev__funnel-link.is-active {
   outline: 1px solid #227197; outline-offset: 1px;
 }
+/* ORS-716：AI 直答率漏斗在手机上一行一层（名称｜条｜率），层间桥压到最小——
+   派单漏斗沿用上面的两行布局，不动 */
+@media (max-width: 720px) {
+  /* 第三列必须定宽：auto 会跟着右侧文字（"100%" vs "占全部 81.0%"）伸缩，
+     每层轨道宽度就不一样，条看起来参差不齐 */
+  .dar-funnel .dispatch-dev__funnel-row {
+    grid-template-columns: 64px minmax(0, 1fr) 82px;
+    column-gap: 6px;
+  }
+  .dar-funnel .dispatch-dev__funnel-name {
+    grid-column: 1; text-align: left; font-size: 11px; line-height: 1.2;
+  }
+  .dar-funnel .dispatch-dev__funnel-track { grid-column: 2; }
+  .dar-funnel .dispatch-dev__funnel-rate { grid-column: 3; text-align: right; }
+  .dar-funnel .dispatch-dev__funnel-rate em { font-size: 10.5px; }
+  .dar-funnel .dispatch-dev__funnel-bridge {
+    margin: 1px 0; grid-template-columns: 1fr;
+  }
+  .dar-funnel .dispatch-dev__funnel-link { font-size: 10px; padding: 1px 6px; }
+  .dar-funnel .dispatch-dev__funnel-step { min-height: 26px; }
+}
+
 @media (max-width: 720px) {
   .dispatch-dev__funnel { padding: 12px 10px 14px; }
   .dispatch-dev__funnel-head { flex-direction: column; align-items: flex-start; }
@@ -10710,6 +10735,10 @@ button.dispatch-dev__rate-row { cursor: pointer; }
   border-radius: 10px; /* 只读态无 toolbar，单独圆角 */
   opacity: 1;
   background: var(--muted, #f6f8fa);
+}
+/* ORS-1214：解决方式确认弹窗（ticket-edit-form）内的精简编辑器——压低高度适应弹窗 */
+.ticket-edit-form .archive-report-rich-editor {
+  min-height: 96px; max-height: 240px;
 }
 .archive-report-rich-editor p { margin: 0 0 10px; }
 .archive-report-rich-editor p:last-child { margin-bottom: 0; }
