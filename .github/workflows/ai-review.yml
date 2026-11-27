@@ -141,10 +141,12 @@ jobs:
         if: >-
           steps.tgt.outputs.mode == 'auto' &&
           steps.deep.outputs.run != 'true' &&
-          steps.screen.outputs.exit_code == '10'
+          (steps.screen.outputs.exit_code == '10' ||
+           steps.screen.outputs.exit_code == '20')
         continue-on-error: true
         env:
-          # post_comment.py 读 PR_NUMBER（非 PR），变量名必须对齐脚本
+          # post_comment.py 读 PR_NUMBER（非 PR），变量名必须对齐脚本。
+          # exit 10=有高危、20=仅关注档——两者都落 PR 评论；推企微只认 10。
           PR_NUMBER: ${{ steps.tgt.outputs.pr }}
         run: |
           python3 ${{ steps.edir.outputs.dir }}/.github/ai-review/scripts/post_comment.py \

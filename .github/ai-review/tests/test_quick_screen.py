@@ -135,3 +135,44 @@ def test_render_markdown_has_marker_and_sections():
     assert "<!-- ors-ai-review:quick -->" in md
     assert "🔴 必须采纳（高危）" in md and "🟡 选择采纳（建议关注）" in md
     assert "不阻塞合并" in md
+
+
+def _run_main(files, out_md, monkeypatch, tmp_path):
+    """以 --files-json 模式跑 main()，返回 (exit_code, 评论文件内容)。"""
+    import json as _json
+    import sys
+    import quick_screen
+    fj = tmp_path / "files.json"
+    fj.write_text(_json.dumps(files, ensure_ascii=False), encoding="utf-8")
+    md_path = tmp_path / "quick.md"
+    monkeypatch.setattr(sys, "argv", [
+        "quick_screen.py", "--files-json", str(fj), "--out-md", str(md_path)])
+    code = quick_screen.main()
+    body = md_path.read_text(encoding="utf-8") if md_path.exists() else None
+    return code, body
+
+
+def test_warning_only_writes_comment_and_exit_20(monkeypatch, tmp_path):
+    """仅命中 warning 也必须落评论（exit 20）——PR #537/#539 静默回归。"""
+    code, body = _run_main(
+        [f("backend/app/x.py", "+now = datetime.now()\n")],
+        "quick.md", monkeypatch, tmp_path)
+    assert code == 20
+    assert body and "🟡 选择采纳（建议关注）" in body
+    assert "时间字段" in body
+
+
+def test_blocker_exit_10_and_comment(tmp_path, monkeypatch):
+    code, body = _run_main(
+        [f("backend/app/x.py", '+API_KEY = "sk-abcdef1234567890abcdef"\n')],
+        "quick.md", monkeypatch, tmp_path)
+    assert code == 10
+    assert body and "🔴 必须采纳（高危）" in body
+
+
+def test_clean_exit_0_no_comment(tmp_path, monkeypatch):
+    code, body = _run_main(
+        [f("backend/app/x.py", "+value = compute(x)\n")],
+        "quick.md", monkeypatch, tmp_path)
+    assert code == 0
+    assert body is None
