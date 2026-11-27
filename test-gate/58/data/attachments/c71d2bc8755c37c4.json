@@ -1,0 +1,7 @@
+{
+  "method": "DELETE",
+  "url": "http://mock.local/api/admin/projects/999",
+  "headers": {
+    "Authorization": "***"
+  }
+}

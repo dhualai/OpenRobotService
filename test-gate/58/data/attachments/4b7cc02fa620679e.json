@@ -1,0 +1,10 @@
+{
+  "method": "POST",
+  "url": "http://mock.local/api/call/qa/ask/stream",
+  "headers": {
+    "Authorization": "***"
+  },
+  "body": {
+    "question": "Tell me"
+  }
+}
