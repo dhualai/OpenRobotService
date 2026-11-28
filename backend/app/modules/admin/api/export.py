@@ -152,7 +152,7 @@ async def export_project_meta(
     return result
 
 
-def _resolve_apply_license_auth(
+async def _resolve_apply_license_auth(
     request: Request,
     key: str,
 ) -> tuple[Dict[str, Any], bool]:
