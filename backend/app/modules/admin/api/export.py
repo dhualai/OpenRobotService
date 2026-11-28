@@ -194,7 +194,7 @@ async def apply_project_license(
     mac: str = Body(..., description="MAC 地址"),
     start_date: str = Body(..., description="开始日期"),
     end_date: str = Body(..., description="结束日期"),
-    max_vehicles: Optional[int] = Body(None, description="允许最大车数，为空表示不限制"),
+    max_vehicles: int = Body(..., description="允许最大车数（必填）"),
     key: str = Query(default="", description="对外 API Key，匹配 LICENSE_APPLY_API_KEY 时跳过 JWT 鉴权"),
 ):
     current_user, is_key_auth = await _resolve_apply_license_auth(request, key)
