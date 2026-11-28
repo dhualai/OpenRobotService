@@ -166,6 +166,7 @@ class Settings(BaseSettings):
     HELPDESK_SYNC_API_KEY: str = Field(default="")          # 外部任务源同步接口 API Key（Airflow 用，X-API-Key）
     ROBOT_ALARM_API_KEY: str = Field(default="")            # 设备报警提醒对外接口 API Key（URL ?key= 方式鉴权）
     USP_PROJECT_SYNC_KEY: str = Field(default="")           # 项目导出接口内部服务鉴权（X-API-Key Header，跳过 JWT 权限码校验）
+    LICENSE_APPLY_API_KEY: str = Field(default="")          # 项目授权申请对外 API Key（URL ?key= 方式鉴权，跳过 JWT 权限码校验；32 位推荐）
 
     # ===== 项目在线状态监控（/api/health?project_code=xxx 心跳判定）=====
     # 超过此秒数未收到心跳视为离线（默认 5 分钟）

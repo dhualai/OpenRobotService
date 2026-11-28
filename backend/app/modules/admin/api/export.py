@@ -7,12 +7,11 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Request, Body, Hea
 from typing import Any, Optional, Dict, List
 from pydantic import BaseModel
 from app.core.config import settings
-from app.modules.admin.utils_das.config import security, DEBUG_MODE, AUTH_SERVICE_BASE_URL
+from app.modules.admin.utils_das.config import AUTH_SERVICE_BASE_URL
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.mqtt import publish_to_mqtt
 from app.modules.admin.api.auth import (
-    require_permission,
     has_permission_code,
 )
 from app.core.security import decode_token
@@ -153,24 +152,59 @@ async def export_project_meta(
     return result
 
 
+def _resolve_apply_license_auth(
+    request: Request,
+    key: str,
+) -> tuple[Dict[str, Any], bool]:
+    """两种鉴权通道任选其一，返回 (current_user, is_key_auth)。
+
+    通道 A（URL ?key=）：key 匹配 settings.LICENSE_APPLY_API_KEY，
+      跳过 JWT 与权限码校验，返回占位用户 is_key_auth=True。
+    通道 B（JWT）：沿用 get_current_active_user_from_token + PERM_LICENSE_APPLY 权限码。
+
+    两个通道都不通过时抛 HTTPException。
+    """
+    expected_key = settings.LICENSE_APPLY_API_KEY
+    if key and expected_key and key == expected_key:
+        return {"username": "api_key", "name": "API Key"}, True
+
+    # 通道 B：JWT
+    from app.modules.admin.api.auth import get_current_active_user_from_token
+    try:
+        current_user = await get_current_active_user_from_token(request)
+    except HTTPException as e:
+        if key and not expected_key:
+            # 调用方传了 key 但后端未配置 LICENSE_APPLY_API_KEY，给出明确提示
+            raise HTTPException(
+                status_code=401,
+                detail="LICENSE_APPLY_API_KEY 未配置，key 通道不可用；请走 JWT 鉴权",
+            )
+        raise e
+
+    if not has_permission_code(current_user, PERM_LICENSE_APPLY):
+        raise HTTPException(status_code=403, detail=f"权限不足: 缺少 {PERM_LICENSE_APPLY}")
+
+    return current_user, False
+
+
 @export_router.post("/apply_project_license", summary="申请项目授权")
 async def apply_project_license(
+    request: Request,
     project_code: str = Body(..., description="项目代码"),
     mac: str = Body(..., description="MAC 地址"),
     start_date: str = Body(..., description="开始日期"),
     end_date: str = Body(..., description="结束日期"),
     max_vehicles: Optional[int] = Body(None, description="允许最大车数，为空表示不限制"),
-    credentials: Optional = Depends(security),
-    request: Request = None,
-    current_user: Dict[str, Any] = require_permission(PERM_LICENSE_APPLY),
+    key: str = Query(default="", description="对外 API Key，匹配 LICENSE_APPLY_API_KEY 时跳过 JWT 鉴权"),
 ):
-    # require_permission 已完成认证与权限校验，current_user 含 username/name 等字段
+    current_user, is_key_auth = await _resolve_apply_license_auth(request, key)
+
     user = current_user.get("username", "")
     user_name = current_user.get("name") or user
 
-    # 仍调用 AUTH 服务获取最新 name（与原逻辑保持一致，失败则回退到 current_user.name）
+    # 仅 JWT 通道尝试调用 AUTH 服务获取最新 name；key 通道用占位值即可
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if user and token:
+    if not is_key_auth and user and token:
         try:
             url = f"{AUTH_SERVICE_BASE_URL}/users/{user}/detail"
             headers = {"Authorization": f"Bearer {token}"}
