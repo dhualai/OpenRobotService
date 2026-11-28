@@ -254,6 +254,16 @@ def step5_import_users(
 # BACKEND_HOST 接口（STEP 3 / STEP 4）
 # ===========================================================================
 
+def _normalize_date(date_str: str, is_start: bool) -> str:
+    """补齐时间后缀。已带时间（含空格/T/毫秒）直接返回。"""
+    if not date_str:
+        return date_str
+    # 已包含时间（YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DDTHH:MM:SS 等）
+    if " " in date_str or "T" in date_str:
+        return date_str
+    return date_str + (" 00:00:00" if is_start else " 23:59:59")
+
+
 def step3_apply_project_license(
     backend_host: str,
     project_code: str,
@@ -265,6 +275,10 @@ def step3_apply_project_license(
     jwt_token: str = "",
     timeout: int = 65,
 ) -> Dict[str, Any]:
+    # 统一补齐时间后缀：YYYY-MM-DD → YYYY-MM-DD 00:00:00 / 23:59:59
+    start_date = _normalize_date(start_date, is_start=True)
+    end_date = _normalize_date(end_date, is_start=False)
+
     url = _join(backend_host, _Path.APPLY_LICENSE)
     params = {"key": apply_key} if apply_key else None
     headers = {"Content-Type": "application/json"}
